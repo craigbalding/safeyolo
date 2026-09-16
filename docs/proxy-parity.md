@@ -2239,8 +2239,49 @@ observed status, headers, body and HTTP end time while displaying the reached
 rejection error. No WebSocket session starts in that case. The focused controls
 cover the actual handshake validator and retained model; they do not establish
 an end-to-end rejected-upgrade exchange or Python invalid-handshake equivalence.
-Required filtering/export and the inventory of exposed edit/replay workflows
-remain migration work. The Python proxy has not been removed or cut over.
+The [shared user filter](../proxy/src/traffic_view/filter.rs) is separate from
+the six pinned scope fields. The authenticated `PUT /admin/traffic/filter`
+accepts only `{"user_filter": expression}`; the terminal inspector's `f` prompt
+uses that route. Compilation precedes publication, and failed edits preserve
+the previous filter and pins. Retained-row snapshots share immutable HTTP and
+WebSocket bodies. Regex execution, content decoding and spool reads occur
+outside the observation lock on an API blocking worker. Direct authenticated
+reads, facets and retention remain independent of this display filter.
+
+Supported predicates and error behavior are listed in the
+[development workflow](DEVELOPERS.md#rust-proxy-development-backend). Header and
+body matching use byte patterns; URL and metadata matching use text patterns.
+HTTP decoding uses the source's raw-content fallback for decoding value errors;
+decoder type failures remain visible. WebSocket searches examine each retained
+message separately, including dropped messages and bytes beyond a display page.
+The shared setter validates the parenthesized user expression, preserving the
+source distinction between explicit and implicit conjunction. Pinned-scope,
+URL/header/metadata projections and native error categories retain the gaps
+described above. Native regex compatibility and the remaining predicates are
+incomplete.
+
+Native scope always combines with the compiled user filter using AND. The
+source's generated text permits a user expression such as
+`~m POST) | (~m GET` to close its wrapper early. With an Alice pin, that source
+expression also selects Bob's GET requests. Native matching keeps those rows
+hidden and groups the effective display expression to reflect that behavior.
+This is an intentional display-selection correction, not a new authorization
+boundary.
+
+The [source filter fixture](../proxy/tests/traffic_filter_source.py) records 130
+parser/matcher observations and 26 shared setter steps. The
+[native replay](../proxy/src/traffic_view/filter/tests/source_replay.rs) compares
+125 observations and all 26 setter steps. Two regex observations return explicit
+compatibility errors; three source URL-projection observations remain excluded.
+Additional controls cover retained snapshots across replacement, eviction and
+message trimming, searches across a spilled message's 64 KiB page boundary,
+byte-identical forwarding after search, and filter error recovery through the
+authenticated API. The joined selection passes 61 native and 104 CLI tests.
+Strict all-target Clippy passes. These are implementation checks, not full
+filter parity or independent acceptance.
+
+Export/import, web inspection and the exposed edit/replay workflows remain
+migration work. The Python proxy has not been removed or cut over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

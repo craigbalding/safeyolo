@@ -54,6 +54,12 @@ async fn authentication_precedes_scope_mutation_and_private_reads() {
     for (method, target, body) in [
         ("PUT", "/admin/traffic/scope", r#"{"agent":"alice"}"#),
         ("PUT", "/admin/traffic/scope", "malformed"),
+        (
+            "PUT",
+            "/admin/traffic/filter",
+            r#"{"user_filter":"~m GET"}"#,
+        ),
+        ("PUT", "/admin/traffic/filter", "malformed"),
         ("GET", "/admin/traffic/flows", ""),
         ("GET", "/admin/traffic/flows/owned/body?side=request", ""),
         ("GET", "/admin/traffic/flows/owned/websocket/messages", ""),
@@ -68,6 +74,7 @@ async fn authentication_precedes_scope_mutation_and_private_reads() {
         assert_eq!(outcome.status(), StatusCode::UNAUTHORIZED);
         assert!(matches!(outcome.audit(), Some(Audit::AuthenticationFailed)));
         assert!(view.scope()["agent"].is_null());
+        assert_eq!(view.scope()["user_filter"], "");
     }
     assert_eq!(
         call(None, "GET", "/admin/traffic/scope", "", true)
@@ -269,7 +276,7 @@ async fn websocket_pages_reconstruct_all_retained_bytes_without_changing_scope()
         .unwrap();
     // Scope selects the shared list, not access to retained operator evidence.
     view.set_scope(&json!({"agent":"bob"})).unwrap();
-    assert_eq!(view.flows()["flows"], json!([]));
+    assert_eq!(view.flows().unwrap()["flows"], json!([]));
     let base = "/admin/traffic/flows/owned%2Fid/websocket/messages";
     let transcript = document(call(Some(&view), "GET", base, "", true).await).await;
     assert_eq!(transcript["websocket"]["state"], "open");
@@ -382,5 +389,185 @@ async fn websocket_reads_distinguish_invalid_queries_and_trimmed_messages() {
             .decode(page["data_base64"].as_str().unwrap())
             .unwrap(),
         b"last"
+    );
+}
+
+#[tokio::test]
+async fn shared_user_filter_combines_with_scope_and_rejected_edits_preserve_it() {
+    let view = Arc::new(TrafficView::new(5000, 1024));
+    let mut handles = Vec::new();
+    for (id, agent, method) in [
+        ("alice-get", "alice", "GET"),
+        ("alice-post", "alice", "POST"),
+        ("bob-get", "bob", "GET"),
+        ("bob-post", "bob", "POST"),
+    ] {
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: Some(agent.into()),
+            method: method.into(),
+            url: "http://owned.invalid/path".into(),
+            headers: vec![],
+            started: 1.,
+        });
+        exchange.response_head(200, vec![]);
+        exchange.finish(None);
+        handles.push(exchange);
+    }
+    view.set_scope(&json!({"agent":"alice"})).unwrap();
+    let outcome = call(
+        Some(&view),
+        "PUT",
+        "/admin/traffic/filter",
+        r#"{"user_filter":"  ~m GET  "}"#,
+        true,
+    )
+    .await;
+    assert_eq!(outcome.status(), StatusCode::OK);
+    // Source console filter editing has no payload-bearing admin audit event.
+    assert!(outcome.audit().is_none());
+    let accepted = document(outcome).await;
+    assert_eq!(accepted["status"], "updated");
+    assert_eq!(accepted["agent"], "alice");
+    assert_eq!(accepted["user_filter"], "  ~m GET  ");
+    assert!(
+        accepted["effective_filter"]
+            .as_str()
+            .unwrap()
+            .ends_with(" & (~m GET)")
+    );
+    let listed = document(call(Some(&view), "GET", "/admin/traffic/flows", "", true).await).await;
+    assert_eq!(listed["flows"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["flows"][0]["id"], "alice-get");
+    // Direct reads and global facets retain their existing access/selection rules.
+    assert_eq!(
+        call(
+            Some(&view),
+            "GET",
+            "/admin/traffic/flows/bob-post",
+            "",
+            true
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        view.facets()["agent"],
+        json!([
+            {"value":"alice","count":2}, {"value":"bob","count":2}
+        ])
+    );
+
+    let accepted_scope = view.scope();
+    for (body, status) in [
+        (r#"{"user_filter":"("}"#, StatusCode::BAD_REQUEST),
+        (
+            r#"{"user_filter":"~src owned"}"#,
+            StatusCode::NOT_IMPLEMENTED,
+        ),
+        (
+            r#"{"user_filter":"~m POST","agent":"bob"}"#,
+            StatusCode::BAD_REQUEST,
+        ),
+        (r#"{"user_filter":null}"#, StatusCode::BAD_REQUEST),
+        (r#"{"user_filter":false}"#, StatusCode::BAD_REQUEST),
+        ("{}", StatusCode::BAD_REQUEST),
+        ("[]", StatusCode::BAD_REQUEST),
+    ] {
+        let outcome = call(Some(&view), "PUT", "/admin/traffic/filter", body, true).await;
+        assert_eq!(outcome.status(), status, "{body}");
+        assert!(outcome.audit().is_none());
+        assert_eq!(view.scope(), accepted_scope);
+    }
+    let switched = document(
+        call(
+            Some(&view),
+            "PUT",
+            "/admin/traffic/scope",
+            r#"{"agent":"bob"}"#,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(switched["user_filter"], "  ~m GET  ");
+    let listed = document(call(Some(&view), "GET", "/admin/traffic/flows", "", true).await).await;
+    assert_eq!(listed["flows"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["flows"][0]["id"], "bob-get");
+    let cleared = document(
+        call(
+            Some(&view),
+            "PUT",
+            "/admin/traffic/filter",
+            r#"{"user_filter":""}"#,
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(cleared["agent"], "bob");
+    assert_eq!(cleared["user_filter"], "");
+    let listed = document(call(Some(&view), "GET", "/admin/traffic/flows", "", true).await).await;
+    assert_eq!(listed["flows"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn filter_evaluation_failure_is_reported_and_clearing_recovers() {
+    let view = Arc::new(TrafficView::new(5000, 1024));
+    let exchange = view.begin(RequestInfo {
+        id: "owned-decode-failure".into(),
+        connection_id: "connection".into(),
+        agent: None,
+        method: "POST".into(),
+        url: "http://owned.invalid/".into(),
+        headers: vec![("Content-Encoding".into(), "rot_13".into())],
+        started: 1.,
+    });
+    exchange.request_body(Some(b"owned-private-marker"));
+    exchange.finish(None);
+    let original_body = view.body("owned-decode-failure", Side::Request).unwrap();
+
+    let accepted = call(
+        Some(&view),
+        "PUT",
+        "/admin/traffic/filter",
+        r#"{"user_filter":"! ~b owned-private-marker"}"#,
+        true,
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::OK);
+    assert_eq!(
+        document(accepted).await["user_filter"],
+        "! ~b owned-private-marker"
+    );
+    let failed = call(Some(&view), "GET", "/admin/traffic/flows", "", true).await;
+    assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(failed.audit().is_none());
+    assert_eq!(
+        document(failed).await,
+        json!({"error": FilterError::DecodeType.to_string()})
+    );
+    assert_eq!(view.scope()["user_filter"], "! ~b owned-private-marker");
+    assert_eq!(
+        view.body("owned-decode-failure", Side::Request).unwrap(),
+        original_body
+    );
+
+    let cleared = call(
+        Some(&view),
+        "PUT",
+        "/admin/traffic/filter",
+        r#"{"user_filter":""}"#,
+        true,
+    )
+    .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let recovered = call(Some(&view), "GET", "/admin/traffic/flows", "", true).await;
+    assert_eq!(recovered.status(), StatusCode::OK);
+    assert_eq!(
+        document(recovered).await["flows"][0]["id"],
+        "owned-decode-failure"
     );
 }

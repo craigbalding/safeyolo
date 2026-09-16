@@ -12,7 +12,10 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
+mod filter;
 mod websocket;
+
+pub use filter::FilterError;
 
 const SELECTORS: [(&str, &str); 5] = [
     ("agent", "agent"),
@@ -53,11 +56,13 @@ pub enum Side {
 
 pub struct TrafficView {
     state: Mutex<State>,
+    case_sensitive: bool,
 }
 
 struct State {
     rows: IndexMap<String, Row>,
     scope: Scope,
+    user_filter: Arc<filter::UserFilter>,
     max_flows: usize,
     max_body_bytes: usize,
 }
@@ -86,13 +91,13 @@ struct Row {
 enum Body {
     Pending,
     Unavailable,
-    Bytes(Zeroizing<Vec<u8>>),
+    Bytes(Arc<Zeroizing<Vec<u8>>>),
 }
 
 impl Body {
     fn observe(bytes: Option<&[u8]>) -> Self {
         bytes.map_or(Self::Unavailable, |bytes| {
-            Self::Bytes(Zeroizing::new(bytes.to_vec()))
+            Self::Bytes(Arc::new(Zeroizing::new(bytes.to_vec())))
         })
     }
 
@@ -120,7 +125,7 @@ impl Body {
         facts.as_object_mut().expect("body facts").insert(
             "data_base64".into(),
             match self {
-                Self::Bytes(bytes) => Value::String(STANDARD.encode(bytes)),
+                Self::Bytes(bytes) => Value::String(STANDARD.encode(bytes.as_slice())),
                 _ => Value::Null,
             },
         );
@@ -130,10 +135,20 @@ impl Body {
 
 impl TrafficView {
     pub fn new(max_flows: usize, max_body_bytes: usize) -> Self {
+        Self::with_case_mode(
+            max_flows,
+            max_body_bytes,
+            std::env::var("MITMPROXY_CASE_SENSITIVE_FILTERS").is_ok_and(|value| value == "1"),
+        )
+    }
+
+    fn with_case_mode(max_flows: usize, max_body_bytes: usize, case_sensitive: bool) -> Self {
         Self {
+            case_sensitive,
             state: Mutex::new(State {
                 rows: IndexMap::new(),
                 scope: Scope::default(),
+                user_filter: Arc::new(filter::UserFilter::empty()),
                 max_flows,
                 max_body_bytes,
             }),
@@ -191,30 +206,61 @@ impl TrafficView {
     }
 
     pub fn scope(&self) -> Value {
-        self.lock().scope.snapshot()
+        self.lock().scope_snapshot()
     }
 
     pub fn set_scope(&self, input: &Value) -> Result<Value, String> {
         let scope = Scope::parse(input)?;
-        let result = scope.snapshot();
-        self.lock().scope = scope;
-        Ok(result)
+        let mut state = self.lock();
+        state.scope = scope;
+        Ok(state.scope_snapshot())
     }
 
-    pub fn flows(&self) -> Value {
-        let state = self.lock();
-        let mut rows: Vec<_> = state
-            .rows
-            .values()
-            .filter(|row| state.scope.matches(row))
-            .collect();
-        rows.sort_by(|a, b| {
-            b.request
-                .started
-                .total_cmp(&a.request.started)
-                .then_with(|| b.request.id.cmp(&a.request.id))
-        });
-        json!({"flows": rows.into_iter().map(Row::summary).collect::<Vec<_>>(), "scope": state.scope.snapshot()})
+    /// Compile before taking the observation lock. Failed edits preserve both
+    /// the current user expression and pinned scope.
+    pub fn set_user_filter(&self, input: &str) -> Result<Value, FilterError> {
+        let compiled = Arc::new(filter::UserFilter::compile(input, self.case_sensitive)?);
+        let mut state = self.lock();
+        state.user_filter = compiled;
+        Ok(state.scope_snapshot())
+    }
+
+    pub fn flows(&self) -> Result<Value, FilterError> {
+        let (compiled, mut result, snapshots) = {
+            let state = self.lock();
+            let compiled = Arc::clone(&state.user_filter);
+            let mut rows: Vec<_> = state
+                .rows
+                .values()
+                .filter(|row| state.scope.matches(row))
+                .collect();
+            rows.sort_by(|a, b| {
+                b.request
+                    .started
+                    .total_cmp(&a.request.started)
+                    .then_with(|| b.request.id.cmp(&a.request.id))
+            });
+            let snapshots = rows
+                .into_iter()
+                .map(|row| compiled.snapshot(row))
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                compiled,
+                filter::WipingValue(json!({"flows":[],"scope":state.scope_snapshot()})),
+                snapshots,
+            )
+        };
+        // Regex execution, HTTP decoding and immutable spool reads all run
+        // after capture can acquire its mutex again. The caller owns offloading.
+        for mut snapshot in snapshots {
+            if compiled.matches(&snapshot)? {
+                result.0["flows"]
+                    .as_array_mut()
+                    .expect("flow list")
+                    .push(std::mem::take(&mut snapshot.summary));
+            }
+        }
+        Ok(result.0.take())
     }
 
     /// Direct reads address all retained rows; pinned display scope is not an
@@ -419,6 +465,25 @@ impl Drop for Row {
 }
 
 impl State {
+    fn scope_snapshot(&self) -> Value {
+        let mut snapshot = self.scope.snapshot();
+        snapshot["user_filter"] = Value::String(self.user_filter.raw().into());
+        let expression = self.user_filter.trimmed();
+        if !expression.is_empty() {
+            let prefix = self.scope.effective.as_str();
+            snapshot["effective_filter"] = Value::String(if prefix.is_empty() {
+                format!("({expression})")
+            } else if let Some(user) = self.user_filter.pinned_display() {
+                // Raw parentheses may close the source-generated user wrapper.
+                // Pins still AND the actual tree, and this display must say so.
+                format!("{prefix} & {user}")
+            } else {
+                format!("{prefix} & ({expression})")
+            });
+        }
+        snapshot
+    }
+
     fn prune(&mut self) {
         let mut bytes: u64 = self.rows.values().map(Row::retained_bytes).sum();
         let max_bytes = self.max_body_bytes as u64;

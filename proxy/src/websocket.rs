@@ -425,6 +425,12 @@ pub(crate) struct MessageContent {
 }
 
 impl MessageContent {
+    /// Borrow a complete retained message on a blocking display worker. The
+    /// immutable mapping does not copy the spool or change the writer offset.
+    pub(crate) fn with_bytes<T>(&self, inspect: impl FnOnce(&[u8]) -> T) -> Result<T, Error> {
+        self.bytes.with_bytes(inspect)
+    }
+
     pub(crate) fn len(&self) -> u64 {
         self.bytes.len()
     }

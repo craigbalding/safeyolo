@@ -1,0 +1,3355 @@
+{
+  "schema": 1,
+  "source_sha256": {
+    "mitmproxy/flowfilter.py": "3a8f86760aa40c8ba62af33c97ccd7577eec5e4aacfb1a4173ddfd760e536e58",
+    "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+    "mitmproxy/websocket.py": "efdfc38b017f36e14fa3f58d8c101493af58f4469edd115ce690fb17e0eaba7b",
+    "mitmproxy/flow.py": "7d013511593f0c4fa370cd58118edb52d0841a1b81a0f846ea512482fbcd9c63",
+    "mitmproxy/connection.py": "e8e7f3a695e17cd134be6728258a98bdcbda52304655532595b31564732ca726",
+    "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea",
+    "pyparsing/core.py": "c03ababf187873c57237c01b35444f111f49359093092c52af1b14c3a0d88347",
+    "stdlib/re/__init__.py": "8ff3c37c63b917fcf8dc8d50993a502292a3dc159e41de4f4018c72a53d1c07b",
+    "stdlib/gzip.py": "ea6e194b9df26398bf0d5215e63320c7b9d801b2d8b723fb9c80619df48076e9",
+    "cli/src/safeyolo/mitm_addons/traffic_scope.py": "20b4920067cec0de8f97a6834fcd3715617e466617394f654ecbedfca8649a34"
+  },
+  "versions": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3",
+    "pyparsing": "3.2.5"
+  },
+  "quoted_unquote_pattern": "(\\\\t|\\\\n|\\\\f|\\\\r)|(\\\\[0-7]3|\\\\0|\\\\x[0-9a-fA-F]2|\\\\u[0-9a-fA-F]4)|(\\\\.)|(\\n|.)",
+  "rows": [
+    {
+      "input": {
+        "name": "pending_method_url",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~all",
+          "~http",
+          "~websocket",
+          "~q",
+          "~s",
+          "~e",
+          "~m get",
+          "owned.invalid",
+          "~u absent"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~all",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FAll"
+          }
+        },
+        {
+          "expression": "~http",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHTTP"
+          }
+        },
+        {
+          "expression": "~websocket",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FWebSocket"
+          }
+        },
+        {
+          "expression": "~q",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FReq"
+          }
+        },
+        {
+          "expression": "~s",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FResp"
+          }
+        },
+        {
+          "expression": "~e",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FErr"
+          }
+        },
+        {
+          "expression": "~m get",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMethod",
+            "expr": "get"
+          }
+        },
+        {
+          "expression": "owned.invalid",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "owned.invalid"
+          }
+        },
+        {
+          "expression": "~u absent",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FUrl",
+            "expr": "absent"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "response_status_error",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 418,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": true
+        },
+        "expressions": [
+          "~q",
+          "~s",
+          "~e",
+          "~c 418",
+          "~c 200",
+          "~c 1267650600228229401496703205376"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~q",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FReq"
+          }
+        },
+        {
+          "expression": "~s",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FResp"
+          }
+        },
+        {
+          "expression": "~e",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FErr"
+          }
+        },
+        {
+          "expression": "~c 418",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FCode",
+            "num": 418
+          }
+        },
+        {
+          "expression": "~c 200",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FCode",
+            "num": 200
+          }
+        },
+        {
+          "expression": "~c 1267650600228229401496703205376",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FCode",
+            "num": 1267650600228229401496703205376
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "implicit_and_and_precedence",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~m GET ~u owned",
+          "(~m GET ~u owned)",
+          "~m GET ~u owned | ~c 404",
+          "~m GET | ~m POST ~c 404",
+          "~m GET | (~m POST & ~c 404)",
+          "!~m POST & ~c 200 | ~c 404",
+          "~m^GET",
+          "~m ^GET"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~m GET ~u owned",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FAnd",
+            "children": [
+              {
+                "type": "FMethod",
+                "expr": "GET"
+              },
+              {
+                "type": "FUrl",
+                "expr": "owned"
+              }
+            ]
+          }
+        },
+        {
+          "expression": "(~m GET ~u owned)",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~m GET ~u owned | ~c 404",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FAnd",
+            "children": [
+              {
+                "type": "FMethod",
+                "expr": "GET"
+              },
+              {
+                "type": "FOr",
+                "children": [
+                  {
+                    "type": "FUrl",
+                    "expr": "owned"
+                  },
+                  {
+                    "type": "FCode",
+                    "num": 404
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "expression": "~m GET | ~m POST ~c 404",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FAnd",
+            "children": [
+              {
+                "type": "FOr",
+                "children": [
+                  {
+                    "type": "FMethod",
+                    "expr": "GET"
+                  },
+                  {
+                    "type": "FMethod",
+                    "expr": "POST"
+                  }
+                ]
+              },
+              {
+                "type": "FCode",
+                "num": 404
+              }
+            ]
+          }
+        },
+        {
+          "expression": "~m GET | (~m POST & ~c 404)",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FOr",
+            "children": [
+              {
+                "type": "FMethod",
+                "expr": "GET"
+              },
+              {
+                "type": "FAnd",
+                "children": [
+                  {
+                    "type": "FMethod",
+                    "expr": "POST"
+                  },
+                  {
+                    "type": "FCode",
+                    "num": 404
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "expression": "!~m POST & ~c 200 | ~c 404",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FOr",
+            "children": [
+              {
+                "type": "FAnd",
+                "children": [
+                  {
+                    "type": "FNot",
+                    "child": {
+                      "type": "FMethod",
+                      "expr": "POST"
+                    }
+                  },
+                  {
+                    "type": "FCode",
+                    "num": 200
+                  }
+                ]
+              },
+              {
+                "type": "FCode",
+                "num": 404
+              }
+            ]
+          }
+        },
+        {
+          "expression": "~m^GET",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~m ^GET",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMethod",
+            "expr": "^GET"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "bare_operator_punctuation",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo!bar&tail",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "foo|absent",
+          "~u foo|absent",
+          "~u foo!bar",
+          "~u bar&tail",
+          "~u absent | ~m GET"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo!bar&tail",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "foo|absent",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "foo|absent"
+          }
+        },
+        {
+          "expression": "~u foo|absent",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "foo|absent"
+          }
+        },
+        {
+          "expression": "~u foo!bar",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "foo!bar"
+          }
+        },
+        {
+          "expression": "~u bar&tail",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "bar&tail"
+          }
+        },
+        {
+          "expression": "~u absent | ~m GET",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FOr",
+            "children": [
+              {
+                "type": "FUrl",
+                "expr": "absent"
+              },
+              {
+                "type": "FMethod",
+                "expr": "GET"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "quoted_unescape",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": {
+              "text": "123 A B a\nb a\tb"
+            }
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b \"\\d+\"",
+          "~b \"\\\\d+\"",
+          "~b \\d+",
+          "~b \"\\x41\"",
+          "~b \"\\x42\"",
+          "~b \"\\101\"",
+          "~b \"a\\nb\"",
+          "~b 'a\nb'",
+          "~b \"a\\tb\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b \"\\d+\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "d+"
+          }
+        },
+        {
+          "expression": "~b \"\\\\d+\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "\\d+"
+          }
+        },
+        {
+          "expression": "~b \\d+",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "\\d+"
+          }
+        },
+        {
+          "expression": "~b \"\\x41\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "x41"
+          }
+        },
+        {
+          "expression": "~b \"\\x42\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "B"
+          }
+        },
+        {
+          "expression": "~b \"\\101\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "101"
+          }
+        },
+        {
+          "expression": "~b \"a\\nb\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "a\nb"
+          }
+        },
+        {
+          "expression": "~b 'a\nb'",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~b \"a\\tb\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "a\tb"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "invalid_syntax",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "",
+          " ",
+          "~m",
+          "~unknown",
+          "(~all",
+          "~c -1",
+          "~u [",
+          "~u \"unterminated"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": " ",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~m",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~unknown",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "(~all",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~c -1",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~u [",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~u \"unterminated",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "binary_regex_categories",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": {
+              "hex": "ff"
+            }
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b .",
+          "~b ^.$",
+          "~b \\w",
+          "~b \\xff",
+          "~b \"(?u).\"",
+          "~b \\u00ff"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b .",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "."
+          }
+        },
+        {
+          "expression": "~b ^.$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "^.$"
+          }
+        },
+        {
+          "expression": "~b \\w",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "\\w"
+          }
+        },
+        {
+          "expression": "~b \\xff",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "\\xff"
+          }
+        },
+        {
+          "expression": "~b \"(?u).\"",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        },
+        {
+          "expression": "~b \\u00ff",
+          "parse_error": "ValueError",
+          "error_type": null,
+          "matched": null,
+          "tree": null
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "unicode_pattern_bytes_and_text",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": {
+              "text": "\u00c9"
+            }
+          },
+          "response": null,
+          "metadata": {
+            "note": "\u00c9"
+          },
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b \u00c9",
+          "~b \u00e9",
+          "~meta \u00e9",
+          "~b \"(?i:\u00e9)\"",
+          "~b \"(?-i:\u00c9)\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": "note: \u00c9"
+      },
+      "results": [
+        {
+          "expression": "~b \u00c9",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "\u00c9"
+          }
+        },
+        {
+          "expression": "~b \u00e9",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "\u00e9"
+          }
+        },
+        {
+          "expression": "~meta \u00e9",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "\u00e9"
+          }
+        },
+        {
+          "expression": "~b \"(?i:\u00e9)\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "(?i:\u00e9)"
+          }
+        },
+        {
+          "expression": "~b \"(?-i:\u00c9)\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "(?-i:\u00c9)"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "ordered_header_lines",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "X-Dup",
+                "one"
+              ],
+              [
+                "x-dup",
+                "two"
+              ],
+              [
+                "Raw",
+                "\u00ff"
+              ]
+            ],
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": [
+              [
+                "Reply",
+                "yes"
+              ]
+            ],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~hq \"^X-Dup: one\\r\\nx-dup: two\\r\\n\"",
+          "~hq \"two\\r\\n$\"",
+          "~hq \"Raw: \\\\xff\\r\\n$\"",
+          "~hq \u00ff",
+          "~hq \\xff",
+          "~hs reply",
+          "~h reply"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "582d4475703a206f6e650d0a782d6475703a2074776f0d0a5261773a20ff0d0a",
+        "response_headers_hex": "5265706c793a207965730d0a",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~hq \"^X-Dup: one\\r\\nx-dup: two\\r\\n\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "^X-Dup: one\r\nx-dup: two\r\n"
+          }
+        },
+        {
+          "expression": "~hq \"two\\r\\n$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "two\r\n$"
+          }
+        },
+        {
+          "expression": "~hq \"Raw: \\\\xff\\r\\n$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "Raw: \\xff\r\n$"
+          }
+        },
+        {
+          "expression": "~hq \u00ff",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "\u00ff"
+          }
+        },
+        {
+          "expression": "~hq \\xff",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "\\xff"
+          }
+        },
+        {
+          "expression": "~hs reply",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHeadResponse",
+            "expr": "reply"
+          }
+        },
+        {
+          "expression": "~h reply",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHead",
+            "expr": "reply"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "case_sensitive_mode",
+        "scope": "shared",
+        "case_sensitive": true,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "X-Case",
+                "Owned"
+              ]
+            ],
+            "body": {
+              "text": "Body"
+            }
+          },
+          "response": null,
+          "metadata": {
+            "agent": "Alice"
+          },
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~m get",
+          "~m GET",
+          "~u OWNED",
+          "~hq x-case",
+          "~hq X-Case",
+          "~b body",
+          "~meta alice"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "582d436173653a204f776e65640d0a",
+        "response_headers_hex": null,
+        "metadata_text": "agent: Alice"
+      },
+      "results": [
+        {
+          "expression": "~m get",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FMethod",
+            "expr": "get"
+          }
+        },
+        {
+          "expression": "~m GET",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMethod",
+            "expr": "GET"
+          }
+        },
+        {
+          "expression": "~u OWNED",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FUrl",
+            "expr": "OWNED"
+          }
+        },
+        {
+          "expression": "~hq x-case",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "x-case"
+          }
+        },
+        {
+          "expression": "~hq X-Case",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHeadRequest",
+            "expr": "X-Case"
+          }
+        },
+        {
+          "expression": "~b body",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "body"
+          }
+        },
+        {
+          "expression": "~meta alice",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FMeta",
+            "expr": "alice"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "content_type_fields_and_assets",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "Content-Type",
+                "text/plain"
+              ],
+              [
+                "content-type",
+                "image/png"
+              ]
+            ],
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "CONTENT-TYPE",
+                "text/css"
+              ]
+            ],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~t image",
+          "~tq image",
+          "~ts image",
+          "~ts text/css",
+          "~a",
+          "~t \"plain, image\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "436f6e74656e742d547970653a20746578742f706c61696e0d0a636f6e74656e742d747970653a20696d6167652f706e670d0a",
+        "response_headers_hex": "436f6e74656e742d547970653a206170706c69636174696f6e2f6a736f6e0d0a434f4e54454e542d545950453a20746578742f6373730d0a",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~t image",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FContentType",
+            "expr": "image"
+          }
+        },
+        {
+          "expression": "~tq image",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FContentTypeRequest",
+            "expr": "image"
+          }
+        },
+        {
+          "expression": "~ts image",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FContentTypeResponse",
+            "expr": "image"
+          }
+        },
+        {
+          "expression": "~ts text/css",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FContentTypeResponse",
+            "expr": "text/css"
+          }
+        },
+        {
+          "expression": "~a",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FAsset"
+          }
+        },
+        {
+          "expression": "~t \"plain, image\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FContentType",
+            "expr": "plain, image"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "asset_case_is_independent",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": [
+              [
+                "Content-Type",
+                "IMAGE/PNG"
+              ]
+            ],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~a",
+          "~ts image",
+          "~t IMAGE"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "436f6e74656e742d547970653a20494d4147452f504e470d0a",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~a",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FAsset"
+          }
+        },
+        {
+          "expression": "~ts image",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FContentTypeResponse",
+            "expr": "image"
+          }
+        },
+        {
+          "expression": "~t IMAGE",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FContentType",
+            "expr": "IMAGE"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "metadata_python_values",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {
+            "flag": true,
+            "none": null,
+            "items": [
+              1,
+              "x"
+            ],
+            "mapping": {
+              "b": false,
+              "a": 2
+            },
+            "note": "first\nembedded: yes\nlast"
+          },
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~meta \"^flag: True$\"",
+          "~meta \"^none: None$\"",
+          "~meta \"^items: \\\\[1, .x.\\\\]$\"",
+          "~meta \"^mapping: .*b.*False.*a.*2\"",
+          "~meta \"^embedded: yes$\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": "flag: True\nnone: None\nitems: [1, 'x']\nmapping: {'b': False, 'a': 2}\nnote: first\nembedded: yes\nlast"
+      },
+      "results": [
+        {
+          "expression": "~meta \"^flag: True$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "^flag: True$"
+          }
+        },
+        {
+          "expression": "~meta \"^none: None$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "^none: None$"
+          }
+        },
+        {
+          "expression": "~meta \"^items: \\\\[1, .x.\\\\]$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "^items: \\[1, .x.\\]$"
+          }
+        },
+        {
+          "expression": "~meta \"^mapping: .*b.*False.*a.*2\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "^mapping: .*b.*False.*a.*2"
+          }
+        },
+        {
+          "expression": "~meta \"^embedded: yes$\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FMeta",
+            "expr": "^embedded: yes$"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "decoded_gzip_both_sides",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "Content-Encoding",
+                "gzip"
+              ]
+            ],
+            "body": {
+              "text": "request_inside",
+              "gzip": true
+            }
+          },
+          "response": {
+            "status": 200,
+            "headers": [
+              [
+                "Content-Encoding",
+                "gzip"
+              ]
+            ],
+            "body": {
+              "text": "response_inside",
+              "gzip": true
+            }
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b request_inside",
+          "~bq request_inside",
+          "~bs request_inside",
+          "~bs response_inside",
+          "~b \"request.*response\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "436f6e74656e742d456e636f64696e673a20677a69700d0a",
+        "response_headers_hex": "436f6e74656e742d456e636f64696e673a20677a69700d0a",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b request_inside",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "request_inside"
+          }
+        },
+        {
+          "expression": "~bq request_inside",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "request_inside"
+          }
+        },
+        {
+          "expression": "~bs request_inside",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "request_inside"
+          }
+        },
+        {
+          "expression": "~bs response_inside",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "response_inside"
+          }
+        },
+        {
+          "expression": "~b \"request.*response\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "request.*response"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "malformed_value_falls_back_raw",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "Content-Encoding",
+                "gzip"
+              ]
+            ],
+            "body": {
+              "text": "RAW_MARKER"
+            }
+          },
+          "response": {
+            "status": 200,
+            "headers": [],
+            "body": {
+              "text": "response"
+            }
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b RAW_MARKER",
+          "~bq RAW_MARKER",
+          "~bs response"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "436f6e74656e742d456e636f64696e673a20677a69700d0a",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b RAW_MARKER",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "RAW_MARKER"
+          }
+        },
+        {
+          "expression": "~bq RAW_MARKER",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "RAW_MARKER"
+          }
+        },
+        {
+          "expression": "~bs response",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "response"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "codec_type_error_and_short_circuit",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [
+              [
+                "Content-Encoding",
+                "rot_13"
+              ]
+            ],
+            "body": {
+              "text": "marker"
+            }
+          },
+          "response": {
+            "status": 200,
+            "headers": [],
+            "body": {
+              "text": "response"
+            }
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b response",
+          "~bq marker",
+          "~bs response",
+          "~all | ~b marker",
+          "~all & ~b marker",
+          "!~b marker"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "436f6e74656e742d456e636f64696e673a20726f745f31330d0a",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b response",
+          "parse_error": null,
+          "error_type": "TypeError",
+          "matched": null,
+          "tree": {
+            "type": "FBod",
+            "expr": "response"
+          }
+        },
+        {
+          "expression": "~bq marker",
+          "parse_error": null,
+          "error_type": "TypeError",
+          "matched": null,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "marker"
+          }
+        },
+        {
+          "expression": "~bs response",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "response"
+          }
+        },
+        {
+          "expression": "~all | ~b marker",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FOr",
+            "children": [
+              {
+                "type": "FAll"
+              },
+              {
+                "type": "FBod",
+                "expr": "marker"
+              }
+            ]
+          }
+        },
+        {
+          "expression": "~all & ~b marker",
+          "parse_error": null,
+          "error_type": "TypeError",
+          "matched": null,
+          "tree": {
+            "type": "FAnd",
+            "children": [
+              {
+                "type": "FAll"
+              },
+              {
+                "type": "FBod",
+                "expr": "marker"
+              }
+            ]
+          }
+        },
+        {
+          "expression": "!~b marker",
+          "parse_error": null,
+          "error_type": "TypeError",
+          "matched": null,
+          "tree": {
+            "type": "FNot",
+            "child": {
+              "type": "FBod",
+              "expr": "marker"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "absent_bodies",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 200,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b ^$",
+          "~bq ^$",
+          "~bs ^$",
+          "~s"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~bq ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~bs ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~s",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FResp"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "empty_present_bodies",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": {
+              "text": ""
+            }
+          },
+          "response": {
+            "status": 200,
+            "headers": [],
+            "body": {
+              "text": ""
+            }
+          },
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b ^$",
+          "~bq ^$",
+          "~bs ^$",
+          "~b missing"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~bq ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~bs ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~b missing",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "missing"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "websocket_messages_are_separate",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 101,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": [
+            {
+              "type": "text",
+              "from_client": true,
+              "body": {
+                "text": "left"
+              },
+              "dropped": true
+            },
+            {
+              "type": "binary",
+              "from_client": true,
+              "body": {
+                "hex": "ff00"
+              },
+              "dropped": false
+            },
+            {
+              "type": "text",
+              "from_client": false,
+              "body": {
+                "text": "right"
+              },
+              "dropped": false
+            }
+          ],
+          "error": false
+        },
+        "expressions": [
+          "~http",
+          "~websocket",
+          "~b left",
+          "~bq left",
+          "~bs left",
+          "~bs right",
+          "~b leftright",
+          "~bq \\xff"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~http",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FHTTP"
+          }
+        },
+        {
+          "expression": "~websocket",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FWebSocket"
+          }
+        },
+        {
+          "expression": "~b left",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "left"
+          }
+        },
+        {
+          "expression": "~bq left",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "left"
+          }
+        },
+        {
+          "expression": "~bs left",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "left"
+          }
+        },
+        {
+          "expression": "~bs right",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "right"
+          }
+        },
+        {
+          "expression": "~b leftright",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "leftright"
+          }
+        },
+        {
+          "expression": "~bq \\xff",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "\\xff"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "websocket_beyond_page",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 101,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": [
+            {
+              "type": "binary",
+              "from_client": false,
+              "body": {
+                "text": "x",
+                "repeat": 65534,
+                "suffix_text": "NEEDLE"
+              },
+              "dropped": true
+            }
+          ],
+          "error": false
+        },
+        "expressions": [
+          "~b NEEDLE",
+          "~bq NEEDLE",
+          "~bs NEEDLE",
+          "~b xxNEEDLE"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b NEEDLE",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "NEEDLE"
+          }
+        },
+        {
+          "expression": "~bq NEEDLE",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBodRequest",
+            "expr": "NEEDLE"
+          }
+        },
+        {
+          "expression": "~bs NEEDLE",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBodResponse",
+            "expr": "NEEDLE"
+          }
+        },
+        {
+          "expression": "~b xxNEEDLE",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "xxNEEDLE"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "websocket_empty_transcript",
+        "scope": "shared",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": {
+            "status": 101,
+            "headers": [],
+            "body": null
+          },
+          "metadata": {},
+          "websocket": [],
+          "error": false
+        },
+        "expressions": [
+          "~websocket",
+          "~b ^$",
+          "~q",
+          "~s"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": "",
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~websocket",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FWebSocket"
+          }
+        },
+        {
+          "expression": "~b ^$",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "^$"
+          }
+        },
+        {
+          "expression": "~q",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FReq"
+          }
+        },
+        {
+          "expression": "~s",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FResp"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "pretty_url_uses_presented_host",
+        "scope": "source_projection",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://dial.invalid:80/path",
+            "headers": [
+              [
+                "Host",
+                "presented.invalid:80"
+              ]
+            ],
+            "body": null
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~u presented.invalid",
+          "~u dial.invalid",
+          "~u :80"
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://presented.invalid/path",
+        "request_method_hex": "474554",
+        "request_headers_hex": "486f73743a2070726573656e7465642e696e76616c69643a38300d0a",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~u presented.invalid",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FUrl",
+            "expr": "presented.invalid"
+          }
+        },
+        {
+          "expression": "~u dial.invalid",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FUrl",
+            "expr": "dial.invalid"
+          }
+        },
+        {
+          "expression": "~u :80",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FUrl",
+            "expr": ":80"
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "regex_backreference_lookaround",
+        "scope": "regex_compatibility",
+        "case_sensitive": false,
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": {
+              "text": "abab a\nb end"
+            }
+          },
+          "response": null,
+          "metadata": {},
+          "websocket": null,
+          "error": false
+        },
+        "expressions": [
+          "~b \"(ab)\\\\1\"",
+          "~b \"(?<=ab)ab\"",
+          "~b \"(?s:a.b)\"",
+          "~b \"(?-s:a.b)\"",
+          "~b \"\\\\Aabab.*end\\\\Z\""
+        ]
+      },
+      "projection": {
+        "pretty_url": "http://owned.invalid/foo",
+        "request_method_hex": "474554",
+        "request_headers_hex": "",
+        "response_headers_hex": null,
+        "metadata_text": ""
+      },
+      "results": [
+        {
+          "expression": "~b \"(ab)\\\\1\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "(ab)\\1"
+          }
+        },
+        {
+          "expression": "~b \"(?<=ab)ab\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "(?<=ab)ab"
+          }
+        },
+        {
+          "expression": "~b \"(?s:a.b)\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "(?s:a.b)"
+          }
+        },
+        {
+          "expression": "~b \"(?-s:a.b)\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": false,
+          "tree": {
+            "type": "FBod",
+            "expr": "(?-s:a.b)"
+          }
+        },
+        {
+          "expression": "~b \"\\\\Aabab.*end\\\\Z\"",
+          "parse_error": null,
+          "error_type": null,
+          "matched": true,
+          "tree": {
+            "type": "FBod",
+            "expr": "\\Aabab.*end\\Z"
+          }
+        }
+      ]
+    }
+  ],
+  "scope_rows": [
+    {
+      "input": {
+        "agent": null,
+        "values": [
+          "  ~m GET  ",
+          "~m GET ~u owned",
+          "~m GET & ~u owned",
+          "~all",
+          "~q",
+          "~s",
+          "~websocket",
+          "(~all )",
+          "(~q )",
+          "(~s )",
+          "(~websocket )",
+          "~all & ~m GET",
+          ""
+        ],
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {
+            "agent": "alice"
+          },
+          "websocket": null,
+          "error": false
+        }
+      },
+      "steps": [
+        {
+          "value": "  ~m GET  ",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "  ~m GET  ",
+            "effective_filter": "(~m GET)"
+          },
+          "published": [
+            "(~m GET)"
+          ],
+          "effective_evaluation": {
+            "expression": "(~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FMethod",
+              "expr": "GET"
+            }
+          }
+        },
+        {
+          "value": "~m GET ~u owned",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "  ~m GET  ",
+            "effective_filter": "(~m GET)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "(~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FMethod",
+              "expr": "GET"
+            }
+          }
+        },
+        {
+          "value": "~m GET & ~u owned",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "(~m GET & ~u owned)"
+          },
+          "published": [
+            "(~m GET & ~u owned)"
+          ],
+          "effective_evaluation": {
+            "expression": "(~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                },
+                {
+                  "type": "FUrl",
+                  "expr": "owned"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~all",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "(~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "(~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                },
+                {
+                  "type": "FUrl",
+                  "expr": "owned"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~q",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "(~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "(~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                },
+                {
+                  "type": "FUrl",
+                  "expr": "owned"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~s",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "(~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "(~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                },
+                {
+                  "type": "FUrl",
+                  "expr": "owned"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~websocket",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "(~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "(~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                },
+                {
+                  "type": "FUrl",
+                  "expr": "owned"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "(~all )",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~all )",
+            "effective_filter": "((~all ))"
+          },
+          "published": [
+            "((~all ))"
+          ],
+          "effective_evaluation": {
+            "expression": "((~all ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAll"
+            }
+          }
+        },
+        {
+          "value": "(~q )",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~q )",
+            "effective_filter": "((~q ))"
+          },
+          "published": [
+            "((~q ))"
+          ],
+          "effective_evaluation": {
+            "expression": "((~q ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FReq"
+            }
+          }
+        },
+        {
+          "value": "(~s )",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~s )",
+            "effective_filter": "((~s ))"
+          },
+          "published": [
+            "((~s ))"
+          ],
+          "effective_evaluation": {
+            "expression": "((~s ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": false,
+            "tree": {
+              "type": "FResp"
+            }
+          }
+        },
+        {
+          "value": "(~websocket )",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~websocket )",
+            "effective_filter": "((~websocket ))"
+          },
+          "published": [
+            "((~websocket ))"
+          ],
+          "effective_evaluation": {
+            "expression": "((~websocket ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": false,
+            "tree": {
+              "type": "FWebSocket"
+            }
+          }
+        },
+        {
+          "value": "~all & ~m GET",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~all & ~m GET",
+            "effective_filter": "(~all & ~m GET)"
+          },
+          "published": [
+            "(~all & ~m GET)"
+          ],
+          "effective_evaluation": {
+            "expression": "(~all & ~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FAll"
+                },
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "",
+          "error_type": null,
+          "stats": {
+            "agent": null,
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "",
+            "effective_filter": ""
+          },
+          "published": [
+            ""
+          ],
+          "effective_evaluation": null
+        }
+      ]
+    },
+    {
+      "input": {
+        "agent": "alice",
+        "values": [
+          "  ~m GET  ",
+          "~m GET ~u owned",
+          "~m GET & ~u owned",
+          "~all",
+          "~q",
+          "~s",
+          "~websocket",
+          "(~all )",
+          "(~q )",
+          "(~s )",
+          "(~websocket )",
+          "~all & ~m GET",
+          ""
+        ],
+        "flow": {
+          "request": {
+            "method": "GET",
+            "url": "http://owned.invalid/foo",
+            "headers": [],
+            "body": null
+          },
+          "response": null,
+          "metadata": {
+            "agent": "alice"
+          },
+          "websocket": null,
+          "error": false
+        }
+      },
+      "steps": [
+        {
+          "value": "  ~m GET  ",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "  ~m GET  ",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET)"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & (~m GET)"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~m GET ~u owned",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "  ~m GET  ",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FMethod",
+                  "expr": "GET"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~m GET & ~u owned",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    },
+                    {
+                      "type": "FUrl",
+                      "expr": "owned"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~all",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    },
+                    {
+                      "type": "FUrl",
+                      "expr": "owned"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~q",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    },
+                    {
+                      "type": "FUrl",
+                      "expr": "owned"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~s",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    },
+                    {
+                      "type": "FUrl",
+                      "expr": "owned"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~websocket",
+          "error_type": "OptionsError",
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~m GET & ~u owned",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)"
+          },
+          "published": [],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~m GET & ~u owned)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    },
+                    {
+                      "type": "FUrl",
+                      "expr": "owned"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "(~all )",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~all )",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & ((~all ))"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & ((~all ))"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & ((~all ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAll"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "(~q )",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~q )",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & ((~q ))"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & ((~q ))"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & ((~q ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FReq"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "(~s )",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~s )",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & ((~s ))"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & ((~s ))"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & ((~s ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": false,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FResp"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "(~websocket )",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "(~websocket )",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & ((~websocket ))"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & ((~websocket ))"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & ((~websocket ))",
+            "parse_error": null,
+            "error_type": null,
+            "matched": false,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FWebSocket"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "~all & ~m GET",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "~all & ~m GET",
+            "effective_filter": "~meta \"^agent:\\ alice$\" & (~all & ~m GET)"
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\" & (~all & ~m GET)"
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\" & (~all & ~m GET)",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FAnd",
+              "children": [
+                {
+                  "type": "FMeta",
+                  "expr": "^agent: alice$"
+                },
+                {
+                  "type": "FAnd",
+                  "children": [
+                    {
+                      "type": "FAll"
+                    },
+                    {
+                      "type": "FMethod",
+                      "expr": "GET"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "value": "",
+          "error_type": null,
+          "stats": {
+            "agent": "alice",
+            "unattributed": false,
+            "test_id": null,
+            "intent": null,
+            "role": null,
+            "expect": null,
+            "user_filter": "",
+            "effective_filter": "~meta \"^agent:\\ alice$\""
+          },
+          "published": [
+            "~meta \"^agent:\\ alice$\""
+          ],
+          "effective_evaluation": {
+            "expression": "~meta \"^agent:\\ alice$\"",
+            "parse_error": null,
+            "error_type": null,
+            "matched": true,
+            "tree": {
+              "type": "FMeta",
+              "expr": "^agent: alice$"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

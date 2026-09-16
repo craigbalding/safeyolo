@@ -182,6 +182,197 @@ def test_api_helpers_keep_ids_within_the_route_and_validate_body_side():
         request.assert_not_called()
 
 
+def test_filter_api_preserves_expression_and_returns_accepted_scope():
+    api = AdminAPI(base_url="http://owned.invalid", token="synthetic")
+    accepted = {"status": "updated", "agent": "alice", "user_filter": "  ~m GET  ",
+                "effective_filter": '~meta "^agent: alice$" & (~m GET)'}
+    with patch.object(AdminAPI, "_request", autospec=True, spec_set=True) as request:
+        request.return_value = accepted
+        assert api.set_traffic_filter("  ~m GET  ") is accepted
+        request.assert_called_once_with(api, "PUT", "/admin/traffic/filter", json={"user_filter": "  ~m GET  "})
+        api.set_traffic_filter("")
+        request.assert_called_with(api, "PUT", "/admin/traffic/filter", json={"user_filter": ""})
+
+
+def test_invalid_filter_retains_view_and_scope_clear_keeps_authoritative_filter():
+    api = client()
+    accepted = {"agent": "alice", "user_filter": "~m GET", "effective_filter": 'agent alice & (~m GET)'}
+    api.traffic_flows.return_value["scope"] = accepted
+    view = TrafficInspector(api)
+
+    async def run():
+        await view.refresh()
+        previous = view.flows, view.detail, view.scope, view.selected
+        api.reset_mock()
+        api.set_traffic_filter.side_effect = APIError("private search\x1b]52;value", 400)
+        view.set_filter("~b private search\x1b]52;value")
+        assert view.scope == accepted
+        api.set_traffic_filter.assert_not_called()  # queued for the existing worker
+        await view.refresh()
+        assert (view.flows, view.detail, view.scope, view.selected) == previous
+        assert view.notice == "View unavailable (APIError 400); retrying"
+        assert view.pending_filter is None
+        api.traffic_flows.assert_not_called()
+        api.get_traffic_scope.assert_not_called()
+        api.set_traffic_scope.assert_not_called()
+        view.pending_scope = {}
+        # A later accepted list is authoritative, including changes by another operator.
+        api.traffic_flows.return_value = {"flows": [flow()], "scope": {
+            "agent": None, "user_filter": "~m GET", "effective_filter": "(~m GET)",
+        }}
+        await view.refresh()
+        api.set_traffic_scope.assert_called_once_with()
+        assert api.set_traffic_filter.call_count == 1  # no automatic rejected-edit retry
+        assert view.scope["user_filter"] == "~m GET" and view.scope["agent"] is None
+        assert view.scope["effective_filter"] == "(~m GET)"
+        assert "1 visible" in view.notice
+
+    asyncio.run(run())
+
+
+def test_headless_filter_editor_prefills_cancels_clears_and_preserves_whitespace():
+    api = client()
+    original = "  ~m GET  "
+    api.traffic_flows.return_value["scope"] = {
+        "agent": "alice", "user_filter": original, "effective_filter": "agent alice & (~m GET)",
+    }
+
+    def accepted(expression):
+        scope = {"agent": "alice", "user_filter": expression,
+                 "effective_filter": "agent alice" + (f" & ({expression.strip()})" if expression else "")}
+        api.traffic_flows.return_value["scope"] = scope
+        return {"status": "updated", **scope}
+
+    api.set_traffic_filter.side_effect = accepted
+    view = TrafficInspector(api)
+
+    async def until(predicate):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    async def run():
+        with create_pipe_input() as keyboard, create_app_session(input=keyboard, output=DummyOutput()):
+            app = view.application()
+            app.ttimeoutlen = 0.01
+
+            async def operator():
+                await until(lambda: view.detail is not None)
+                rows = app.layout.current_buffer
+                keyboard.send_text("f")
+                await until(lambda: app.layout.current_buffer is not rows)
+                assert app.layout.current_buffer.text == original
+                assert app.layout.current_buffer.cursor_position == len(original)
+                keyboard.send_text("discarded\x1b")
+                await until(lambda: app.layout.current_buffer is rows)
+                api.set_traffic_filter.assert_not_called()
+                keyboard.send_text("f")
+                await until(lambda: app.layout.current_buffer is not rows)
+                assert app.layout.current_buffer.text == original
+                keyboard.send_text("\x01\x0b\r")  # Ctrl-A, Ctrl-K, Enter: clear only the filter
+                await until(lambda: view.scope.get("user_filter") == "")
+                api.set_traffic_filter.assert_called_once_with("")
+                assert view.scope["agent"] == "alice" and view.selected == "one"
+                keyboard.send_text("f")
+                await until(lambda: app.layout.current_buffer is not rows)
+                keyboard.send_text("  ~b marker  \r")
+                await until(lambda: view.scope.get("user_filter") == "  ~b marker  ")
+                assert view.scope["effective_filter"] == "agent alice & (~b marker)"
+                assert view.selected == "one" and "f filter" in view.help_text()
+                keyboard.send_text("q")
+
+            app.pre_run_callables.append(lambda: app.create_background_task(operator()))
+            await asyncio.wait_for(app.run_async(), timeout=3)
+
+    asyncio.run(run())
+    assert [call.args for call in api.set_traffic_filter.call_args_list] == [("",), ("  ~b marker  ",)]
+    api.set_traffic_scope.assert_not_called()
+
+
+def test_accepted_filter_and_scope_remain_editable_when_flow_matching_fails():
+    api = client()
+    api.traffic_flows.return_value["scope"] = {
+        "agent": "alice", "user_filter": "~m GET", "effective_filter": "agent alice & (~m GET)",
+    }
+    view = TrafficInspector(api)
+    expression = "  ~b retained  "
+
+    async def run():
+        await view.refresh()
+        previous_rows, previous_detail = view.flows, view.detail
+        accepted = {"status": "updated", "agent": "alice", "user_filter": expression,
+                    "effective_filter": "agent alice & (~b retained)"}
+        api.set_traffic_filter.return_value = accepted
+        api.traffic_flows.side_effect = APIError("private retained content", 500)
+        view.set_filter(expression)
+        await view.refresh()
+        assert view.scope is accepted and view.scope["user_filter"] == expression
+        assert view.flows == previous_rows and view.detail == previous_detail
+        assert view.notice == "View unavailable (APIError 500); retrying"
+        view.pending_scope = {}
+        accepted_unpinned = {**accepted, "agent": None, "effective_filter": "(~b retained)"}
+        api.set_traffic_scope.return_value = accepted_unpinned
+        await view.refresh()
+        assert view.scope is accepted_unpinned
+        assert view.scope["user_filter"] == expression
+        assert view.flows == previous_rows and "APIError 500" in view.notice
+        # Clearing still targets the actual active expression after a failed list read.
+        cleared = {"status": "updated", "agent": None, "user_filter": "", "effective_filter": ""}
+        api.set_traffic_filter.return_value = cleared
+        api.traffic_flows.side_effect = None
+        api.traffic_flows.return_value = {"flows": [flow()], "scope": cleared}
+        view.set_filter("")
+        await view.refresh()
+        assert view.scope is cleared and "1 visible" in view.notice
+
+    asyncio.run(run())
+    assert [call.args for call in api.set_traffic_filter.call_args_list] == [(expression,), ("",)]
+    api.set_traffic_scope.assert_called_once_with()
+
+
+@pytest.mark.parametrize("already_attached", [False, True])
+def test_list_failure_fetches_other_operators_filter_without_replacing_rows(already_attached):
+    api = client()
+    view = TrafficInspector(api)
+    actual = {"agent": "bob", "user_filter": "  ~b changed  ", "effective_filter": "agent bob & (~b changed)"}
+
+    async def run():
+        if already_attached:
+            await view.refresh()
+        previous_rows, previous_detail, previous_selected = view.flows, view.detail, view.selected
+        api.reset_mock()
+        api.traffic_flows.side_effect = APIError("sensitive match failure", 500)
+        api.get_traffic_scope.return_value = actual
+        await view.refresh()
+        assert view.scope is actual and view.scope["user_filter"] == "  ~b changed  "
+        assert (view.flows, view.detail, view.selected) == (previous_rows, previous_detail, previous_selected)
+        assert view.notice == "View unavailable (APIError 500); retrying"
+        assert [call[0] for call in api.method_calls] == ["traffic_flows", "get_traffic_scope"]
+        api.set_traffic_filter.assert_not_called()
+        api.set_traffic_scope.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_failed_scope_recovery_keeps_previous_projection_and_original_list_error():
+    api = client()
+    view = TrafficInspector(api)
+
+    async def run():
+        await view.refresh()
+        previous = view.flows, view.detail, view.scope, view.selected
+        api.reset_mock()
+        api.traffic_flows.side_effect = APIError("original private match error", 500)
+        api.get_traffic_scope.side_effect = APIError("later private scope error", 503)
+        await view.refresh()
+        assert (view.flows, view.detail, view.scope, view.selected) == previous
+        assert view.notice == "View unavailable (APIError 500); retrying"
+        assert [call[0] for call in api.method_calls] == ["traffic_flows", "get_traffic_scope"]
+        api.traffic_flow.assert_not_called()
+        api.set_traffic_filter.assert_not_called()
+
+    asyncio.run(run())
+
+
 def websocket_session(**changes):
     return {"state": "open", "started": 1.25, "timestamp_end": None, "closed_by_client": None,
             "close_code": None, "close_reason": None,
@@ -279,6 +470,36 @@ def test_websocket_pages_are_fetched_once_and_keep_selection_when_messages_arriv
         ("one", 7, 0), ("one", 7, BODY_PREVIEW_BYTES), ("one", 7, BODY_PREVIEW_BYTES * 2),
         ("one", 7, BODY_PREVIEW_BYTES),
     ]
+
+
+def test_filter_refresh_preserves_visible_websocket_selection_and_cached_page():
+    api = websocket_client([message(7)])
+    view = TrafficInspector(api)
+
+    async def run():
+        await view.refresh()
+        view.toggle_websocket()
+        await view.refresh()
+        previous_page = view.transcript.body
+        api.reset_mock()
+        view.set_filter("  ~b x  ")
+        api.traffic_flows.return_value["scope"] = {"user_filter": "  ~b x  ", "effective_filter": "(~b x)"}
+        await view.refresh()
+        assert [call[0] for call in api.method_calls] == [
+            "set_traffic_filter", "traffic_flows", "traffic_flow", "traffic_websocket_messages",
+        ]
+        assert view.websocket_mode and view.selected == "one" and view.transcript.selected == 7
+        assert view.transcript.body == previous_page
+        api.traffic_websocket_message_body.assert_not_called()
+        api.set_traffic_scope.assert_not_called()
+        # An accepted expression hiding the current row releases its client projection.
+        api.traffic_flows.return_value = {"flows": [], "scope": {"user_filter": "~b missing", "effective_filter": "(~b missing)"}}
+        view.set_filter("~b missing")
+        await view.refresh()
+        assert view.selected is None and not view.websocket_mode
+        assert not view.transcript.messages and not view.transcript.body
+
+    asyncio.run(run())
 
 
 def test_trimmed_selection_and_changed_flow_clear_old_pages_and_http_controls_work():

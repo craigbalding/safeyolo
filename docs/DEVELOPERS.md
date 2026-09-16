@@ -451,17 +451,53 @@ reads the proxy's shared live HTTP and WebSocket view. It includes ordinary
 requests without TestContext, pending requests, and terminal responses or errors.
 The existing scope options, such as `--agent alice --test CASE-1`, update the
 shared view before attaching. `--no-attach` changes only the scope.
-Scope changes affect all inspectors and do not change forwarding policy.
+Scope and user-filter changes affect all inspectors and do not change forwarding
+policy.
 Detaching leaves the proxy and its retained view running.
 Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
 scroll. `r` and `s` fetch request and response body snapshots. `a` and `t`
-change the shared agent and test scope; `c` clears it. `q` detaches.
+change the shared agent and test scope; `c` clears only that scope. `f` edits
+the shared user filter. Enter applies the expression, Escape cancels, and an
+empty expression clears only the user filter. `q` detaches.
 For an upgraded WebSocket, `w` opens its retained message transcript and returns
 to HTTP. Up/Down selects a message; `[` and `]` navigate its 64 KiB body pages.
 Every retained byte is reachable through these pages. The inspector fetches a
 page when selected or requested, rather than fetching the payload on every poll.
 Message rows show direction, type, size, time and the reached inspection drop
 decision. That decision does not establish delivery to the peer.
+
+For example, enter `~m GET`, `~u example.com`, or `~b base_instruction` in the
+filter prompt. Combine predicates with explicit `&`, `|`, `!` and parentheses,
+such as `~m POST & ~b base_instruction`. A bare regular expression searches the
+URL. The filter combines with the pinned scope; changing either preserves the
+other. Invalid expressions and unsupported predicates leave the previous filter
+active. If an accepted filter fails during evaluation, the inspector reports
+the failure and retains its previous rows. Use `f` to edit or clear the active
+expression and recover.
+
+The shared editor preserves the source parser's spacing rules. For a standalone
+predicate without an operand, use a spaced group such as `(~q )` for flows
+without a response or `(~websocket )` for WebSockets. The source wrapper rejects
+bare `~q` and `~websocket`. An explicit combination such as `~q & ~m GET` works.
+
+The native filter supports URL, method, status, request/response presence,
+headers, content type, assets, metadata, HTTP/WebSocket body, HTTP/WebSocket type,
+`~all` and error predicates. Body searches use complete retained HTTP content
+after decoding and each retained WebSocket message separately, including dropped
+messages. Searches are independent of terminal preview and page sizes. Body
+predicates search only retained bytes. Header and body expressions search bytes;
+URL and metadata expressions search text. Matching ignores case unless
+`MITMPROXY_CASE_SENSITIVE_FILTERS=1` when the view is created; the asset predicate
+keeps its source case-sensitive behavior.
+
+Domain, peer-address, replay, mark, comment and non-HTTP protocol predicates
+remain unimplemented. The private filter API reports unsupported predicates or
+known regex incompatibilities with HTTP 501. Invalid expressions return 400;
+evaluation failures return 500. Compilation and evaluation errors contain a
+category, without the expression or captured content. Native regex matching
+has finite Python compatibility. Unavailable byte-pattern cases include
+case-insensitive backreferences and advanced patterns containing non-ASCII byte
+literals. This interface does not establish complete mitmproxy filter parity.
 
 The live view is separate from the durable TestContext evidence store.
 Native JSON settings `flow_pruner_max` (default 5000 flows) and
@@ -475,8 +511,8 @@ shows how many messages have been trimmed from each session. Closed sessions
 keep their remaining transcript until the whole flow is evicted. These targets
 do not limit forwarded message size. Large messages share the relay's anonymous
 file storage; inspecting a page does not load the whole message into memory.
-Accepted reloads keep the view and scope, and apply updated targets; failed
-reloads leave the targets unchanged. Native pruning occurs on observation,
+Accepted reloads keep the view, scope and user filter, and apply updated targets.
+Failed reloads leave the targets unchanged. Native pruning occurs on observation,
 exchange release or settings changes. Python uses its hook and interval schedule.
 
 For HTTP, the inspector shows retained encoded body bytes, including a distinct
@@ -497,7 +533,7 @@ If native validation rejects an upstream 101 upgrade response, the HTTP view
 keeps that observed response and shows the rejection error. No WebSocket
 session is created for that response.
 
-The mitmproxy user-filter language, editing, replay, interception, import/export
+Remaining filter compatibility, flow editing, replay, interception, import/export
 and a web inspector remain migration work.
 
 The native view excludes CONNECT, reserved internal hosts, and requests whose
@@ -508,7 +544,10 @@ case-insensitive literal metadata text with multiline anchors. The Python
 filter lexer can change escaped punctuation and reject newlines; its optional
 case-sensitive mode and Unicode regex folding also differ. Native scope
 updates validate before publication. Python can publish scope fields before
-its generated filter fails. These are explicit compatibility gaps.
+its generated filter fails. Native pins also remain a separate AND condition
+when a user expression closes the source's generated parentheses early. The
+Python expression can widen the pinned selection in that case. These are
+display-selection differences; scope is not an authorization boundary.
 
 Request headers reflect the last reached hygiene/context stage; an earlier
 local reply can retain the ingress headers. Upstream response headers come

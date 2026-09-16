@@ -29,13 +29,14 @@ fn retention_defaults_are_source_soft_targets_and_zero_is_invalid() {
 }
 
 #[tokio::test]
-async fn accepted_reload_preserves_view_and_scope_and_publishes_retention() {
+async fn accepted_reload_preserves_view_scope_and_filter_and_publishes_retention() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(directory.path());
     config.flow_pruner_max = 3;
     let mut proxy = Proxy::start(config.clone()).await.unwrap();
     let initial = proxy.runtime.read().unwrap().traffic_view.clone();
     initial.set_scope(&json!({"agent":"alice"})).unwrap();
+    initial.set_user_filter("  ~m GET  ").unwrap();
     for id in ["first", "second"] {
         let exchange = initial.begin(RequestInfo {
             id: id.into(),
@@ -48,17 +49,22 @@ async fn accepted_reload_preserves_view_and_scope_and_publishes_retention() {
         });
         exchange.finish(None);
     }
-    assert_eq!(initial.flows()["flows"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        initial.flows().unwrap()["flows"].as_array().unwrap().len(),
+        2
+    );
     config.flow_pruner_max = 1;
     let mut failed = config.clone();
     failed.policy_file = Some(directory.path().join("missing-policy.json"));
     assert!(proxy.reload(failed).await.is_err());
+    assert_eq!(initial.scope()["user_filter"], "  ~m GET  ");
     assert!(initial.detail("first").is_some());
     assert!(initial.detail("second").is_some());
     proxy.reload(config.clone()).await.unwrap();
     let current = proxy.runtime.read().unwrap().traffic_view.clone();
     assert!(Arc::ptr_eq(&initial, &current));
     assert_eq!(current.scope()["agent"], "alice");
+    assert_eq!(current.scope()["user_filter"], "  ~m GET  ");
     assert!(current.detail("first").is_none());
     assert!(current.detail("second").is_some());
     proxy.shutdown().await;
@@ -111,7 +117,7 @@ async fn ordinary_http_is_visible_while_pending_and_completes_across_reload() {
         let mut client = UnixStream::connect(&socket_path).await.unwrap();
         client.write_all(format!("POST http://{address}/owned?x=1&x=2 HTTP/1.1\r\nHost: {address}\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody").as_bytes()).await.unwrap();
         request_ready.await.unwrap();
-        let flows = view.flows();
+        let flows = view.flows().unwrap();
         let rows = flows["flows"].as_array().unwrap();
         assert_eq!(rows.len(), 1);
         let id = rows[0]["id"].as_str().unwrap().to_owned();

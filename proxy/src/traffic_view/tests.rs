@@ -24,7 +24,7 @@ fn metadata(exchange: &Exchange, value: Value) {
 }
 
 fn ids(view: &TrafficView) -> Vec<String> {
-    view.flows()["flows"]
+    view.flows().unwrap()["flows"]
         .as_array()
         .unwrap()
         .iter()

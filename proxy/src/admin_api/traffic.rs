@@ -1,7 +1,7 @@
 //! Authorized access to the process-owned live traffic view.
 
 use super::{Audit, Error, Json, Outcome, ParsedBody, TrafficScopeAudit, read_json, response};
-use crate::traffic_view::{Side, TrafficView};
+use crate::traffic_view::{FilterError, Side, TrafficView};
 use bytes::Bytes;
 use hyper::{Method, Request, StatusCode, body::Body};
 use percent_encoding::percent_decode_str;
@@ -35,11 +35,8 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             ));
         }
         return Ok(match view.set_scope(&data.0) {
-            Ok(mut scope) => {
-                let mut result = serde_json::Map::new();
-                result.insert("status".into(), json!("updated"));
-                result.extend(std::mem::take(scope.as_object_mut().expect("scope object")));
-                let mut outcome = response(StatusCode::OK, Value::Object(result));
+            Ok(scope) => {
+                let mut outcome = updated_scope(scope);
                 outcome.audit = Some(Audit::TrafficScopeUpdated(TrafficScopeAudit {
                     fields: data.0.clone(),
                 }));
@@ -48,12 +45,25 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
             Err(error) => response(StatusCode::BAD_REQUEST, json!({"error":error})),
         });
     }
+    if request.method() == Method::PUT && path == "/admin/traffic/filter" {
+        return update_filter(request, view.clone()).await;
+    }
     if request.method() != Method::GET {
         return Ok(not_found());
     }
     let value = match path {
         "/admin/traffic/scope" => Some(view.scope()),
-        "/admin/traffic/flows" => Some(view.flows()),
+        "/admin/traffic/flows" => {
+            let view = view.clone();
+            // Decoding and regex searches can read anonymous message files.
+            // The model snapshots first, then evaluates outside its view lock.
+            return tokio::task::spawn_blocking(move || match view.flows() {
+                Ok(flows) => response(StatusCode::OK, flows),
+                Err(error) => filter_error(error),
+            })
+            .await
+            .map_err(|_| Error::TrafficReporting);
+        }
         "/admin/traffic/facets" => Some(view.facets()),
         _ => {
             let Some(tail) = path.strip_prefix("/admin/traffic/flows/") else {
@@ -101,6 +111,64 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         }
     };
     Ok(optional_response(value))
+}
+
+async fn update_filter<B: Body<Data = Bytes>>(
+    request: Request<B>,
+    view: Arc<TrafficView>,
+) -> Result<Outcome, Error> {
+    let data = match read_json(request).await? {
+        ParsedBody::Terminal(outcome) => return Ok(outcome),
+        ParsedBody::Absent => Json(Value::Null),
+        ParsedBody::Value(data) => data,
+    };
+    let Some(object) = data.0.as_object() else {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"request body must be a JSON object"}),
+        ));
+    };
+    if object.len() != 1 || !object.contains_key("user_filter") {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"request body must contain only user_filter"}),
+        ));
+    }
+    if !object["user_filter"].is_string() {
+        return Ok(response(
+            StatusCode::BAD_REQUEST,
+            json!({"error":"user_filter must be a string"}),
+        ));
+    }
+    // Compile before publication on a blocking worker. Both its input and
+    // response retain wiping owners even when the awaiting request is canceled.
+    tokio::task::spawn_blocking(move || {
+        match view.set_user_filter(data.0["user_filter"].as_str().expect("validated string")) {
+            Ok(scope) => updated_scope(scope),
+            Err(error) => filter_error(error),
+        }
+    })
+    .await
+    .map_err(|_| Error::TrafficReporting)
+}
+
+fn updated_scope(mut scope: Value) -> Outcome {
+    let mut result = serde_json::Map::new();
+    result.insert("status".into(), json!("updated"));
+    result.extend(std::mem::take(scope.as_object_mut().expect("scope object")));
+    response(StatusCode::OK, Value::Object(result))
+}
+
+fn filter_error(error: FilterError) -> Outcome {
+    let status = match error {
+        FilterError::Invalid => StatusCode::BAD_REQUEST,
+        FilterError::Unsupported | FilterError::Compatibility => StatusCode::NOT_IMPLEMENTED,
+        FilterError::Runtime
+        | FilterError::DecodeType
+        | FilterError::Allocation
+        | FilterError::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    response(status, json!({"error":error.to_string()}))
 }
 
 async fn websocket_body(

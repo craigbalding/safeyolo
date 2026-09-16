@@ -160,7 +160,7 @@ fn ordinary_head_is_pending_without_context_and_keeps_trusted_identity() {
         );
     }
     assert_eq!(
-        fixture.runtime.traffic_view.flows()["flows"]
+        fixture.runtime.traffic_view.flows().unwrap()["flows"]
             .as_array()
             .unwrap()
             .len(),

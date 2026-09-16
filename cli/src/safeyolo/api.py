@@ -195,6 +195,9 @@ class AdminAPI:
     def set_traffic_scope(self, **scope: Any) -> dict[str, Any]:
         return self._request("PUT", "/admin/traffic/scope", json=scope)
 
+    def set_traffic_filter(self, expression: str) -> dict[str, Any]:
+        return self._request("PUT", "/admin/traffic/filter", json={"user_filter": expression})
+
     def metrics(self) -> str:
         """Get Prometheus format metrics."""
         return self._request("GET", "/metrics")

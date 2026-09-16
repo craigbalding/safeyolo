@@ -162,6 +162,7 @@ class TrafficInspector:
         self.body = ""
         self.notice = "Connecting…"
         self.pending_scope: dict | None = None
+        self.pending_filter: str | None = None
         self.pending_body: tuple[str, str] | None = None
         self.websocket_mode = False
         self.transcript = WebSocketTranscript()
@@ -210,6 +211,10 @@ class TrafficInspector:
                                   "test_id": value or None}
         self.wake.set()
 
+    def set_filter(self, expression: str) -> None:
+        self.pending_filter = expression
+        self.wake.set()
+
     def toggle_websocket(self) -> None:
         if self.websocket_mode:
             self.websocket_mode = False
@@ -247,13 +252,32 @@ class TrafficInspector:
             if self.transcript is transcript and (transcript.selected, transcript.offset) == (message_id, offset):
                 transcript.body = websocket_page(value, offset)
 
+    async def _refresh_flows(self) -> None:
+        try:
+            document = await asyncio.to_thread(self.api.traffic_flows)
+        except APIError:
+            # Another operator's accepted filter may make list evaluation fail.
+            # Recover its editable expression without hiding the original error.
+            try:
+                scope = await asyncio.to_thread(self.api.get_traffic_scope)
+            except (APIError, ValueError, TypeError):
+                pass  # Keep the prior scope and report the original list failure.
+            else:
+                if isinstance(scope, dict):
+                    self.scope = scope
+            raise
+        self.snapshot(document)
+
     async def refresh(self) -> None:
         """One worker serializes this mutable AdminAPI client's requests."""
         try:
             if self.pending_scope is not None:
                 scope, self.pending_scope = self.pending_scope, None
-                await asyncio.to_thread(self.api.set_traffic_scope, **scope)
-            self.snapshot(await asyncio.to_thread(self.api.traffic_flows))
+                self.scope = await asyncio.to_thread(self.api.set_traffic_scope, **scope)
+            if self.pending_filter is not None:
+                expression, self.pending_filter = self.pending_filter, None
+                self.scope = await asyncio.to_thread(self.api.set_traffic_filter, expression)
+            await self._refresh_flows()
             await self._refresh_detail()
             if self.websocket_mode and self.selected:
                 await self._refresh_websocket()
@@ -318,7 +342,11 @@ class TrafficInspector:
         bindings = KeyBindings()
 
         def finish_prompt(buffer) -> bool:
-            self.set_scope(prompt_field.pop(), buffer.text)
+            field = prompt_field.pop()
+            if field == "user_filter":
+                self.set_filter(buffer.text)
+            else:
+                self.set_scope(field, buffer.text)
             get_app().layout.focus(rows)
             prompt.prompt = ""
             return False
@@ -355,10 +383,13 @@ class TrafficInspector:
 
         @bindings.add("a", filter=browsing)
         @bindings.add("t", filter=browsing)
+        @bindings.add("f", filter=browsing)
         def scope(event) -> None:
-            field = {"a": "agent", "t": "test_id"}[event.key_sequence[0].key]
+            field = {"a": "agent", "t": "test_id", "f": "user_filter"}[event.key_sequence[0].key]
             prompt_field.append(field)
-            prompt.prompt = f"{field} (empty clears): "
+            prompt.text = self.scope.get("user_filter", "") if field == "user_filter" else ""
+            prompt.buffer.cursor_position = len(prompt.text)
+            prompt.prompt = "User filter (empty clears filter): " if field == "user_filter" else f"{field} (empty clears): "
             event.app.layout.focus(prompt)
 
         @bindings.add("escape", filter=Condition(lambda: bool(prompt_field)))
@@ -396,7 +427,7 @@ class TrafficInspector:
 
     def help_text(self) -> str:
         view = "w HTTP · [/] message page · r/s HTTP body" if self.websocket_mode else "r/s body · w WebSocket"
-        return f"↑↓ select · Tab pane · PgUp/PgDn scroll · {view} · a/t scope · c clear · q detach"
+        return f"↑↓ select · Tab pane · PgUp/PgDn scroll · {view} · f filter · a/t scope · c clear scope · q detach"
 
     def application(self) -> Application:
         detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)

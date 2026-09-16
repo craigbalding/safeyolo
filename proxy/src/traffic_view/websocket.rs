@@ -35,6 +35,13 @@ struct Message {
 }
 
 impl Session {
+    pub(super) fn filter_messages(&self) -> Vec<(bool, Arc<MessageContent>)> {
+        self.messages
+            .iter()
+            .map(|message| (message.from_client, Arc::clone(&message.content)))
+            .collect()
+    }
+
     fn new(started: f64) -> Self {
         Self {
             started,
