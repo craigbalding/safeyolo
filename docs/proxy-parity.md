@@ -2316,8 +2316,8 @@ These source checks do not establish native formatter parity or independent
 acceptance.
 
 The native formatter replay compares 154 of those observations. It excludes
-only curl's optional original-IP preservation output because the native view
-does not retain the required peer-IP observation. The replay preserves the
+only curl's optional original-IP preservation output because the exporter
+does not implement that option. The replay preserves the
 input's explicit default ports and compares command bytes, including header
 values that are not valid UTF-8. It constructs retained observations from the
 fixture; it does not establish complete runtime capture equivalence. Native
@@ -2326,6 +2326,24 @@ workflow.
 Command body decoding currently covers ASCII, Latin-1 and UTF-8/16/32. Other
 source-supported codecs and additional aliases remain a compatibility gap;
 the native formatter reports an unsupported representation for those labels.
+
+The [live view](../proxy/src/traffic_view.rs) now retains request completion,
+first response-head observation and successful response completion separately
+from exchange end. Missing observations remain null. It also retains upstream
+connection identity, direct IPv4/IPv6 peer address and reached connection phases.
+Parent connection facts do not become origin facts. These observations support
+future formatters; they do not enable original-IP curl export or HAR by themselves.
+
+The [row tests](../proxy/src/traffic_view/tests.rs) cover phase separation,
+repeated callbacks, constructed address records and unavailable parent phases.
+The [egress test](../proxy/src/http/ignored_host_tests.rs) checks an actual owned
+direct IPv4 connection and transfers its owner through a tunnel slot. CONNECT
+classification, failure retention, IPv6 transport, parent routes and target TLS
+received static wiring review for this change; these tests do not establish
+their complete runtime capture equivalence. The [HAR source fixture](../proxy/tests/traffic_har_source.py)
+records 12 selections and two archive formats, including missing request-end
+defaults and connection timing suppression within one archive. It does not
+establish native HAR availability.
 
 HAR, flow-dump export and import, web inspection and the exposed edit/replay
 workflows remain migration work. The Python proxy has not been removed or cut
