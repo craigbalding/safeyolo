@@ -1,0 +1,71 @@
+# Rust dependency validation
+
+Run the command from the repository root with Rust 1.94.0 and CPython 3.12.
+Cargo runs offline by default and requires the dependencies to be present in
+the local cache. Use `--online` only when the operator intends Cargo to fetch
+missing packages. The report is written outside the checkout unless `--report`
+specifies another path.
+
+```sh
+SAFEYOLO_POLICY_PYTHON="$(command -v python3)" \
+  ./scripts/validate_rust_dependencies.py \
+  --report /tmp/safeyolo-rust-dependency-validation.json
+```
+
+The script exits nonzero when a command fails, a required target is absent, a
+test command collects zero tests, a selected test fails, or a provenance hash
+does not match the current vendored source. It prints command output and keeps
+the command, exit code, elapsed time, test counts, output hash and output tail
+in the JSON report. The report also records the Git revision, Rust and Cargo
+versions, package manifests, enabled features, lockfile hashes, and the
+cumulative source hashes from each `UPSTREAM.json`.
+
+The first Python oracle command intentionally unsets
+`SAFEYOLO_POLICY_PYTHON` and selects the real
+`every_valid_scalar_lowercase_matches_actual_python_312` regression. That
+command must fail because its required oracle is unavailable. The script then
+runs the same package's complete Python-backreference target with CPython 3.12
+and requires a clean result. This controlled failure checks the runner's
+failure-to-nonzero path without changing product source or expected assertions.
+
+## Change-to-test map
+
+The map names the local change, the package and feature resolution, the
+existing regression target, its invocation, and the remaining limitation.
+`docs/proxy-parity.md` remains the capability and deletion inventory; this
+document only describes dependency validation.
+
+| Local change | Package and enabled features | Regression or build command | Remaining limitation |
+| --- | --- | --- | --- |
+| Fallible VM growth, scratch release and cancellation polling | `fancy-regex` 0.19.2, default `unicode,perf,std,variable-lookbehinds` | `cargo test --offline --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test runtime_allocation -- --test-threads=1 --nocapture`; `runtime_cancellation` with `--include-ignored` | Delegated-engine allocation and cancellation remain outside the patch. |
+| Scoped ASCII references and Python scalar backreferences | `fancy-regex` 0.19.2, same default features; Python option is opt-in | `ascii_backrefs`; `python_backrefs -- --include-ignored`; the target invokes the existing CPython 3.12 oracle | The bounded tests do not establish complete Python regex parity. |
+| Original regular-header fields | Patched `hyper` 1.11.1 and `h2` 0.4.19 selected by locked `safeyolo-proxy` | `cargo test --locked --offline --manifest-path proxy/Cargo.toml --test response_head_capture -- --test-threads=1` | Six bare-parser admission differences remain outside the metadata patch. |
+| Request and response completion, unread payload and trailers | Patched `hyper`/`h2` selected by the product lock; H1 and H2 paths are separate targets | `request_completion_h1`, `request_completion_h2`, `response_completion_h1`, `response_completion_h2` in the product command | The tests cover the selected parser/client paths, not all HTTP conformance. |
+| Independent feature boundaries | Standalone `h2` default, `stream`, `unstable`, and combined features; standalone Hyper `client,http2` with no `http1` | `cargo check --locked --offline --manifest-path proxy/vendor/h2/Cargo.toml ...`; `cargo check --locked --offline --manifest-path proxy/vendor/hyper/Cargo.toml --no-default-features --features client,http2` | Standalone manifests resolve their own lockfiles; product behavior is proved by the locked product tests. |
+| Locked product build | `safeyolo-proxy` 0.1.0 with the committed `proxy/Cargo.lock` and all product targets | `cargo build --locked --offline --manifest-path proxy/Cargo.toml --all-targets` | Build coverage is compile and link validation; shared #621 owns proxy startup and origin traffic. |
+
+The product command includes `inspection` without ignored tests. It executes
+the native scanner's focused tests and records the seven ignored Python
+inspection oracles as unexecuted. Those oracles import the checkout's optional
+`mitmproxy` and `yarl` dependencies and belong to the shared acceptance lane
+when that environment is provisioned.
+
+The script labels inherited package tests separately from local patch
+regressions and product acceptance. The Hyper inherited smoke runs two tests
+with no default features. The h2 smoke runs one existing Huffman test and
+filters the rest. h2's published vendored manifest excludes its upstream
+fixture corpus, so the full fixture suite is not a valid local acceptance
+command. No whole-library dependency conformance, proxy startup, real-origin
+traffic, or Linux/macOS black-box result is claimed here; those scopes remain
+with #621 and the release checkpoints.
+
+## Provenance
+
+`proxy/vendor/fancy-regex/SAFEYOLO.md` and `UPSTREAM.json` describe the pinned
+crate commit, crates.io archive checksum, patch files, retained MIT and
+CPython licenses, and generated lowercase-data source. Hyper and h2 retain
+their MIT licenses and cumulative source hashes in their respective
+`UPSTREAM.json` files. The script checks every latest cumulative candidate
+hash, the generated lowercase JSON and its CPython license, and reports the
+recorded upstream/archive values without replacing or rewriting vendored
+source.
