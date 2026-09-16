@@ -34,6 +34,8 @@ mod flow_recording;
 mod ignored_host;
 #[cfg(test)]
 mod ignored_host_tests;
+#[cfg(test)]
+mod memory_tests;
 mod network_trace;
 mod request_body;
 mod request_context;
@@ -809,7 +811,7 @@ fn record_agent_api(
 
 async fn local_agent_api(
     runtime: &Runtime,
-    state: RuntimeState,
+    traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
     request: &mut Request<Incoming>,
@@ -882,6 +884,11 @@ async fn local_agent_api(
             &runtime.tasks,
             crate::policy::current_time_ms(),
             agent_api::Controls {
+                memory: Some(agent_api::MemoryContext {
+                    owner: &runtime.memory_monitor,
+                    sample: crate::memory_runtime::sample,
+                    now: crate::circuit_runtime::now,
+                }),
                 traces: Some(agent_api::TraceContext {
                     store: &runtime.traces,
                     now: &crate::circuit_runtime::now,
@@ -942,11 +949,19 @@ async fn local_agent_api(
     let eligible =
         (local_observation.decoded_size.is_some() || terminal_body) && observer.await.is_ok();
     let traffic = if eligible {
+        // Use the existing reader's original-content observation. Memory
+        // accounting must not decode headers after request-ID hygiene removed
+        // a nominated Content-Encoding field, or reread the request body.
+        if let Some(decoded) = local_observation.decoded_size {
+            traffic.memory_request_size(|| decoded);
+        } else {
+            traffic.memory_request(Some(&[]));
+        }
         let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
         if let Some(trace) = trace {
             trace.enable(hygiene.trace_requested);
         }
-        let traffic = traffic::Traffic::new(state, identity, request_id, request, destination);
+        traffic.request_headers(request, destination);
         traffic.begin_request();
         let encoding = test_context::combined(request.headers(), header::CONTENT_ENCODING);
         evidence_failed |= traffic.request(|| {
@@ -1236,7 +1251,10 @@ async fn forward(
         {
             let reply = local_agent_api(
                 &runtime,
-                state.clone(),
+                traffic
+                    .as_ref()
+                    .expect("ordinary local HTTP traffic")
+                    .clone(),
                 identity,
                 request_id,
                 &mut request,
@@ -1673,6 +1691,7 @@ async fn forward(
             host: destination.host.clone(),
             port: destination.port,
         };
+        let memory_host = destination.policy_host.clone();
         upgrades.tasks.lock().await.spawn(async move {
             let _connection = connection;
             let result: Result<(), Error> = async {
@@ -1681,6 +1700,9 @@ async fn forward(
                     _ = stop.changed() => return Ok(()),
                     result = async { tokio::try_join!(client_upgrade, server_upgrade) } => result?,
                 };
+                let memory = crate::memory_runtime::WebSocket::new(
+                    &runtime, &session.identity.connection_id, &memory_host,
+                );
                 runtime.record(json!({
                     "event": "proxy.websocket.start", "agent": session.identity.agent_id,
                     "connection_id": session.identity.connection_id, "request_id": session.request_id,
@@ -1688,7 +1710,7 @@ async fn forward(
                     "subprotocol": negotiated.subprotocol,
                     "compressed_client": negotiated.client.is_some(), "compressed_server": negotiated.server.is_some(),
                 }))?;
-                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop).await
+                crate::websocket_relay::relay(Box::new(TokioIo::new(client)), Box::new(TokioIo::new(server)), negotiated, session, stop, memory).await
             }.await;
             if result.is_err() { eprintln!("WebSocket connection ended with an error"); }
         });
@@ -1842,6 +1864,32 @@ pub(crate) fn serve_request(
                 "error".into(),
             )
         });
+        // Memory observes a completed local response before circuit and later
+        // recording hooks. An arbitrary returned status does not prove that
+        // this existing local completion marker was reached.
+        if let Some(local) = reply.extensions().get::<traffic::LocalResponse>() {
+            let current = state.read().map(|runtime| runtime.clone());
+            match current {
+                Ok(current) => {
+                    // Generated local replies have one content-type field.
+                    // Source SSE selection also applies to buffered JSON replies.
+                    let content_type = reply
+                        .headers()
+                        .get(header::CONTENT_TYPE)
+                        .map_or(&b""[..], |value| value.as_bytes());
+                    if !test_context::source_streamed(&current, &local.traffic.host, content_type) {
+                        local.traffic.memory_response_size(|| Ok(local.size));
+                    }
+                }
+                Err(_) => {
+                    use std::io::Write as _;
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "Memory monitor runtime state unavailable"
+                    );
+                }
+            }
+        }
         let circuit = if !connect
             && reply
                 .extensions_mut()

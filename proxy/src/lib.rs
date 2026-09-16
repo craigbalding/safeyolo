@@ -28,6 +28,7 @@ pub mod http_content;
 pub mod ignored_host_logger;
 pub mod inspection;
 pub mod memory_monitor;
+mod memory_runtime;
 pub mod metrics;
 pub mod network_guard;
 pub mod oauth;
@@ -122,6 +123,7 @@ pub(crate) struct Runtime {
     agent_discovery: Arc<agent_discovery::AgentDiscovery>,
     metrics: Arc<metrics::Metrics>,
     traces: Arc<trace::TraceStore>,
+    memory_monitor: Arc<memory_monitor::MemoryMonitor>,
     via_token: String,
     events: Mutex<File>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -186,6 +188,9 @@ impl Runtime {
         let traces = previous
             .map(|runtime| runtime.traces.clone())
             .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
+        let memory_monitor = previous
+            .map(|runtime| runtime.memory_monitor.clone())
+            .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
         let flow_recorder = match previous {
             Some(runtime) => runtime.flow_recorder.clone(),
             None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -256,6 +261,7 @@ impl Runtime {
             agent_discovery,
             metrics,
             traces,
+            memory_monitor,
             via_token: config
                 .via_token
                 .clone()
@@ -475,7 +481,21 @@ async fn accept_agents(
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: source_id.clone(),
                     };
-                    connections.spawn(serve_connection(socket, identity, runtime.clone(), stop.clone()));
+                    // Register before spawning so even an unpolled canceled
+                    // task owns cleanup. One guard spans all inner upgrades.
+                    let memory = match runtime.read() {
+                        Ok(runtime) => Some(memory_runtime::Client::new(&runtime, &identity.connection_id)),
+                        Err(_) => {
+                            let _ = writeln!(std::io::stderr().lock(), "Memory monitor runtime unavailable");
+                            None
+                        }
+                    };
+                    let connection_runtime = runtime.clone();
+                    let connection_stop = stop.clone();
+                    connections.spawn(async move {
+                        let _memory = memory;
+                        serve_connection(socket, identity, connection_runtime, connection_stop).await;
+                    });
                 }
                 Err(error) => {
                     eprintln!("listener accept failed: {error}");
@@ -570,13 +590,15 @@ impl Proxy {
             let temporary_policy_lock = temporary_policy_lock.clone();
             Arc::new(
                 tokio::task::spawn_blocking(move || {
-                    Runtime::new(
+                    let runtime = Runtime::new(
                         config,
                         &default_via,
                         temporary_policy_lock,
                         None,
                         admin_address,
-                    )
+                    )?;
+                    memory_runtime::running(&runtime);
+                    Ok::<_, Error>(runtime)
                 })
                 .await??,
             )

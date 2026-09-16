@@ -158,6 +158,7 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             .collect::<Vec<_>>(),
         [
             "proxy",
+            "memory-monitor",
             "service-discovery",
             "policy-engine",
             "network-guard",
@@ -260,6 +261,11 @@ async fn circuit_audit_failure_preserves_partial_state_and_later_stats() {
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     seed(&runtime);
+    assert!(runtime.audit.wait_for_drain(WAIT).unwrap());
+    let startup = records(directory.path());
+    assert_eq!(startup.len(), 1);
+    assert_eq!(startup[0]["event"], "ops.startup");
+    assert_eq!(startup[0]["addon"], "memory-monitor");
     runtime.audit.poison_for_test();
     let (status, report) = stats(&runtime, true).await;
     assert_eq!(status, 200);
@@ -282,7 +288,7 @@ async fn circuit_audit_failure_preserves_partial_state_and_later_stats() {
     );
     assert_eq!(report["request-logger"]["requests_total"], 0);
     assert_eq!(report["network-guard"]["checks"], 0);
-    assert!(records(directory.path()).is_empty());
+    assert_eq!(records(directory.path()), startup);
     proxy.shutdown().await;
     assert!(!directory.path().join("alice.sock").exists());
 }

@@ -31,6 +31,8 @@ pub(super) struct Traffic {
     request_id: String,
     agent: Zeroizing<String>,
     client: Option<Zeroizing<String>>,
+    connection_id: Zeroizing<String>,
+    memory_encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
 }
 
 impl Traffic {
@@ -61,7 +63,70 @@ impl Traffic {
             request_id: request_id.to_owned(),
             agent: Zeroizing::new(identity.agent_id.clone()),
             client: identity.source_id.clone().map(Zeroizing::new),
+            connection_id: Zeroizing::new(identity.connection_id.clone()),
+            // MemoryMonitor runs before source header hygiene. Keep this
+            // projection even if a Connection nomination later removes it.
+            memory_encoding: super::test_context::combined(
+                request.headers(),
+                header::CONTENT_ENCODING,
+            ),
         })
+    }
+
+    /// The existing request-completion owner calls this once at its reached
+    /// hook. Absent source content is zero bytes without decoding the header.
+    pub(super) fn memory_request(&self, content: Option<&[u8]>) {
+        self.memory_request_size(|| {
+            memory_decoded_size(
+                content,
+                self.memory_encoding
+                    .as_deref()
+                    .map(Vec::as_slice)
+                    .map_err(|e| *e),
+            )
+        });
+    }
+
+    pub(super) fn memory_request_size(
+        &self,
+        decoded_size: impl FnOnce() -> Result<u64, ContentError>,
+    ) {
+        let runtime = match self.state.read() {
+            Ok(runtime) => runtime.clone(),
+            Err(_) => {
+                report_memory_state();
+                return;
+            }
+        };
+        crate::memory_runtime::observe(runtime.memory_monitor.request(
+            &self.connection_id,
+            &self.host,
+            &runtime.audit,
+            decoded_size,
+            crate::circuit_runtime::now,
+            crate::memory_runtime::sample,
+        ));
+    }
+
+    /// Call only for a reached, present, non-streamed response. The existing
+    /// response owner supplies these guards and prevents duplicate application.
+    pub(super) fn memory_response_size(
+        &self,
+        decoded_size: impl FnOnce() -> Result<u64, ContentError>,
+    ) {
+        let runtime = match self.state.read() {
+            Ok(runtime) => runtime.clone(),
+            Err(_) => {
+                report_memory_state();
+                return;
+            }
+        };
+        crate::memory_runtime::observe(runtime.memory_monitor.response(
+            &self.connection_id,
+            true,
+            false,
+            decoded_size,
+        ));
     }
 
     pub(super) fn request_headers<B>(
@@ -236,6 +301,25 @@ pub(super) fn decoded_size(
     .map_err(|_| Error(ErrorKind::Decode))
 }
 
+pub(super) fn memory_decoded_size(
+    content: Option<&[u8]>,
+    encoding: Result<&[u8], ContentError>,
+) -> Result<u64, ContentError> {
+    let Some(content) = content else {
+        return Ok(0);
+    };
+    http_content::decode_prefix_with_size(content, encoding?, 0)
+        .map(|decoded| decoded.total_bytes as u64)
+}
+
+fn report_memory_state() {
+    use std::io::Write as _;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "Memory monitor runtime state unavailable"
+    );
+}
+
 fn report(result: Result<(), Error>) -> bool {
     if let Err(error) = result {
         eprintln!("Request logger hook failed: {:?}", error.0);
@@ -302,6 +386,7 @@ pub(super) fn local_reply<B: hyper::body::Body>(
     ) {
         return Ok(());
     }
+    traffic.memory_request(Some(&[]));
     if !hygiene_applied {
         let mut headers = crate::request_headers::RequestHeaders::take(request)?;
         let hygiene = headers.apply_hygiene(request.headers_mut());

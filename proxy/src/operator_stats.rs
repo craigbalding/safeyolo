@@ -5,7 +5,24 @@ use crate::{Runtime, circuits::CircuitValue, policy::Policy, tasks::Registry};
 use serde_json::json;
 
 pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
+    document_with_memory(
+        runtime,
+        crate::memory_runtime::sample,
+        crate::circuit_runtime::now,
+    )
+}
+
+fn document_with_memory(
+    runtime: &Runtime,
+    sample: fn() -> Result<crate::memory_monitor::MemorySample, crate::memory_monitor::SampleError>,
+    now: fn() -> f64,
+) -> CircuitValue {
     let mut report = indexmap::IndexMap::from([("proxy".into(), json!("safeyolo").into())]);
+    let memory = match runtime.memory_monitor.get_stats(sample, now) {
+        Ok(stats) => stats,
+        Err(error) => memory_failure(error.kind()),
+    };
+    report.insert("memory-monitor".into(), memory);
     let discovery = match runtime
         .agent_discovery
         .get_stats(&runtime.audit, crate::circuit_runtime::now)
@@ -82,6 +99,27 @@ pub(crate) fn document(runtime: &Runtime) -> CircuitValue {
     };
     report.insert("metrics".into(), metrics);
     CircuitValue::Object(report)
+}
+
+fn memory_failure(kind: crate::memory_monitor::ErrorKind) -> CircuitValue {
+    use crate::{
+        circuits::ErrorKind as Numeric,
+        memory_monitor::{ErrorKind, SampleError},
+    };
+    let class = match kind {
+        ErrorKind::Sample(SampleError::Index) => "IndexError",
+        ErrorKind::Numeric(Numeric::Value) => "ValueError",
+        ErrorKind::Numeric(Numeric::Overflow) => "OverflowError",
+        ErrorKind::Numeric(Numeric::Type) => "TypeError",
+        ErrorKind::Numeric(Numeric::ZeroDivision) => "ZeroDivisionError",
+        ErrorKind::Poisoned
+        | ErrorKind::Content(_)
+        | ErrorKind::Audit(_)
+        | ErrorKind::Numeric(_) => "RuntimeError",
+    };
+    // The component retains a category, not arbitrary Python exception prose.
+    // In particular Overflow cannot identify which report conversion failed.
+    failure(class, "memory monitor operation failed")
 }
 
 fn discovery_failure(kind: crate::agent_discovery::ErrorKind, message: &str) -> CircuitValue {
@@ -192,6 +230,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 "proxy",
+                "memory-monitor",
                 "service-discovery",
                 "policy-engine",
                 "flow-recorder",
@@ -203,3 +242,6 @@ mod tests {
         assert!(!directory.path().join("unused.sqlite3").exists());
     }
 }
+
+#[cfg(test)]
+mod memory_tests;

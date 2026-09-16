@@ -74,6 +74,14 @@ fn events(directory: &Path) -> Vec<Value> {
         .unwrap()
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
+        // Preserve all other producer events and their original order.
+        .filter(|row: &Value| {
+            !(row["addon"] == "memory-monitor"
+                && matches!(
+                    row["event"].as_str(),
+                    Some("ops.startup" | "ops.memory.conn_closed")
+                ))
+        })
         .collect()
 }
 

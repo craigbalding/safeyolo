@@ -86,7 +86,17 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
             .wait_for_drain(LIMIT)
             .unwrap()
     );
+    // Startup and connection-close memory events have separate runtime tests.
     records(&directory.join("audit.jsonl"))
+        .into_iter()
+        .filter(|row| {
+            !(row["addon"] == "memory-monitor"
+                && matches!(
+                    row["event"].as_str(),
+                    Some("ops.startup" | "ops.memory.conn_closed")
+                ))
+        })
+        .collect()
 }
 fn names(rows: &[Value]) -> Vec<&str> {
     rows.iter()

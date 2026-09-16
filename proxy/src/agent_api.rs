@@ -20,7 +20,10 @@ mod declarations;
 mod discovery;
 mod explain;
 mod flows;
+mod memory;
 mod trace;
+pub use memory::MemoryContext;
+
 pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
     respond_with_body_and_audit_id,
@@ -123,6 +126,7 @@ pub enum Failure {
     FlowReporting(FlowFailure),
     ExplainReporting(ExplainFailure),
     DiscoveryReporting(crate::agent_discovery::ErrorKind),
+    MemoryReporting(crate::memory_monitor::ErrorKind),
     TraceReporting(crate::trace::ErrorKind),
 }
 

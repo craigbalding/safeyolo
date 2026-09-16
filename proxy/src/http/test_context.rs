@@ -501,6 +501,34 @@ impl ResponseCapture {
         }
     }
 
+    /// Called only by the serialized, once-only successful Completion apply,
+    /// before CircuitBreaker. Preserve this same buffer for later consumers.
+    pub(super) fn memory_response(&self) {
+        let Some(traffic) = &self.traffic else {
+            return;
+        };
+        let capture = self
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        let Some(capture) = capture else {
+            return;
+        };
+        if !capture.failed
+            && !capture.body.is_streamed()
+            && let Some(head) = &capture.head
+        {
+            traffic.memory_response_size(|| {
+                super::traffic::memory_decoded_size(capture.body.content(), Ok(&head.encoding))
+            });
+        }
+        *self
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(capture);
+    }
+
     /// An earlier production response hook raised. Release captured bytes and
     /// pending recording without applying provenance or recorder counters.
     pub(super) fn skip_response(&self) {
@@ -594,7 +622,7 @@ impl ResponseCapture {
     }
 }
 
-fn source_streamed(runtime: &Runtime, host: &str, content_type: &[u8]) -> bool {
+pub(super) fn source_streamed(runtime: &Runtime, host: &str, content_type: &[u8]) -> bool {
     runtime.config.sse_streaming_enabled
         && runtime
             .policy

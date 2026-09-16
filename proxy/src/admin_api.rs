@@ -30,6 +30,7 @@ pub enum Error {
     BodyFraming,
     BodyRead,
     RegistryUnavailable,
+    StatsReporting,
     BudgetReporting(BudgetStatsError),
     CircuitOperation(crate::circuits::ErrorKind),
     Audit(crate::audit::ErrorKind),
@@ -43,6 +44,7 @@ impl fmt::Display for Error {
             Self::BodyFraming => "Operator request framing failed",
             Self::BodyRead => "Operator request body read failed",
             Self::RegistryUnavailable => "Task registry unavailable",
+            Self::StatsReporting => "Operator stats task failed",
             Self::BudgetReporting(_) => "Operator budget report unavailable",
             Self::CircuitOperation(_) => "Operator circuit operation failed",
             Self::Audit(_) => "Operator audit submission failed",
@@ -493,7 +495,7 @@ pub(crate) async fn respond_with_stats<B>(
     registry: &Registry,
     policy: Option<&Policy>,
     circuits: Option<&crate::circuits::CircuitBreaker>,
-    stats: Option<&(dyn Fn() -> crate::circuits::CircuitValue + Sync)>,
+    stats: Option<&(dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
 ) -> Result<Outcome, Error>
 where
     B: Body<Data = Bytes>,
@@ -525,6 +527,8 @@ where
         && let Some(stats) = stats
     {
         let body = stats()
+            .await
+            .map_err(|_| Error::StatsReporting)?
             .render_json(true)
             .map_err(|error| Error::CircuitOperation(error.kind()))?;
         return Ok(encoded(StatusCode::OK, "application/json", body, false));
@@ -703,7 +707,8 @@ mod tests {
             let sampled = std::sync::atomic::AtomicUsize::new(0);
             let stats = || {
                 sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                document.clone()
+                let document = document.clone();
+                tokio::task::spawn_blocking(move || document)
             };
             let outcome = respond_with_stats(
                 request("GET", "/stats", b""),
@@ -748,7 +753,8 @@ mod tests {
         let sampled = std::sync::atomic::AtomicUsize::new(0);
         let stats = || {
             sampled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            document.clone()
+            let document = document.clone();
+            tokio::task::spawn_blocking(move || document)
         };
         let result = respond_with_stats(
             request("GET", "/stats", b""),
@@ -764,6 +770,21 @@ mod tests {
             Err(Error::CircuitOperation(crate::circuits::ErrorKind::Type))
         ));
         assert_eq!(sampled.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn stats_task_failure_is_terminal_after_authorized_invocation() {
+        let stats = || tokio::task::spawn_blocking(|| panic!("owned stats worker failure"));
+        let result = respond_with_stats(
+            request("GET", "/stats", b""),
+            TOKEN,
+            &Registry::default(),
+            None,
+            None,
+            Some(&stats),
+        )
+        .await;
+        assert!(matches!(result, Err(Error::StatsReporting)));
     }
 
     #[tokio::test]

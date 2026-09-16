@@ -63,6 +63,11 @@ impl BufferedContent {
         self.content.is_none()
     }
 
+    /// Borrow completed encoded content without consuming or copying it.
+    pub(crate) fn content(&self) -> Option<&[u8]> {
+        self.content.as_deref().map(Vec::as_slice)
+    }
+
     /// Return encoded content, or `None` when source raw content is absent.
     pub fn into_content(self) -> Option<Zeroizing<Vec<u8>>> {
         self.content

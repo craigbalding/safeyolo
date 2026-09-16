@@ -131,6 +131,7 @@ impl Completion {
             && let Some(capture) = &self.capture
         {
             capture.apply_head();
+            capture.memory_response();
         }
         let circuit = match result {
             Ok(status) => crate::circuit_runtime::completed_response(
@@ -432,6 +433,82 @@ mod tests {
         let mut bytes = Vec::new();
         while !bytes.ends_with(b"\r\n\r\n") {
             bytes.push(peer.read_u8().await.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_response_precedes_circuit_and_retains_existing_completion_guards() {
+        for (name, wire, expected_bytes, completed, poison) in [
+            ("ordinary", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody".as_slice(), 4, true, false),
+            ("circuit_audit_error", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody".as_slice(), 4, true, true),
+            ("memory_decode_error", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 3\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\nbad".as_slice(), 0, true, false),
+            ("streamed", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 3\r\nContent-Type: text/event-stream\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\nbad".as_slice(), 0, true, false),
+            ("aborted", b"HTTP/1.1 503 Unavailable\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbo".as_slice(), 0, false, false),
+        ] {
+            let fixture = Fixture::new(false);
+            let runtime = fixture.state.read().unwrap().clone();
+            runtime.memory_monitor.client_connected("owned-connection", || 0.).unwrap();
+            if poison {
+                runtime.audit.poison_for_test();
+            }
+            let identity = ConnectionIdentity {
+                agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
+            };
+            let mut request = Request::builder().uri("http://owned.invalid/")
+                .body(Empty::<Bytes>::new()).unwrap();
+            let destination = super::super::Destination {
+                host: "owned.invalid".into(), policy_host: "owned.invalid".into(), port: 80,
+                authority: "owned.invalid:80".into(), uri_authority: "owned.invalid:80".into(),
+                scheme: "http".into(), path: "/".into(),
+            };
+            let traffic = super::super::traffic::Traffic::new(
+                fixture.state.clone(), &identity, "owned-request", &request, &destination,
+            );
+            let capture = Arc::new(ResponseCapture::new(
+                fixture.state.clone(), None, Some(traffic.clone()), None, None,
+            ));
+            // Reuse the actual H1 response capture/completion extension. Only
+            // request preparation is absent from this response-owned control.
+            let protocol = Protocol::Http1(hyper::ext::on_response_complete_with_capture(
+                &mut request, capture.clone(),
+            ));
+            let completion = Arc::new(Completion {
+                observation: Mutex::new(Observation {
+                    protocol: Some(protocol), applied: None, request: None, request_failed: false,
+                }),
+                state: fixture.state.clone(), identity, request_id: "owned-request".into(),
+                host: "owned.invalid".into(), capture: Some(capture), recording: None,
+                traffic: Some(traffic), trace: None,
+            });
+            let (client, mut peer) = tokio::io::duplex(4096);
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client)).await.unwrap();
+            let mut driver = Task(tokio::spawn(completion.clone().drive(connection)));
+            let response = sender.send_request(request);
+            read_head(&mut peer).await;
+            peer.write_all(wire).await.unwrap();
+            peer.shutdown().await.unwrap();
+            let response = tokio::time::timeout(LIMIT, response).await.unwrap().unwrap();
+            let body = tokio::time::timeout(LIMIT, response.into_body().collect()).await.unwrap();
+            if completed {
+                assert_eq!(body.unwrap().to_bytes(), wire.rsplit(|&byte| byte == b'\n').next().unwrap(), "{name}");
+            } else {
+                assert!(body.is_err(), "{name}");
+            }
+            let _ = tokio::time::timeout(LIMIT, &mut driver.0).await.unwrap().unwrap();
+            // Existing circuit canonical errors suppress its later children;
+            // only its separate diagnostic failure changes this evidence flag.
+            assert_eq!(completion.try_finish(), Some(false), "{name}");
+            assert_eq!(completion.try_finish(), Some(false), "{name}");
+            let stats = runtime.memory_monitor.get_stats(crate::memory_runtime::sample, || 1.).unwrap().json().unwrap();
+            assert_eq!(stats["total_flows"], 0, "response cannot invent request completion");
+            assert_eq!(stats["connections"][0]["bytes_received"], expected_bytes, "{name}");
+            // The failed canonical submission does not publish the staged
+            // circuit state; memory bytes were already committed before it.
+            assert_eq!(fixture.failures(), (completed && !poison).then(|| json!(1)), "{name}");
+            assert_eq!(runtime.request_logger.stats().unwrap().responses_total, num_bigint::BigInt::from(u64::from(completed && !poison)), "{name}");
+            if !poison {
+                assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());
+            }
         }
     }
 

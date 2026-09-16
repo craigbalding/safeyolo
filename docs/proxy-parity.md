@@ -365,6 +365,7 @@ silently reduce accepted message sizes to a library default.
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
 | D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | Native identity still comes only from the accepted listener. The discovery report reads map metadata and records that listener owner; it does not implement source map-conflict containment or its security events. This remains an unresolved identity-parity gap. Reporting tests do not establish equivalence for mismatched identities. |
 | D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | The native store preserves these source behaviors and their finite source witnesses. The global record and per-record step caps still apply. These retention discrepancies remain unresolved; the configured TTL and per-agent cap are not strict guarantees in these cases. |
+| D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. |
 
 ## Deletion map and evidence still required
 
@@ -1568,41 +1569,85 @@ strings and nonfinite record-creation timestamps remain outside the native
 store representation. These checks are implementation evidence, not full
 pipeline parity or independent acceptance.
 
-### Memory monitor component
+### Memory, connection and WebSocket reports
 
-The [native memory monitor](../proxy/src/memory_monitor.rs) implements connection and WebSocket state, source
-report construction and the four canonical memory events. It remains a
-component prerequisite. The runtime does not install it; `/memory` remains
-unavailable, and operator `/stats` does not include a memory-monitor entry.
+The runtime installs one shared [memory monitor](../proxy/src/memory_monitor.rs),
+independent of policy and Agent API availability. The owner retains its baseline,
+connection state and counters across runtime reloads. Authenticated `GET /memory`
+returns the global report; caller identity and query hints do not filter it.
+Operator `/stats` includes `memory-monitor` immediately after `proxy`, including
+when the temporary policy adapter is selected. Report sampling runs in the
+existing request's blocking work after authentication. Report errors preserve
+the source exception class when the native type establishes that class; native
+failures use categorical names. Operator error messages remain content-free
+and do not reproduce Python's original numeric exception text.
 
-Per-connection flow counts follow reached request hooks. Body sizes measure retained,
-decoded HTTP content. WebSocket hooks count complete
-messages without retaining payloads. Reports show the ten busiest connections
-in stable order and all active WebSocket sessions. Counters and state removals
-that precede a decoding, sampling or audit-submission failure remain committed.
-The periodic event is request-driven at the source's 60-second interval.
+Each accepted agent connection creates one entry. CONNECT, intercepted inner
+HTTP and WebSocket traffic retain that connection ID. Cleanup removes the entry
+when its existing task finishes or is cancelled, including an unpolled task.
+The native owner spans the existing upgrade drain; this does not reproduce the
+source's exact disconnect timing relative to residual transport cleanup.
+Ordinary `Proxy::drop` still starts shutdown without guaranteeing that tasks or
+audit writes have drained. Explicit shutdown awaits normal connection and
+upgrade completion. If the existing ten-second grace aborts an outer task,
+nested upgrade tasks are aborted without being joined. An inner WebSocket
+cleanup can then follow connection removal or audit shutdown. Early tunnel-task
+errors can also skip the nested join. That existing ownership gap remains
+unresolved; isolated guard-cancellation tests do not prove recursive shutdown
+drainage.
+
+Reached request hooks count flows and retained decoded body bytes. The monitor
+captures the original content encoding before header hygiene. Completed
+nonstreamed responses contribute decoded bytes before the circuit response
+hook, so a later circuit failure does not erase the memory observation.
+Local JSON replies also honor the existing JSON streaming selection and domain
+policy when deciding whether to count response bytes.
+WebSocket counters observe complete data messages before inspection, including
+messages later dropped by the scanner. Control frames and individual fragments
+do not become message counts. The monitor retains no message payloads.
+
+Memory errors keep mutations already made, including removal before a failed
+close event submission. They cannot skip native security hooks or change a
+WebSocket result to an inspection error. D62 documents the source containment
+defect behind this deliberate difference. Memory observation alone does not
+change HTTP evidence-error flags. Requests and responses still rely on their
+existing parser completion owners; the monitor adds no drain or completion
+observer. Aborted exchanges do not gain fabricated successful body hooks.
+
+Native network, circuit and context admission can precede request-body
+completion. Memory accounting at the existing completion point therefore does
+not establish source-wide hook ordering. Completed local replies use their
+existing reader or empty-request marker. The local Agent API handler still runs
+before that observation, so `/memory` reports prior completed requests and does
+not include its current request's flow count. Unmarked early replies can omit
+source request accounting. These ordering and reachability gaps remain open;
+the memory join does not change the Agent API completion boundary.
+
+Reports show the ten busiest connections in stable order and all active
+WebSocket sessions. The periodic event remains request-driven at the source's
+60-second interval. There is no new timer, enable option, connection cap or
+payload retention policy. Startup and report work use blocking workers. The
+synchronous periodic hook yields a multithread Tokio worker while sampling;
+synchronous and current-thread callers retain a direct sampler call.
 
 The process sampler reads the serving process's `/proc/self/status`, with
-current resident memory as a lower bound when the peak field is absent. The
+current resident memory as a lower bound when the peak field is absent. A
+missing procfs file retains the source zero result. The
 [sampler controls](../proxy/tests/memory_sample_source.py) use owned in-memory
-input and the pinned UTF-8 environment. They
-cover partial reads, malformed values and text-decoding order; they are not
-measurements of a running proxy. Source debug logging and the exceptional case
-where a close failure masks a missing-token error remain outside the sampler's
-demonstrated behavior.
+input and the pinned UTF-8 environment. They cover partial reads, malformed
+values and text-decoding order; they are not measurements of a running proxy.
+Source debug logging and the exceptional case where a close failure masks a
+missing-token error remain outside the sampler's demonstrated behavior.
 
 The [source oracle](../proxy/tests/memory_monitor_source.py) supplies explicit
 memory samples and clocks while exercising actual callbacks, HTTP decoding and
-canonical event construction. Runtime integration still needs accepted-client
-lifetimes, request and response completion, WebSocket hooks, reload ownership
-and API reporting. Memory accounting must use the original content headers and
-run at the source hook position before later API and security consumers. A
-report of process memory alone does not establish those counters or workflows.
-
-Five focused native tests pass, including replay of 24 source workflows.
-Thirteen separate source sampler controls pass with in-memory readers. These
-checks establish component behavior; transport lifecycle and API integration
-remain unverified.
+canonical event construction. Its 24 source workflows and the thirteen separate
+sampler controls establish the retained component contract. Native runtime
+checks use deterministic synthetic samples, owned HTTP/WS peers and temporary
+audit files. They exercise reload, body accounting, reports, cancellation and
+security continuity, without reading operational process data. Actual RSS,
+load behavior, supported-host validation and independent acceptance remain
+unverified.
 
 ### Agent discovery reports
 

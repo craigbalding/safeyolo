@@ -191,7 +191,10 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
-            let stats = || crate::operator_stats::document(&runtime);
+            let stats = || {
+                let runtime = runtime.clone();
+                tokio::task::spawn_blocking(move || crate::operator_stats::document(&runtime))
+            };
             let outcome = admin_api::respond_with_stats(
                 request,
                 token.trim_matches(python_whitespace),

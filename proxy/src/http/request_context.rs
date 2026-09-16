@@ -295,6 +295,11 @@ impl RequestContext {
 
     fn apply(&mut self, pending: Pending, content: Option<&[u8]>) {
         self.terminal = Some(false);
+        if let Some(traffic) = &self.traffic {
+            // Memory failures retain partial accounting but must not abandon
+            // existing security hooks, as source container exceptions can.
+            traffic.memory_request(content);
+        }
         let started = self
             .traffic
             .as_ref()

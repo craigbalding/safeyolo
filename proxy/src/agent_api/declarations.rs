@@ -9,6 +9,7 @@ use crate::{circuits::CircuitValue, http_content, test_context};
 
 /// Native control owners share process state across request/reload snapshots.
 pub struct Controls<'a> {
+    pub memory: Option<MemoryContext<'a>>,
     pub traces: Option<TraceContext<'a>>,
     pub discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
@@ -87,6 +88,9 @@ where
 {
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
+    }
+    if route(request) == "/memory" {
+        return Ok(memory::respond(request, controls.memory).await);
     }
     if route(request) == "/explain" {
         return Ok(explain::respond(request, controls.audit).await);

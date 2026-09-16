@@ -20,6 +20,8 @@ use tungstenite::protocol::frame::coding::Control;
 
 use crate::{
     ConnectionIdentity, Error, RuntimeState, inspection,
+    memory_monitor::MemoryMonitor,
+    memory_runtime,
     tunnels::BoxStream,
     websocket::{Event, MessageType, Negotiated, Reader, ReceiveError, Writer},
 };
@@ -79,6 +81,7 @@ async fn read_messages<R: AsyncRead + Unpin>(
     mut closing: watch::Receiver<Option<Closing>>,
     session: Arc<Session>,
     inspection_lifetime: Arc<InspectionLifetime>,
+    memory: Arc<MemoryMonitor>,
 ) -> Finished {
     loop {
         let event = tokio::select! {
@@ -108,6 +111,10 @@ async fn read_messages<R: AsyncRead + Unpin>(
                 });
             }
             Event::Message(message) => {
+                // The source counts every complete data message before later
+                // scanner decisions, including messages the scanner drops.
+                // Observation failure must not skip that security decision.
+                memory_runtime::observe(memory.websocket_message(&session.identity.connection_id));
                 let state = session.clone();
                 let lifetime = inspection_lifetime.clone();
                 // Complete-message decoding, matching and synchronous evidence
@@ -251,7 +258,10 @@ pub(crate) async fn relay(
     negotiated: Negotiated,
     session: Session,
     mut stop: watch::Receiver<bool>,
+    memory: memory_runtime::WebSocket,
 ) -> Result<(), Error> {
+    let monitor = memory.monitor();
+    let _memory = memory;
     let session = Arc::new(session);
     let inspection_lifetime = Arc::new(InspectionLifetime {
         cancelled: AtomicBool::new(false),
@@ -274,6 +284,7 @@ pub(crate) async fn relay(
         close.clone(),
         session.clone(),
         inspection_lifetime.clone(),
+        monitor.clone(),
     ));
     tasks.spawn(read_messages(
         Reader::new(server_read, false, negotiated.server),
@@ -282,6 +293,7 @@ pub(crate) async fn relay(
         close.clone(),
         session.clone(),
         inspection_lifetime.clone(),
+        monitor,
     ));
     let client_close = close.clone();
     tasks.spawn(async move {
@@ -352,3 +364,6 @@ pub(crate) async fn relay(
         "drained": drained, "duration_ms": started.elapsed().as_millis(),
     }))
 }
+
+#[cfg(test)]
+mod tests;

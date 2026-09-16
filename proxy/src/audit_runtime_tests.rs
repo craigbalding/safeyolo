@@ -136,13 +136,24 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                 .unwrap()
                 .block_on(async {
                     let sink = directory.join("lazy-parent/audit.jsonl");
-                    let proxy = Proxy::start(config(directory, &sink)).await.unwrap();
-                    let runtime = proxy.runtime.read().unwrap().clone();
-                    let writer = runtime.audit.clone();
+                    let inert = Runtime::new(
+                        config(directory, &sink),
+                        "owned-lazy",
+                        Arc::new(tokio::sync::Mutex::new(())),
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                    let writer = inert.audit.clone();
                     assert!(writer_threads().is_empty());
                     assert!(!sink.parent().unwrap().exists());
                     assert_eq!(writer.pending_count().unwrap(), 0);
                     assert!(writer.wait_for_drain(Duration::ZERO).unwrap());
+                    drop(writer);
+                    drop(inert);
+                    let proxy = Proxy::start(config(directory, &sink)).await.unwrap();
+                    let runtime = proxy.runtime.read().unwrap().clone();
+                    let writer = runtime.audit.clone();
                     assert!(!logger_request(&runtime, "owned.invalid", || 9));
                     for index in 0..32 {
                         assert_eq!(writer.emit(event(index)).unwrap(), Submission::Queued);
@@ -158,11 +169,13 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                         .lines()
                         .map(|line| serde_json::from_str(line).unwrap())
                         .collect();
-                    assert_eq!(rows.len(), 33);
-                    assert_eq!(rows[0]["event"], "traffic.request");
-                    assert_eq!(rows[0]["details"]["size"], 9);
-                    assert_eq!(rows[0]["details"]["attribution"]["evidence_owner"], "alice");
-                    for (index, row) in rows[1..].iter().enumerate() {
+                    assert_eq!(rows.len(), 34);
+                    assert_eq!(rows[0]["event"], "ops.startup");
+                    assert_eq!(rows[0]["addon"], "memory-monitor");
+                    assert_eq!(rows[1]["event"], "traffic.request");
+                    assert_eq!(rows[1]["details"]["size"], 9);
+                    assert_eq!(rows[1]["details"]["attribution"]["evidence_owner"], "alice");
+                    for (index, row) in rows[2..].iter().enumerate() {
                         assert_eq!(row["event"], "ops.owned_lifecycle");
                         assert_eq!(row["details"]["index"], index);
                     }
@@ -195,7 +208,7 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 let initial = proxy.runtime.read().unwrap().clone();
                 assert!(!logger_request(&initial, "owned.invalid", || 7));
                 assert_eq!(initial.audit.emit(event(1)).unwrap(), Submission::Queued);
-                assert_eq!(initial.audit.pending_count().unwrap(), 2);
+                assert_eq!(initial.audit.pending_count().unwrap(), 3);
                 assert!(!initial.audit.wait_for_drain(Duration::ZERO).unwrap());
 
                 configuration.audit_log_path = Some(directory.join("not-selected/audit.jsonl"));
@@ -207,7 +220,7 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 assert!(Arc::ptr_eq(&initial.request_logger, &current.request_logger));
                 assert_eq!(current.request_logger.stats().unwrap().requests_total, 1.into());
                 assert!(logger_request(&current, "quiet.invalid", || panic!("quiet request decoded a body")));
-                assert_eq!(current.audit.pending_count().unwrap(), 2);
+                assert_eq!(current.audit.pending_count().unwrap(), 3);
 
                 let mut invalid = configuration.clone();
                 invalid.policy_file = Some(directory.join("failed-candidate-policy.json"));
@@ -219,10 +232,10 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 assert!(proxy.reload(invalid).await.is_err());
                 let retained = proxy.runtime.read().unwrap().clone();
                 assert!(Arc::ptr_eq(&current, &retained));
-                assert_eq!(retained.audit.pending_count().unwrap(), 2);
+                assert_eq!(retained.audit.pending_count().unwrap(), 3);
                 assert!(!logger_request(&retained, "owned.invalid", || 11));
                 assert_eq!(initial.audit.emit(event(2)).unwrap(), Submission::Queued);
-                assert_eq!(retained.audit.pending_count().unwrap(), 4);
+                assert_eq!(retained.audit.pending_count().unwrap(), 5);
                 let later_path = configuration.audit_log_path.as_ref().unwrap();
                 assert!(!later_path.parent().unwrap().exists());
 
@@ -249,13 +262,15 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 }
                 let rows: Vec<Value> = std::str::from_utf8(&bytes).unwrap().lines()
                     .map(|line| serde_json::from_str(line).unwrap()).collect();
-                assert_eq!(rows.len(), 4);
-                assert_eq!(rows[0]["event"], "traffic.request");
-                assert_eq!(rows[0]["details"]["size"], 7);
-                assert_eq!(rows[1]["details"]["index"], 1);
-                assert_eq!(rows[2]["event"], "traffic.request");
-                assert_eq!(rows[2]["details"]["size"], 11);
-                assert_eq!(rows[3]["details"]["index"], 2);
+                assert_eq!(rows.len(), 5);
+                assert_eq!(rows[0]["event"], "ops.startup");
+                assert_eq!(rows[0]["addon"], "memory-monitor");
+                assert_eq!(rows[1]["event"], "traffic.request");
+                assert_eq!(rows[1]["details"]["size"], 7);
+                assert_eq!(rows[2]["details"]["index"], 1);
+                assert_eq!(rows[3]["event"], "traffic.request");
+                assert_eq!(rows[3]["details"]["size"], 11);
+                assert_eq!(rows[4]["details"]["index"], 2);
                 let stats = retained.request_logger.stats().unwrap();
                 assert_eq!(stats.requests_total, 3.into());
                 assert_eq!(stats.requests_quieted, 1.into());

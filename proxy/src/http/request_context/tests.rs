@@ -120,6 +120,137 @@ fn pending(admission: Admission) -> RequestContext {
     }
 }
 
+fn memory_stats(runtime: &Runtime) -> Value {
+    runtime
+        .memory_monitor
+        .get_stats(crate::memory_runtime::sample, crate::circuit_runtime::now)
+        .unwrap()
+        .json()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn memory_original_decode_failure_does_not_skip_reached_test_context() {
+    let fixture = Fixture::new(true, json!(["owned.invalid"]), false);
+    fixture
+        .runtime
+        .memory_monitor
+        .client_connected(
+            &fixture.identity().connection_id,
+            crate::circuit_runtime::now,
+        )
+        .unwrap();
+    let mut peer = H1::new().await;
+    peer.socket.write_all(format!(
+        "POST /path HTTP/1.1\r\nHost: owned.invalid\r\nContent-Length: 4\r\nContent-Encoding: gzip\r\nConnection: Content-Encoding\r\n{}: {CLAIM}\r\n\r\n",
+        test_context::HEADER,
+    ).as_bytes()).await.unwrap();
+    let mut request = timeout(LIMIT, peer.requests.recv()).await.unwrap().unwrap();
+    let traffic = super::super::traffic::Traffic::new(
+        Arc::new(RwLock::new(fixture.runtime.clone())),
+        &fixture.identity(),
+        "owned-request",
+        &request,
+        &fixture.destination(),
+    );
+    let mut headers = crate::request_headers::RequestHeaders::take(&mut request).unwrap();
+    headers.apply_hygiene(request.headers_mut());
+    assert!(!request.headers().contains_key(header::CONTENT_ENCODING));
+    let mut context = pending(fixture.prepare(&mut request).unwrap());
+    context.attach_traffic(traffic.clone());
+    peer.socket.write_all(b"body").await.unwrap();
+    let (body, mut context) = context.buffer(request.into_body(), Some(4)).await.unwrap();
+    assert_eq!(body.collect().await.unwrap().to_bytes(), b"body".as_slice());
+    assert_eq!(context.try_finish(), Some(false));
+    assert_eq!(context.try_finish(), Some(false));
+    assert!(traffic.source_metadata_reached());
+    assert_eq!(fixture.counts(), [1, 1, 0, 0, 0]);
+    assert_eq!(
+        fixture
+            .runtime
+            .request_logger
+            .stats()
+            .unwrap()
+            .requests_total,
+        num_bigint::BigInt::from(1)
+    );
+    let stats = memory_stats(&fixture.runtime);
+    assert_eq!(stats["total_flows"], 1);
+    assert_eq!(stats["connections"][0]["flows"], 1);
+    assert_eq!(stats["connections"][0]["domain"], "owned.invalid");
+    assert_eq!(stats["connections"][0]["bytes_sent"], 0);
+    assert!(fixture.runtime.audit.wait_for_drain(LIMIT).unwrap());
+    let records: Vec<Value> = std::fs::read_to_string(fixture.directory.path().join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let applied = records
+        .iter()
+        .find(|row| row["event"] == "security.test_context" && row["details"]["phase"] == "request")
+        .unwrap();
+    assert_eq!(applied["details"]["request_body_snippet"], "body");
+    assert!(records.iter().any(|row| row["event"] == "traffic.request"));
+    assert!(!records.iter().any(|row| row["event"] == "ops.memory"));
+}
+
+#[tokio::test]
+async fn memory_request_audit_error_keeps_partial_effects_without_terminal_failure() {
+    let fixture = Fixture::new(true, json!([]), false);
+    fixture
+        .runtime
+        .memory_monitor
+        .running(&fixture.runtime.audit, crate::memory_runtime::sample, || 0.)
+        .unwrap();
+    fixture
+        .runtime
+        .memory_monitor
+        .client_connected(&fixture.identity().connection_id, || 0.)
+        .unwrap();
+    assert!(fixture.runtime.audit.wait_for_drain(LIMIT).unwrap());
+    fixture.runtime.audit.poison_for_test();
+    let mut peer = H1::new().await;
+    let mut request = peer.request(0, None, "identity").await;
+    let traffic = super::super::traffic::Traffic::new(
+        Arc::new(RwLock::new(fixture.runtime.clone())),
+        &fixture.identity(),
+        "owned-request",
+        &request,
+        &fixture.destination(),
+    );
+    // Isolate memory's synchronous submission result from a later logger's
+    // independent use of this same deliberately poisoned Writer.
+    let mut context = RequestContext::traffic_only(&mut request, true, None).unwrap();
+    context.attach_traffic(traffic.clone());
+    let (_, mut context) = context.buffer(request.into_body(), Some(0)).await.unwrap();
+    assert_eq!(context.try_finish(), Some(false));
+    assert_eq!(context.try_finish(), Some(false));
+    assert!(traffic.source_metadata_reached());
+    assert!(!context.evidence_failed());
+    let stats = memory_stats(&fixture.runtime);
+    assert_eq!(stats["total_flows"], 1);
+    assert_eq!(stats["connections"][0]["flows"], 1);
+    assert_eq!(stats["connections"][0]["bytes_sent"], 0);
+
+    let fixture = Fixture::new(true, json!([]), false);
+    let mut peer = H1::new().await;
+    let mut request = peer.request(4, None, "identity").await;
+    let traffic = super::super::traffic::Traffic::new(
+        Arc::new(RwLock::new(fixture.runtime.clone())),
+        &fixture.identity(),
+        "aborted-request",
+        &request,
+        &fixture.destination(),
+    );
+    let mut context = RequestContext::traffic_only(&mut request, true, None).unwrap();
+    context.attach_traffic(traffic.clone());
+    peer.socket.write_all(b"bo").await.unwrap();
+    peer.socket.shutdown().await.unwrap();
+    assert!(context.buffer(request.into_body(), Some(4)).await.is_err());
+    assert!(!traffic.source_metadata_reached());
+    assert_eq!(memory_stats(&fixture.runtime)["total_flows"], 0);
+}
+
 struct Task<T>(JoinHandle<T>);
 impl<T> Drop for Task<T> {
     fn drop(&mut self) {
@@ -138,6 +269,7 @@ impl H1 {
         let (send, requests) = mpsc::unbounded_channel();
         let driver = Task(tokio::spawn(async move {
             let _ = hyper::server::conn::http1::Builder::new()
+                .preserve_header_case(true)
                 .serve_connection(
                     TokioIo::new(server),
                     service_fn(move |request| {
