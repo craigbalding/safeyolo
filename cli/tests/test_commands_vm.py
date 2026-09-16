@@ -169,7 +169,7 @@ class TestLifecycleStart:
         """A repeated start reconciles Coord and exits without proxy work."""
         with (
             patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
+                "safeyolo.commands.lifecycle.check_running_backend",
                 return_value=True,
                 autospec=True,
             ),
@@ -192,7 +192,7 @@ class TestLifecycleStart:
         mock_coord_start.return_value = outcome
         with (
             patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
+                "safeyolo.commands.lifecycle.check_running_backend",
                 return_value=True,
                 autospec=True,
             ),
@@ -215,7 +215,7 @@ class TestLifecycleStart:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
@@ -230,7 +230,7 @@ class TestLifecycleStart:
     def test_guest_images_missing_warns_but_continues(self, runner, config_dir):
         """Missing guest images produce a warning but don't block start."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False, autospec=True,),
             patch(
                 "safeyolo.commands.lifecycle.missing_guest_images",
@@ -248,7 +248,7 @@ class TestLifecycleStart:
     def test_proxy_start_failure_exits_one(self, runner, config_dir):
         """If start_proxy raises, prints error and exits 1."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", side_effect=RuntimeError("no mitmdump"), autospec=True,),
         ):
@@ -260,7 +260,7 @@ class TestLifecycleStart:
     def test_wait_timeout_fails_and_cleans_up(self, runner, config_dir):
         """A proxy that does not remain healthy cannot report success."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=False, autospec=True,),
@@ -277,7 +277,7 @@ class TestLifecycleStart:
         """--no-wait skips the health check entirely."""
         mock_wait = create_autospec(wait_for_healthy, spec_set=True)
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", mock_wait),
@@ -289,7 +289,7 @@ class TestLifecycleStart:
 
     def test_flow_cache_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
         ):
@@ -300,7 +300,7 @@ class TestLifecycleStart:
 
     def test_flow_cache_bytes_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
         ):
@@ -315,7 +315,7 @@ class TestLifecycleStart:
     def test_dev_mode_is_forwarded_to_proxy_start(self, runner, config_dir):
         with (
             patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
+                "safeyolo.commands.lifecycle.check_running_backend",
                 return_value=False,
                 autospec=True,
             ),
@@ -340,7 +340,7 @@ class TestLifecycleStart:
 
     def test_profile_emits_report_and_jsonl_artifact(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
         ):

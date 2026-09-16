@@ -307,6 +307,25 @@ def _run_git(directory: Path, *arguments: str) -> str | None:
     return result.stdout.strip()
 
 
+def process_is_alive(process_id: int) -> bool:
+    """Observe process exit, including Linux zombies; propagate access failures."""
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    if sys.platform.startswith("linux"):
+        try:
+            stat_text = Path(f"/proc/{process_id}/stat").read_text()
+        except FileNotFoundError:
+            return False
+        # As in the NATS lifecycle, zombies have exited even before reaping.
+        fields = stat_text.rsplit(")", 1)[-1].split()
+        if not fields:
+            raise RuntimeError("Cannot determine proxy process state")
+        return fields[0] != "Z"
+    return True
+
+
 def process_start_token(process_id: int) -> str | None:
     """Return an OS-backed token that changes when a PID is reused."""
     if sys.platform.startswith("linux"):

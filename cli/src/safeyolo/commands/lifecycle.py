@@ -24,7 +24,9 @@ from ..config import (
     save_config,
 )
 from ..proxy import (
+    check_running_backend,
     is_proxy_running,
+    selected_backend,
     start_proxy,
     stop_proxy,
     wait_for_healthy,
@@ -317,19 +319,50 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
         _bootstrap_config(config_dir)
         console.print(f"  Created {config_dir}")
 
+    try:
+        config = load_config()
+        backend = selected_backend(config)
+    except (OSError, ValueError, RuntimeError) as err:
+        console.print(f"[red]Cannot select proxy backend:[/red] {escape(str(err))}")
+        raise typer.Exit(1) from err
+
+    if backend == "rust":
+        unsupported = [
+            flag for flag, supplied in (
+                ("--test", test),
+                ("--dev", dev),
+                ("--flow-cache", flow_cache is not None),
+                ("--flow-cache-bytes", flow_cache_bytes is not None),
+            ) if supplied
+        ]
+        if unsupported:
+            console.print(
+                f"[red]{', '.join(unsupported)} cannot be used with proxy.backend: rust.[/red]\n"
+                "Configure native values in the JSON file selected by proxy.rust_config."
+            )
+            raise typer.Exit(1)
+
+    # Check if already running
+    try:
+        running = check_running_backend()
+    except (OSError, ValueError, RuntimeError) as err:
+        console.print(f"[red]Cannot start proxy:[/red] {escape(str(err))}")
+        raise typer.Exit(1) from err
+
     # Refuse to start against an empty/malformed policy (#336). Symmetric with
     # the guard in `agent add`; catches the case where a previous init only
     # wrote [agents.X] blocks without host rules, leaving the compiled
     # permissions list empty. The first-run path above just seeded from the
     # template so we don't need to check it there.
-    if not first_run:
+    if backend == "python" and not first_run:
         from .policy import assert_policy_has_permissions
 
         assert_policy_has_permissions(config_dir)
 
-    # Check if already running
-    if is_proxy_running():
+    if running:
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
+        if backend == "rust":
+            raise typer.Exit(0)
         _profile_enter("coord message plane reconciliation")
         coord_outcome = _start_coord_best_effort()
         if coord_outcome == "healthy":
@@ -347,17 +380,15 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
         raise typer.Exit(0)
 
     # Check guest images (platform-aware).
-    if not check_guest_images():
+    if backend == "python" and not check_guest_images():
         missing = missing_guest_images()
         console.print(f"[yellow]Guest images missing: {', '.join(missing)}[/yellow]")
         console.print("Build and install them with: [bold]safeyolo build[/bold]")
 
-    config = load_config()
-    proxy_port = config["proxy"]["port"]
-    admin_port = config["proxy"]["admin_port"]
-
     # Enable test mode if --test flag passed
-    if test:
+    if backend == "rust":
+        console.print("[bold]Starting SafeYolo (Rust development backend)...[/bold]")
+    elif test:
         test_cfg = config.get("test", {})
         if not test_cfg.get("sinkhole_router"):
             console.print("[red]--test requires test.sinkhole_router in config.yaml[/red]")
@@ -377,16 +408,19 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
             save_config(config)
         console.print("[bold]Starting SafeYolo...[/bold]")
 
-    # Start host mitmproxy
+    # The shared launcher owns backend-specific configuration and readiness.
     _profile_enter("proxy process launch and readiness")
     try:
-        start_proxy(
-            proxy_port=proxy_port,
-            admin_port=admin_port,
-            flow_cache=flow_cache,
-            flow_cache_bytes=flow_cache_bytes,
-            dev=dev,
-        )
+        if backend == "rust":
+            start_proxy()
+        else:
+            start_proxy(
+                proxy_port=config["proxy"]["port"],
+                admin_port=config["proxy"]["admin_port"],
+                flow_cache=flow_cache,
+                flow_cache_bytes=flow_cache_bytes,
+                dev=dev,
+            )
     except Exception as err:
         write_event(
             "ops.proxy_start_failed",
@@ -404,9 +438,14 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
     # listeners are the moving parts; they come up with the proxy itself.
 
     if wait:
-        _profile_enter("admin API health check")
+        _profile_enter("native readiness and health check" if backend == "rust" else "admin API health check")
         console.print("Waiting for healthy status...", end=" ")
-        if wait_for_healthy(timeout=30, admin_port=admin_port):
+        healthy = (
+            wait_for_healthy(timeout=30)
+            if backend == "rust"
+            else wait_for_healthy(timeout=30, admin_port=config["proxy"]["admin_port"])
+        )
+        if healthy:
             console.print("[green]ready![/green]")
         else:
             console.print("[red]failed[/red]")
@@ -417,13 +456,33 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
                 severity="high",
                 summary="SafeYolo proxy did not remain healthy during startup",
                 addon="cli.lifecycle",
-                details={"phase": "health", "admin_port": admin_port},
+                details=(
+                    {"phase": "health", "backend": "rust"}
+                    if backend == "rust"
+                    else {"phase": "health", "admin_port": config["proxy"]["admin_port"]}
+                ),
             )
             console.print(
                 "[red]SafeYolo did not remain healthy during startup.[/red]\n"
-                f"Check: {get_logs_dir() / 'mitmproxy.log'}"
+                + (
+                    "Check the native launch diagnostics and proxy.rust_config JSON paths."
+                    if backend == "rust"
+                    else f"Check: {get_logs_dir() / 'mitmproxy.log'}"
+                )
             )
             raise typer.Exit(1)
+
+    if backend == "rust":
+        _profile_enter("render startup result")
+        console.print(
+            Panel(
+                "[green]SafeYolo Rust development backend is running.[/green]\n\n"
+                f"Native listeners: defined in {escape(str(config['proxy'].get('rust_config', 'proxy.rust_config')))}\n"
+                "HTTP credential inspection/injection, WebMITM and agent management remain incomplete.",
+                title="Started",
+            )
+        )
+        return
 
     # Coord message plane (nats-server). Best-effort: a failure here
     # marks coord degraded, it does NOT block the proxy from being
@@ -434,6 +493,7 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
 
     # Show connection info
     _profile_enter("render startup result")
+    proxy_port = config["proxy"]["port"]
     web_tailnet = _web_tailnet_runtime(config)
     tailnet_line = ""
     if web_tailnet.get("enabled") and web_tailnet.get("url"):
@@ -609,6 +669,27 @@ def status() -> None:
     table.add_column("Value")
 
     table.add_row("Proxy", "[green]running[/green]")
+
+    from .. import rust_proxy
+
+    native = rust_proxy.read_process()
+    if native is not None:
+        ready = rust_proxy.readiness(native)
+        table.add_row("Backend", "Rust development")
+        table.add_row("PID", str(native.pid))
+        table.add_row("Readiness", "[green]ready[/green]" if ready else "[yellow]not ready[/yellow]")
+        table.add_row("Readiness File", escape(native.readiness_file))
+        if ready and ready.get("admin_port") is not None:
+            table.add_row("Admin Port", str(ready["admin_port"]))
+        elif native.admin_port is None:
+            table.add_row("Admin Port", "not configured")
+        elif native.admin_port == 0:
+            table.add_row("Admin Port", "unavailable until ready")
+        else:
+            table.add_row("Admin Port", f"{native.admin_port} (configured; not ready)")
+        console.print(table)
+        return
+
     table.add_row("Proxy Port", str(config["proxy"]["port"]))
     table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
     web_tailnet = _web_tailnet_runtime(config)

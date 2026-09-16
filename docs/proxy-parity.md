@@ -371,6 +371,22 @@ silently reduce accepted message sizes to a library default.
 | D65 | Source baseline loading publishes before its success audit submission. A synchronous submission failure attempts `ops.policy_error`, then returns false or raises even though the policy changed; subsequent callbacks are skipped. Catalog synchronization can then attempt a separate rollback and reload. | Native keeps policy, catalog, routes and tokens in one accepted snapshot. Audit failure attempts the source-shaped error event once and reports an evidence failure separately; it does not change a successful load result or roll back the catalog alone. A rejected load retains its original error if error-event submission also fails. The source failure behavior remains in the policy reload oracle. |
 | D66 | Source baseline loading publishes its validated model, then advances file timestamps before rebuilding permission indexes. A later file-observation failure can leave the new model, old indexes and partially advanced timestamps together while reporting a load failure. | Native compiles and observes all baseline/addon/list timestamps before publishing the candidate. An observation failure retains the previous policy and all accepted timestamps and attempts the existing later-load error event. This preserves atomic policy/catalog ownership; it does not claim an atomic filesystem snapshot. |
 
+## Development CLI process selection
+
+The [CLI development workflow](DEVELOPERS.md#rust-proxy-development-backend)
+selects a supplied Rust executable and native JSON configuration through
+`proxy.backend: rust`. Python remains the default. Start, status and stop use
+the native readiness marker and a separate process lifetime record; no launch
+failure selects Python automatically. Rust shutdown waits for process exit.
+
+[Mocked lifecycle tests](../cli/tests/test_rust_proxy.py) and
+[command tests](../cli/tests/test_lifecycle_rust.py) cover selection, ownership,
+failure cleanup, health and explicit rollback selection. They do not establish
+installed tmux behavior, live native process startup, Linux/macOS ingress,
+packaging or pilot acceptance. Listener synchronization, complete management
+and traffic UI workflows, and credential inspection/injection remain unfinished.
+This development launcher does not complete M7 or authorize cutover.
+
 ## Deletion map and evidence still required
 
 Deletion is conditional on replacement, not movement behind an adapter.

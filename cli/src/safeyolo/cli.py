@@ -110,7 +110,7 @@ def up_alias(
     profile: bool = typer.Option(False, "--profile", help="Profile lifecycle phases"),
 ):
     """Alias for 'start'."""
-    start(wait=wait, profile=profile)
+    start(wait=wait, profile=profile, dev=False, test=False, flow_cache=None, flow_cache_bytes=None)
 
 
 @app.command(name="down")

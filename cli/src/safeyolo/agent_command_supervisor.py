@@ -117,7 +117,7 @@ class _CapturedOutput:
         return self.total_bytes > MAX_STDERR_BYTES
 
 
-def _write_json(path: Path, value: dict) -> None:
+def _write_json(path: Path, value: dict | int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:

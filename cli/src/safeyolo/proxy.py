@@ -1,4 +1,4 @@
-"""Host-side mitmproxy process management for SafeYolo."""
+"""Host-side proxy process management for SafeYolo."""
 
 import json
 import logging
@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from . import mitm_addons as _mitm_addons
+from . import rust_proxy
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
 from .ignore_hosts import (
     build_ignore_patterns,
@@ -859,7 +860,58 @@ def resolve_upstream_ca_cert(
     return None, None
 
 
+def selected_backend(config: dict | None = None) -> str:
+    """Resolve the persistent process selection, including automatic starts."""
+    selected = load_config() if config is None else config
+    options = selected.get("proxy", {})
+    if not isinstance(options, dict):
+        raise ValueError("proxy configuration must be a mapping")
+    backend = options.get("backend", "python")
+    if backend not in ("python", "rust"):
+        raise ValueError("proxy.backend must be python or rust")
+    return backend
+
+
+def check_running_backend() -> bool:
+    """Reject reusing a live process from a different requested backend."""
+    backend = selected_backend()
+    if not is_proxy_running():
+        return False
+    running = "rust" if rust_proxy.read_process() is not None else "python"
+    if running != backend:
+        raise RuntimeError(f"The {running} proxy is still running; run safeyolo stop before starting {backend}")
+    return True
+
+
 def start_proxy(
+    proxy_port: int = 8080,
+    admin_port: int = 9090,
+    flow_cache: int | None = None,
+    flow_cache_bytes: int | None = None,
+    dev: bool = False,
+) -> None:
+    """Start the selected proxy process without automatic backend fallback."""
+    with rust_proxy.lifecycle_lock():
+        config = load_config()
+        backend = selected_backend(config)
+        if backend == "rust" and (dev or flow_cache is not None or flow_cache_bytes is not None):
+            raise ValueError("Rust startup uses proxy.rust_config; --dev and live-view cache options require Python")
+        if check_running_backend():
+            log.info("Proxy already running (%s)", backend)
+            return
+        stale = rust_proxy.read_process()
+        if stale is not None:
+            rust_proxy.clear_process(stale)
+            if check_running_backend():
+                log.info("Proxy already running (%s)", backend)
+                return
+        if backend == "rust":
+            rust_proxy.start(config)
+        else:
+            _start_python_proxy(proxy_port, admin_port, flow_cache, flow_cache_bytes, dev)
+
+
+def _start_python_proxy(
     proxy_port: int = 8080,
     admin_port: int = 9090,
     flow_cache: int | None = None,
@@ -1098,6 +1150,16 @@ def start_proxy(
 
 
 def stop_proxy() -> None:
+    """Stop the actual running backend, even after the configured selection changes."""
+    with rust_proxy.lifecycle_lock():
+        process = rust_proxy.read_process()
+        if process is not None:
+            rust_proxy.stop(process)
+        else:
+            _stop_python_proxy()
+
+
+def _stop_python_proxy() -> None:
     """Stop the host mitmproxy process.
 
     Per-agent UDS listeners are owned by mitmproxy directly (one
@@ -1147,7 +1209,10 @@ def stop_proxy() -> None:
 
 
 def is_proxy_running() -> bool:
-    """Check if the mitmproxy process is alive."""
+    """Check lifetime state; native readiness can disappear before process exit."""
+    process = rust_proxy.read_process()
+    if process is not None:
+        return rust_proxy.is_alive(process)
     pid_file = _pid_file()
     if not pid_file.exists():
         return False
@@ -1162,18 +1227,26 @@ def is_proxy_running() -> bool:
 
 
 def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
-    """Wait for mitmproxy admin API to become healthy."""
+    """Check the running backend's readiness and optional operator health endpoint."""
     import urllib.error
     import urllib.request
 
-    data_dir = get_data_dir()
-    admin_token_file = data_dir / "admin_token"
-    token = admin_token_file.read_text().strip() if admin_token_file.exists() else ""
+    process = rust_proxy.read_process()
+    if process is not None and process.admin_port is None:
+        return rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
+    admin_token_file = get_data_dir() / "admin_token"
+    if process is not None:
+        admin_port = process.admin_port
+        admin_token_file = Path(process.admin_token_file) if process.admin_token_file else None
+    token = admin_token_file.read_text().strip() if admin_token_file and admin_token_file.exists() else ""
 
     for _ in range(timeout):
         # start_proxy has already published its final readiness marker. If
         # that process disappears, no amount of HTTP retrying can recover it.
-        if not is_proxy_running():
+        if process is not None:
+            if not rust_proxy.is_alive(process) or rust_proxy.readiness(process) is None:
+                return False
+        elif not is_proxy_running():
             return False
         try:
             req = urllib.request.Request(
@@ -1182,7 +1255,9 @@ def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
             )
             with urllib.request.urlopen(req, timeout=2) as resp:
                 if resp.status == 200:
-                    return True
+                    return process is None or (
+                        rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
+                    )
         except (urllib.error.URLError, ConnectionError, OSError):
             # Proxy not up yet this tick — sleep and retry until timeout.
             pass

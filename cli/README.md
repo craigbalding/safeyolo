@@ -131,6 +131,9 @@ for the experiment workflow.
 
 #### Start options
 
+These options use the default Python backend. The Rust backend requires an
+explicit development configuration; see the [native development workflow](../docs/DEVELOPERS.md#rust-proxy-development-backend).
+
 ```bash
 safeyolo start              # Normal start
 safeyolo start --dev        # Dev mode: run proxy from local repo checkout

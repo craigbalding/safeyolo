@@ -258,7 +258,7 @@ def test_running_proxy_start_reconciles_coord_and_preserves_state(
 
     with (
         patch(
-            "safeyolo.commands.lifecycle.is_proxy_running",
+            "safeyolo.commands.lifecycle.check_running_backend",
             return_value=True,
             autospec=True,
         ),

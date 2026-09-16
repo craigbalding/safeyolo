@@ -344,7 +344,7 @@ implicit partial hot reload.
 For host installation and retrying an individual bootstrap phase, use the
 [installation reference](../cli/README.md#installation).
 
-**Running with live source editing:**
+**Running the default Python backend with live source editing:**
 ```bash
 # `--dev` runs the proxy from your local checkout so edits to addons/pdp
 # source pick up on the next start (no container image, no rebuild step).
@@ -355,13 +355,100 @@ safeyolo start --dev
 safeyolo stop && safeyolo start --dev
 ```
 
+### Rust proxy development backend
+
+The CLI defaults to `proxy.backend: python`. Rust selection is an explicit
+development setting, not a completed migration or production cutover. HTTP
+credential inspection and injection, WebMITM, and agent management remain
+incomplete. Native listeners come from the supplied JSON; `safeyolo agent add`
+does not configure them. See [proxy parity](proxy-parity.md) for current scope.
+
+Run the following on the host from the checkout root, with the Rust toolchain,
+tmux, and an initialized CLI configuration. Stop the current backend before
+changing selection. These commands change the currently selected CLI instance
+and stop its proxy. This example copies the default policy into development
+state because native loads can remove expired TOML entries from disk. If your
+policy is elsewhere, use that path as the copy source.
+
+```sh
+safeyolo stop
+cargo build --manifest-path proxy/Cargo.toml
+export SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy"
+mkdir -p .native-dev
+cp ~/.safeyolo/policy.toml .native-dev/policy.toml
+```
+
+Create `.native-dev/proxy.json` with a listener identity and paths for this
+development instance. This example supplies a local Unix socket; it does not
+provision or attach a sandbox:
+
+```json
+{
+  "listeners": [{"agent_id": "development", "socket_path": ".native-dev/agent.sock"}],
+  "policy_file": ".native-dev/policy.toml",
+  "readiness_file": ".native-dev/ready.json",
+  "event_log": ".native-dev/diagnostics.jsonl",
+  "audit_log_path": ".native-dev/audit.jsonl",
+  "flow_store_db_path": ".native-dev/flows.sqlite3"
+}
+```
+
+The [native configuration](../proxy/src/config.rs) defines additional fields,
+including TLS and an optional authenticated operator listener. Relative paths
+inside the JSON resolve from the directory where the CLI is launched. Keep that
+working directory consistent across starts; JSON paths do not expand `~`.
+
+In your existing CLI `config.yaml` (normally `~/.safeyolo/config.yaml`), set these
+fields under `proxy`, retaining other configuration. Set `rust_config` to the
+absolute path of the JSON you created:
+
+```yaml
+proxy:
+  backend: rust
+  rust_config: /absolute/path/to/checkout/.native-dev/proxy.json
+```
+
+The export selects this build for the current shell, including an installed CLI.
+Without it, a CLI running from the checkout uses
+`proxy/target/debug/safeyolo-proxy`. Missing binaries or invalid configuration
+fail without falling back to Python. Selection persists for subsequent starts,
+including automatic starts. Rust rejects `--dev`, `--test`, `--flow-cache` and
+`--flow-cache-bytes`; set native values in its JSON instead. It does not change
+the Python `test.enabled` setting.
+
+```sh
+safeyolo start
+```
+
+The success panel identifies the Rust development backend and its listener
+configuration. Startup requires native readiness. The default `--wait` also
+checks the running native operator endpoint when configured; otherwise it uses
+readiness. This establishes process availability, not full policy parity or a
+working sandbox. `--no-wait` skips that extra health check, not startup readiness.
+
+`safeyolo status` reports the running Rust process's PID, readiness file and
+native admin port, even if `proxy.backend` has since changed. A live process
+without its readiness marker is shown as running but not ready. Status does not
+query the Python management APIs for a Rust process.
+
+To return to Python, run `safeyolo stop`, change `proxy.backend` to `python` in
+`config.yaml`, then run `safeyolo start`. A requested/live backend mismatch is an
+error; changing the setting does not replace a running backend. The development
+files remain available for inspection after rollback. Native stop waits for the
+process to exit. An interrupted stop retains its process ownership state so that
+the stop can be retried. The exited console remains in the private tmux session
+for diagnostics; the next start reaps that dead pane.
+
 ### Runtime and build identity
 
-Every traffic process captures one immutable runtime-identity snapshot at
+The Python traffic process captures one immutable runtime-identity snapshot at
 startup. Operators can inspect it with `safeyolo doctor`; the underlying
 authenticated host-admin route is `GET /admin/runtime-identity`. It is not
 exposed through the sandbox Agent API, and the public `/health` response
 remains only `{"status": "ok"}`.
+
+The Rust lifecycle receipt records process ownership and readiness. Rust does
+not yet implement this build-identity endpoint or the corresponding doctor check.
 
 Production wheels include `safeyolo/_build_identity.json`, generated by the
 Hatch wheel-build hook rather than at runtime. Release automation should set
