@@ -431,6 +431,20 @@ native admin port, even if `proxy.backend` has since changed. A live process
 without its readiness marker is shown as running but not ready. Status does not
 query the Python management APIs for a Rust process.
 
+The shared CLI admin client uses the running Rust process record's admin port
+and token file, including an automatically assigned port. An explicit client
+URL keeps its existing behavior. For the default Rust target, token precedence
+is an explicit client token, `SAFEYOLO_ADMIN_TOKEN`, then the recorded token file.
+Long-lived clients can follow a verified Rust restart and refresh the port and
+default token. Once a client selects Rust, missing or stale process ownership
+prevents the request; it does not select a Python endpoint. Established admin
+listeners remain usable for
+diagnostics while the process is alive even if its readiness marker is absent.
+The native listener loads its token at startup, so token-file changes require
+a proxy restart. This client integration reaches the native APIs already
+implemented, including budget and circuit resets used by `safeyolo watch`.
+Agent service authorization and traffic scope remain unimplemented native routes.
+
 At startup and after agent-map changes, the CLI derives managed listener paths
 with the existing `<ip>_<agent>/proxy.sock` convention under its data directory.
 It preserves custom JSON listeners outside that convention. A missing map leaves

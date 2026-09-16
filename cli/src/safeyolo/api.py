@@ -1,9 +1,12 @@
 """Admin API client for SafeYolo proxy."""
 
+import os
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from . import rust_proxy
 from .config import get_admin_token, load_config
 
 
@@ -27,18 +30,72 @@ class AdminAPI:
         """Initialize API client.
 
         Args:
-            base_url: Admin API URL (default: from config)
-            token: Auth token (default: from config/env)
+            base_url: Admin API URL (default: the recorded Rust listener or Python config)
+            token: Auth token (default: environment override or the selected listener's file)
             timeout: Request timeout in seconds
         """
+        self._rust_process: rust_proxy.RustProcess | None = None
+        self._token_override = token
         if base_url is None:
-            config = load_config()
-            port = config["proxy"]["admin_port"]
-            base_url = f"http://localhost:{port}"
+            base_url, self._rust_process = self._default_connection()
 
         self.base_url = base_url.rstrip("/")
-        self.token = token or get_admin_token()
+        self.token = token or self._default_token(self._rust_process)
         self.timeout = timeout
+
+    def _default_connection(self, *, require_rust: bool = False) -> tuple[str, rust_proxy.RustProcess | None]:
+        try:
+            process = rust_proxy.read_process()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise APIError(f"Cannot read Rust proxy ownership: {exc}") from exc
+        if process is None:
+            if require_rust:
+                raise APIError("The Rust proxy has no current process record")
+            config = load_config()
+            return f"http://localhost:{config['proxy']['admin_port']}", None
+        self._check_rust_process(process)
+        port = process.admin_port
+        if port is None:
+            raise APIError("The running Rust proxy has no admin listener configured")
+        if port == 0:
+            try:
+                marker = rust_proxy.readiness(process)
+            except OSError as exc:
+                raise APIError("Cannot read the Rust proxy's admin listener readiness") from exc
+            if marker is None:
+                raise APIError("The Rust proxy has not published its admin listener port yet")
+            port = marker["admin_port"]
+            self._check_rust_process(process)
+        return f"http://127.0.0.1:{port}", process
+
+    def _default_token(self, process: rust_proxy.RustProcess | None) -> str | None:
+        if process is None:
+            return get_admin_token()
+        if process.admin_token_file is None:
+            return os.environ.get("SAFEYOLO_ADMIN_TOKEN") or None
+        try:
+            return get_admin_token(token_path=Path(process.admin_token_file))
+        except (OSError, UnicodeError) as exc:
+            raise APIError("Cannot read the Rust proxy's admin token file") from exc
+
+    def _check_rust_process(self, process: rust_proxy.RustProcess) -> None:
+        try:
+            alive = rust_proxy.is_alive(process)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise APIError(f"Cannot verify Rust proxy process identity: {exc}") from exc
+        if not alive:
+            raise APIError("The recorded Rust proxy process has exited or changed")
+
+    def _refresh_rust_connection(self) -> None:
+        """Follow a recorded native restart while rejecting stale ownership."""
+        previous = self._rust_process
+        if previous is None:
+            return
+        base_url, process = self._default_connection(require_rust=True)
+        assert process is not None
+        if (process.pid, process.start_token) != (previous.pid, previous.start_token):
+            token = self._token_override or self._default_token(process)
+            self.base_url, self.token, self._rust_process = base_url, token, process
 
     def _headers(self) -> dict[str, str]:
         """Get request headers with auth."""
@@ -55,6 +112,7 @@ class AdminAPI:
         require_auth: bool = True,
     ) -> Any:
         """Make an API request."""
+        self._refresh_rust_connection()
         url = f"{self.base_url}{path}"
         headers = self._headers() if require_auth else {}
 

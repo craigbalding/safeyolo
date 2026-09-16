@@ -228,8 +228,8 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[key] = value
 
 
-def get_admin_token() -> str | None:
-    """Get admin API token from file or environment."""
+def get_admin_token(*, token_path: Path | None = None) -> str | None:
+    """Get the environment override or the token from the selected file."""
     import os
 
     # Check environment first
@@ -238,7 +238,8 @@ def get_admin_token() -> str | None:
         return token
 
     # Check file
-    token_path = get_admin_token_path()
+    if token_path is None:
+        token_path = get_admin_token_path()
     if token_path.exists():
         return token_path.read_text().strip()
 

@@ -379,6 +379,15 @@ selects a supplied Rust executable and native JSON configuration through
 the native readiness marker and a separate process lifetime record; no launch
 failure selects Python automatically. Rust shutdown waits for process exit.
 
+The shared CLI admin client selects the recorded native IPv4 loopback endpoint
+and credentials. It verifies process identity before requests and follows a
+new verified Rust process after restart. Once a client selects Rust, a missing
+or stale native record does not fall back to the Python endpoint. Explicit
+client URLs retain their existing
+targeting and token behavior. This connects existing consumers to implemented
+native routes; agent service authorization, traffic scope and other missing
+management routes remain separate work.
+
 [Mocked lifecycle tests](../cli/tests/test_rust_proxy.py) and
 [command tests](../cli/tests/test_lifecycle_rust.py) cover selection, ownership,
 failure cleanup, health and explicit rollback selection. They do not establish
