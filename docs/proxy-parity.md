@@ -36,6 +36,31 @@ behavior unless they explicitly identify a discrepancy. Replacement paths name
 responsibilities, not a required Rust module or callback hierarchy. Unless a
 row says otherwise, its intended behavior change is **none**.
 
+### First-release traffic scope
+
+The operator narrowed traffic tooling to a read-only terminal inspector on
+16 September 2026. For the first Rust release, this scope supersedes the broader
+traffic viewing and manipulation obligations in issue #620. The source inventory
+below still records those broader workflows; deferred features are not parity
+claims or first-release acceptance requirements.
+
+Retain live flow browsing, shared scope and supported filters, HTTP headers and
+body details, WebSocket transcripts, and selected-flow `raw`, `raw_request`,
+`raw_response`, `curl`, `httpie`, `har` and `zhar` exports. Read-only means the
+inspector does not edit, replay, pause, resume or kill traffic. Display selection
+can change, and exports can write local files. Generated commands remain text.
+
+Defer flow-dump save/load, historical dump migration, HAR import, all-flow HAR
+archives and continuous-save lifecycle, a web inspector, and traffic editing,
+replay or interactive interception. Further mitmproxy filter-language and
+display/export charset parity are also deferred. Existing supported operations
+must remain correct, and unsupported representations must remain explicit.
+
+The reduction applies only to traffic tooling. Forwarding, security inspection,
+policy and credentials, authorized evidence access and retention, platform
+validation, rollback and removal of the old proxy retain their requirements.
+Shared matching or decoding needed by those paths is not deferred by this scope.
+
 Local refs include proxy-related branches such as
 `origin/feat/connect-policy-598` (`c19c0dc5`),
 `origin/feat/connect-trace-evidence-598-599` (`2a4dc17e`),
@@ -2422,8 +2447,9 @@ native dump or HAR import, historical-version migration, UDP/DNS import, startup
 or addon lifecycle behavior, continuous save/rotation, or web import.
 
 All-flow HAR archives and lifecycle behavior, flow-dump export and import, web
-inspection and the exposed edit/replay workflows remain migration work. The Python proxy has not been removed or cut
-over.
+inspection and the exposed edit/replay workflows are deferred under the
+[first-release traffic scope](#first-release-traffic-scope). The Python proxy has
+not been removed or cut over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

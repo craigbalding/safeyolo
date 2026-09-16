@@ -449,6 +449,10 @@ For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector
 reads the proxy's shared live HTTP and WebSocket view. It includes ordinary
 requests without TestContext, pending requests, and terminal responses or errors.
+The first Rust release provides read-only inspection and the selected-flow
+exports described below. It does not provide traffic editing, replay or
+interactive interception. See the
+[first-release traffic scope](proxy-parity.md#first-release-traffic-scope).
 The existing scope options, such as `--agent alice --test CASE-1`, update the
 shared view before attaching. `--no-attach` changes only the scope.
 Scope and user-filter changes affect all inspectors and do not change forwarding
@@ -490,7 +494,8 @@ The shared text decoder supports the codec families listed under
 [selected-flow file export](proxy-parity.md#selected-flow-file-export).
 Registered codecs without a native implementation report an unsupported
 representation. Unknown charset labels follow the selected format's decoding
-error behavior. Broader codec compatibility remains migration work.
+error behavior. Further display/export codec compatibility is deferred beyond
+the first Rust release.
 HTTP decoding and command formatting materialize complete decoded HTTP bodies
 in memory. WebSocket export reads retained payloads in bounded chunks.
 
@@ -575,9 +580,9 @@ If native validation rejects an upstream 101 upgrade response, the HTTP view
 keeps that observed response and shows the rejection error. No WebSocket
 session is created for that response.
 
-Remaining filter compatibility, flow editing, replay, interception, all-flow
-HAR archives and lifecycle behavior, flow-dump export, import and a web inspector
-remain migration work.
+Further filter-language compatibility, flow editing, replay, interactive
+interception, all-flow HAR archives and lifecycle behavior, flow-dump save/load,
+HAR import and a web inspector are deferred beyond the first Rust release.
 
 The native view excludes CONNECT, reserved internal hosts, and requests whose
 destination cannot be parsed. URLs use the admitted scheme and authority with
