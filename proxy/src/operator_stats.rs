@@ -50,6 +50,14 @@ fn document_with_memory(
             Err(error) => failure("RuntimeError", &error.to_string()),
         };
         report.insert("network-guard".into(), network);
+        let credential = match runtime.credential_guard.as_ref() {
+            Some(guard) => match guard.stats_json() {
+                Ok(stats) => stats.into(),
+                Err(error) => failure("RuntimeError", &error.to_string()),
+            },
+            None => failure("RuntimeError", "credential guard stats unavailable"),
+        };
+        report.insert("credential-guard".into(), credential);
         let audit = crate::circuits::Audit::new(&runtime.audit, None, None);
         let circuits = match runtime.circuits.stats_document_with_audit(
             runtime.config.circuit_breaker_enabled,

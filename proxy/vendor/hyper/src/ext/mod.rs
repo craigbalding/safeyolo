@@ -321,6 +321,12 @@ impl OriginalHeaderOrder {
 pub struct OriginalHeaderFields(pub(crate) Vec<(Bytes, Bytes)>);
 #[cfg(all(any(feature = "client", feature = "server"), feature = "http1"))]
 impl OriginalHeaderFields {
+    /// Construct parser metadata for consumers that need to exercise the
+    /// request-header owner with an exact ordered byte fixture.
+    pub fn from_bytes(fields: Vec<(Bytes, Bytes)>) -> Self {
+        Self(fields)
+    }
+
     /// Borrow the parsed name/value bytes in arrival order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
         self.0

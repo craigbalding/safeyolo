@@ -104,6 +104,7 @@ fn config(directory: &TempDir) -> Config {
         network_guard_enabled: true,
         network_guard_block: true,
         network_guard_homoglyph: true,
+        credential_guard_block: true,
         circuit_breaker_enabled: true,
         circuit_state_file: None,
         agent_api_enabled: false,

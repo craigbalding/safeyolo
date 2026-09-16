@@ -162,6 +162,7 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
             "service-discovery",
             "policy-engine",
             "network-guard",
+            "credential-guard",
             "circuit-breaker",
             "test-context",
             "flow-recorder",

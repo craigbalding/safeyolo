@@ -1267,6 +1267,45 @@ fn circuit_admission(
     }
 }
 
+/// Publish each guard intent as the corresponding shared trace step. Guard
+/// outcomes are already source-shaped (including bypass reasons, counts and
+/// local status); keep those fields intact instead of replacing the sequence
+/// with one synthetic outcome for the whole request.
+fn publish_credential_trace(
+    trace: Option<&Arc<RequestTrace>>,
+    intents: &[crate::credential_guard::TraceIntent],
+) {
+    for intent in intents {
+        let Some(trace) = trace else {
+            continue;
+        };
+        let Some(hook) = trace.hook("credential-guard", intent.hook) else {
+            continue;
+        };
+        match intent.state {
+            "evaluated" => {
+                let details = match (intent.detection_count, intent.status) {
+                    (None, None) => None,
+                    (count, status) => {
+                        let mut fields = indexmap::IndexMap::new();
+                        if let Some(count) = count {
+                            fields.insert("detection_count".into(), json!(count).into());
+                        }
+                        if let Some(status) = status {
+                            fields.insert("status".into(), json!(status).into());
+                        }
+                        Some(crate::circuits::CircuitValue::Object(fields))
+                    }
+                };
+                hook.evaluated(intent.outcome.unwrap_or("evaluated"), details);
+            }
+            "bypassed" => hook.bypassed(intent.reason.unwrap_or("bypassed")),
+            "error" => hook.error(intent.reason.unwrap_or("CredentialGuardError")),
+            _ => hook.error("CredentialGuardTraceState"),
+        }
+    }
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -1600,16 +1639,6 @@ async fn forward(
             .credential_guard
             .as_ref()
             .ok_or("native credential guard is unavailable")?;
-        let guard_trace = trace.as_ref().and_then(|trace| {
-            trace.hook(
-                "credential-guard",
-                if request.method() == Method::CONNECT {
-                    "http_connect"
-                } else {
-                    "request"
-                },
-            )
-        });
         let outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
             crate::network_guard::Identity::Resolved(&identity.agent_id),
@@ -1622,13 +1651,24 @@ async fn forward(
             &identity.connection_id,
             false,
             ordered_headers.iter(),
-            crate::credential_guard::Options::default(),
+            crate::credential_guard::Options {
+                block: runtime.config.credential_guard_block(),
+            },
             crate::policy::current_time_ms(),
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                if let Some(trace) = &guard_trace {
-                    trace.error("CredentialGuardError");
+                if let Some(hook) = trace.as_ref().and_then(|trace| {
+                    trace.hook(
+                        "credential-guard",
+                        if request.method() == Method::CONNECT {
+                            "http_connect"
+                        } else {
+                            "request"
+                        },
+                    )
+                }) {
+                    hook.error("CredentialGuardError");
                 }
                 // A decoder, matcher, or policy observation error is a
                 // terminal local failure. It cannot be interpreted as
@@ -1636,16 +1676,7 @@ async fn forward(
                 return Err(error.into());
             }
         };
-        if let Some(trace) = &guard_trace {
-            let outcome_name = match outcome.kind {
-                crate::credential_guard::OutcomeKind::Bypassed => "bypassed",
-                crate::credential_guard::OutcomeKind::NoDetection => "no_detection",
-                crate::credential_guard::OutcomeKind::Allowed => "allowed",
-                crate::credential_guard::OutcomeKind::Warned => "warned",
-                crate::credential_guard::OutcomeKind::Blocked => "blocked",
-            };
-            trace.evaluated(outcome_name, None);
-        }
+        publish_credential_trace(trace.as_ref(), &outcome.trace);
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
         for intent in &outcome.audit {

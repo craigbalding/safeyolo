@@ -239,6 +239,7 @@ fn lower_equals_ascii(raw: &[u8], expected: &[u8], trim: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     use hyper::header::{HeaderName, HeaderValue};
     use serde_json::{Value, json};
 
@@ -345,6 +346,54 @@ mod tests {
             assert_eq!(request.headers()["x-inert"], "value");
             assert_eq!(request.body(), &b"body");
         }
+    }
+
+    #[test]
+    fn take_hygiene_preserves_first_spelling_and_grouped_duplicate_values() {
+        let mut request = Request::builder()
+            .version(Version::HTTP_11)
+            .header("X-Remove", "drop")
+            .header("Authorization", "one")
+            .header("authorization", "two")
+            .header("Connection", "keep-alive, X-Remove")
+            .body(())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(hyper::ext::OriginalHeaderFields::from_bytes(vec![
+                (
+                    Bytes::from_static(b"Host"),
+                    Bytes::from_static(b"owned.invalid"),
+                ),
+                (Bytes::from_static(b"X-Remove"), Bytes::from_static(b"drop")),
+                (
+                    Bytes::from_static(b"Authorization"),
+                    Bytes::from_static(b"one"),
+                ),
+                (
+                    Bytes::from_static(b"authorization"),
+                    Bytes::from_static(b"two"),
+                ),
+                (
+                    Bytes::from_static(b"Connection"),
+                    Bytes::from_static(b"keep-alive, X-Remove"),
+                ),
+            ]));
+        let mut owner = RequestHeaders::take(&mut request).unwrap();
+        let facts = owner.apply_hygiene(request.headers_mut());
+        assert!(!facts.trace_requested);
+        assert_eq!(
+            owner
+                .iter()
+                .map(|(name, value)| (name.to_vec(), value.to_vec()))
+                .collect::<Vec<_>>(),
+            vec![
+                (b"Host".to_vec(), b"owned.invalid".to_vec()),
+                (b"Authorization".to_vec(), b"one, two".to_vec()),
+            ]
+        );
+        assert!(!request.headers().contains_key("x-remove"));
+        assert_eq!(request.headers().get_all("authorization").iter().count(), 2);
     }
 
     #[test]

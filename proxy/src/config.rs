@@ -77,6 +77,11 @@ pub struct Config {
     pub network_guard_block: bool,
     #[serde(default = "enabled")]
     pub network_guard_homoglyph: bool,
+    /// Whether credential detections stop forwarding. The source producer
+    /// calls this setting `credguard_block`; retain that spelling as an input
+    /// alias while keeping the Rust configuration name explicit.
+    #[serde(default = "enabled", alias = "credguard_block")]
+    pub credential_guard_block: bool,
     #[serde(default = "enabled")]
     pub circuit_breaker_enabled: bool,
     /// An absent or empty path disables circuit snapshots.
@@ -178,6 +183,21 @@ impl Config {
             .clone()
             .or_else(|| std::env::var_os("SAFEYOLO_DATA_DIR").map(PathBuf::from))
             .unwrap_or_else(|| "/safeyolo/data".into())
+    }
+
+    /// Resolve the source-compatible credential guard mode. A process-wide
+    /// SAFEYOLO_BLOCK=true remains the emergency force-block setting; the
+    /// credential-specific environment setting takes precedence over the
+    /// serialized producer value when present.
+    pub(crate) fn credential_guard_block(&self) -> bool {
+        if std::env::var_os("SAFEYOLO_BLOCK")
+            .is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("true"))
+        {
+            return true;
+        }
+        std::env::var_os("CREDGUARD_BLOCK")
+            .map(|value| value.to_string_lossy().eq_ignore_ascii_case("true"))
+            .unwrap_or(self.credential_guard_block)
     }
 
     pub fn read(path: &std::path::Path) -> Result<Self, Error> {
