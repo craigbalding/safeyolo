@@ -11,6 +11,7 @@ use crate::{
     ConnectionIdentity, Runtime, RuntimeState, audit,
     http_content::{self, BufferedContent, ContentError},
     policy::Addon,
+    request_trace::RequestTrace,
     test_context::{AppliedContext, Reason},
 };
 
@@ -21,6 +22,21 @@ pub(super) enum HookError {
 }
 
 impl HookError {
+    pub(super) fn trace_reason(self) -> &'static str {
+        match self {
+            Self::Content(ContentError::Value) => "ValueError",
+            Self::Content(ContentError::Type) => "TypeError",
+            Self::Content(ContentError::Allocation) => "ContentAllocationError",
+            Self::Audit(error) => match error.kind() {
+                audit::ErrorKind::Configuration => "AuditConfiguration",
+                audit::ErrorKind::ThreadStart => "AuditThreadStart",
+                audit::ErrorKind::Poisoned => "AuditPoisoned",
+                audit::ErrorKind::Encoding => "AuditEncoding",
+                audit::ErrorKind::Io => "AuditIo",
+            },
+        }
+    }
+
     pub(super) fn evidence_failed(self) -> bool {
         matches!(
             self,
@@ -50,6 +66,11 @@ impl From<audit::Error> for HookError {
 struct Applied {
     context: AppliedContext,
     started: f64,
+}
+
+enum ResponseOutcome {
+    NotApplicable,
+    Recorded,
 }
 
 /// Metadata becomes visible only when the request parser has completed. It is
@@ -220,11 +241,16 @@ impl Provenance {
             .is_err())
     }
 
-    fn response(&self, head: &Head, content: Option<&[u8]>, now: f64) -> Result<bool, HookError> {
+    fn response(
+        &self,
+        head: &Head,
+        content: Option<&[u8]>,
+        now: f64,
+    ) -> Result<(bool, ResponseOutcome), HookError> {
         let (context, started) = {
             let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
             let Some(applied) = applied.as_ref() else {
-                return Ok(false);
+                return Ok((false, ResponseOutcome::NotApplicable));
             };
             (applied.context.clone(), applied.started)
         };
@@ -263,15 +289,17 @@ impl Provenance {
         event.request_id = Some(self.request_id.clone());
         event.details = details.clone().into();
         self.runtime.audit.emit(event)?;
-        Ok(self
-            .runtime
-            .record(json!({
-                "event": "security.test_context", "kind": "security", "severity": "low",
-                "addon": "test-context", "host": self.host,
-                "agent": self.identity.agent_id, "request_id": self.request_id,
-                "summary": summary, "details": details,
-            }))
-            .is_err())
+        Ok((
+            self.runtime
+                .record(json!({
+                    "event": "security.test_context", "kind": "security", "severity": "low",
+                    "addon": "test-context", "host": self.host,
+                    "agent": self.identity.agent_id, "request_id": self.request_id,
+                    "summary": summary, "details": details,
+                }))
+                .is_err(),
+            ResponseOutcome::Recorded,
+        ))
     }
 }
 
@@ -334,6 +362,7 @@ pub(super) struct ResponseCapture {
     recording: Option<Arc<super::flow_recording::Recording>>,
     method: String,
     host: String,
+    trace: Option<Arc<RequestTrace>>,
 }
 
 impl ResponseCapture {
@@ -342,6 +371,7 @@ impl ResponseCapture {
         provenance: Option<Arc<Provenance>>,
         traffic: Option<Arc<super::traffic::Traffic>>,
         recording: Option<Arc<super::flow_recording::Recording>>,
+        trace: Option<Arc<RequestTrace>>,
     ) -> Self {
         let (method, host) = if let Some(traffic) = &traffic {
             (traffic.method.clone(), traffic.host.clone())
@@ -369,6 +399,7 @@ impl ResponseCapture {
             recording,
             method,
             host,
+            trace,
         }
     }
 
@@ -515,11 +546,27 @@ impl ResponseCapture {
         };
         let content = capture.body.into_content();
         let content = content.as_deref().map(Vec::as_slice);
-        let provenance = self.provenance.as_ref().map_or(Ok(false), |provenance| {
-            provenance.response(&head, content, crate::circuit_runtime::now())
-        });
+        let hook = self
+            .trace
+            .as_ref()
+            .and_then(|trace| trace.hook("test-context", "response"));
+        let provenance = self
+            .provenance
+            .as_ref()
+            .map_or(Ok((false, ResponseOutcome::NotApplicable)), |provenance| {
+                provenance.response(&head, content, crate::circuit_runtime::now())
+            });
         match provenance {
-            Ok(mut failed) => {
+            Ok((mut failed, outcome)) => {
+                if let Some(hook) = &hook {
+                    match outcome {
+                        ResponseOutcome::NotApplicable => hook.evaluated("not_applicable", None),
+                        ResponseOutcome::Recorded => hook.evaluated(
+                            "response_recorded",
+                            Some(json!({"status_code":head.status.as_u16()}).into()),
+                        ),
+                    }
+                }
                 if let Some(recording) = self.recording() {
                     recording.finish(true, content, false);
                 }
@@ -531,6 +578,9 @@ impl ResponseCapture {
                 failed
             }
             Err(error) => {
+                if let Some(hook) = &hook {
+                    hook.error(error.trace_reason());
+                }
                 // ProductionAddons shares one dispatcher exception boundary.
                 // A failed TestContext response hook skips the later recorder;
                 // no recorder counter or retry belongs to this response.
@@ -669,7 +719,8 @@ mod tests {
             headers: &[(&str, &str)],
             bodyless: bool,
         ) -> ResponseCapture {
-            let capture = ResponseCapture::new(self.state.clone(), Some(provenance), None, None);
+            let capture =
+                ResponseCapture::new(self.state.clone(), Some(provenance), None, None, None);
             let mut fields = HeaderMap::new();
             for (name, value) in headers {
                 fields.append(
@@ -928,6 +979,7 @@ mod tests {
         let capture = Arc::new(ResponseCapture::new(
             fixture.state.clone(),
             Some(provenance),
+            None,
             None,
             None,
         ));

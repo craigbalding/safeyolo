@@ -1475,11 +1475,11 @@ strict-schema rejection: `trace_requested` stays local to native events and is
 excluded from the adapter request. These checks are implementation evidence;
 independent acceptance and the remaining production migration work are pending.
 
-### Opt-in native network traces
+### Opt-in native security traces
 
-An ordinary HTTP request or CONNECT that reaches native NetworkGuard can opt in
-with a nonempty `X-SafeYolo-Trace` header. The proxy consumes the header and
-records the guard's reached steps. The originating agent can then read
+An HTTP request or CONNECT can opt in with a nonempty `X-SafeYolo-Trace`
+header. When request-header hygiene runs, the proxy consumes the header and
+activates observation of reached native security hooks. The originating agent can then read
 `GET /trace?request_id=<response-request-id>` with its Agent API bearer token.
 The [trace store](../proxy/src/trace.rs) stays in memory and survives runtime
 reload. The [API route](../proxy/src/agent_api/trace.rs) authenticates before
@@ -1510,24 +1510,60 @@ Python exception class. Durations measure the native guard call. Native
 admission can precede source request-body completion, as documented for the
 existing HTTP pipeline.
 
-This first runtime join instruments NetworkGuard only. The source `not_loaded`
-field lists expected addon names absent from all retained steps; it is not a
-runtime installation inventory. CircuitBreaker and TestContext still lack
-trace instrumentation. HTTP service gateway, credential and pattern stages
-remain inactive. Later stages skipped by native early returns have no invented
-bypass steps. A stored CONNECT hook narrows the source expected set to
-NetworkGuard. Outer CONNECT and enclosed HTTP retain separate request IDs and
-share the transport connection ID. Reserved local replies and the temporary
-Python policy adapter do not fabricate native guard traces. The diagnostic
-probe pipeline and complete doctor trace workflow remain unimplemented.
+[CircuitBreaker](../proxy/src/circuit_runtime.rs) records its reached request
+and response decisions, including disabled or policy bypass, selected circuit
+state, completed blocks and recorded response status. A core blocked decision
+becomes a blocked trace only after canonical denial audit and response
+construction succeed. An error records its typed category and preserves the
+existing partial state. Diagnostic event-write failure remains separate from
+hook failure. A circuit response exception still skips later response hooks.
+
+[TestContext](../proxy/src/http/request_context.rs) records actual context
+application, warning, block or nontarget outcomes. Deferred request timing
+starts when the existing completion owner applies the hook; it excludes upload
+time. Head-selected errors and blocks use their preparation interval. These
+native intervals do not reproduce the source's single request-hook interval.
+The existing [response capture](../proxy/src/http/test_context.rs) records
+`response_recorded` after successful context audit, or `not_applicable` when no
+context has been applied. A request decode or audit error can leave applied
+metadata for a separately reached response. An aborted response has no response
+step. A response that completes before request application can record
+`not_applicable` without inventing a completed request hook.
+
+Completed local replies carrying the existing traffic marker reach TestContext's
+`not_applicable` response observation after circuit response succeeds and before
+local recording and logging. Early local request returns still omit the native
+request hooks they skip; they do not reproduce the source's later
+`prior_response` request steps. Opt-in activation uses the existing local
+header-hygiene boundary. The trace join adds no request drain or completion
+observer. Typed source-compatible errors retain their class names; native-only
+runtime, audit, allocation and poisoned-state errors remain native categories.
+Trace-store failures cannot change hook continuation or evidence-error flags.
+
+The source `not_loaded` field lists expected addon names absent from all retained
+steps; it is not a runtime installation inventory. HTTP service gateway,
+credential and pattern stages remain inactive. A stored CONNECT hook narrows
+the source expected set to NetworkGuard. Outer CONNECT and enclosed HTTP retain
+separate request IDs and share the transport connection ID. Reserved local
+replies and the temporary Python policy adapter do not fabricate native guard
+traces. The diagnostic probe pipeline and complete doctor trace workflow remain
+unimplemented.
 
 The [source corpus](../proxy/tests/trace_source.py) exercises actual trace
 storage and Agent API dispatch. [Native API tests](../proxy/tests/agent_api_trace.rs)
 compare exact source response bytes, query ordering, identity and errors.
 [Producer tests](../proxy/tests/network_trace.rs) verify reached trace/audit
 order and single policy charging. [HTTP controls](../proxy/src/http/trace_tests.rs)
-cover opt-in removal, agent scope, reload, CONNECT correlation and failed
-observation. Arbitrary Python objects, nonstring detail keys, lone-surrogate
+cover opt-in removal, agent scope, reload, CONNECT correlation, context request
+and response effects, and failed observation. The [security-hook source corpus](../proxy/tests/security_trace_source.py)
+uses 36 selected workflows and 47 actual decorated hook calls. Its ordered
+audit and trace attempts retain partial effects and swallowed trace failures.
+Native component comparisons and [HTTP circuit controls](../proxy/src/http/circuit_audit_tests.rs)
+check the corresponding outcomes, open/deny sequence, early response and later
+hook suppression. Source audit fault injection raises `RuntimeError`; native
+poisoned-writer controls retain their separate native error categories. These
+finite controls do not prove full container dispatch or transport parity.
+Arbitrary Python objects, nonstring detail keys, lone-surrogate
 strings and nonfinite record-creation timestamps remain outside the native
 store representation. These checks are implementation evidence, not full
 pipeline parity or independent acceptance.

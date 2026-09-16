@@ -52,6 +52,7 @@ pub(super) struct Completion {
     capture: Option<Arc<ResponseCapture>>,
     recording: Option<Arc<super::flow_recording::Recording>>,
     traffic: Option<Arc<super::traffic::Traffic>>,
+    trace: Option<Arc<crate::request_trace::RequestTrace>>,
 }
 
 impl Completion {
@@ -71,6 +72,7 @@ impl Completion {
             .as_ref()
             .is_some_and(RequestContext::evidence_failed);
         let traffic = context.as_ref().and_then(RequestContext::traffic);
+        let trace = context.as_ref().and_then(RequestContext::trace);
         let capture = context.as_ref().and_then(|context| {
             let provenance = context.response_provenance();
             let traffic = context.traffic();
@@ -80,6 +82,7 @@ impl Completion {
                     provenance,
                     traffic,
                     recording.clone(),
+                    trace.clone(),
                 ))
             })
         });
@@ -108,6 +111,7 @@ impl Completion {
             capture,
             recording,
             traffic,
+            trace,
         })
     }
 
@@ -138,6 +142,7 @@ impl Completion {
                     .is_some_and(|traffic| traffic.source_metadata_reached()),
                 &self.host,
                 status.as_u16(),
+                self.trace.as_ref(),
             ),
             Err(()) => crate::circuit_runtime::ResponseOutcome::Complete {
                 evidence_failed: false,

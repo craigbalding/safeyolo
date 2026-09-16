@@ -128,9 +128,38 @@ async fn fetch(directory: &Path, port: u16, traced: bool) -> Vec<u8> {
     )).await
 }
 
+fn steps(report: &Value) -> Vec<Value> {
+    report["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            let bypass = step["state"] == "bypassed";
+            assert_eq!(step.get("duration_us").is_some(), !bypass);
+            json!([
+                step["addon"],
+                step["hook"],
+                step["state"],
+                step.get("outcome").or_else(|| step.get("reason")).unwrap()
+            ])
+        })
+        .collect()
+}
+
 fn ordinary_step(report: &Value, outcome: &str) {
     assert_eq!(report["agent_id"], "alice");
-    assert_eq!(report["steps"].as_array().unwrap().len(), 1);
+    let mut expected = vec![json!(["network-guard", "request", "evaluated", outcome])];
+    if outcome != "blocked" {
+        expected.extend([
+            json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["test-context", "request", "evaluated", "not_target_host"]),
+        ]);
+    }
+    expected.extend([
+        json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
+        json!(["test-context", "response", "evaluated", "not_applicable"]),
+    ]);
+    assert_eq!(steps(report), expected);
     let step = &report["steps"][0];
     assert_eq!(step["addon"], "network-guard");
     assert_eq!(step["hook"], "request");
@@ -141,10 +170,8 @@ fn ordinary_step(report: &Value, outcome: &str) {
         report["not_loaded"],
         json!([
             {"addon":"service-gateway", "state":"not_loaded"},
-            {"addon":"circuit-breaker", "state":"not_loaded"},
             {"addon":"credential-guard", "state":"not_loaded"},
-            {"addon":"pattern-scanner", "state":"not_loaded"},
-            {"addon":"test-context", "state":"not_loaded"}
+            {"addon":"pattern-scanner", "state":"not_loaded"}
         ])
     );
     for absent in ["trace-secret-query", "forged", "owned-body", TOKEN] {
@@ -278,6 +305,77 @@ async fn owned_workflow(directory: &Path) {
     assert_eq!(report["steps"][0]["state"], "bypassed");
     assert_eq!(report["steps"][0]["reason"], "addon_disabled");
     assert!(report["steps"][0].get("duration_us").is_none());
+    // A present but empty marker remains opted out after source hygiene.
+    let (port, peer) = origin().await;
+    let empty = exchange(directory, "alice", &format!(
+        "GET http://{HOST}:{port}/empty HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace:\r\nConnection: close\r\n\r\n"
+    )).await;
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    assert_eq!(trace(directory, "alice", &request_id(&empty)).await.0, 404);
+
+    // Context application and its response audit use the same request owner.
+    configured = config(directory, "allow");
+    std::fs::write(
+        directory.join("policy.json"),
+        json!({
+            "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
+            "addons":{"test_context":{"target_hosts":[HOST]}},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    configured.test_context_block = true;
+    proxy.reload(configured).await.unwrap();
+    let (port, peer) = origin().await;
+    let applied = exchange(directory, "alice", &format!(
+        "GET http://{HOST}:{port}/context HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Test-Context: run=owned;agent=alice;test=wire\r\nConnection: close\r\n\r\n"
+    )).await;
+    timeout(LIMIT, peer).await.unwrap().unwrap();
+    assert!(applied.starts_with(b"HTTP/1.1 200"));
+    let applied = trace(directory, "alice", &request_id(&applied)).await.1;
+    assert_eq!(
+        steps(&applied),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["test-context", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
+            json!(["test-context", "response", "evaluated", "response_recorded"]),
+        ]
+    );
+    assert_eq!(
+        applied["steps"][2]["details"],
+        json!({"context_source":"header"})
+    );
+    assert_eq!(applied["steps"][4]["details"], json!({"status_code":200}));
+    let denied = fetch(directory, port, true).await;
+    assert!(denied.starts_with(b"HTTP/1.1 428"));
+    let denied = trace(directory, "alice", &request_id(&denied)).await.1;
+    assert_eq!(
+        steps(&denied),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["test-context", "request", "evaluated", "blocked"]),
+            json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
+            json!(["test-context", "response", "evaluated", "not_applicable"]),
+        ]
+    );
+    assert_eq!(denied["steps"][2]["details"], json!({"status":428}));
+
+    let local = exchange(directory, "alice", &format!(
+        "GET http://_safeyolo.proxy.internal/health HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {TOKEN}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n"
+    )).await;
+    assert!(local.starts_with(b"HTTP/1.1 200"));
+    let local = trace(directory, "alice", &request_id(&local)).await.1;
+    assert_eq!(
+        steps(&local),
+        vec![
+            json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
+            json!(["test-context", "response", "evaluated", "not_applicable"]),
+        ]
+    );
+    assert!(!local.to_string().contains(TOKEN));
     proxy.shutdown().await;
 }
 
@@ -315,7 +413,20 @@ async fn failed_network_audit_retains_only_reached_trace_steps() {
             body_present: false,
             trace_requested: true,
         };
-        assert!(decide(&runtime, &identity, &request).await.is_err());
+        let trace = Arc::new(crate::request_trace::RequestTrace::new(
+            runtime.traces.clone(),
+            &identity,
+            request.request_id,
+            request.method,
+            request.host,
+            request.port,
+        ));
+        trace.enable(true);
+        assert!(
+            decide(&runtime, &identity, &request, Some(&trace))
+                .await
+                .is_err()
+        );
         let report = runtime
             .traces
             .get(
@@ -376,7 +487,18 @@ async fn trace_store_failure_does_not_change_guard_decision_or_counts() {
             body_present: false,
             trace_requested: true,
         };
-        let outcome = decide(&runtime, &identity, &request).await.unwrap();
+        let trace = Arc::new(crate::request_trace::RequestTrace::new(
+            runtime.traces.clone(),
+            &identity,
+            request.request_id,
+            request.method,
+            request.host,
+            request.port,
+        ));
+        trace.enable(true);
+        let outcome = decide(&runtime, &identity, &request, Some(&trace))
+            .await
+            .unwrap();
         assert_eq!(outcome.allow, effect == "allow");
         assert_eq!(outcome.status, (effect == "deny").then_some(403));
         assert_eq!(runtime.network_guard.stats().unwrap().checks, 1);

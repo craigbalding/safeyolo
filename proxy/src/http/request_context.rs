@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 use crate::{
     ConnectionIdentity, Error, Runtime,
     http_content::ContentError,
+    request_trace::{RequestTrace, TraceHook},
     test_context::{self, ContextErrorKind, PreparedRequest, RequestOutcome, TrustedIdentity},
 };
 
@@ -78,6 +79,7 @@ pub(super) struct RequestContext {
     skip_logger: bool,
     port: u16,
     valid_context: bool,
+    trace: Option<Arc<RequestTrace>>,
 }
 
 /// Call after network/circuit admission and CONNECT exclusion. Only reserved
@@ -89,6 +91,7 @@ pub(super) fn prepare<B>(
     request_id: &str,
     request: &mut Request<B>,
     destination: &super::Destination,
+    trace: Option<Arc<RequestTrace>>,
 ) -> Result<Admission, Error> {
     let Some(policy) = runtime.policy.as_ref() else {
         return Ok(Admission::Inactive);
@@ -103,6 +106,9 @@ pub(super) fn prepare<B>(
         .source_id
         .as_ref()
         .and_then(|source| TrustedIdentity::new(source.clone(), identity.agent_id.clone()).ok());
+    let head_hook = trace
+        .as_ref()
+        .and_then(|trace| trace.hook("test-context", "request"));
     let selected = runtime.test_context.prepare_request_current(
         Some(policy),
         test_context::Request {
@@ -118,16 +124,11 @@ pub(super) fn prepare<B>(
     let prepared = match selected {
         Ok(prepared) => prepared,
         Err(error) => {
+            trace_core_error(head_hook.as_ref(), error.kind());
             report_core_error(error.kind());
             return Ok(Admission::HookError);
         }
     };
-    if matches!(
-        prepared.result(),
-        Ok(RequestOutcome::NotTargetHost | RequestOutcome::PriorResponse)
-    ) {
-        return Ok(Admission::Inactive);
-    }
     let provenance = Arc::new(Provenance::new(
         runtime,
         identity.clone(),
@@ -146,6 +147,7 @@ pub(super) fn prepare<B>(
             None,
             Ok(&[]),
             crate::circuit_runtime::now(),
+            head_hook.as_ref(),
         ) {
             Ok(failed) => failed,
             Err(_) => return Ok(Admission::HookError),
@@ -166,6 +168,9 @@ pub(super) fn prepare<B>(
                 .headers_mut()
                 .insert("x-safeyolo-evidence-error", "true".parse()?);
         }
+        if let Some(hook) = &head_hook {
+            hook.evaluated("blocked", Some(serde_json::json!({"status":status}).into()));
+        }
         return Ok(Admission::Block(super::prior_block(response)));
     }
     let valid_context = matches!(prepared.result(), Ok(RequestOutcome::Applied { .. }));
@@ -183,6 +188,7 @@ pub(super) fn prepare<B>(
         skip_logger: false,
         port: destination.port,
         valid_context,
+        trace,
     }))
 }
 
@@ -191,6 +197,7 @@ impl RequestContext {
     pub(super) fn traffic_only<B>(
         request: &mut Request<B>,
         skip_logger: bool,
+        trace: Option<Arc<RequestTrace>>,
     ) -> Result<Self, Error> {
         Ok(Self {
             pending: Some(Pending {
@@ -204,6 +211,7 @@ impl RequestContext {
             skip_logger,
             port: 0,
             valid_context: false,
+            trace,
         })
     }
 
@@ -213,6 +221,10 @@ impl RequestContext {
 
     pub(super) fn traffic(&self) -> Option<Arc<super::traffic::Traffic>> {
         self.traffic.clone()
+    }
+
+    pub(super) fn trace(&self) -> Option<Arc<RequestTrace>> {
+        self.trace.clone()
     }
 
     /// Small buffered requests must cross the independent parser barrier before
@@ -296,7 +308,20 @@ impl RequestContext {
             .map_err(|error| *error);
         let outcome = match (pending.prepared, self.provenance.as_deref()) {
             (Some(prepared), Some(provenance)) => {
-                apply(provenance, self.port, prepared, content, encoding, started)
+                // Measure the reached application, not the pending upload interval.
+                let hook = self
+                    .trace
+                    .as_ref()
+                    .and_then(|trace| trace.hook("test-context", "request"));
+                apply(
+                    provenance,
+                    self.port,
+                    prepared,
+                    content,
+                    encoding,
+                    started,
+                    hook.as_ref(),
+                )
             }
             _ => Ok(false),
         };
@@ -323,6 +348,18 @@ fn report_core_error(kind: ContextErrorKind) {
     eprintln!("Test context request hook failed: {kind:?}");
 }
 
+fn trace_core_error(hook: Option<&TraceHook>, kind: ContextErrorKind) {
+    if let Some(hook) = hook {
+        hook.error(match kind {
+            ContextErrorKind::Value => "ValueError",
+            ContextErrorKind::Overflow => "OverflowError",
+            ContextErrorKind::Type => "TypeError",
+            ContextErrorKind::Attribute => "AttributeError",
+            ContextErrorKind::Poisoned => "ContextPoisoned",
+        });
+    }
+}
+
 fn apply(
     provenance: &Provenance,
     port: u16,
@@ -330,10 +367,12 @@ fn apply(
     content: Option<&[u8]>,
     encoding: Result<&[u8], ContentError>,
     started: f64,
+    hook: Option<&TraceHook>,
 ) -> Result<bool, bool> {
     let application = match prepared.begin() {
         Ok(application) => application,
         Err(error) => {
+            trace_core_error(hook, error.kind());
             report_core_error(error.kind());
             return Err(error.kind() == ContextErrorKind::Poisoned);
         }
@@ -348,6 +387,7 @@ fn apply(
         Ok(RequestOutcome::Block { reason, .. }) => provenance.decision(*reason, true, port),
         Ok(RequestOutcome::PriorResponse | RequestOutcome::NotTargetHost) => Ok(false),
         Err(error) => {
+            trace_core_error(hook, error.kind());
             report_core_error(error.kind());
             return Err(error.kind() == ContextErrorKind::Poisoned);
         }
@@ -355,6 +395,9 @@ fn apply(
     let failed = match submitted {
         Ok(failed) => failed,
         Err(error) => {
+            if let Some(hook) = hook {
+                hook.error(error.trace_reason());
+            }
             eprintln!("Test context request hook failed: {error}");
             return Err(error.evidence_failed());
         }
@@ -362,8 +405,24 @@ fn apply(
     // Canonical submission succeeded. An asynchronous writer sink failure does
     // not undo terminal counters; a separate diagnostic failure only marks evidence.
     match application.finish() {
-        Ok(_) => Ok(failed),
+        Ok(outcome) => {
+            if let Some(hook) = hook {
+                match outcome {
+                    RequestOutcome::Applied { applied } => hook.evaluated(
+                        "allowed",
+                        Some(serde_json::json!({"context_source":applied.source}).into()),
+                    ),
+                    RequestOutcome::Warn { .. } => hook.evaluated("warned", None),
+                    RequestOutcome::NotTargetHost => hook.evaluated("not_target_host", None),
+                    RequestOutcome::PriorResponse => hook.bypassed("prior_response"),
+                    // The caller must construct the actual reply first.
+                    RequestOutcome::Block { .. } => {}
+                }
+            }
+            Ok(failed)
+        }
         Err(error) => {
+            trace_core_error(hook, error.kind());
             report_core_error(error.kind());
             Err(failed || error.kind() == ContextErrorKind::Poisoned)
         }

@@ -50,7 +50,7 @@ async fn request(directory: &Path, agent: &str, port: u16, length: usize) -> Uni
         .await
         .unwrap();
     stream.write_all(format!(
-        "POST http://{HOST}:{port}/owned HTTP/1.1\r\nHost: {HOST}:{port}\r\nContent-Length: {length}\r\nX-SafeYolo-Agent: forged-owner\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
+        "POST http://{HOST}:{port}/owned HTTP/1.1\r\nHost: {HOST}:{port}\r\nContent-Length: {length}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Agent: forged-owner\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
     ).as_bytes()).await.unwrap();
     stream
 }
@@ -88,6 +88,35 @@ fn circuit_stats(runtime: &Runtime) -> Value {
         .stats(true, crate::circuit_runtime::now(), &mut || 0.5)
         .unwrap()
         .value
+}
+
+fn trace_steps(runtime: &Runtime, response: &[u8], agent: &str) -> Vec<Value> {
+    let id = String::from_utf8_lossy(response)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-safeyolo-request-id")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap();
+    let report = runtime
+        .traces
+        .get(&id, Some(agent), crate::circuit_runtime::now())
+        .unwrap()
+        .unwrap();
+    report["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| {
+            json!([
+                step["addon"],
+                step["hook"],
+                step["state"],
+                step.get("outcome").or_else(|| step.get("reason")).unwrap()
+            ])
+        })
+        .collect()
 }
 
 fn check_open(event: &Value) {
@@ -128,6 +157,30 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
     let origin = timeout(LIMIT, peer).await.unwrap().unwrap();
     let denied = reply(request(directory.path(), "bob", port, 0).await).await;
     assert!(denied.starts_with(b"HTTP/1.1 503"));
+    assert_eq!(
+        trace_steps(&runtime, &response, "alice"),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!(["test-context", "request", "evaluated", "not_target_host"]),
+            json!([
+                "circuit-breaker",
+                "response",
+                "evaluated",
+                "failure_recorded"
+            ]),
+            json!(["test-context", "response", "evaluated", "not_applicable"]),
+        ]
+    );
+    assert_eq!(
+        trace_steps(&runtime, &denied, "bob"),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "evaluated", "blocked"]),
+            json!(["circuit-breaker", "response", "evaluated", "prior_block"]),
+            json!(["test-context", "response", "evaluated", "not_applicable"]),
+        ]
+    );
     assert!(
         timeout(Duration::from_millis(20), origin.accept())
             .await
@@ -239,6 +292,20 @@ async fn early_response_open_omits_unreached_source_correlation() {
     timeout(LIMIT, peer).await.unwrap().unwrap();
     proxy.shutdown().await;
     assert_eq!(logger_stats(&runtime)["requests_total"], 0);
+    assert_eq!(
+        trace_steps(&runtime, &head, "alice"),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!([
+                "circuit-breaker",
+                "response",
+                "evaluated",
+                "failure_recorded"
+            ]),
+            json!(["test-context", "response", "evaluated", "not_applicable"]),
+        ]
+    );
     assert_eq!(logger_stats(&runtime)["responses_total"], 1);
     let rows = records(directory.path());
     assert_eq!(rows.len(), 2);
@@ -293,6 +360,15 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
     assert_eq!(stats["opens_total"], 1);
     assert_eq!(stats["checks_total"], 1);
     assert_eq!(logger_stats(&runtime)["responses_total"], 0);
+    assert_eq!(
+        trace_steps(&runtime, &response, "alice"),
+        vec![
+            json!(["network-guard", "request", "evaluated", "allowed"]),
+            json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!(["test-context", "request", "evaluated", "not_target_host"]),
+            json!(["circuit-breaker", "response", "error", "AuditError"]),
+        ]
+    );
     assert_eq!(
         runtime.flow_recorder.stats(),
         json!({"recorded":0,"errors":0,"skipped":0})

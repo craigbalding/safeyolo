@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::net::{TcpStream, UnixStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
+use crate::request_trace::RequestTrace;
 use crate::tunnels::{self, BoxStream, Protocol};
 use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, UpgradeTasks, is_reserved};
 
@@ -612,11 +613,21 @@ async fn decide(
     runtime: &Runtime,
     identity: &ConnectionIdentity,
     request: &PolicyRequest<'_>,
+    trace: Option<&Arc<RequestTrace>>,
 ) -> Result<PolicyDecision, Error> {
     if let Some(policy) = &runtime.policy {
         use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
 
-        let started = request.trace_requested.then(std::time::Instant::now);
+        let trace = trace.and_then(|trace| {
+            trace.hook(
+                "network-guard",
+                if request.method == "CONNECT" {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
         let result = runtime.network_guard.enforce_with_audit_and_trace(
             Pdp::Ready(policy),
             Request {
@@ -644,10 +655,14 @@ async fn decide(
                     .map(|_| ())
                     .map_err(|error| crate::network_guard::GuardError(error.to_string()))
             },
-            |intent| network_trace::observe(runtime, request, started, intent),
+            |intent| network_trace::observe(trace.as_ref(), intent),
         );
-        if result.is_err() {
-            network_trace::failed(runtime, request, started);
+        if result.is_err()
+            && let Some(trace) = &trace
+        {
+            // GuardError erases native producer categories; its diagnostic
+            // text cannot establish a corresponding source exception class.
+            trace.error("GuardError");
         }
         let outcome = result?;
         // Development guard evidence excludes the URL query and application
@@ -799,6 +814,7 @@ async fn local_agent_api(
     request_id: &str,
     request: &mut Request<Incoming>,
     destination: &Destination,
+    trace: Option<&Arc<RequestTrace>>,
 ) -> Result<Response<Body>, Error> {
     use crate::agent_api::{self, Failure, PolicyState};
 
@@ -926,7 +942,10 @@ async fn local_agent_api(
     let eligible =
         (local_observation.decoded_size.is_some() || terminal_body) && observer.await.is_ok();
     let traffic = if eligible {
-        ordered_headers.apply_hygiene(request.headers_mut());
+        let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
+        if let Some(trace) = trace {
+            trace.enable(hygiene.trace_requested);
+        }
         let traffic = traffic::Traffic::new(state, identity, request_id, request, destination);
         traffic.begin_request();
         let encoding = test_context::combined(request.headers(), header::CONTENT_ENCODING);
@@ -1008,9 +1027,14 @@ fn circuit_admission(
     request_id: &str,
     method: &str,
     destination: &Destination,
+    trace: Option<&Arc<RequestTrace>>,
 ) -> (Option<Response<Body>>, bool, bool) {
     use crate::circuits::{CircuitValue, RequestDecision, RequestGate};
+    let trace = trace.and_then(|trace| trace.hook("circuit-breaker", "request"));
     let Ok(runtime) = state.read() else {
+        if let Some(trace) = &trace {
+            trace.error("CircuitRuntimeUnavailable");
+        }
         eprintln!("Circuit request runtime unavailable");
         return (None, true, true);
     };
@@ -1037,11 +1061,13 @@ fn circuit_admission(
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(error) => {
+            crate::circuit_runtime::trace_error(trace.as_ref(), &error);
             eprintln!("Circuit request operation failed: {:?}", error.kind());
             let failed = crate::circuit_runtime::record_transitions(&runtime, error.events(), None);
             return (None, failed, true);
         }
     };
+    crate::circuit_runtime::trace_request_decision(trace.as_ref(), &outcome.value);
     let mut failed = crate::circuit_runtime::record_transitions(&runtime, &outcome.events, None);
     let RequestDecision::Blocked {
         status,
@@ -1135,8 +1161,18 @@ fn circuit_admission(
         Ok(reply)
     })();
     match reply {
-        Ok(reply) => (Some(reply), failed, false),
-        Err(_) => {
+        Ok(reply) => {
+            crate::circuit_runtime::trace_request_blocked(trace.as_ref());
+            (Some(reply), failed, false)
+        }
+        Err(error) => {
+            if let Some(error) = error.downcast_ref::<crate::circuits::Error>() {
+                crate::circuit_runtime::trace_error(trace.as_ref(), error);
+            } else if let Some(error) = error.downcast_ref::<crate::audit::Error>() {
+                crate::circuit_runtime::trace_audit_error(trace.as_ref(), error.kind());
+            } else if let Some(trace) = &trace {
+                trace.error("CircuitResponseError");
+            }
             eprintln!("Circuit request response construction failed");
             (None, failed, true)
         }
@@ -1156,6 +1192,7 @@ async fn forward(
     recording: Arc<flow_recording::Recording>,
     destination: &Destination,
     tunnel: Option<&Tunnel>,
+    trace: Option<Arc<RequestTrace>>,
 ) -> Result<(Response<Body>, String), Error> {
     // CONNECT has its own source hook before destination policy and no
     // ordinary HTTP request body lifecycle. Observe each admission once.
@@ -1177,6 +1214,7 @@ async fn forward(
             Some(json!("admin_port_access")),
             destination,
             false,
+            trace.as_ref(),
         )?;
         return Ok((reply, "admin_port_access".into()));
     }
@@ -1203,6 +1241,7 @@ async fn forward(
                 request_id,
                 &mut request,
                 destination,
+                trace.as_ref(),
             )
             .await?;
             return Ok((prior_block(reply), "local".into()));
@@ -1243,6 +1282,7 @@ async fn forward(
             Some(json!("proxy_loop")),
             destination,
             false,
+            trace.as_ref(),
         )?;
         return Ok((prior_block(response), "deny".into()));
     }
@@ -1257,6 +1297,9 @@ async fn forward(
             .is_some_and(|value| value != "0");
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
     let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
+    if let Some(trace) = &trace {
+        trace.enable(hygiene.trace_requested);
+    }
     let decision = decide(
         &runtime,
         identity,
@@ -1286,6 +1329,7 @@ async fn forward(
             body_present,
             trace_requested: hygiene.trace_requested,
         },
+        trace.as_ref(),
     )
     .await?;
     if decision.allow != (decision.decision == "allow") {
@@ -1313,6 +1357,7 @@ async fn forward(
             decision.block_reason,
             destination,
             true,
+            trace.as_ref(),
         )?;
         return Ok((prior_block(denied), decision.decision));
     }
@@ -1414,6 +1459,7 @@ async fn forward(
         request_id,
         request.method().as_str(),
         destination,
+        trace.as_ref(),
     );
     if let Some(mut reply) = circuit_block {
         traffic::local_reply(
@@ -1424,6 +1470,7 @@ async fn forward(
             None,
             destination,
             true,
+            trace.as_ref(),
         )?;
         return Ok((prior_block(reply), "deny".into()));
     }
@@ -1439,14 +1486,15 @@ async fn forward(
             request_id,
             &mut request,
             destination,
+            trace.clone(),
         )?
     };
     let mut context = match admission {
         request_context::Admission::Inactive => {
-            request_context::RequestContext::traffic_only(&mut request, false)?
+            request_context::RequestContext::traffic_only(&mut request, false, trace.clone())?
         }
         request_context::Admission::HookError => {
-            request_context::RequestContext::traffic_only(&mut request, true)?
+            request_context::RequestContext::traffic_only(&mut request, true, trace.clone())?
         }
         request_context::Admission::Block(mut response) => {
             traffic::local_reply(
@@ -1457,6 +1505,7 @@ async fn forward(
                 None,
                 destination,
                 true,
+                trace.as_ref(),
             )?;
             return Ok((prior_block(response), "deny".into()));
         }
@@ -1741,6 +1790,22 @@ pub(crate) fn serve_request(
         let _pending_recording = recording.pending();
         let destination =
             Destination::from_request(&request, tunnel.as_ref().map(|tunnel| &tunnel.destination));
+        // Presence allocates an inert carrier; the existing ordered header
+        // hygiene decides whether the opt-in is nonempty and actually reached.
+        let trace = destination
+            .as_ref()
+            .ok()
+            .filter(|_| request.headers().contains_key("x-safeyolo-trace"))
+            .map(|destination| {
+                Arc::new(RequestTrace::new(
+                    runtime.traces.clone(),
+                    &identity,
+                    &request_id,
+                    request.method().as_str(),
+                    &destination.policy_host,
+                    destination.port,
+                ))
+            });
         let result = match &destination {
             Ok(destination) => {
                 forward(
@@ -1753,6 +1818,7 @@ pub(crate) fn serve_request(
                     recording.clone(),
                     destination,
                     tunnel.as_deref(),
+                    trace.clone(),
                 )
                 .await
             }
@@ -1783,7 +1849,11 @@ pub(crate) fn serve_request(
                 .is_some()
             && let Ok(destination) = &destination
         {
-            crate::circuit_runtime::local_blocked_response(&state, &destination.policy_host)
+            crate::circuit_runtime::local_blocked_response(
+                &state,
+                &destination.policy_host,
+                trace.as_ref(),
+            )
         } else {
             crate::circuit_runtime::ResponseOutcome::Complete {
                 evidence_failed: false,
@@ -1798,6 +1868,13 @@ pub(crate) fn serve_request(
         } else {
             // Upstream/deferred recording stays with Completion. Local response
             // recording follows the same earlier circuit exception boundary.
+            if reply.extensions().get::<traffic::LocalResponse>().is_some()
+                && let Some(trace) = trace
+                    .as_ref()
+                    .and_then(|trace| trace.hook("test-context", "response"))
+            {
+                trace.evaluated("not_applicable", None);
+            }
             recording.local_terminal(false);
         }
         if matches!(

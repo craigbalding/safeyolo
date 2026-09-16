@@ -2,16 +2,25 @@
 
 use std::{
     path::Path,
-    sync::mpsc::{self, RecvTimeoutError},
+    sync::{
+        Arc,
+        mpsc::{self, RecvTimeoutError},
+    },
     thread::{self, JoinHandle},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{ConnectionIdentity, Error, Runtime, RuntimeState, circuits};
+use crate::{
+    ConnectionIdentity, Error, Runtime, RuntimeState, circuits,
+    request_trace::{RequestTrace, TraceHook},
+};
 
 #[cfg(test)]
 #[path = "circuit_runtime_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "circuit_runtime/trace_tests.rs"]
+mod trace_tests;
 
 pub(crate) fn now() -> f64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -114,6 +123,7 @@ pub(crate) fn completed_response(
     source_metadata_reached: bool,
     host: &str,
     status: u16,
+    trace: Option<&Arc<RequestTrace>>,
 ) -> ResponseOutcome {
     response_operation(
         state,
@@ -122,11 +132,16 @@ pub(crate) fn completed_response(
         host,
         Some(status),
         false,
+        trace,
     )
 }
 
-pub(crate) fn local_blocked_response(state: &RuntimeState, host: &str) -> ResponseOutcome {
-    response_operation(state, None, false, host, None, true)
+pub(crate) fn local_blocked_response(
+    state: &RuntimeState,
+    host: &str,
+    trace: Option<&Arc<RequestTrace>>,
+) -> ResponseOutcome {
+    response_operation(state, None, false, host, None, true, trace)
 }
 
 fn response_operation(
@@ -136,8 +151,13 @@ fn response_operation(
     host: &str,
     status: Option<u16>,
     prior_block: bool,
+    trace: Option<&Arc<RequestTrace>>,
 ) -> ResponseOutcome {
+    let trace = trace.and_then(|trace| trace.hook("circuit-breaker", "response"));
     let Ok(runtime) = state.read() else {
+        if let Some(trace) = &trace {
+            trace.error("CircuitRuntimeUnavailable");
+        }
         eprintln!("Circuit response runtime unavailable");
         return ResponseOutcome::Exception {
             evidence_failed: true,
@@ -167,10 +187,14 @@ fn response_operation(
         &audit,
     );
     let outcome = match result {
-        Ok(outcome) => ResponseOutcome::Complete {
-            evidence_failed: record_transitions(&runtime, &outcome.events, scope),
-        },
+        Ok(outcome) => {
+            trace_response_decision(trace.as_ref(), outcome.value, status);
+            ResponseOutcome::Complete {
+                evidence_failed: record_transitions(&runtime, &outcome.events, scope),
+            }
+        }
         Err(error) => {
+            trace_error(trace.as_ref(), &error);
             // Preserve emitted transitions and committed state, but the shared
             // ProductionAddons exception boundary skips later response hooks.
             eprintln!("Circuit response operation failed: {:?}", error.kind());
@@ -185,6 +209,104 @@ fn response_operation(
         eprintln!("Circuit response evidence write failed");
     }
     outcome
+}
+
+/// Observe a reached nonblocked request decision without querying state again.
+/// A blocked core decision is incomplete until the caller constructs its reply.
+pub(crate) fn trace_request_decision(
+    trace: Option<&TraceHook>,
+    decision: &circuits::RequestDecision,
+) {
+    use circuits::{RequestDecision, State};
+    let Some(trace) = trace else { return };
+    match decision {
+        RequestDecision::AddonDisabled => trace.bypassed("addon_disabled"),
+        RequestDecision::PriorResponse => trace.bypassed("prior_response"),
+        RequestDecision::PolicyDisabled => trace.bypassed("policy_disabled"),
+        RequestDecision::ExcludedDomain => trace.evaluated("excluded_domain", None),
+        RequestDecision::Allowed { status } => {
+            let state = match status.state {
+                State::Closed => "closed",
+                State::Open => "open",
+                State::HalfOpen => "half_open",
+            };
+            trace.evaluated(
+                "allowed",
+                Some(serde_json::json!({"circuit_state":state}).into()),
+            );
+        }
+        RequestDecision::Blocked { .. } => (),
+    }
+}
+
+/// Call only after the canonical denial audit and response construction succeed.
+pub(crate) fn trace_request_blocked(trace: Option<&TraceHook>) {
+    if let Some(trace) = trace {
+        trace.evaluated("blocked", Some(serde_json::json!({"status":503}).into()));
+    }
+}
+
+fn trace_response_decision(
+    trace: Option<&TraceHook>,
+    decision: circuits::ResponseDecision,
+    status: Option<u16>,
+) {
+    use circuits::ResponseDecision;
+    let Some(trace) = trace else { return };
+    match decision {
+        ResponseDecision::AddonDisabled => trace.bypassed("addon_disabled"),
+        ResponseDecision::PriorBlock => trace.evaluated("prior_block", None),
+        ResponseDecision::NoResponse => (),
+        ResponseDecision::ExcludedDomain => trace.evaluated("excluded_domain", None),
+        ResponseDecision::SuccessRecorded
+        | ResponseDecision::FailureRecorded
+        | ResponseDecision::StatusNoAction => {
+            let outcome = match decision {
+                ResponseDecision::SuccessRecorded => "success_recorded",
+                ResponseDecision::FailureRecorded => "failure_recorded",
+                ResponseDecision::StatusNoAction => "status_no_action",
+                _ => unreachable!("matched response classification"),
+            };
+            trace.evaluated(
+                outcome,
+                status.map(|code| serde_json::json!({"status_code":code}).into()),
+            );
+        }
+    }
+}
+
+/// Typed operation categories only; diagnostic text is never a class oracle.
+pub(crate) fn trace_error(trace: Option<&TraceHook>, error: &circuits::Error) {
+    if let Some(trace) = trace {
+        let reason = match error.kind() {
+            circuits::ErrorKind::Type => "TypeError",
+            circuits::ErrorKind::Value => "ValueError",
+            circuits::ErrorKind::Overflow => "OverflowError",
+            circuits::ErrorKind::ZeroDivision => "ZeroDivisionError",
+            circuits::ErrorKind::Invalid | circuits::ErrorKind::Compatibility => "CircuitError",
+            circuits::ErrorKind::Audit(kind) => audit_error_reason(kind),
+        };
+        trace.error(reason);
+    }
+}
+
+/// Canonical denial submission has the same concrete writer error boundary.
+pub(crate) fn trace_audit_error(trace: Option<&TraceHook>, kind: crate::audit::ErrorKind) {
+    if let Some(trace) = trace {
+        trace.error(audit_error_reason(kind));
+    }
+}
+
+fn audit_error_reason(kind: crate::audit::ErrorKind) -> &'static str {
+    match kind {
+        crate::audit::ErrorKind::ThreadStart => "RuntimeError",
+        // The writer erases the concrete stderr error (including possible
+        // source subclasses such as BrokenPipeError), so retain a native label.
+        crate::audit::ErrorKind::Io => "AuditIo",
+        crate::audit::ErrorKind::Configuration
+        | crate::audit::ErrorKind::Encoding
+        | crate::audit::ErrorKind::Poisoned => "AuditError",
+    }
 }
 
 /// One process-owned worker. Runtime publication and snapshot path selection

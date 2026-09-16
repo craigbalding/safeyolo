@@ -1,4 +1,7 @@
 use super::*;
+
+#[path = "trace_tests.rs"]
+mod trace_tests;
 use bytes::Bytes;
 use http_body_util::Empty;
 use hyper::{StatusCode, service::service_fn};
@@ -82,6 +85,7 @@ impl Fixture {
             "owned-request",
             request,
             &self.destination(),
+            None,
         )
     }
 
@@ -387,6 +391,7 @@ async fn decode_failure_keeps_metadata_for_response_but_not_allowed_counter() {
         context.response_provenance(),
         None,
         None,
+        None,
     );
     hyper::ext::ResponseBodyCapture::head(&capture, StatusCode::OK, &hyper::HeaderMap::new(), true);
     assert!(!capture.finish(true));
@@ -592,7 +597,15 @@ fn canonical_test_context_events_and_submission_effects_match_source_hooks() {
         if case.ends_with("error") && case != "applied_response_error" {
             fixture.runtime.audit.poison_for_test();
         }
-        let result = apply(&provenance, 8123, prepared, Some(b"body"), Ok(b""), 0.);
+        let result = apply(
+            &provenance,
+            8123,
+            prepared,
+            Some(b"body"),
+            Ok(b""),
+            0.,
+            None,
+        );
         let mut errors = Vec::new();
         if result.is_err() {
             errors.push("request");
@@ -627,6 +640,7 @@ fn canonical_test_context_events_and_submission_effects_match_source_hooks() {
                 Some(provenance),
                 Some(traffic),
                 Some(recording),
+                None,
             );
             hyper::ext::ResponseBodyCapture::head(
                 &capture,
@@ -738,6 +752,7 @@ async fn canonical_sink_fallback_keeps_context_counters_and_response_children() 
         context.response_provenance(),
         Some(traffic),
         Some(recording),
+        None,
     );
     hyper::ext::ResponseBodyCapture::head(&capture, StatusCode::OK, &hyper::HeaderMap::new(), true);
     assert!(!capture.finish(true));

@@ -278,6 +278,7 @@ impl LocalResponse {
 
 /// A head-selected local reply may have a genuinely completed empty request.
 /// Do not poll/drain body frames or wait for a missing terminal to create logs.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn local_reply<B: hyper::body::Body>(
     traffic: Option<&Arc<Traffic>>,
     request: &mut Request<B>,
@@ -286,6 +287,7 @@ pub(super) fn local_reply<B: hyper::body::Body>(
     block_reason: Option<serde_json::Value>,
     destination: &super::Destination,
     hygiene_applied: bool,
+    trace: Option<&Arc<crate::request_trace::RequestTrace>>,
 ) -> Result<(), crate::Error> {
     use hyper::body::Body as _;
     let Some(traffic) = traffic.filter(|_| request.body().is_end_stream()) else {
@@ -302,7 +304,10 @@ pub(super) fn local_reply<B: hyper::body::Body>(
     }
     if !hygiene_applied {
         let mut headers = crate::request_headers::RequestHeaders::take(request)?;
-        headers.apply_hygiene(request.headers_mut());
+        let hygiene = headers.apply_hygiene(request.headers_mut());
+        if let Some(trace) = trace {
+            trace.enable(hygiene.trace_requested);
+        }
     }
     traffic.request_headers(request, destination);
     let encoding = super::test_context::combined(request.headers(), header::CONTENT_ENCODING);

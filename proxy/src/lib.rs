@@ -37,6 +37,7 @@ mod python_json;
 mod python_text;
 mod request_headers;
 mod request_logger;
+mod request_trace;
 pub mod services;
 pub mod tasks;
 pub mod test_context;
