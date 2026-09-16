@@ -1,0 +1,5568 @@
+{
+  "rows": [
+    {
+      "input": {
+        "name": "baseline_strict_float_mtime_and_invalid_retry",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 1700000000000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "equal",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "equal"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1700000000000000000
+              }
+            }
+          },
+          {
+            "name": "older",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "older"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1699999999000000000
+              }
+            }
+          },
+          {
+            "name": "deleted",
+            "remove": [
+              "policy.yaml"
+            ]
+          },
+          {
+            "name": "restored_equal",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "restored"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1700000000000000000
+              }
+            }
+          },
+          {
+            "name": "one_ns_same_float",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "one ns"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1700000000000000001
+              }
+            }
+          },
+          {
+            "name": "newer_valid",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "newer"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1700000002000000000
+              }
+            }
+          },
+          {
+            "name": "newer_invalid",
+            "write": {
+              "policy.yaml": {
+                "text": "[invalid",
+                "mtime_ns": 1700000004000000000
+              }
+            }
+          },
+          {
+            "name": "unchanged_invalid_retries"
+          },
+          {
+            "name": "repair_same_candidate_mtime",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "repaired"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 1700000004000000000
+              }
+            }
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 1700000000.0,
+                "addons": 0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 1700000000.0,
+            "addons": 0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "equal",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000000.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "older",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1699999999.0,
+              "mtime_ns": 1699999999000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1699999999.0,
+              "mtime_ns": 1699999999000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1699999999.0,
+              "mtime_ns": 1699999999000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000000.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "deleted",
+          "timeline": [
+            {
+              "phase": "stat_raise",
+              "path": "policy.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat_raise",
+              "path": "policy.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Policy file not found: <owned>/0/policy.yaml"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000000.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "restored_equal",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000000.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "one_ns_same_float",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000001
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000001
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000000.0,
+              "mtime_ns": 1700000000000000001
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000000.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "newer_valid",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000002.0,
+              "mtime_ns": 1700000002000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 1700000002.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "newer",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000002.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "newer",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "newer_invalid",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_error",
+              "accepted": true
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": false
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_error",
+                "kind": "ops",
+                "severity": "high",
+                "summary": "Baseline policy file not found or invalid",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "error": "File not found or invalid"
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 1700000002.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "newer",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            false
+          ],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "ERROR",
+              "message": "Failed to load <owned>/0/policy.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+            },
+            {
+              "level": "ERROR",
+              "message": "Failed to load <owned>/0/policy.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000002.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "newer",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "unchanged_invalid_retries",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_error",
+              "accepted": true
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": false
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_error",
+                "kind": "ops",
+                "severity": "high",
+                "summary": "Baseline policy file not found or invalid",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "error": "File not found or invalid"
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 1700000002.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "newer",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            false
+          ],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "ERROR",
+              "message": "Failed to load <owned>/0/policy.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+            },
+            {
+              "level": "ERROR",
+              "message": "Failed to load <owned>/0/policy.yaml: ParserError: while parsing a flow sequence\n  in \"<unicode string>\", line 1, column 1:\n    [invalid\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 1, column 9:\n    [invalid\n            ^"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000002.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "newer",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "repair_same_candidate_mtime",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 1700000004.0,
+              "mtime_ns": 1700000004000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 1700000004.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "repaired",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 1700000004.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "repaired",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "addon_lifecycle_retains_absent_watermark",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "appears",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "required": [
+                    "network-guard"
+                  ]
+                },
+                "mtime_ns": 50000000000
+              }
+            }
+          },
+          {
+            "name": "changes",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "required": [
+                    "circuit-breaker"
+                  ]
+                },
+                "mtime_ns": 70000000000
+              }
+            }
+          },
+          {
+            "name": "deleted",
+            "remove": [
+              "addons.yaml"
+            ]
+          },
+          {
+            "name": "baseline_load_while_addon_absent",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "without addon"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 200000000000
+              }
+            }
+          },
+          {
+            "name": "reappears_older_than_stale_mark",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "required": [
+                    "request-logger"
+                  ]
+                },
+                "mtime_ns": 60000000000
+              }
+            }
+          },
+          {
+            "name": "reappears_newer",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "required": [
+                    "test-context"
+                  ]
+                },
+                "mtime_ns": 80000000000
+              }
+            }
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "appears",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 100.0,
+                  "addons": 50.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "initial",
+                  "required": [
+                    "network-guard"
+                  ],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 50.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [
+                "network-guard"
+              ],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "changes",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 70.0,
+              "mtime_ns": 70000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 100.0,
+                  "addons": 70.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "initial",
+                  "required": [
+                    "circuit-breaker"
+                  ],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 70.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [
+                "circuit-breaker"
+              ],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "deleted",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 70.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [
+                "circuit-breaker"
+              ],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "baseline_load_while_addon_absent",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 70.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "without addon",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 70.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "without addon",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "reappears_older_than_stale_mark",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 70.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "without addon",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "reappears_newer",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 80.0,
+              "mtime_ns": 80000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 80.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "without addon",
+                  "required": [
+                    "test-context"
+                  ],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 80.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "without addon",
+              "required": [
+                "test-context"
+              ],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "raw_lists_all_strings_use_one_maximum",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "hosts": {
+                "$used": {
+                  "egress": "allow"
+                }
+              },
+              "lists": {
+                "used": "used.txt",
+                "unused": "unused.txt",
+                "missing": "missing.txt",
+                "not_string": 7
+              }
+            },
+            "mtime_ns": 10000000000
+          },
+          "used.txt": {
+            "text": "initial.invalid\n",
+            "mtime_ns": 100000000000
+          },
+          "unused.txt": {
+            "text": "unreferenced.invalid\n",
+            "mtime_ns": 500000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "used_changes_below_unrelated_max",
+            "write": {
+              "used.txt": {
+                "text": "changed.invalid\n",
+                "mtime_ns": 400000000000
+              }
+            }
+          },
+          {
+            "name": "missing_unreferenced_appears_above_max",
+            "write": {
+              "missing.txt": {
+                "text": "not-used.invalid\n",
+                "mtime_ns": 600000000000
+              }
+            }
+          },
+          {
+            "name": "maximum_list_deleted",
+            "remove": [
+              "missing.txt"
+            ]
+          },
+          {
+            "name": "used_exceeds_old_max",
+            "write": {
+              "used.txt": {
+                "text": "newest.invalid\n",
+                "mtime_ns": 700000000000
+              }
+            }
+          },
+          {
+            "name": "unreferenced_list_triggers",
+            "write": {
+              "unused.txt": {
+                "text": "still-unused.invalid\n",
+                "mtime_ns": 800000000000
+              }
+            }
+          },
+          {
+            "name": "used_list_deleted_without_new_max",
+            "remove": [
+              "used.txt"
+            ]
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 500.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 10.0,
+                "addons": 0,
+                "lists": 500.0
+              },
+              "policy": {
+                "description": null,
+                "required": [],
+                "permissions_count": 0,
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "initial.invalid/*"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 10.0,
+            "addons": 0,
+            "lists": 500.0
+          },
+          "policy": {
+            "description": null,
+            "required": [],
+            "permissions_count": 0,
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "initial.invalid/*"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "used_changes_below_unrelated_max",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 500.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 500.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "initial.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing_unreferenced_appears_above_max",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat",
+              "path": "missing.txt",
+              "mtime": 600.0,
+              "mtime_ns": 600000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 600.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat",
+              "path": "missing.txt",
+              "mtime": 600.0,
+              "mtime_ns": 600000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 600.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 10.0,
+                  "addons": 0,
+                  "lists": 600.0
+                },
+                "policy": {
+                  "description": null,
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": [
+                    {
+                      "action": "network:request",
+                      "effect": "allow",
+                      "resources": [
+                        "changed.invalid/*"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 600.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "changed.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "maximum_list_deleted",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 500.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 600.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "changed.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "used_exceeds_old_max",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 700.0,
+              "mtime_ns": 700000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 700.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 700.0,
+              "mtime_ns": 700000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 500.0,
+              "mtime_ns": 500000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 700.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 10.0,
+                  "addons": 0,
+                  "lists": 700.0
+                },
+                "policy": {
+                  "description": null,
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": [
+                    {
+                      "action": "network:request",
+                      "effect": "allow",
+                      "resources": [
+                        "newest.invalid/*"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 700.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "newest.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "unreferenced_list_triggers",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 700.0,
+              "mtime_ns": 700000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 800.0,
+              "mtime_ns": 800000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 800.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "used.txt",
+              "mtime": 700.0,
+              "mtime_ns": 700000000000
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 800.0,
+              "mtime_ns": 800000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 800.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 10.0,
+                  "addons": 0,
+                  "lists": 800.0
+                },
+                "policy": {
+                  "description": null,
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": [
+                    {
+                      "action": "network:request",
+                      "effect": "allow",
+                      "resources": [
+                        "newest.invalid/*"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 800.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "newest.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "used_list_deleted_without_new_max",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 10.0,
+              "mtime_ns": 10000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "used.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "stat",
+              "path": "unused.txt",
+              "mtime": 800.0,
+              "mtime_ns": 800000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "missing.txt",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 800.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 10.0,
+              "addons": 0,
+              "lists": 800.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "newest.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "addon_only_list_is_not_watched",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "hosts": {
+                "$addon": {
+                  "egress": "allow"
+                }
+              }
+            },
+            "mtime_ns": 100000000000
+          },
+          "addons.yaml": {
+            "document": {
+              "lists": {
+                "addon": "addon.txt"
+              }
+            },
+            "mtime_ns": 50000000000
+          },
+          "addon.txt": {
+            "text": "initial.invalid\n",
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "list_only_change",
+            "write": {
+              "addon.txt": {
+                "text": "changed.invalid\n",
+                "mtime_ns": 200000000000
+              }
+            }
+          },
+          {
+            "name": "addon_timestamp_triggers_expansion",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "lists": {
+                    "addon": "addon.txt"
+                  }
+                },
+                "mtime_ns": 60000000000
+              }
+            }
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "load_file",
+            "path": "addons.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 50.0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": null,
+                "required": [],
+                "permissions_count": 0,
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "initial.invalid/*"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 50.0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": null,
+            "required": [],
+            "permissions_count": 0,
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "initial.invalid/*"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "list_only_change",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 50.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "initial.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "addon_timestamp_triggers_expansion",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 60.0,
+              "mtime_ns": 60000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 100.0,
+                  "addons": 60.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": null,
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": [
+                    {
+                      "action": "network:request",
+                      "effect": "allow",
+                      "resources": [
+                        "changed.invalid/*"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 60.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": null,
+              "required": [],
+              "permissions_count": 0,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "changed.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "later_check_failure_prevents_earlier_trigger",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          },
+          "addons.yaml": {
+            "document": {},
+            "mtime_ns": 50000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "baseline_newer_then_addon_stat_denied",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "candidate"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 200000000000
+              }
+            },
+            "stat_error": {
+              "path": "addons.yaml",
+              "errno": "EACCES"
+            }
+          },
+          {
+            "name": "same_baseline_retries_after_stat_recovers"
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "load_file",
+            "path": "addons.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 50.0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 50.0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "baseline_newer_then_addon_stat_denied",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "PermissionError",
+              "errno": 13
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Policy watcher error: PermissionError: [Errno 13] Permission denied: '<owned>/4/addons.yaml'"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 50.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "same_baseline_retries_after_stat_recovers",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 50.0,
+              "mtime_ns": 50000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 50.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "candidate",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 50.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "candidate",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "success_audit_failure_publishes_watermarks",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "newer_success_submit_fails",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "published"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 200000000000
+              }
+            },
+            "audit_failures": [
+              "ops.policy_reload"
+            ]
+          },
+          {
+            "name": "unchanged_published_candidate_does_not_retry"
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "newer_success_submit_fails",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": false
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_error",
+              "accepted": true
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": false
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": false,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "published",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            },
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_error",
+                "kind": "ops",
+                "severity": "high",
+                "summary": "Baseline policy load failed: owned policy watcher submission failure",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "error": "owned policy watcher submission failure"
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "published",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            false
+          ],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "ERROR",
+              "message": "Failed to load baseline policy: RuntimeError: owned policy watcher submission failure"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "published",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "unchanged_published_candidate_does_not_retry",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "published",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "baseline_is_its_own_addon_sibling",
+        "baseline_path": "addons.yaml",
+        "initial_files": {
+          "addons.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "equal",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "equal"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 100000000000
+              }
+            }
+          },
+          {
+            "name": "newer",
+            "write": {
+              "addons.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "newer"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 101000000000
+              }
+            }
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "addons.yaml"
+          },
+          {
+            "phase": "load_file",
+            "path": "addons.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "addons.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 100.0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 100.0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "equal",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 100.0,
+              "mtime_ns": 100000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 100.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "newer",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "addons.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "addons.yaml",
+              "mtime": 101.0,
+              "mtime_ns": 101000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 101.0,
+                  "addons": 101.0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "newer",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 101.0,
+              "addons": 101.0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "newer",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "raw_list_scan_errors_prevent_reload",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "truthy_nonmapping",
+            "write": {
+              "policy.yaml": {
+                "document": [
+                  42
+                ],
+                "mtime_ns": 200000000000
+              }
+            }
+          },
+          {
+            "name": "nul_list_path",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "lists": {
+                    "bad": "bad\u0000path"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 300000000000
+              }
+            }
+          },
+          {
+            "name": "repair",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "repaired"
+                  },
+                  "permissions": []
+                },
+                "mtime_ns": 400000000000
+              }
+            }
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "truthy_nonmapping",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Policy watcher error: AttributeError: 'list' object has no attribute 'get'"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "nul_list_path",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 300.0,
+              "mtime_ns": 300000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 300.0,
+              "mtime_ns": 300000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 300.0,
+              "mtime_ns": 300000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "bad\u0000path",
+              "class": "ValueError",
+              "errno": null
+            }
+          ],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Policy watcher error: ValueError: stat: embedded null character in path"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "initial",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "repair",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 0
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 400.0,
+              "mtime_ns": 400000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 400.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "repaired",
+                  "required": [],
+                  "permissions_count": 0,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 400.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "repaired",
+              "required": [],
+              "permissions_count": 0,
+              "simple": []
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    },
+    {
+      "input": {
+        "name": "post_validation_stat_failure_partially_publishes",
+        "initial_files": {
+          "policy.yaml": {
+            "document": {
+              "metadata": {
+                "description": "initial"
+              },
+              "permissions": []
+            },
+            "mtime_ns": 100000000000
+          }
+        },
+        "iterations": [
+          {
+            "name": "new_model_then_stat_failure",
+            "write": {
+              "policy.yaml": {
+                "document": {
+                  "metadata": {
+                    "description": "partially published"
+                  },
+                  "permissions": [
+                    {
+                      "action": "network:request",
+                      "resource": "owned.invalid/*",
+                      "effect": "allow"
+                    }
+                  ]
+                },
+                "mtime_ns": 200000000000
+              }
+            },
+            "stat_error": {
+              "path": "policy.yaml",
+              "errno": "EACCES",
+              "after_validate": true
+            }
+          },
+          {
+            "name": "same_candidate_retries"
+          }
+        ]
+      },
+      "initial": {
+        "name": "initial",
+        "timeline": [
+          {
+            "phase": "baseline_load_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "model_validated",
+            "permissions_count": 0
+          },
+          {
+            "phase": "list_max_enter"
+          },
+          {
+            "phase": "load_file",
+            "path": "policy.yaml"
+          },
+          {
+            "phase": "list_max_return",
+            "mtime": 0.0
+          },
+          {
+            "phase": "audit",
+            "event": "ops.policy_reload",
+            "accepted": true
+          },
+          {
+            "phase": "callback"
+          },
+          {
+            "phase": "baseline_load_return",
+            "result": true
+          }
+        ],
+        "events": [
+          {
+            "event": {
+              "schema_version": 1,
+              "ts": "<canonical timestamp>",
+              "event": "ops.policy_reload",
+              "kind": "ops",
+              "severity": "medium",
+              "summary": "Baseline policy reloaded: 0 permissions",
+              "addon": "policy-loader",
+              "details": {
+                "policy_type": "baseline",
+                "permissions_count": 0
+              }
+            },
+            "accepted": true,
+            "state_at_submit": {
+              "watermarks": {
+                "baseline": 100.0,
+                "addons": 0,
+                "lists": 0.0
+              },
+              "policy": {
+                "description": "initial",
+                "required": [],
+                "permissions_count": 0,
+                "simple": []
+              }
+            }
+          }
+        ],
+        "loads": [
+          true
+        ],
+        "callbacks": 1,
+        "warnings": [],
+        "after": {
+          "watermarks": {
+            "baseline": 100.0,
+            "addons": 0,
+            "lists": 0.0
+          },
+          "policy": {
+            "description": "initial",
+            "required": [],
+            "permissions_count": 0,
+            "simple": []
+          }
+        }
+      },
+      "iterations": [
+        {
+          "name": "new_model_then_stat_failure",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 1
+            },
+            {
+              "phase": "stat_raise",
+              "path": "policy.yaml",
+              "class": "PermissionError",
+              "errno": 13
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_error",
+              "accepted": true
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": false
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_error",
+                "kind": "ops",
+                "severity": "high",
+                "summary": "Baseline policy load failed: [Errno 13] Permission denied: '<owned>/8/policy.yaml'",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "error": "[Errno 13] Permission denied: '<owned>/8/policy.yaml'"
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 100.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "partially published",
+                  "required": [],
+                  "permissions_count": 1,
+                  "simple": []
+                }
+              }
+            }
+          ],
+          "loads": [
+            false
+          ],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "ERROR",
+              "message": "Failed to load baseline policy: PermissionError: [Errno 13] Permission denied: '<owned>/8/policy.yaml'"
+            }
+          ],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 100.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "partially published",
+              "required": [],
+              "permissions_count": 1,
+              "simple": []
+            }
+          }
+        },
+        {
+          "name": "same_candidate_retries",
+          "timeline": [
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "baseline_load_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "model_validated",
+              "permissions_count": 1
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "stat_raise",
+              "path": "addons.yaml",
+              "class": "FileNotFoundError",
+              "errno": 2
+            },
+            {
+              "phase": "list_max_enter"
+            },
+            {
+              "phase": "load_file",
+              "path": "policy.yaml"
+            },
+            {
+              "phase": "stat",
+              "path": "policy.yaml",
+              "mtime": 200.0,
+              "mtime_ns": 200000000000
+            },
+            {
+              "phase": "list_max_return",
+              "mtime": 0.0
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload",
+              "accepted": true
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "baseline_load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 1 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 1
+                }
+              },
+              "accepted": true,
+              "state_at_submit": {
+                "watermarks": {
+                  "baseline": 200.0,
+                  "addons": 0,
+                  "lists": 0.0
+                },
+                "policy": {
+                  "description": "partially published",
+                  "required": [],
+                  "permissions_count": 1,
+                  "simple": [
+                    {
+                      "action": "network:request",
+                      "effect": "allow",
+                      "resources": [
+                        "owned.invalid/*"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after": {
+            "watermarks": {
+              "baseline": 200.0,
+              "addons": 0,
+              "lists": 0.0
+            },
+            "policy": {
+              "description": "partially published",
+              "required": [],
+              "permissions_count": 1,
+              "simple": [
+                {
+                  "action": "network:request",
+                  "effect": "allow",
+                  "resources": [
+                    "owned.invalid/*"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "thread": {
+        "name": "policy-watcher",
+        "daemon": true,
+        "actual_thread_started": false
+      }
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/policy/loader.py": "74f7da6c9c80c0b6e0cd1780a4d40e8c8e2e3ed81d4371da6cd8e9570c59ace4",
+    "cli/src/safeyolo/policy/list_loader.py": "f6902117f10eec98a84fa468019712a2b6bbb1ccb065692bc8a76bfde297df21",
+    "cli/src/safeyolo/policy/compiler.py": "56ce5b6a203fed9b43152c94695184f85ca334aab4507f22d84df1c8f9f3d77e",
+    "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
+  }
+}

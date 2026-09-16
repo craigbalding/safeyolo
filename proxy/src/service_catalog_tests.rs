@@ -3,6 +3,7 @@
 mod diagnostics;
 mod metadata;
 mod policy_events;
+mod policy_watch;
 mod reload;
 
 use super::*;

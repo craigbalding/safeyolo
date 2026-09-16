@@ -369,6 +369,7 @@ silently reduce accepted message sizes to a library default.
 | D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. |
 | D64 | Source probes that cross the existing streaming threshold attempt transport before the request sink, even when that sink is installed. The transport guard refuses locally. Source HTTP/1 returns HTML 502 without a request-ID header; its error hook records `error_type: Error`. | Native preserves the buffered/streamed distinction and refuses streamed probes without draining the remaining upload or publishing sink success. Its existing error response is correlated JSON 502, with the native trace category `NativeProbeTransportRefused`. Earlier native network/circuit admission still has the request-head timing described for the HTTP pipeline. Source lifecycle evidence is static; owned native HTTP/1 controls verify the local behavior. |
 | D65 | Source baseline loading publishes before its success audit submission. A synchronous submission failure attempts `ops.policy_error`, then returns false or raises even though the policy changed; subsequent callbacks are skipped. Catalog synchronization can then attempt a separate rollback and reload. | Native keeps policy, catalog, routes and tokens in one accepted snapshot. Audit failure attempts the source-shaped error event once and reports an evidence failure separately; it does not change a successful load result or roll back the catalog alone. A rejected load retains its original error if error-event submission also fails. The source failure behavior remains in the policy reload oracle. |
+| D66 | Source baseline loading publishes its validated model, then advances file timestamps before rebuilding permission indexes. A later file-observation failure can leave the new model, old indexes and partially advanced timestamps together while reporting a load failure. | Native compiles and observes all baseline/addon/list timestamps before publishing the candidate. An observation failure retains the previous policy and all accepted timestamps and attempts the existing later-load error event. This preserves atomic policy/catalog ownership; it does not claim an atomic filesystem snapshot. |
 
 ## Deletion map and evidence still required
 
@@ -979,6 +980,71 @@ selection/injection remain required migration work. Initial path resolution,
 including source symlink resolution before loading, remains separate from
 metadata checks on already configured directories.
 
+### Baseline file watching
+
+With a configured native policy, the process checks the baseline, sibling
+`addons.yaml` and referenced host-list files independently of service catalog
+changes. It uses the existing process control loop, with an immediate first
+check and a two-second wait after each attempt, including failure. Embedded
+`Proxy` callers drive `wait_for_policy_check` and `reload_policy_if_changed`.
+The separate catalog and policy deadlines do not suppress each other after an
+error. Removing the native policy configuration cancels subsequent policy
+checks; selecting another path makes its first check immediately eligible.
+An accepted explicit reload of the same path retains its current deadline.
+
+Each check compares modification times as floating-point seconds, as the source
+does. Only a strictly newer timestamp triggers a reload. Deletion, equal or
+older timestamps, and content changes with an unchanged timestamp do not trigger
+by themselves. Adjacent nanosecond timestamps can compare equal after float
+conversion. All three checks finish before a changed flag triggers loading;
+a later check error can prevent a reload detected by an earlier check.
+
+List observation re-reads the raw baseline on every check. It uses the maximum
+timestamp across every string value in the raw `lists` mapping, including lists
+unused by host rules. Relative paths use the baseline directory. Lists defined
+only in addon defaults do not participate. Missing or unreadable lists contribute
+no timestamp; an unrelated newer list can mask a change to an older list.
+An invalid baseline read commonly produces a zero list maximum, while a truthy
+nonmapping document or a NUL-containing list path can raise a check error.
+Existing native parser representation limits remain: for example, native JSON
+rejects `NaN` during decoding and returns a zero list maximum, while Python
+decodes it and then raises when the watcher expects a mapping.
+
+Successful file loads capture new baseline, addon and list timestamps after
+compilation. The candidate retains the previous addon timestamp when that
+sibling is absent and the baseline path is unchanged. An addon that later
+reappears at an equal or older timestamp can therefore remain unnoticed. A new
+baseline path starts new observation history. Source-string policy mutations
+retain the previous file observations. Explicit and catalog-driven file reloads
+refresh them, preventing a duplicate policy-watcher reload of the same state.
+
+A policy-file reload uses the accepted service registry and retains existing
+transport, inspection, audit and budget owners. It does not read catalog files
+or rebuild unrelated configuration. The policy, routes, tokens and accepted
+file timestamps publish together. Invalid newer candidates retain the old
+timestamps and remain eligible for retry. D66 records the correction to source
+partial publication after a late observation error. D65 still preserves an
+accepted policy when audit submission fails.
+
+The [source watcher oracle](../proxy/tests/policy_watch_source.py) captures nine
+workflows and 34 finite iterations of the actual watcher closure. Native
+[component tests](../proxy/src/policy/watch/tests.rs) replay six workflows and
+28 iterations, comparing reached loads, accepted timestamps and selected policy
+fields. The other three workflows inject source stat or audit failures; they
+inform separate native error and publication tests without a nine-workflow
+equivalence claim. The [Runtime tests](../proxy/src/service_catalog_tests/policy_watch.rs)
+cover deadlines, retry, accepted registry reuse, authenticated HTTP/1 views and
+retained budget state. These are implementation evidence, not independent
+migration acceptance.
+
+The observation is not a filesystem snapshot: a file can change between its
+content read and subsequent stat. Native preserves the reached observation
+phases without claiming the source's exact repeated-stat races or thread
+interleaving. Task-policy file activation, source watcher restart races and
+source TOML pruning on disk remain separate work. Time passing without a file
+change does not itself trigger host-expiry pruning. Native startup continues
+to reject an invalid initial configuration.
+
 ### Baseline policy reload events
 
 The [runtime policy loader](../proxy/src/policy_runtime.rs) emits
@@ -1021,8 +1087,8 @@ remaining source observations inform component and Runtime controls or retain
 explicit gaps; they are not an 18-case native parity claim. D65 keeps the source
 audit-failure outcomes alongside the native correction.
 
-The source loader also has baseline file watching, task-policy activation and
-task-specific event behavior. Those producers remain separate migration work.
+The source loader also has task-policy activation and task-specific event
+behavior. Those producers remain separate migration work.
 Source/native stat-error phase differences and existing YAML/TOML/JSON
 representation limits remain explicit gaps; these events do not close them.
 

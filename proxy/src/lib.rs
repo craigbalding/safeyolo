@@ -662,6 +662,7 @@ pub struct Proxy {
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
+    policy_check_at: Option<tokio::time::Instant>,
 }
 
 impl Proxy {
@@ -704,6 +705,10 @@ impl Proxy {
             circuit_snapshots: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
+            policy_check_at: config
+                .policy_file
+                .as_ref()
+                .map(|_| tokio::time::Instant::now()),
         };
         // A readiness marker is useful only after all configured sockets have bound.
         // Keep the prepared operator socket locally owned until agent binds succeed.
@@ -846,23 +851,74 @@ impl Proxy {
                         ),
                         &previous.audit,
                     )?;
-                    let runtime = Arc::new(Runtime {
-                        policy: Some(policy),
-                        ..previous.clone()
-                    });
-                    let mut current = self
-                        .runtime
-                        .write()
-                        .map_err(|_| "runtime write lock poisoned")?;
-                    runtime.configure_declarations()?;
-                    *current = runtime.clone();
-                    drop(current);
-                    policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+                    self.publish_policy(previous, policy)?;
                     Ok(true)
                 }
             }
             _ => Ok(false),
         }
+    }
+
+    /// Wait for the next baseline/addons/list check. Without a configured native
+    /// policy this remains pending; the control loop can cancel it on shutdown.
+    pub async fn wait_for_policy_check(&self) {
+        match self.policy_check_at {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    /// Reload a changed baseline against the accepted service registry. Keep
+    /// file observation and publication separate from catalog change detection.
+    pub async fn reload_policy_if_changed(&mut self) -> Result<bool, Error> {
+        let result = (|| {
+            let previous = self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            let Some(policy) = previous.policy.as_ref() else {
+                return Ok(false);
+            };
+            if !policy.baseline_files_changed()? {
+                return Ok(false);
+            }
+            let candidate = policy_runtime::load(
+                previous
+                    .config
+                    .policy_file
+                    .as_ref()
+                    .ok_or("native policy requires policy_file")?,
+                policy.gateway().and_then(|gateway| gateway.registry()),
+                Some(policy),
+                &previous.audit,
+            )?;
+            self.publish_policy(&previous, candidate)?;
+            Ok(true)
+        })();
+        // Every reached attempt owns its next deadline, including a poisoned
+        // Runtime lock or rejected candidate. Catalog checks have their own wait.
+        self.policy_check_at = self
+            .policy_check_at
+            .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
+        result
+    }
+
+    fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
+        let runtime = Arc::new(Runtime {
+            policy: Some(policy),
+            ..previous.clone()
+        });
+        {
+            let mut current = self
+                .runtime
+                .write()
+                .map_err(|_| "runtime write lock poisoned")?;
+            runtime.configure_declarations()?;
+            *current = runtime.clone();
+        }
+        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        Ok(())
     }
 
     pub async fn reload(&mut self, config: Config) -> Result<(), Error> {
@@ -920,6 +976,12 @@ impl Proxy {
         policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
         self.service_files = service_files;
+        if previous.config.policy_file != config.policy_file {
+            self.policy_check_at = config
+                .policy_file
+                .as_ref()
+                .map(|_| tokio::time::Instant::now());
+        }
         if self.readiness_file != config.readiness_file {
             clear_readiness(&self.readiness_file, &self.default_via);
             self.readiness_file = config.readiness_file;

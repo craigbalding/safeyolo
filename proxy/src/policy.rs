@@ -33,6 +33,7 @@ mod sensor_config;
 mod source;
 mod stats;
 mod test_context_targets;
+mod watch;
 use baseline::{Baseline, Builder as BaselineBuilder};
 pub use budgets::{BudgetResetError, BudgetStatsError};
 use source::{ParsedPolicy, TemporalEntry};
@@ -370,6 +371,7 @@ struct Override {
 pub struct Policy {
     baseline: Option<Arc<Baseline>>,
     baseline_path: Option<PathBuf>,
+    file_times: Option<watch::PolicyFileTimes>,
     gateway: Option<Arc<crate::services::GatewaySnapshot>>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
@@ -486,6 +488,7 @@ impl Policy {
         replacement.budgets = self.budgets.clone();
         replacement.evaluations = self.evaluations.clone();
         replacement.baseline_path = self.baseline_path.clone();
+        replacement.file_times = self.file_times;
         replacement.task = self.task.clone();
         Ok(replacement)
     }
@@ -682,6 +685,7 @@ impl Policy {
         let mut policy = Self {
             baseline: None,
             baseline_path: None,
+            file_times: None,
             gateway: None,
             rules: Vec::new(),
             global_budget,
@@ -2784,17 +2788,7 @@ fn parse_policy_document_staged(
     format: Format,
 ) -> std::result::Result<ParsedPolicy, PolicyLoadError> {
     let decode_error = |error| load_error(PolicyLoadStage::Decode(format), error);
-    let (value, mut timestamps) = match format {
-        Format::Yaml => {
-            let node = parse_yaml_node_with_keys(source, true).map_err(decode_error)?;
-            (node.value, node.timestamps)
-        }
-        Format::Toml => parse_toml_with_timestamps(source).map_err(decode_error)?,
-        Format::Json => (
-            parse_json(source, false).map_err(|error| decode_error(invalid(error.to_string())))?,
-            TimestampPaths::default(),
-        ),
-    };
+    let (value, mut timestamps) = decode_policy_value(source, format).map_err(decode_error)?;
     if timestamps.value_at(&[]).is_some() {
         return Err(load_error(
             PolicyLoadStage::Document,
@@ -2824,6 +2818,22 @@ fn parse_policy_document_staged(
         document,
         timestamps,
     })
+}
+
+// Share the existing format decoders with raw-baseline watch observation. Root
+// mapping admission and TOML transforms remain at their existing call sites.
+fn decode_policy_value(source: &str, format: Format) -> Result<(Value, TimestampPaths)> {
+    match format {
+        Format::Yaml => {
+            let node = parse_yaml_node_with_keys(source, true)?;
+            Ok((node.value, node.timestamps))
+        }
+        Format::Toml => parse_toml_with_timestamps(source),
+        Format::Json => Ok((
+            parse_json(source, false).map_err(|error| invalid(error.to_string()))?,
+            TimestampPaths::default(),
+        )),
+    }
 }
 
 fn normalize_toml(

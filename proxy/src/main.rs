@@ -40,6 +40,15 @@ async fn main() -> Result<(), Error> {
                     );
                 }
             },
+            _ = proxy.wait_for_policy_check() => {
+                if let Err(error) = proxy.reload_policy_if_changed().await {
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "Policy watcher reload failed: {}",
+                        safeyolo_proxy::network_guard::sanitize(&error.to_string()),
+                    );
+                }
+            },
         }
     }
     proxy.shutdown().await;

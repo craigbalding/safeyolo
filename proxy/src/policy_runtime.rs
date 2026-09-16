@@ -21,13 +21,23 @@ pub(crate) fn load(
         Some(policy) => policy.reload_baseline_at(path, registry, policy::current_time_ms()),
         None => Policy::load_baseline_at(path, registry, policy::current_time_ms()),
     };
-    result.map_err(|failure| {
+    let mut policy = result.map_err(|failure| {
         if writer.emit(rejected(&failure)).is_err() {
             evidence_failure("rejected");
         }
         // Evidence failure must not replace the rejected configuration's cause.
         Box::new(failure.error) as Error
-    })
+    })?;
+    // Observe after compilation but before the candidate can be published.
+    // Source can partially publish before this I/O fails; retain one complete
+    // native policy and its accepted watch timestamps instead.
+    policy.observe_baseline_files(previous).map_err(|error| {
+        if writer.emit(failed(&error.message)).is_err() {
+            evidence_failure("rejected");
+        }
+        Box::new(error) as Error
+    })?;
+    Ok(policy)
 }
 
 pub(crate) fn accepted(policy: Option<&Policy>, writer: &Writer) {
@@ -96,6 +106,68 @@ mod tests {
     use super::*;
     use serde_json::Value;
     use std::time::Duration;
+
+    #[test]
+    fn post_compile_observation_failure_keeps_prior_policy_and_reports_processing_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.json");
+        std::fs::write(
+            &path,
+            r#"{"metadata":{"description":"accepted"},"permissions":[]}"#,
+        )
+        .unwrap();
+        let audit_path = directory.path().join("audit.jsonl");
+        let writer = Writer::new(audit_path.clone(), Default::default());
+        let previous = load(&path, None, None, &writer).unwrap();
+        std::fs::write(
+            &path,
+            json!({
+                "metadata":{"description":"candidate"}, "permissions":[],
+                "lists":{"unused":"owned\0list"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // The unused list does not participate in compilation. Source still
+        // observes every raw string list path after publishing its baseline.
+        let mut candidate = Policy::from_path(&path).unwrap();
+        let expected = candidate
+            .observe_baseline_files(Some(&previous))
+            .unwrap_err();
+        let error = load(&path, None, Some(&previous), &writer).unwrap_err();
+        let error = error.downcast_ref::<policy::PolicyError>().unwrap();
+        assert_eq!(error.kind, expected.kind);
+        assert_eq!(error.message, expected.message);
+        assert_eq!(
+            previous.baseline().unwrap().unwrap()["metadata"]["description"],
+            "accepted"
+        );
+        assert!(writer.shutdown(Duration::from_secs(5)).unwrap());
+        let rows: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 1);
+        let mut event = rows[0].clone();
+        assert!(
+            event
+                .as_object_mut()
+                .unwrap()
+                .remove("ts")
+                .unwrap()
+                .is_string()
+        );
+        assert_eq!(
+            event,
+            json!({
+                "schema_version":1, "event":"ops.policy_error", "kind":"ops",
+                "severity":"high", "addon":"policy-loader",
+                "summary":format!("Baseline policy load failed: {}", expected.message),
+                "details":{"policy_type":"baseline", "error":expected.message}
+            })
+        );
+    }
 
     #[test]
     fn eight_actual_source_loads_match_complete_canonical_event_envelopes() {
