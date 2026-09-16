@@ -1,6 +1,10 @@
 """Admin API client for SafeYolo proxy."""
 
 import os
+import stat
+import sys
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +21,98 @@ class APIError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class ExportCancelled(Exception):
+    """The caller abandoned an in-progress traffic export."""
+
+
+class ExportPublicationState:
+    """Coordinate cancellation with the final local publication commit."""
+
+    def __init__(self):
+        self._cancel_event = threading.Event()
+        self._publication_lock = threading.Lock()
+
+    def is_set(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def set(self) -> None:
+        with self._publication_lock:
+            self._cancel_event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._cancel_event.wait(timeout)
+
+    def publish(self, temporary: Path, destination: Path) -> None:
+        """Replace the destination unless detach won the same boundary."""
+        with self._publication_lock:
+            if self._cancel_event.is_set():
+                raise ExportCancelled()
+            os.replace(temporary, destination)
+
+
+class TrafficExportResult:
+    """Metadata for a completed local traffic export."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        content_type: str,
+        bytes_written: int,
+        cleanup_warning: str | None = None,
+    ):
+        self.status_code = status_code
+        self.content_type = content_type
+        self.bytes_written = bytes_written
+        self.cleanup_warning = cleanup_warning
+
+
+def _content_length(headers: httpx.Headers) -> int | None:
+    value = headers.get("content-length")
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except (TypeError, ValueError) as exc:
+        raise APIError("Traffic export response had an invalid length") from exc
+    if length < 0:
+        raise APIError("Traffic export response had an invalid length")
+    return length
+
+
+def _destination_details(destination: Path) -> tuple[Path, int | None]:
+    """Resolve a symlink target and retain an existing target's mode."""
+    try:
+        previous = destination.stat()
+    except FileNotFoundError:
+        previous = None
+    except OSError as exc:
+        raise APIError("Cannot inspect traffic export destination") from exc
+    try:
+        publication_path = destination.resolve(strict=False) if destination.is_symlink() else destination
+    except (OSError, RuntimeError) as exc:
+        raise APIError("Cannot resolve traffic export destination") from exc
+    mode = stat.S_IMODE(previous.st_mode) if previous is not None else None
+    return publication_path, mode
+
+
+def _check_export_cancel(cancel_event: threading.Event | ExportPublicationState | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ExportCancelled()
+
+
+def _publish_export(
+    cancel_event: threading.Event | ExportPublicationState | None,
+    temporary: Path,
+    destination: Path,
+) -> None:
+    if isinstance(cancel_event, ExportPublicationState):
+        cancel_event.publish(temporary, destination)
+    else:
+        _check_export_cancel(cancel_event)
+        os.replace(temporary, destination)
 
 
 class AdminAPI:
@@ -177,6 +273,104 @@ class AdminAPI:
         if side not in {"request", "response"}:
             raise ValueError("body side must be request or response")
         return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}")
+
+    def traffic_export(
+        self,
+        flow_id: str,
+        format_name: str,
+        destination: Path,
+        *,
+        cancel_event: threading.Event | ExportPublicationState | None = None,
+    ) -> TrafficExportResult:
+        """Stream one retained flow export to a local file atomically.
+
+        The destination is used only by this client.  The server receives the
+        frozen flow ID and format in the request path/query and never sees the
+        local path.  A sibling temporary file is published only after the
+        response stream, file write, and file close all complete.
+        """
+        _check_export_cancel(cancel_event)
+        self._refresh_rust_connection()
+        encoded_id = quote(flow_id, safe="")
+        encoded_format = quote(format_name, safe="")
+        url = f"{self.base_url}/admin/traffic/flows/{encoded_id}/export?format={encoded_format}"
+        headers = self._headers()
+        try:
+            return self._write_traffic_export(url, headers, destination, cancel_event)
+        except (APIError, ExportCancelled):
+            raise
+        except httpx.HTTPError as exc:
+            raise APIError("Traffic export stream failed") from exc
+        except OSError as exc:
+            raise APIError("Cannot write traffic export") from exc
+
+    def _write_traffic_export(
+        self,
+        url: str,
+        headers: dict[str, str],
+        destination: Path,
+        cancel_event: threading.Event | ExportPublicationState | None,
+    ) -> TrafficExportResult:
+        publication_path, existing_mode = _destination_details(destination)
+        temporary_dir = tempfile.TemporaryDirectory(
+            prefix=".export-",
+            dir=publication_path.parent,
+        )
+        result = None
+        try:
+            temporary = Path(temporary_dir.name) / publication_path.name
+            status_code, content_type, bytes_written = self._stream_traffic_export(
+                url, headers, temporary, cancel_event
+            )
+            if existing_mode is not None:
+                os.chmod(temporary, existing_mode)
+            _publish_export(cancel_event, temporary, publication_path)
+            result = TrafficExportResult(
+                status_code=status_code,
+                content_type=content_type,
+                bytes_written=bytes_written,
+            )
+        finally:
+            active_exception = sys.exc_info()[0] is not None
+            try:
+                temporary_dir.cleanup()
+            except OSError:
+                if result is not None:
+                    result.cleanup_warning = "staging cleanup warning"
+                elif not active_exception:
+                    raise
+        assert result is not None
+        return result
+
+    def _stream_traffic_export(
+        self,
+        url: str,
+        headers: dict[str, str],
+        temporary: Path,
+        cancel_event: threading.Event | ExportPublicationState | None,
+    ) -> tuple[int, str, int]:
+        bytes_written = 0
+        with temporary.open("wb") as output:
+            _check_export_cancel(cancel_event)
+            with httpx.Client(timeout=self.timeout) as client:
+                _check_export_cancel(cancel_event)
+                with client.stream("GET", url, headers=headers) as response:
+                    status_code = response.status_code
+                    if status_code != 200:
+                        raise APIError(f"Traffic export failed (HTTP {status_code})", status_code)
+                    content_type = response.headers.get("content-type", "")
+                    expected_length = _content_length(response.headers)
+                    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                        _check_export_cancel(cancel_event)
+                        if not isinstance(chunk, bytes):
+                            raise APIError("Traffic export returned an invalid byte chunk")
+                        output.write(chunk)
+                        bytes_written += len(chunk)
+                    if expected_length is not None and bytes_written != expected_length:
+                        raise APIError("Traffic export stream was truncated")
+                    output.flush()
+                    os.fsync(output.fileno())
+        return status_code, content_type, bytes_written
 
     def traffic_websocket_messages(self, flow_id: str) -> dict[str, Any]:
         return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/websocket/messages")

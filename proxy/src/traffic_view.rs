@@ -12,6 +12,7 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
+mod export;
 mod filter;
 mod websocket;
 
@@ -80,6 +81,12 @@ struct Row {
     metadata: Value,
     response_headers: Vec<(String, String)>,
     status: Option<u16>,
+    request_version: Option<Zeroizing<String>>,
+    request_target: Option<Zeroizing<String>>,
+    response_version: Option<Zeroizing<String>>,
+    response_reason: Option<Zeroizing<Vec<u8>>>,
+    request_trailers: Vec<(String, String)>,
+    response_trailers: Vec<(String, String)>,
     request_body: Body,
     response_body: Body,
     state: &'static str,
@@ -93,6 +100,8 @@ enum Body {
     Unavailable,
     Bytes(Arc<Zeroizing<Vec<u8>>>),
 }
+
+pub(crate) use export::{ExportError, ExportFormat, ExportPlan};
 
 impl Body {
     fn observe(bytes: Option<&[u8]>) -> Self {
@@ -186,6 +195,12 @@ impl TrafficView {
                 metadata: Value::Object(metadata),
                 response_headers: Vec::new(),
                 status: None,
+                request_version: None,
+                request_target: None,
+                response_version: None,
+                response_reason: None,
+                request_trailers: Vec::new(),
+                response_trailers: Vec::new(),
                 request_body: Body::Pending,
                 response_body: Body::Pending,
                 state: "pending",
@@ -283,6 +298,20 @@ impl TrafficView {
         })
     }
 
+    /// Snapshot all selected-flow owners while the row is coherent, then do
+    /// decoding and retained-message reads after releasing the view lock.
+    pub(crate) fn export(&self, id: &str, format: ExportFormat) -> Result<ExportPlan, ExportError> {
+        let snapshot = {
+            let state = self.lock();
+            state
+                .rows
+                .get(id)
+                .map(Row::export_snapshot)
+                .ok_or(ExportError::MissingFlow)?
+        };
+        ExportPlan::build(snapshot, format)
+    }
+
     pub fn facets(&self) -> Value {
         let state = self.lock();
         let mut result = Map::new();
@@ -347,6 +376,17 @@ impl Exchange {
         wipe_headers(&mut headers);
     }
 
+    /// Request protocol and target are captured from the parser-owned request
+    /// before the relay rewrites its URI or version for the upstream leg.
+    pub(crate) fn request_line(&self, version: &str, target: &str) {
+        let version = Zeroizing::new(version.to_owned());
+        let target = Zeroizing::new(target.to_owned());
+        self.update(|row| {
+            row.request_version = Some(version);
+            row.request_target = Some(target);
+        });
+    }
+
     pub fn request_body(&self, bytes: Option<&[u8]>) {
         self.update(|row| row.request_body = Body::observe(bytes));
     }
@@ -370,13 +410,67 @@ impl Exchange {
     }
 
     pub fn response_head(&self, status: u16, headers: Vec<(String, String)>) {
+        self.response_head_observed(status, None, headers, None);
+    }
+
+    /// Preserve parser-observed protocol and reason bytes when available. A
+    /// missing reason remains missing; export never synthesizes one from the
+    /// status code.
+    pub(crate) fn response_head_observed(
+        &self,
+        status: u16,
+        version: Option<&str>,
+        headers: Vec<(String, String)>,
+        reason: Option<&[u8]>,
+    ) {
         let mut headers = headers;
+        let version = version.map(|version| Zeroizing::new(version.to_owned()));
+        let reason = reason.map(|reason| Zeroizing::new(reason.to_vec()));
         self.update(|row| {
             wipe_headers(&mut row.response_headers);
             row.response_headers = std::mem::take(&mut headers);
             row.status = Some(status);
+            if version.is_some() {
+                row.response_version = version;
+            }
+            if reason.is_some() {
+                row.response_reason = reason;
+            }
         });
         wipe_headers(&mut headers);
+    }
+
+    /// Update protocol-only response facts without replacing the ordered
+    /// header projection captured by the reached parser owner.
+    pub(crate) fn response_details(&self, version: Option<&str>, reason: Option<&[u8]>) {
+        let version = version.map(|version| Zeroizing::new(version.to_owned()));
+        let reason = reason.map(|reason| Zeroizing::new(reason.to_vec()));
+        self.update(|row| {
+            if version.is_some() {
+                row.response_version = version;
+            }
+            if reason.is_some() {
+                row.response_reason = reason;
+            }
+        });
+    }
+
+    pub(crate) fn response_trailers(&self, trailers: Vec<(String, String)>) {
+        let mut trailers = trailers;
+        self.update(|row| {
+            wipe_headers(&mut row.response_trailers);
+            row.response_trailers = std::mem::take(&mut trailers);
+        });
+        wipe_headers(&mut trailers);
+    }
+
+    pub(crate) fn request_trailers(&self, trailers: Vec<(String, String)>) {
+        let mut trailers = trailers;
+        self.update(|row| {
+            wipe_headers(&mut row.request_trailers);
+            row.request_trailers = std::mem::take(&mut trailers);
+        });
+        wipe_headers(&mut trailers);
     }
 
     pub fn response_body(&self, bytes: Option<&[u8]>) {
@@ -459,7 +553,13 @@ impl Row {
 
 impl Drop for Row {
     fn drop(&mut self) {
+        self.request_version.zeroize();
+        self.request_target.zeroize();
+        self.response_version.zeroize();
+        self.response_reason.zeroize();
         wipe_headers(&mut self.response_headers);
+        wipe_headers(&mut self.request_trailers);
+        wipe_headers(&mut self.response_trailers);
         wipe_json(&mut self.metadata);
     }
 }

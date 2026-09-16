@@ -466,6 +466,30 @@ page when selected or requested, rather than fetching the payload on every poll.
 Message rows show direction, type, size, time and the reached inspection drop
 decision. That decision does not establish delivery to the peer.
 
+To export a selected flow, press `x`, enter `raw`, `raw_request`, `raw_response`,
+`curl` or `httpie`, then enter a local file path. Escape cancels either prompt.
+The selection is fixed when the format prompt opens. Export also works while
+viewing that flow's WebSocket transcript. The destination belongs to the host
+running the inspector; the proxy receives only the flow ID and format.
+The inspector saves the completed download before replacing the destination.
+A failed or canceled download leaves an existing destination unchanged.
+Replacement preserves an existing destination's permissions and follows a final
+symbolic link to its target. It creates a new file inode, so other hard links
+to the previous file keep their previous content.
+
+Raw export reconstructs HTTP messages from retained observations and available
+body content. It does not reproduce original wire bytes. Combined `raw` output can
+append retained WebSocket payloads with direction prefixes, including dropped
+messages. That format does not record message type or drop status. Use the
+inspector for those facts. `curl` and `httpie` produce command text; export does
+not execute it. If a format requires unavailable content or protocol facts,
+the export reports a failure.
+Command body decoding currently supports ASCII, Latin-1 and UTF-8/16/32.
+Other charset labels report an unsupported representation; broader codec
+compatibility remains migration work.
+HTTP decoding and command formatting materialize complete decoded HTTP bodies
+in memory. WebSocket export reads retained payloads in bounded chunks.
+
 For example, enter `~m GET`, `~u example.com`, or `~b base_instruction` in the
 filter prompt. Combine predicates with explicit `&`, `|`, `!` and parentheses,
 such as `~m POST & ~b base_instruction`. A bare regular expression searches the
@@ -533,8 +557,8 @@ If native validation rejects an upstream 101 upgrade response, the HTTP view
 keeps that observed response and shows the rejection error. No WebSocket
 session is created for that response.
 
-Remaining filter compatibility, flow editing, replay, interception, import/export
-and a web inspector remain migration work.
+Remaining filter compatibility, flow editing, replay, interception, HAR and
+flow-dump export, import and a web inspector remain migration work.
 
 The native view excludes CONNECT, reserved internal hosts, and requests whose
 destination cannot be parsed. URLs use the admitted scheme and authority with
@@ -554,6 +578,8 @@ local reply can retain the ingress headers. Upstream response headers come
 from the parser before downstream header rewriting. Known local replies show
 their returned headers. The inspector preserves repeated fields and available
 original order, but does not claim the Python view's final mutable header state.
+Trailer capture uses normalized header pairs. Original trailer field casing
+and interleaving of different fields are unavailable.
 
 At startup and after agent-map changes, the CLI derives managed listener paths
 with the existing `<ip>_<agent>/proxy.sock` convention under its data directory.

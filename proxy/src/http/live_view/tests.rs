@@ -272,6 +272,64 @@ fn response_capture_keeps_encoded_content_independently_of_later_hook_skip() {
 }
 
 #[test]
+fn response_capture_preserves_reached_protocol_reason_and_trailers() {
+    for (id, version, reason, expected_start) in [
+        (
+            "canonical-h1",
+            "HTTP/1.1",
+            Some(b"OK".as_slice()),
+            b"HTTP/1.1 200 OK\r\n".as_slice(),
+        ),
+        (
+            "custom-h1",
+            "HTTP/1.0",
+            Some(b"Accepted by upstream".as_slice()),
+            b"HTTP/1.0 200 Accepted by upstream\r\n".as_slice(),
+        ),
+        (
+            "empty-h2",
+            "HTTP/2.0",
+            Some(b"".as_slice()),
+            b"HTTP/2.0 200 \r\n".as_slice(),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        let live = fixture.begin(id);
+        let capture = fixture.capture(id, live.clone());
+        // The relay receives parser version/reason facts before the later
+        // response capture callback supplies status and headers. A callback
+        // without those optional facts must not erase the reached values.
+        live.response_details(Some(version), reason);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+        headers.append("x-reached-trailer", "one".parse().unwrap());
+        headers.append("x-reached-trailer", "two".parse().unwrap());
+        capture.head_with_fields(StatusCode::OK, &headers, false, None, None);
+        capture.data(b"body");
+        capture.apply_head();
+        capture.finish_live(true, None);
+        live.response_trailers(vec![
+            ("x-reached-trailer".into(), "one".into()),
+            ("x-reached-trailer".into(), "two".into()),
+        ]);
+
+        let mut plan = fixture
+            .runtime
+            .traffic_view
+            .export(id, crate::traffic_view::ExportFormat::RawResponse)
+            .unwrap();
+        let mut output = Vec::new();
+        while let Some(chunk) = plan.next_chunk().unwrap() {
+            output.extend_from_slice(&chunk);
+        }
+        assert!(output.starts_with(expected_start), "{id}");
+        assert!(output.ends_with(
+            b"4\r\nbody\r\n0\r\nx-reached-trailer: one\r\nx-reached-trailer: two\r\n\r\n"
+        ));
+    }
+}
+
+#[test]
 fn completed_empty_streamed_and_sse_bodies_are_distinct() {
     let fixture = Fixture::new();
     for (id, headers, expected_available) in [

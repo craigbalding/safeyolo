@@ -1,7 +1,7 @@
 //! Authorized access to the process-owned live traffic view.
 
 use super::{Audit, Error, Json, Outcome, ParsedBody, TrafficScopeAudit, read_json, response};
-use crate::traffic_view::{FilterError, Side, TrafficView};
+use crate::traffic_view::{ExportError, ExportFormat, FilterError, Side, TrafficView};
 use bytes::Bytes;
 use hyper::{Method, Request, StatusCode, body::Body};
 use percent_encoding::percent_decode_str;
@@ -81,6 +81,26 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                 };
                 return Ok(optional_response(view.websocket_messages(&id)));
             }
+            if let Some(id) = tail.strip_suffix("/export") {
+                let Ok(id) = percent_decode_str(id).decode_utf8() else {
+                    return Ok(invalid_flow_id());
+                };
+                let id = id.into_owned();
+                let Some(format) = export_format(request.uri().query()) else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"format must be raw, raw_request, raw_response, curl, or httpie"}),
+                    ));
+                };
+                let view = view.clone();
+                let plan = tokio::task::spawn_blocking(move || view.export(&id, format))
+                    .await
+                    .map_err(|_| Error::TrafficReporting)?;
+                return Ok(match plan {
+                    Ok(plan) => super::export_response(plan),
+                    Err(error) => export_error(error),
+                });
+            }
             let (id, body) = tail
                 .strip_suffix("/body")
                 .map_or((tail, false), |id| (id, true));
@@ -111,6 +131,35 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
         }
     };
     Ok(optional_response(value))
+}
+
+fn export_format(query: Option<&str>) -> Option<ExportFormat> {
+    let query = query?;
+    let mut found = None;
+    for pair in query.split('&') {
+        let Some(value) = pair.strip_prefix("format=") else {
+            continue;
+        };
+        let value = percent_decode_str(value).decode_utf8().ok()?;
+        if found.is_some() {
+            return None;
+        }
+        found = Some(ExportFormat::parse(&value)?);
+    }
+    found
+}
+
+fn export_error(error: ExportError) -> Outcome {
+    let status = match error {
+        ExportError::MissingFlow => StatusCode::NOT_FOUND,
+        ExportError::MissingRequest
+        | ExportError::MissingResponse
+        | ExportError::MissingBody
+        | ExportError::Decode
+        | ExportError::Unsupported => StatusCode::UNPROCESSABLE_ENTITY,
+        ExportError::Storage | ExportError::Allocation => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    response(status, json!({"error":error.to_string()}))
 }
 
 async fn update_filter<B: Body<Data = Bytes>>(

@@ -3,14 +3,25 @@ use super::*;
 #[path = "trace_tests.rs"]
 mod trace_tests;
 use bytes::Bytes;
-use http_body_util::Empty;
-use hyper::{StatusCode, service::service_fn};
+use http_body_util::{BodyExt, Empty};
+use hyper::{
+    HeaderMap, StatusCode,
+    body::{Body as HttpBody, Frame, Incoming, SizeHint},
+    service::service_fn,
+};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use serde_json::{Value, json};
-use std::{convert::Infallible, sync::RwLock, time::Duration};
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    pin::Pin,
+    sync::RwLock,
+    task::{Context, Poll},
+    time::Duration,
+};
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncWriteExt, DuplexStream},
+    io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
     sync::{mpsc, oneshot},
     task::JoinHandle,
     time::timeout,
@@ -117,6 +128,26 @@ fn pending(admission: Admission) -> RequestContext {
     match admission {
         Admission::Pending(context) => context,
         _ => panic!("expected pending request context"),
+    }
+}
+
+struct TrailerFrames {
+    frames: VecDeque<Result<Frame<Bytes>, Error>>,
+}
+
+impl HttpBody for TrailerFrames {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
+        Poll::Ready(self.get_mut().frames.pop_front())
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
     }
 }
 
@@ -428,6 +459,211 @@ async fn actual_h2_no_error_reset_cannot_publish_buffered_context() {
 }
 
 #[tokio::test]
+async fn forwarded_request_body_publishes_reached_trailers_to_live_export() {
+    let fixture = Fixture::new(false, json!(true), false);
+    let live = fixture
+        .runtime
+        .traffic_view
+        .begin(crate::traffic_view::RequestInfo {
+            id: "request-trailer-observer".into(),
+            connection_id: fixture.identity().connection_id.clone(),
+            agent: Some(fixture.identity().agent_id.clone()),
+            method: "POST".into(),
+            url: "http://owned.invalid/path".into(),
+            headers: vec![],
+            started: 1.,
+        });
+    live.request_line("HTTP/1.1", "http://owned.invalid/path");
+    live.request_headers(vec![
+        ("Transfer-Encoding".into(), "chunked".into()),
+        ("Trailer".into(), "X-Reached-Trailer".into()),
+    ]);
+    live.request_body(Some(b"body"));
+
+    let mut trailers = HeaderMap::new();
+    trailers.append("x-reached-trailer", "one".parse().unwrap());
+    trailers.append("x-reached-trailer", "two".parse().unwrap());
+    let source = TrailerFrames {
+        frames: VecDeque::from([
+            Ok(Frame::data(Bytes::from_static(b"body"))),
+            Ok(Frame::trailers(trailers)),
+        ]),
+    }
+    .boxed();
+    let mut outbound = Request::builder()
+        .uri("http://owned.invalid/path")
+        .body(source)
+        .unwrap();
+    let state = Arc::new(RwLock::new(fixture.runtime.clone()));
+    let completion = super::super::circuit_completion::Completion::register(
+        &mut outbound,
+        false,
+        state,
+        fixture.identity(),
+        "request-trailer-observer".into(),
+        "owned.invalid".into(),
+        None,
+    );
+    let mut body = super::super::ForwardedRequestBody {
+        body: outbound.into_body(),
+        completion,
+        live: Some(live.clone()),
+    };
+    assert_eq!(
+        body.frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap()
+            .as_ref(),
+        b"body"
+    );
+    assert_eq!(
+        body.frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_trailers()
+            .unwrap()
+            .get_all("x-reached-trailer")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    assert!(body.frame().await.is_none());
+
+    let mut plan = fixture
+        .runtime
+        .traffic_view
+        .export(
+            "request-trailer-observer",
+            crate::traffic_view::ExportFormat::RawRequest,
+        )
+        .unwrap();
+    let mut output = Vec::new();
+    while let Some(chunk) = plan.next_chunk().unwrap() {
+        output.extend_from_slice(&chunk);
+    }
+    assert_eq!(
+        output,
+        b"POST http://owned.invalid/path HTTP/1.1\r\nTransfer-Encoding: chunked\r\nTrailer: X-Reached-Trailer\r\n\r\n4\r\nbody\r\n0\r\nx-reached-trailer: one\r\nx-reached-trailer: two\r\n\r\n"
+    );
+}
+
+#[tokio::test]
+async fn upstream_response_body_publishes_reached_trailers_to_live_export() {
+    let fixture = Fixture::new(false, json!(true), false);
+    let live = fixture
+        .runtime
+        .traffic_view
+        .begin(crate::traffic_view::RequestInfo {
+            id: "response-trailer-observer".into(),
+            connection_id: fixture.identity().connection_id.clone(),
+            agent: Some(fixture.identity().agent_id.clone()),
+            method: "GET".into(),
+            url: "http://owned.invalid/path".into(),
+            headers: vec![],
+            started: 1.,
+        });
+    live.request_line("HTTP/1.1", "/path");
+    live.request_body(Some(&[]));
+    live.response_head_observed(
+        200,
+        Some("HTTP/1.1"),
+        vec![
+            ("Transfer-Encoding".into(), "chunked".into()),
+            ("Trailer".into(), "X-Reached-Response-Trailer".into()),
+        ],
+        Some(b"Observed Reason"),
+    );
+    live.response_body(Some(b"response"));
+
+    let (client, mut server) = tokio::io::duplex(65536);
+    let peer = tokio::spawn(async move {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.ends_with(b"\r\n\r\n") {
+            let length = server.read(&mut buffer).await.unwrap();
+            assert!(length > 0);
+            request.extend_from_slice(&buffer[..length]);
+        }
+        server
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: x-reached-response-trailer\r\n\r\n8\r\nresponse\r\n0\r\nx-reached-response-trailer: one\r\nx-reached-response-trailer: two\r\n\r\n",
+            )
+            .await
+            .unwrap();
+    });
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+        .await
+        .unwrap();
+    let driver = tokio::spawn(connection);
+    let response = sender
+        .send_request(
+            Request::builder()
+                .method("GET")
+                .uri("http://owned.invalid/path")
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (parts, incoming) = response.into_parts();
+    assert_eq!(parts.status, StatusCode::OK);
+    let task = tokio::spawn(async {});
+    let mut body = super::super::UpstreamBody {
+        body: incoming,
+        _connection: super::super::HttpTask::unobserved(task.abort_handle()),
+        live: Some(live.clone()),
+    };
+    assert_eq!(
+        body.frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_data()
+            .unwrap()
+            .as_ref(),
+        b"response"
+    );
+    assert_eq!(
+        body.frame()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_trailers()
+            .unwrap()
+            .get_all("x-reached-response-trailer")
+            .iter()
+            .map(|value| value.to_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["one", "two"]
+    );
+    assert!(body.frame().await.is_none());
+
+    let mut plan = fixture
+        .runtime
+        .traffic_view
+        .export(
+            "response-trailer-observer",
+            crate::traffic_view::ExportFormat::RawResponse,
+        )
+        .unwrap();
+    let mut output = Vec::new();
+    while let Some(chunk) = plan.next_chunk().unwrap() {
+        output.extend_from_slice(&chunk);
+    }
+    assert_eq!(
+        output,
+        b"HTTP/1.1 200 Observed Reason\r\nTransfer-Encoding: chunked\r\nTrailer: X-Reached-Response-Trailer\r\n\r\n8\r\nresponse\r\n0\r\nx-reached-response-trailer: one\r\nx-reached-response-trailer: two\r\n\r\n"
+    );
+    driver.abort();
+    peer.abort();
+}
+
+#[tokio::test]
 async fn streamed_drop_has_no_effects_and_forwarded_terminal_applies_once() {
     let fixture = Fixture::new(true, json!(["owned.invalid"]), false);
     let length = crate::http_content::BUFFERED_BODY_THRESHOLD + 1;
@@ -463,6 +699,7 @@ async fn streamed_drop_has_no_effects_and_forwarded_terminal_applies_once() {
             let mut body = super::super::ForwardedRequestBody {
                 body: outbound.into_body(),
                 completion: completion.clone(),
+                live: None,
             };
             let mut writer = Task(tokio::spawn(async move {
                 let chunk = [b'x'; 8192];

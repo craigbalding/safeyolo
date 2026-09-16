@@ -720,6 +720,9 @@ impl hyper::ext::ResponseBodyCapture for ResponseCapture {
     ) {
         Self::head(self, status, headers, end_stream_at_head);
         self.live_head(status, headers, fields.map(|fields| fields.iter()));
+        if let Some(live) = &self.live {
+            live.response_details(None, reason);
+        }
         if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }
@@ -746,6 +749,9 @@ impl h2::ext::ResponseBodyCapture for ResponseCapture {
     ) {
         Self::head(self, status, headers, end_stream_at_head);
         self.live_head(status, headers, fields.map(|fields| fields.iter()));
+        if let Some(live) = &self.live {
+            live.response_details(None, reason);
+        }
         if let Some(recording) = self.recording() {
             recording.head(status, fields.map(|fields| fields.iter()), reason);
         }

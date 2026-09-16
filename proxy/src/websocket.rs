@@ -475,6 +475,19 @@ impl MessageContent {
             bytes: StoredBytes::Memory(bytes),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_file_for_test(bytes: &[u8], declared_len: u64) -> Self {
+        use std::io::Write;
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(bytes).unwrap();
+        Self {
+            bytes: StoredBytes::File {
+                file,
+                len: declared_len,
+            },
+        }
+    }
 }
 
 impl Drop for MessageContent {

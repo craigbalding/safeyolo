@@ -5,12 +5,15 @@
 //! accepts an agent identity. Other management routes remain unimplemented.
 
 use std::fmt;
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{
     Method, Request, Response, StatusCode,
-    body::Body,
+    body::{Body, Frame},
     header::{self, HeaderMap},
 };
 use serde_json::{Value, json};
@@ -188,8 +191,72 @@ impl Drop for CircuitResetAudit {
 /// fn cannot_log(outcome: &Outcome) { println!("{outcome:?}"); }
 /// ```
 pub struct Outcome {
-    response: Response<Full<Bytes>>,
+    response: Response<AdminBody>,
     audit: Option<Audit>,
+}
+
+type AdminBody = BoxBody<Bytes, Error>;
+
+/// A bounded private export stream. The worker owns the source snapshot and
+/// stops when the receiver is dropped; body errors abort the HTTP response
+/// instead of claiming a complete artifact.
+struct ExportBody {
+    receiver: Mutex<tokio::sync::mpsc::Receiver<ExportEvent>>,
+    terminal: bool,
+}
+
+enum ExportEvent {
+    Chunk(Frame<Bytes>),
+    Complete,
+    Error(Error),
+}
+
+impl Body for ExportBody {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        let this = self.get_mut();
+        if this.terminal {
+            return Poll::Ready(None);
+        }
+        let event = {
+            let mut receiver = this
+                .receiver
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Pin::new(&mut *receiver).poll_recv(cx)
+        };
+        match event {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(ExportEvent::Chunk(frame))) => Poll::Ready(Some(Ok(frame))),
+            Poll::Ready(Some(ExportEvent::Complete)) => {
+                this.terminal = true;
+                Poll::Ready(None)
+            }
+            Poll::Ready(Some(ExportEvent::Error(error))) => {
+                this.terminal = true;
+                Poll::Ready(Some(Err(error)))
+            }
+            // A producer panic, cancellation, or other abandonment closes the
+            // channel without Complete. Treat that as truncation.
+            Poll::Ready(None) => {
+                this.terminal = true;
+                Poll::Ready(Some(Err(Error::TrafficReporting)))
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.terminal
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::SizeHint::default()
+    }
 }
 
 impl Outcome {
@@ -206,7 +273,7 @@ impl Outcome {
     /// Explicitly hand the authorized bytes to the management transport.
     /// The allocation is wiped after its final Bytes owner drops; HTTP and OS
     /// transport copies are outside that owner. Do not log the returned body.
-    pub fn into_response(self) -> Response<Full<Bytes>> {
+    pub fn into_response(self) -> Response<AdminBody> {
         self.response
     }
 }
@@ -231,8 +298,56 @@ fn encoded(status: StatusCode, content_type: &'static str, body: String, head: b
             .status(status)
             .header(header::CONTENT_TYPE, content_type)
             .header(header::CONTENT_LENGTH, length)
-            .body(Full::new(bytes))
+            .body(Full::new(bytes).map_err(|never| match never {}).boxed())
             .expect("fixed operator response fields"),
+        audit: None,
+    }
+}
+
+pub(super) fn export_response(plan: crate::traffic_view::ExportPlan) -> Outcome {
+    let format = plan.format().name();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    tokio::task::spawn_blocking(move || {
+        let mut plan = plan;
+        loop {
+            match plan.next_chunk() {
+                Ok(Some(chunk)) => {
+                    let bytes = Bytes::from_owner(chunk);
+                    if sender
+                        .blocking_send(ExportEvent::Chunk(Frame::data(bytes)))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = sender.blocking_send(ExportEvent::Complete);
+                    break;
+                }
+                Err(_) => {
+                    let _ = sender.blocking_send(ExportEvent::Error(Error::TrafficReporting));
+                    break;
+                }
+            }
+        }
+    });
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"traffic.{}\"", format),
+        )
+        .body(
+            ExportBody {
+                receiver: Mutex::new(receiver),
+                terminal: false,
+            }
+            .boxed(),
+        )
+        .expect("fixed export response fields");
+    Outcome {
+        response,
         audit: None,
     }
 }
@@ -736,6 +851,68 @@ mod tests {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(bytes.len(), length);
         bytes
+    }
+
+    fn export_body(receiver: tokio::sync::mpsc::Receiver<ExportEvent>) -> ExportBody {
+        ExportBody {
+            receiver: Mutex::new(receiver),
+            terminal: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn export_body_publishes_eof_only_after_explicit_completion() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        sender
+            .send(ExportEvent::Chunk(Frame::data(Bytes::from_static(
+                b"complete",
+            ))))
+            .await
+            .unwrap();
+        sender.send(ExportEvent::Complete).await.unwrap();
+        drop(sender);
+
+        let bytes = export_body(receiver).collect().await.unwrap().to_bytes();
+        assert_eq!(bytes, Bytes::from_static(b"complete"));
+    }
+
+    #[tokio::test]
+    async fn export_body_rejects_producer_disappearance_and_explicit_error() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        sender
+            .send(ExportEvent::Chunk(Frame::data(Bytes::from_static(
+                b"partial",
+            ))))
+            .await
+            .unwrap();
+        drop(sender);
+        assert!(matches!(
+            export_body(receiver).collect().await,
+            Err(Error::TrafficReporting)
+        ));
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        sender
+            .send(ExportEvent::Chunk(Frame::data(Bytes::from_static(
+                b"partial",
+            ))))
+            .await
+            .unwrap();
+        sender
+            .send(ExportEvent::Error(Error::TrafficReporting))
+            .await
+            .unwrap();
+        assert!(matches!(
+            export_body(receiver).collect().await,
+            Err(Error::TrafficReporting)
+        ));
+    }
+
+    #[tokio::test]
+    async fn export_body_drop_closes_the_bounded_producer_channel() {
+        let (sender, receiver) = tokio::sync::mpsc::channel(2);
+        drop(export_body(receiver));
+        assert!(sender.send(ExportEvent::Complete).await.is_err());
     }
 
     #[tokio::test]

@@ -88,6 +88,7 @@ fn prior_block(mut response: Response<Body>) -> Response<Body> {
 struct UpstreamBody {
     body: Incoming,
     _connection: HttpTask,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
 }
 
 /// Apply validated request effects before releasing its terminal bytes to the
@@ -95,6 +96,7 @@ struct UpstreamBody {
 struct ForwardedRequestBody {
     body: Body,
     completion: Arc<circuit_completion::Completion>,
+    live: Option<Arc<crate::traffic_view::Exchange>>,
 }
 
 impl HttpBody for ForwardedRequestBody {
@@ -108,6 +110,12 @@ impl HttpBody for ForwardedRequestBody {
         let this = self.get_mut();
         let _ = this.completion.try_finish();
         let frame = Pin::new(&mut this.body).poll_frame(cx);
+        if let Poll::Ready(Some(Ok(frame))) = &frame
+            && let Some(trailers) = frame.trailers_ref()
+            && let Some(live) = &this.live
+        {
+            live.request_trailers(live_view::header_map(trailers));
+        }
         let _ = this.completion.try_finish();
         frame
     }
@@ -128,9 +136,15 @@ impl HttpBody for UpstreamBody {
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, Error>>> {
-        Pin::new(&mut self.get_mut().body)
-            .poll_frame(cx)
-            .map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
+        let this = self.get_mut();
+        let frame = Pin::new(&mut this.body).poll_frame(cx);
+        if let Poll::Ready(Some(Ok(frame))) = &frame
+            && let Some(trailers) = frame.trailers_ref()
+            && let Some(live) = &this.live
+        {
+            live.response_trailers(live_view::header_map(trailers));
+        }
+        frame.map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
     }
     fn is_end_stream(&self) -> bool {
         self.body.is_end_stream()
@@ -1695,6 +1709,7 @@ async fn forward(
     let mut request = request.map(|body| ForwardedRequestBody {
         body,
         completion: completion.clone(),
+        live: live.clone(),
     });
     let (mut upstream, connection) = if outbound.http2 {
         // :authority carries the admitted destination. Avoid retaining a second
@@ -1735,6 +1750,24 @@ async fn forward(
     };
     completion.headers_received();
     let _ = completion.try_finish();
+    if let Some(live) = &live {
+        let version = format!("{:?}", upstream.version());
+        let reason = upstream
+            .extensions()
+            .get::<hyper::ext::ReasonPhrase>()
+            .map(|reason| reason.as_bytes())
+            // The reached H1 parser stores a ReasonPhrase only when the
+            // accepted bytes differ from the status' canonical phrase. This
+            // is a parser fact, rather than a status-derived export guess.
+            .or_else(|| {
+                if upstream.version() == hyper::Version::HTTP_2 {
+                    Some(&[][..])
+                } else {
+                    upstream.status().canonical_reason().map(str::as_bytes)
+                }
+            });
+        live.response_details(Some(&version), reason);
+    }
     if completion.evidence_failed() || circuit_evidence_failed {
         upstream
             .headers_mut()
@@ -1809,6 +1842,7 @@ async fn forward(
             UpstreamBody {
                 body,
                 _connection: connection,
+                live: live.clone(),
             }
             .boxed(),
         ),

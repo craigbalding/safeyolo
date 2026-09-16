@@ -8,6 +8,7 @@ import binascii
 import json
 import sys
 import unicodedata
+from pathlib import Path
 
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import Condition
@@ -16,11 +17,12 @@ from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.widgets import TextArea
 
-from .api import AdminAPI, APIError
+from .api import AdminAPI, APIError, ExportCancelled, ExportPublicationState, TrafficExportResult
 
 # Rendering limits leave the proxy's retained model and body response unchanged.
 BODY_PREVIEW_BYTES = 64 * 1024
 DETAIL_PREVIEW_CHARS = 128 * 1024
+EXPORT_FORMATS = ("raw", "raw_request", "raw_response", "curl", "httpie")
 
 
 def plain_text(value: object, *, multiline: bool = False) -> str:
@@ -164,6 +166,9 @@ class TrafficInspector:
         self.pending_scope: dict | None = None
         self.pending_filter: str | None = None
         self.pending_body: tuple[str, str] | None = None
+        self.pending_export: tuple[str, str, Path] | None = None
+        self._export_cancel_event: ExportPublicationState | None = None
+        self._notice_hold: str | None = None
         self.websocket_mode = False
         self.transcript = WebSocketTranscript()
         self.wake = asyncio.Event()
@@ -214,6 +219,66 @@ class TrafficInspector:
     def set_filter(self, expression: str) -> None:
         self.pending_filter = expression
         self.wake.set()
+
+    def queue_export(self, flow_id: str, format_name: str, destination: str) -> None:
+        """Queue one local export using the flow ID selected at confirmation."""
+        if format_name not in EXPORT_FORMATS:
+            self._hold_notice("Export format is invalid")
+            return
+        if not destination.strip():
+            self._hold_notice("Export destination is empty")
+            return
+        self.pending_export = flow_id, format_name, Path(destination).expanduser()
+        self._hold_notice(f"Export queued for flow {plain_text(flow_id)}")
+        self.wake.set()
+
+    def cancel_export(self) -> None:
+        """Cancel queued or active export work before detaching the UI.
+
+        The worker serializes this request with its final publication commit;
+        after that commit, a successful result remains authoritative.
+        """
+        self.pending_export = None
+        if self._export_cancel_event is not None:
+            self._export_cancel_event.set()
+
+    def _hold_notice(self, notice: str) -> None:
+        self._notice_hold = notice
+        self.notice = notice
+
+    async def _run_export(self, request: tuple[str, str, Path]) -> None:
+        flow_id, format_name, destination = request
+        cancel_event = ExportPublicationState()
+        self._export_cancel_event = cancel_event
+        try:
+            result = await asyncio.to_thread(
+                self.api.traffic_export,
+                flow_id,
+                format_name,
+                destination,
+                cancel_event=cancel_event,
+            )
+        except ExportCancelled:
+            self._hold_notice("Export canceled; destination unchanged")
+        except asyncio.CancelledError:
+            cancel_event.set()
+            raise
+        except APIError as exc:
+            status = f" {exc.status_code}" if exc.status_code is not None else ""
+            self._hold_notice(f"Export unavailable (APIError{status}); destination unchanged")
+        except (OSError, TypeError, ValueError) as exc:
+            self._hold_notice(f"Export failed ({type(exc).__name__}); destination unchanged")
+        else:
+            if not isinstance(result, TrafficExportResult):
+                self._hold_notice("Export failed (invalid result); destination unchanged")
+            else:
+                warning = f"; {result.cleanup_warning}" if result.cleanup_warning else ""
+                self._hold_notice(
+                    f"Exported flow {plain_text(flow_id)} to {plain_text(destination)} "
+                    f"({result.bytes_written} bytes){warning}"
+                )
+        finally:
+            self._export_cancel_event = None
 
     def toggle_websocket(self) -> None:
         if self.websocket_mode:
@@ -287,7 +352,14 @@ class TrafficInspector:
                 value = await asyncio.to_thread(self.api.traffic_body, flow_id, side)
                 if self.selected == flow_id:
                     self.body = f"{side.title()} body (fetched snapshot: encoded bytes, UTF-8 preview)\n{body_preview(value)}"
-            self.notice = f"{len(self.flows)} visible flows · shared scope · q detaches"
+            if self.pending_export is not None:
+                request, self.pending_export = self.pending_export, None
+                await self._run_export(request)
+            if self._notice_hold is None:
+                self.notice = f"{len(self.flows)} visible flows · shared scope · q detaches"
+            else:
+                self.notice = self._notice_hold
+                self._notice_hold = None
         except (APIError, ValueError, TypeError) as exc:
             # Show only the category/status: an HTTP error body may contain traffic.
             status = exc.status_code if isinstance(exc, APIError) else None
@@ -337,19 +409,83 @@ class TrafficInspector:
             index = next(i for i, row in enumerate(items) if row["id"] == selected)
             rows.buffer.cursor_position = sum(len(line) + 1 for line in rows.text.splitlines()[:index])
 
+    def _finish_prompt(
+        self,
+        buffer,
+        prompt_field: list[str],
+        export_flow: list[str],
+        export_format: list[str],
+        rows: TextArea,
+        prompt: TextArea,
+    ) -> bool:
+        field = prompt_field.pop()
+        if field == "user_filter":
+            self.set_filter(buffer.text)
+        elif field in {"agent", "test_id"}:
+            self.set_scope(field, buffer.text)
+        elif field == "export_format":
+            return self._finish_export_format(buffer, prompt_field, export_flow, export_format, rows, prompt)
+        else:
+            flow_id = export_flow.pop()
+            format_name = export_format.pop()
+            self.queue_export(flow_id, format_name, buffer.text)
+        get_app().layout.focus(rows)
+        prompt.text, prompt.prompt = "", ""
+        return False
+
+    def _finish_export_format(
+        self,
+        buffer,
+        prompt_field: list[str],
+        export_flow: list[str],
+        export_format: list[str],
+        rows: TextArea,
+        prompt: TextArea,
+    ) -> bool:
+        format_name = buffer.text.strip()
+        flow_id = export_flow.pop()
+        if format_name not in EXPORT_FORMATS:
+            self._hold_notice("Export format must be raw, raw_request, raw_response, curl, or httpie")
+            get_app().layout.focus(rows)
+            prompt.text, prompt.prompt = "", ""
+            return False
+        export_flow.append(flow_id)
+        export_format.append(format_name)
+        prompt_field.append("export_path")
+        prompt.text = ""
+        prompt.buffer.cursor_position = 0
+        prompt.prompt = "Local destination path (Escape cancels): "
+        return False
+
+    def _add_export_binding(
+        self,
+        bindings: KeyBindings,
+        browsing: Condition,
+        rows: TextArea,
+        prompt: TextArea,
+        prompt_field: list[str],
+        export_flow: list[str],
+    ) -> None:
+        @bindings.add("x", filter=browsing)
+        def export(event) -> None:
+            if self.selected is None:
+                self._hold_notice("Select a flow before exporting")
+                return
+            export_flow.append(self.selected)
+            prompt_field.append("export_format")
+            prompt.text = ""
+            prompt.buffer.cursor_position = 0
+            prompt.prompt = "Format [raw/raw_request/raw_response/curl/httpie] (Escape cancels): "
+            event.app.layout.focus(prompt)
+
     def _bindings(self, rows: TextArea, detail: TextArea, prompt: TextArea) -> KeyBindings:
         prompt_field: list[str] = []
+        export_flow: list[str] = []
+        export_format: list[str] = []
         bindings = KeyBindings()
 
         def finish_prompt(buffer) -> bool:
-            field = prompt_field.pop()
-            if field == "user_filter":
-                self.set_filter(buffer.text)
-            else:
-                self.set_scope(field, buffer.text)
-            get_app().layout.focus(rows)
-            prompt.prompt = ""
-            return False
+            return self._finish_prompt(buffer, prompt_field, export_flow, export_format, rows, prompt)
 
         prompt.accept_handler = finish_prompt
 
@@ -359,6 +495,7 @@ class TrafficInspector:
         @bindings.add("q", filter=browsing)
         @bindings.add("c-c")
         def quit_view(event) -> None:
+            self.cancel_export()
             event.app.exit()
 
         @bindings.add("up", filter=listing)
@@ -392,9 +529,13 @@ class TrafficInspector:
             prompt.prompt = "User filter (empty clears filter): " if field == "user_filter" else f"{field} (empty clears): "
             event.app.layout.focus(prompt)
 
+        self._add_export_binding(bindings, browsing, rows, prompt, prompt_field, export_flow)
+
         @bindings.add("escape", filter=Condition(lambda: bool(prompt_field)))
         def cancel_prompt(event) -> None:
             prompt_field.clear()
+            export_flow.clear()
+            export_format.clear()
             prompt.text, prompt.prompt = "", ""
             event.app.layout.focus(rows)
 
@@ -415,19 +556,22 @@ class TrafficInspector:
             self._show(rows, detail)
 
     async def _poll(self, app: Application, rows: TextArea, detail: TextArea) -> None:
-        while True:
-            self.wake.clear()
-            await self.refresh()
-            self._show(rows, detail)
-            app.invalidate()
-            try:
-                await asyncio.wait_for(self.wake.wait(), timeout=1)
-            except TimeoutError:
-                pass
+        try:
+            while True:
+                self.wake.clear()
+                await self.refresh()
+                self._show(rows, detail)
+                app.invalidate()
+                try:
+                    await asyncio.wait_for(self.wake.wait(), timeout=1)
+                except TimeoutError:
+                    pass
+        finally:
+            self.cancel_export()
 
     def help_text(self) -> str:
         view = "w HTTP · [/] message page · r/s HTTP body" if self.websocket_mode else "r/s body · w WebSocket"
-        return f"↑↓ select · Tab pane · PgUp/PgDn scroll · {view} · f filter · a/t scope · c clear scope · q detach"
+        return f"↑↓ select · Tab pane · PgUp/PgDn scroll · {view} · x export · f filter · a/t scope · c clear scope · q detach"
 
     def application(self) -> Application:
         detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
@@ -451,8 +595,11 @@ def inspect_traffic(api: AdminAPI) -> None:
     """Attach a terminal client without acquiring any proxy shutdown ownership."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise RuntimeError("Traffic inspection needs a terminal; use --no-attach to update scope only.")
+    view = TrafficInspector(api)
     try:
-        TrafficInspector(api).application().run()
+        view.application().run()
     except (KeyboardInterrupt, EOFError):
         # Closing the UI is a detach. No lifecycle operation belongs here.
         pass
+    finally:
+        view.cancel_export()

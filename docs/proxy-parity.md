@@ -2280,8 +2280,56 @@ authenticated API. The joined selection passes 61 native and 104 CLI tests.
 Strict all-target Clippy passes. These are implementation checks, not full
 filter parity or independent acceptance.
 
-Export/import, web inspection and the exposed edit/replay workflows remain
-migration work. The Python proxy has not been removed or cut over.
+### Selected-flow file export
+
+The terminal inspector's `x` action selects `raw`, `raw_request`, `raw_response`,
+`curl` or `httpie` and saves the selected flow to a local path. The authenticated
+operator route receives the flow ID and format. The destination path stays with
+the client. Command formats produce text and do not execute it.
+
+An export snapshots retained HTTP observations and WebSocket payload owners
+under the live-view lock. Decoding and file-backed message reads occur after
+that lock is released. Streaming retains those owners across later view changes
+or pruning. A producer must explicitly finish the stream; losing the producer
+before that completion produces an error rather than successful end-of-file.
+HTTP decoding and command formatting still materialize complete decoded HTTP
+bodies in memory. Output chunks and WebSocket payload reads are bounded.
+
+Raw formats reconstruct HTTP messages using observed protocol, target, headers,
+reason and available content. They do not preserve original wire bytes.
+Captured trailer pairs preserve duplicate values, with normalized field names
+and no original interleaving of different fields.
+Combined raw output follows the source's available-side selection and includes
+its direction-prefixed WebSocket payloads when both HTTP sides are present.
+The raw transcript includes dropped messages and omits message type and drop
+metadata. Those facts remain available in the inspector.
+
+The [source export fixture](../proxy/tests/traffic_export_source.py) records
+31 workflows and 155 formatter observations. Independent assertions cover
+missing versus empty content, retained encoding headers for empty bodies,
+repeated headers, command quoting, finite trailers, and full WebSocket bytes
+across the display-page boundary. Added controls cover explicit default ports,
+raw header bytes, valid ASCII, retained Unicode byte-order marks, and encoding
+declarations in HTML, XML and CSS bodies. Command observations preserve exact
+bytes even when the source string contains surrogateescaped header bytes.
+These source checks do not establish native formatter parity or independent
+acceptance.
+
+The native formatter replay compares 154 of those observations. It excludes
+only curl's optional original-IP preservation output because the native view
+does not retain the required peer-IP observation. The replay preserves the
+input's explicit default ports and compares command bytes, including header
+values that are not valid UTF-8. It constructs retained observations from the
+fixture; it does not establish complete runtime capture equivalence. Native
+URL and header projections retain the differences documented in the development
+workflow.
+Command body decoding currently covers ASCII, Latin-1 and UTF-8/16/32. Other
+source-supported codecs and additional aliases remain a compatibility gap;
+the native formatter reports an unsupported representation for those labels.
+
+HAR, flow-dump export and import, web inspection and the exposed edit/replay
+workflows remain migration work. The Python proxy has not been removed or cut
+over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those

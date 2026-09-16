@@ -39,7 +39,7 @@ pub(super) fn begin<B>(
             .map(|fields| pairs(fields.iter()))
     }
     .unwrap_or_else(|| header_map(request.headers()));
-    Some(runtime.traffic_view.begin(RequestInfo {
+    let exchange = runtime.traffic_view.begin(RequestInfo {
         id: request_id.to_owned(),
         connection_id: identity.connection_id.clone(),
         agent: Some(identity.agent_id.clone()),
@@ -50,7 +50,14 @@ pub(super) fn begin<B>(
         ),
         headers,
         started: crate::circuit_runtime::now(),
-    }))
+    });
+    // Capture the parser-owned request line before forwarding rewrites the
+    // request URI and protocol for the upstream leg.
+    exchange.request_line(
+        &format!("{:?}", request.version()),
+        &request.uri().to_string(),
+    );
+    Some(exchange)
 }
 
 /// The live model retains header bytes reversibly as Latin-1 text; it does not
@@ -82,7 +89,16 @@ pub(super) fn header_map(headers: &hyper::HeaderMap) -> Vec<(String, String)> {
 }
 
 pub(super) fn local_response(exchange: &Exchange, response: &Response<Body>) {
-    exchange.response_head(response.status().as_u16(), header_map(response.headers()));
+    let reason = response
+        .extensions()
+        .get::<hyper::ext::ReasonPhrase>()
+        .map(|reason| reason.as_bytes());
+    exchange.response_head_observed(
+        response.status().as_u16(),
+        Some(&format!("{:?}", response.version())),
+        header_map(response.headers()),
+        reason,
+    );
     // Local replies are already constructed, but their boxed body has no byte
     // borrow. Keep this capture limitation explicit instead of polling it.
     exchange.response_body(None);
