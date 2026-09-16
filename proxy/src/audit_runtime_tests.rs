@@ -73,6 +73,26 @@ fn event(index: usize) -> Event {
     event
 }
 
+fn assert_policy_reload(row: &Value) {
+    let mut event = row.clone();
+    assert!(
+        event
+            .as_object_mut()
+            .unwrap()
+            .remove("ts")
+            .unwrap()
+            .is_string()
+    );
+    assert_eq!(
+        event,
+        json!({
+            "schema_version":1,"event":"ops.policy_reload","kind":"ops",
+            "severity":"medium","summary":"Baseline policy reloaded: 0 permissions",
+            "addon":"policy-loader","details":{"policy_type":"baseline","permissions_count":0}
+        })
+    );
+}
+
 fn logger_request(runtime: &Runtime, host: &str, size: impl FnOnce() -> u64) -> bool {
     let mut exchange = Exchange::new(
         Attribution {
@@ -169,13 +189,14 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                         .lines()
                         .map(|line| serde_json::from_str(line).unwrap())
                         .collect();
-                    assert_eq!(rows.len(), 34);
-                    assert_eq!(rows[0]["event"], "ops.startup");
-                    assert_eq!(rows[0]["addon"], "memory-monitor");
-                    assert_eq!(rows[1]["event"], "traffic.request");
-                    assert_eq!(rows[1]["details"]["size"], 9);
-                    assert_eq!(rows[1]["details"]["attribution"]["evidence_owner"], "alice");
-                    for (index, row) in rows[2..].iter().enumerate() {
+                    assert_eq!(rows.len(), 35);
+                    assert_policy_reload(&rows[0]);
+                    assert_eq!(rows[1]["event"], "ops.startup");
+                    assert_eq!(rows[1]["addon"], "memory-monitor");
+                    assert_eq!(rows[2]["event"], "traffic.request");
+                    assert_eq!(rows[2]["details"]["size"], 9);
+                    assert_eq!(rows[2]["details"]["attribution"]["evidence_owner"], "alice");
+                    for (index, row) in rows[3..].iter().enumerate() {
                         assert_eq!(row["event"], "ops.owned_lifecycle");
                         assert_eq!(row["details"]["index"], index);
                     }
@@ -208,7 +229,7 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 let initial = proxy.runtime.read().unwrap().clone();
                 assert!(!logger_request(&initial, "owned.invalid", || 7));
                 assert_eq!(initial.audit.emit(event(1)).unwrap(), Submission::Queued);
-                assert_eq!(initial.audit.pending_count().unwrap(), 3);
+                assert_eq!(initial.audit.pending_count().unwrap(), 4);
                 assert!(!initial.audit.wait_for_drain(Duration::ZERO).unwrap());
 
                 configuration.audit_log_path = Some(directory.join("not-selected/audit.jsonl"));
@@ -220,7 +241,7 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 assert!(Arc::ptr_eq(&initial.request_logger, &current.request_logger));
                 assert_eq!(current.request_logger.stats().unwrap().requests_total, 1.into());
                 assert!(logger_request(&current, "quiet.invalid", || panic!("quiet request decoded a body")));
-                assert_eq!(current.audit.pending_count().unwrap(), 3);
+                assert_eq!(current.audit.pending_count().unwrap(), 5);
 
                 let mut invalid = configuration.clone();
                 invalid.policy_file = Some(directory.join("failed-candidate-policy.json"));
@@ -232,10 +253,10 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 assert!(proxy.reload(invalid).await.is_err());
                 let retained = proxy.runtime.read().unwrap().clone();
                 assert!(Arc::ptr_eq(&current, &retained));
-                assert_eq!(retained.audit.pending_count().unwrap(), 3);
+                assert_eq!(retained.audit.pending_count().unwrap(), 5);
                 assert!(!logger_request(&retained, "owned.invalid", || 11));
                 assert_eq!(initial.audit.emit(event(2)).unwrap(), Submission::Queued);
-                assert_eq!(retained.audit.pending_count().unwrap(), 5);
+                assert_eq!(retained.audit.pending_count().unwrap(), 7);
                 let later_path = configuration.audit_log_path.as_ref().unwrap();
                 assert!(!later_path.parent().unwrap().exists());
 
@@ -262,15 +283,19 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 }
                 let rows: Vec<Value> = std::str::from_utf8(&bytes).unwrap().lines()
                     .map(|line| serde_json::from_str(line).unwrap()).collect();
-                assert_eq!(rows.len(), 5);
-                assert_eq!(rows[0]["event"], "ops.startup");
-                assert_eq!(rows[0]["addon"], "memory-monitor");
-                assert_eq!(rows[1]["event"], "traffic.request");
-                assert_eq!(rows[1]["details"]["size"], 7);
-                assert_eq!(rows[2]["details"]["index"], 1);
-                assert_eq!(rows[3]["event"], "traffic.request");
-                assert_eq!(rows[3]["details"]["size"], 11);
-                assert_eq!(rows[4]["details"]["index"], 2);
+                assert_eq!(rows.len(), 7);
+                assert_policy_reload(&rows[0]);
+                assert_eq!(rows[1]["event"], "ops.startup");
+                assert_eq!(rows[1]["addon"], "memory-monitor");
+                assert_eq!(rows[2]["event"], "traffic.request");
+                assert_eq!(rows[2]["details"]["size"], 7);
+                assert_eq!(rows[3]["event"], "ops.owned_lifecycle");
+                assert_eq!(rows[3]["details"]["index"], 1);
+                assert_policy_reload(&rows[4]);
+                assert_eq!(rows[5]["event"], "traffic.request");
+                assert_eq!(rows[5]["details"]["size"], 11);
+                assert_eq!(rows[6]["event"], "ops.owned_lifecycle");
+                assert_eq!(rows[6]["details"]["index"], 2);
                 let stats = retained.request_logger.stats().unwrap();
                 assert_eq!(stats.requests_total, 3.into());
                 assert_eq!(stats.requests_quieted, 1.into());

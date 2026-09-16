@@ -35,6 +35,7 @@ pub mod network_guard;
 pub mod oauth;
 mod operator_stats;
 pub mod policy;
+mod policy_runtime;
 mod python_json;
 mod python_text;
 mod request_headers;
@@ -180,20 +181,14 @@ impl Runtime {
             let policy = config
                 .policy_file
                 .as_ref()
-                .map(
-                    |path| match previous.and_then(|runtime| runtime.policy.as_ref()) {
-                        Some(policy) => policy.reload_from_path_with_registry_at(
-                            path,
-                            registry,
-                            policy::current_time_ms(),
-                        ),
-                        None => policy::Policy::from_path_with_registry_at(
-                            path,
-                            registry,
-                            policy::current_time_ms(),
-                        ),
-                    },
-                )
+                .map(|path| {
+                    policy_runtime::load(
+                        path,
+                        registry,
+                        previous.and_then(|runtime| runtime.policy.as_ref()),
+                        &audit,
+                    )
+                })
                 .transpose()?;
             let network_guard = previous
                 .map(|runtime| runtime.network_guard.clone())
@@ -692,6 +687,7 @@ impl Proxy {
                     admin_address,
                     &mut service_files,
                 )?;
+                policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
                 memory_runtime::running(&runtime);
                 Ok::<_, Error>((Arc::new(runtime), service_files))
             })
@@ -836,18 +832,20 @@ impl Proxy {
                     // when a later policy compile rejects the candidate.
                     let registry =
                         load_service_catalog(config, &previous.audit, &mut self.service_files)?;
-                    let policy = previous
-                        .policy
-                        .as_ref()
-                        .ok_or("service catalog requires native policy")?
-                        .reload_from_path_with_registry_at(
-                            config
-                                .policy_file
+                    let policy = policy_runtime::load(
+                        config
+                            .policy_file
+                            .as_ref()
+                            .ok_or("service catalog requires policy_file")?,
+                        registry,
+                        Some(
+                            previous
+                                .policy
                                 .as_ref()
-                                .ok_or("service catalog requires policy_file")?,
-                            registry,
-                            policy::current_time_ms(),
-                        )?;
+                                .ok_or("service catalog requires native policy")?,
+                        ),
+                        &previous.audit,
+                    )?;
                     let runtime = Arc::new(Runtime {
                         policy: Some(policy),
                         ..previous.clone()
@@ -857,7 +855,9 @@ impl Proxy {
                         .write()
                         .map_err(|_| "runtime write lock poisoned")?;
                     runtime.configure_declarations()?;
-                    *current = runtime;
+                    *current = runtime.clone();
+                    drop(current);
+                    policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
                     Ok(true)
                 }
             }
@@ -915,8 +915,9 @@ impl Proxy {
             // existing declarations retain their original expiry and context.
             runtime.configure_declarations()?;
             runtime.flow_recorder.set_enabled(config.flow_store_enabled);
-            *current = runtime;
+            *current = runtime.clone();
         }
+        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
         self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
         self.service_files = service_files;
         if self.readiness_file != config.readiness_file {

@@ -39,7 +39,7 @@ use source::{ParsedPolicy, TemporalEntry};
 pub(crate) use source::{TemporalValue, TimestampPaths};
 pub use stats::EngineStatsError;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Toml,
     Yaml,
@@ -62,6 +62,39 @@ pub(crate) enum BaselineSerializationError {
 pub struct PolicyError {
     pub kind: ErrorKind,
     pub message: String,
+}
+
+/// Reached native load phase, not an inferred Python exception class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PolicyLoadStage {
+    Read,
+    Decode(Format),
+    JsonNull,
+    Document,
+    Prepare,
+}
+
+pub(crate) struct PolicyLoadError {
+    pub stage: PolicyLoadStage,
+    pub error: PolicyError,
+}
+impl fmt::Debug for PolicyLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("PolicyLoadError")
+            .field(&self.stage)
+            .finish()
+    }
+}
+impl fmt::Display for PolicyLoadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("baseline policy load failed")
+    }
+}
+impl std::error::Error for PolicyLoadError {}
+
+fn load_error(stage: PolicyLoadStage, error: PolicyError) -> PolicyLoadError {
+    PolicyLoadError { stage, error }
 }
 
 impl fmt::Display for PolicyError {
@@ -475,7 +508,19 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
-        let mut replacement = Self::from_path_with_registry_at(path, registry, now_ms)?;
+        self.reload_baseline_at(path, registry, now_ms)
+            .map_err(|error| error.error)
+    }
+
+    /// The audit owner needs the reached failure phase while public loaders
+    /// continue to return their original policy error unchanged.
+    pub(crate) fn reload_baseline_at(
+        &self,
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> std::result::Result<Self, PolicyLoadError> {
+        let mut replacement = Self::load_baseline_at(path, registry, now_ms)?;
         replacement.budgets = self.budgets.clone();
         replacement.evaluations = self.evaluations.clone();
         replacement.task = self.task.clone();
@@ -548,19 +593,33 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
-        let source = std::fs::read_to_string(path).map_err(|error| PolicyError {
-            kind: ErrorKind::Read,
-            message: error.to_string(),
+        Self::load_baseline_at(path, registry, now_ms).map_err(|error| error.error)
+    }
+
+    pub(crate) fn load_baseline_at(
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+    ) -> std::result::Result<Self, PolicyLoadError> {
+        let source = std::fs::read_to_string(path).map_err(|error| {
+            load_error(
+                PolicyLoadStage::Read,
+                PolicyError {
+                    kind: ErrorKind::Read,
+                    message: error.to_string(),
+                },
+            )
         })?;
         let format = match path.extension().and_then(|extension| extension.to_str()) {
             Some("toml") => Format::Toml,
             Some("yaml" | "yml") => Format::Yaml,
             _ => Format::Json,
         };
-        let mut parsed = parse_policy_document(&source, format)?;
+        let mut parsed = parse_policy_document_staged(&source, format)?;
         // Production expires baseline entries before merging addon defaults or
         // opening list files, so an expired reference cannot require its file.
-        prune_parsed_document(&mut parsed, now_ms)?;
+        prune_parsed_document(&mut parsed, now_ms)
+            .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
         // Existing loader merges sibling addons.yaml defaults before compilation.
         let addons = path.with_file_name("addons.yaml");
         if addons.exists() && addons != path {
@@ -568,12 +627,25 @@ impl Policy {
                 .ok()
                 .and_then(|source| parse_policy_document(&source, Format::Yaml).ok());
             if let Some(defaults) = defaults {
-                parsed = merge_parsed_defaults(parsed, defaults)?;
+                parsed = merge_parsed_defaults(parsed, defaults)
+                    .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
             }
         }
-        let mut policy = Self::from_document(parsed, path.parent(), registry, false)?;
+        let mut policy = Self::from_document(parsed, path.parent(), registry, false)
+            .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
         policy.baseline_path = Some(path.to_owned());
         Ok(policy)
+    }
+
+    /// Count the validated canonical permissions after host-centric simple-rule
+    /// extraction, without serializing unrelated (possibly temporal) fields.
+    pub(crate) fn baseline_permissions_count(&self) -> Option<usize> {
+        self.baseline.as_ref().map(|baseline| {
+            baseline.value["permissions"]
+                .as_array()
+                .expect("validated baseline permissions")
+                .len()
+        })
     }
 
     fn from_document(
@@ -2704,29 +2776,49 @@ pub(crate) fn parse_document(source: &str, format: Format) -> Result<Map<String,
 }
 
 fn parse_policy_document(source: &str, format: Format) -> Result<ParsedPolicy> {
+    parse_policy_document_staged(source, format).map_err(|error| error.error)
+}
+
+fn parse_policy_document_staged(
+    source: &str,
+    format: Format,
+) -> std::result::Result<ParsedPolicy, PolicyLoadError> {
+    let decode_error = |error| load_error(PolicyLoadStage::Decode(format), error);
     let (value, mut timestamps) = match format {
         Format::Yaml => {
-            let node = parse_yaml_node_with_keys(source, true)?;
+            let node = parse_yaml_node_with_keys(source, true).map_err(decode_error)?;
             (node.value, node.timestamps)
         }
-        Format::Toml => parse_toml_with_timestamps(source)?,
+        Format::Toml => parse_toml_with_timestamps(source).map_err(decode_error)?,
         Format::Json => (
-            parse_json(source, false).map_err(|error| invalid(error.to_string()))?,
+            parse_json(source, false).map_err(|error| decode_error(invalid(error.to_string())))?,
             TimestampPaths::default(),
         ),
     };
     if timestamps.value_at(&[]).is_some() {
-        return Err(invalid("policy document must be a mapping"));
+        return Err(load_error(
+            PolicyLoadStage::Document,
+            invalid("policy document must be a mapping"),
+        ));
     }
     let mut document = if value.is_null() && matches!(format, Format::Yaml) {
         Map::new()
     } else if let Value::Object(document) = value {
         document
     } else {
-        return Err(invalid("policy document must be a mapping"));
+        let stage = if value.is_null() && matches!(format, Format::Json) {
+            PolicyLoadStage::JsonNull
+        } else {
+            PolicyLoadStage::Document
+        };
+        return Err(load_error(
+            stage,
+            invalid("policy document must be a mapping"),
+        ));
     };
     if matches!(format, Format::Toml) {
-        document = normalize_toml(document, &mut timestamps)?;
+        // Source load_as_internal includes TOML normalization inside _load_file.
+        document = normalize_toml(document, &mut timestamps).map_err(decode_error)?;
     }
     Ok(ParsedPolicy {
         document,
@@ -3365,3 +3457,6 @@ mod yaml_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod load_tests;

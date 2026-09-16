@@ -1,6 +1,7 @@
 //! Owned Runtime publication and authenticated H1 catalog reads. No injection.
 
 mod diagnostics;
+mod policy_events;
 mod reload;
 
 use super::*;

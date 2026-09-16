@@ -164,15 +164,17 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     let head = read_head(&mut client).await;
     assert!(head.starts_with(b"HTTP/1.1 101"));
     let initial = drained_records(&runtime, directory.path());
-    assert_eq!(initial.len(), 2);
-    assert_eq!(initial[0]["event"], "traffic.request");
-    assert_eq!(initial[0]["summary"], "GET logical.invalid/socket");
-    assert_eq!(initial[0]["details"]["size"], 0);
-    assert_eq!(initial[1]["event"], "traffic.response");
-    assert_eq!(initial[1]["summary"], "101 logical.invalid/socket");
-    assert_eq!(initial[1]["details"]["status"], 101);
+    assert_eq!(initial.len(), 3);
+    assert_eq!(initial[0]["event"], "ops.policy_reload");
+    assert_eq!(initial[0]["details"]["permissions_count"], 1);
+    assert_eq!(initial[1]["event"], "traffic.request");
+    assert_eq!(initial[1]["summary"], "GET logical.invalid/socket");
     assert_eq!(initial[1]["details"]["size"], 0);
-    assert_eq!(initial[0]["request_id"], initial[1]["request_id"]);
+    assert_eq!(initial[2]["event"], "traffic.response");
+    assert_eq!(initial[2]["summary"], "101 logical.invalid/socket");
+    assert_eq!(initial[2]["details"]["status"], 101);
+    assert_eq!(initial[2]["details"]["size"], 0);
+    assert_eq!(initial[1]["request_id"], initial[2]["request_id"]);
     assert_eq!(stats(&runtime), expected_stats(1));
     assert_eq!(super::metrics_stats(&runtime), expected_metrics(1));
     let (read, mut write) = tokio::io::split(client);
@@ -372,12 +374,14 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
             .is_err()
     );
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 5);
-    assert_eq!(rows[0]["event"], "admin.auth_failure");
+    assert_eq!(rows.len(), 6);
+    assert_eq!(rows[0]["event"], "ops.policy_reload");
+    assert_eq!(rows[0]["details"]["permissions_count"], 1);
     assert_eq!(rows[1]["event"], "admin.auth_failure");
-    assert_eq!(rows[2]["event"], "traffic.request");
-    assert_eq!(rows[3]["event"], "traffic.response");
-    assert_eq!(rows[4]["event"], "admin.auth_failure");
+    assert_eq!(rows[2]["event"], "admin.auth_failure");
+    assert_eq!(rows[3]["event"], "traffic.request");
+    assert_eq!(rows[4]["event"], "traffic.response");
+    assert_eq!(rows[5]["event"], "admin.auth_failure");
     let events = diagnostic_events(directory.path());
     let egress: Vec<_> = events
         .iter()
@@ -696,9 +700,12 @@ async fn immediate_shutdown_joins_listener_before_its_first_poll() {
     assert_eq!(report["total_flows"], 0);
     assert_eq!(runtime.audit.pending_count().unwrap(), 0);
     let rows = all_records(directory.path());
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["event"], "ops.startup");
-    assert_eq!(rows[0]["addon"], "memory-monitor");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["event"], "ops.policy_reload");
+    assert_eq!(rows[0]["addon"], "policy-loader");
+    assert_eq!(rows[0]["details"]["permissions_count"], 1);
+    assert_eq!(rows[1]["event"], "ops.startup");
+    assert_eq!(rows[1]["addon"], "memory-monitor");
 }
 
 #[tokio::test]

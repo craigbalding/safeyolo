@@ -368,6 +368,7 @@ silently reduce accepted message sizes to a library default.
 | D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. |
 | D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. |
 | D64 | Source probes that cross the existing streaming threshold attempt transport before the request sink, even when that sink is installed. The transport guard refuses locally. Source HTTP/1 returns HTML 502 without a request-ID header; its error hook records `error_type: Error`. | Native preserves the buffered/streamed distinction and refuses streamed probes without draining the remaining upload or publishing sink success. Its existing error response is correlated JSON 502, with the native trace category `NativeProbeTransportRefused`. Earlier native network/circuit admission still has the request-head timing described for the HTTP pipeline. Source lifecycle evidence is static; owned native HTTP/1 controls verify the local behavior. |
+| D65 | Source baseline loading publishes before its success audit submission. A synchronous submission failure attempts `ops.policy_error`, then returns false or raises even though the policy changed; subsequent callbacks are skipped. Catalog synchronization can then attempt a separate rollback and reload. | Native keeps policy, catalog, routes and tokens in one accepted snapshot. Audit failure attempts the source-shaped error event once and reports an evidence failure separately; it does not change a successful load result or roll back the catalog alone. A rejected load retains its original error if error-event submission also fails. The source failure behavior remains in the policy reload oracle. |
 
 ## Deletion map and evidence still required
 
@@ -912,8 +913,7 @@ configuration reload retains its existing full-runtime construction path.
 
 The source watcher also attempts a configured task-policy file reload. The
 native process has no active task-policy file configuration; its existing task
-snapshot is retained. Task-file activation and the source policy callback's
-`ops.policy_reload` / `ops.policy_error` events remain separate migration gaps.
+snapshot is retained. Task-file activation remains a separate migration gap.
 The native process has no source watcher timeout-and-restart race because one
 control-loop owner completes each check before admitting another reload.
 
@@ -967,6 +967,53 @@ limits include directory metadata errors: native `Path::is_dir` suppresses
 errors that Python's path checks can propagate. The installed builtin-path
 resolver and packaging, task-file activation, and HTTP selection/injection
 remain required migration work.
+
+### Baseline policy reload events
+
+The [runtime policy loader](../proxy/src/policy_runtime.rs) emits
+`ops.policy_reload` for an accepted native baseline. Startup emits after complete
+Runtime construction and before the memory startup event; this does not imply
+listener readiness. Explicit and automatic reload emit after policy publication.
+The event uses `kind: ops`, `severity: medium`, addon `policy-loader`, and ordered
+details `policy_type: baseline` and `permissions_count`. That count comes from
+the canonical permission array, after host-centric simple-rule extraction. It
+does not count all matcher entries or copy a token-bearing policy document.
+
+Rejected baseline loads attempt `ops.policy_error` with severity `high` and
+ordered details `policy_type: baseline` and `error`. Read/decode failures and
+JSON null use the source's fixed file-not-found-or-invalid summary and error.
+Reached document, merge, compiler and validation failures use their native
+error text in the source-shaped failure summary and details. Explicitly
+unsupported native representations use their native error text. Existing parser
+differences can also change the reached branch: Python accepts JSON nonfinite
+constants that native rejects during decoding, and coerces falsy YAML scalars
+to an empty policy where native can reject the document. These stages and error
+strings do not establish Python/Pydantic equivalence. Neither event has request,
+agent, host, decision or attribution fields.
+
+Catalog rejection before policy loading, unchanged catalog checks, and the
+temporary policy adapter emit no native baseline event. Later pre-publication
+configuration failure emits no reload success. A readiness-write failure after
+publication does not erase the event for the installed policy.
+
+Audit submission failure is reported separately from policy acceptance. After
+a failed success submission, native attempts the source-shaped policy error
+once, then keeps the accepted snapshot and successful load result. A failed
+error submission preserves the original rejected-load error. D65 records this
+correction to source partial-publication and callback behavior. Queue-full or
+stopped normal submissions and later asynchronous sink failure do not become
+synchronous policy-load exceptions; a queued event is not a durability claim.
+
+The [source oracle](../proxy/tests/policy_reload_source.py) records 18 selected
+load workflows. Native comparisons pair eight complete event envelopes. The
+remaining source observations inform component and Runtime controls or retain
+explicit gaps; they are not an 18-case native parity claim. D65 keeps the source
+audit-failure outcomes alongside the native correction.
+
+The source loader also has baseline file watching, task-policy activation and
+task-specific event behavior. Those producers remain separate migration work.
+Source/native stat-error phase differences and existing YAML/TOML/JSON
+representation limits remain explicit gaps; these events do not close them.
 
 ### Gateway representation and response encoding
 
