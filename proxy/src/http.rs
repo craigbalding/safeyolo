@@ -30,6 +30,9 @@ mod agent_audit_tests;
 mod circuit_audit_tests;
 mod circuit_completion;
 mod flow_recording;
+mod ignored_host;
+#[cfg(test)]
+mod ignored_host_tests;
 mod request_body;
 mod request_context;
 mod test_context;
@@ -408,6 +411,7 @@ async fn open_egress(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
     tunnel: bool,
+    ignored: Option<crate::ignored_host_logger::SelectedDestination<'_>>,
 ) -> Result<Connected, Error> {
     let destination = allowed.destination;
     if is_reserved(&destination.host) {
@@ -434,59 +438,78 @@ async fn open_egress(
             "host": destination.host, "port": destination.port, "route": route,
         }))
     };
-    let socket = if runtime.admin_shield.protects_port(port)
-        || runtime
-            .admin_address
-            .is_some_and(|bound| bound.port() == port)
-    {
-        // Resolve this immediate route once before selecting a socket that
-        // could reach the operator listener. Parent-origin DNS remains remote.
-        let addresses = tokio::net::lookup_host((host, port)).await?;
-        let mut socket = None;
-        let mut last_error = None;
-        let mut protected = false;
-        let mut recorded = false;
-        for address in addresses {
-            if runtime.admin_shield.blocks_address(address)
-                || runtime
-                    .admin_address
-                    .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound))
-            {
-                protected = true;
-                continue;
-            }
-            if !recorded {
-                record_egress()?;
-                recorded = true;
-            }
-            match TcpStream::connect(address).await {
-                Ok(connected) => {
-                    socket = Some(connected);
-                    break;
+    let mut connection_audit = ignored.map(|selected| {
+        ignored_host::ConnectionAudit::new(runtime.audit.clone(), allowed.identity, selected)
+    });
+    let connecting: Result<TcpStream, Error> = async {
+        let socket = if runtime.admin_shield.protects_port(port)
+            || runtime
+                .admin_address
+                .is_some_and(|bound| bound.port() == port)
+        {
+            // Resolve this immediate route once before selecting a socket that
+            // could reach the operator listener. Parent-origin DNS remains remote.
+            let addresses = tokio::net::lookup_host((host, port)).await?;
+            let mut socket = None;
+            let mut last_error = None;
+            let mut protected = false;
+            let mut recorded = false;
+            for address in addresses {
+                if runtime.admin_shield.blocks_address(address)
+                    || runtime
+                        .admin_address
+                        .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound))
+                {
+                    protected = true;
+                    continue;
                 }
-                Err(error) => last_error = Some(error),
+                if !recorded {
+                    record_egress()?;
+                    recorded = true;
+                }
+                match TcpStream::connect(address).await {
+                    Ok(connected) => {
+                        socket = Some(connected);
+                        break;
+                    }
+                    Err(error) => last_error = Some(error),
+                }
             }
+            match socket {
+                Some(socket) => socket,
+                None => {
+                    if protected {
+                        return Err(AdminPortAccess.into());
+                    }
+                    if let Some(error) = last_error {
+                        return Err(error.into());
+                    }
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "egress route resolved no socket addresses",
+                    )
+                    .into());
+                }
+            }
+        } else {
+            record_egress()?;
+            TcpStream::connect((host, port)).await?
+        };
+        Ok(socket)
+    }
+    .await;
+    let socket = match connecting {
+        Ok(socket) => socket,
+        Err(error) => {
+            if let Some(observation) = &mut connection_audit {
+                observation.failed(&error.to_string());
+            }
+            return Err(error);
         }
-        match socket {
-            Some(socket) => socket,
-            None => {
-                if protected {
-                    return Err(AdminPortAccess.into());
-                }
-                if let Some(error) = last_error {
-                    return Err(error.into());
-                }
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "egress route resolved no socket addresses",
-                )
-                .into());
-            }
-        }
-    } else {
-        record_egress()?;
-        TcpStream::connect((host, port)).await?
     };
+    if let Some(observation) = &mut connection_audit {
+        observation.connected();
+    }
     let peer = if runtime.parent.is_none() {
         match socket.peer_addr()?.ip() {
             std::net::IpAddr::V4(address) => Some(address),
@@ -494,6 +517,10 @@ async fn open_egress(
         }
     } else {
         None
+    };
+    let socket: BoxStream = match connection_audit {
+        Some(observation) => ignored_host::observe(socket, observation),
+        None => Box::new(socket),
     };
     let mut stream: BoxStream = if tls {
         let name = ServerName::try_from(host.to_owned())?;
@@ -503,7 +530,7 @@ async fn open_egress(
             .ok_or("HTTPS parent TLS was not configured")?;
         Box::new(TlsConnector::from(tls).connect(name, socket).await?)
     } else {
-        Box::new(socket)
+        socket
     };
     if tunnel && runtime.parent.is_some() {
         let (mut sender, connection) =
@@ -552,6 +579,7 @@ async fn open_outbound(
                 runtime,
                 allowed,
                 tunnel.is_some() || destination.scheme == "https",
+                None,
             )
             .await?
             .stream
@@ -1278,6 +1306,16 @@ async fn forward(
     if request.method() == Method::CONNECT {
         // Admission precedes DNS/dial. Eager connection supports protocols whose
         // server greets the client before receiving any client bytes.
+        // Source logging selects a destination before DNS. Keep the existing
+        // later transport matcher, including its resolved-peer behavior.
+        let ignored = (runtime.parent.is_none()
+            && runtime
+                .passthrough
+                .matches(&destination.host, destination.port, None))
+        .then_some(crate::ignored_host_logger::SelectedDestination {
+            host: &destination.host,
+            port: destination.port,
+        });
         let connected = open_egress(
             &runtime,
             &AllowedRequest {
@@ -1286,6 +1324,7 @@ async fn forward(
                 request_id,
             },
             true,
+            ignored,
         )
         .await?;
         let passthrough =

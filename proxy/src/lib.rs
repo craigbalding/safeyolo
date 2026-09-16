@@ -25,6 +25,7 @@ pub mod grants;
 pub mod host_names;
 mod http;
 pub mod http_content;
+pub mod ignored_host_logger;
 pub mod inspection;
 pub mod memory_monitor;
 pub mod metrics;

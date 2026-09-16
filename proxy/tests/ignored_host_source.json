@@ -1,0 +1,2645 @@
+{
+  "scope": "source-only matching and actual lifecycle methods; final audit sink and clocks supplied",
+  "rows": [
+    {
+      "input": {
+        "name": "candidate_order_and_exact_dedup",
+        "steps": [
+          {
+            "hook": "match",
+            "now": 10.0,
+            "peer": [
+              "192.0.2.20",
+              443
+            ],
+            "patterns": [
+              "service\\.owned",
+              "192\\.0\\.2\\.20"
+            ]
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "peer": [
+              "service.owned.invalid",
+              443
+            ]
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "peer": [
+              "service.owned.invalid",
+              443
+            ],
+            "sni": "SERVICE.OWNED.INVALID"
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "address": [
+              "other.invalid",
+              8443
+            ],
+            "sni": "service.owned.invalid",
+            "patterns": [
+              "owned\\.invalid:8443$"
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "192.0.2.20",
+              443
+            ],
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": [
+            "192.0.2.20",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ],
+            [
+              "SERVICE.OWNED.INVALID",
+              443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "other.invalid",
+              8443
+            ],
+            [
+              "service.owned.invalid",
+              8443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            8443
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "missing_candidates_and_options",
+        "steps": [
+          {
+            "hook": "match",
+            "now": 10.0,
+            "peer": null,
+            "address": null
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "missing_patterns": true
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "patterns": []
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "missing_patterns": true
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [],
+          "matched": null,
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": null,
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [],
+          "selected_destination": null,
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [],
+          "selected_destination": null,
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "invalid_regex_skipped_case_insensitive",
+        "steps": [
+          {
+            "hook": "match",
+            "now": 10.0,
+            "patterns": [
+              "[",
+              "^SERVICE\\.OWNED\\.INVALID:443$"
+            ]
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "patterns": [
+              "[",
+              "^SERVICE\\.OWNED\\.INVALID:443$"
+            ]
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 125}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "source_search_and_advanced_regex",
+        "steps": [
+          {
+            "hook": "match",
+            "now": 10.0,
+            "patterns": [
+              "vice\\.owned"
+            ]
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "patterns": [
+              "^(?=service\\.)[^:]+:443$"
+            ]
+          },
+          {
+            "hook": "match",
+            "now": 10.0,
+            "patterns": [
+              "["
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "match",
+          "error_class": null,
+          "timeline": [],
+          "candidates": [
+            [
+              "service.owned.invalid",
+              443
+            ]
+          ],
+          "matched": null,
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "successful_lifecycle",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 125}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "unmatched_lifecycle",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "patterns": [
+              "^other\\.invalid:443$"
+            ]
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [],
+          "selected_destination": null,
+          "state_after": []
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "unknown_callbacks",
+        "steps": [
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "error": "owned refusal"
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "disconnect_before_connected",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": []
+    },
+    {
+      "input": {
+        "name": "connect_error_pop_and_sanitization",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "error": "owned refusal\n\u001b[31munsafe\u001b[0m"
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "error": "ignored repeat"
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "id": "empty"
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "id": "empty",
+            "error": ""
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "id": "none"
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "id": "none",
+            "error": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_error"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "empty",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_error"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "none",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_error"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_error",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough failed for service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "error": "owned refusal?unsafe?"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_error\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough failed for service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"error\": \"owned refusal?unsafe?\"}}",
+          "accepted": true,
+          "state_at_submit": []
+        },
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_error",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough failed for service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "error": ""
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_error\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough failed for service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"error\": \"\"}}",
+          "accepted": true,
+          "state_at_submit": []
+        },
+        {
+          "step": 7,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_error",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough failed for service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "error": ""
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_error\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough failed for service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"error\": \"\"}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "start_submit_failure_retains_connected",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0,
+            "audit_error": "RuntimeError"
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": "RuntimeError",
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": false,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 125}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "connect_error_submit_failure_pops",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect_error",
+            "now": 10.0,
+            "audit_error": "RuntimeError",
+            "error": "owned refusal"
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect_error",
+          "error_class": "RuntimeError",
+          "timeline": [
+            "put_event:traffic.passthrough_error"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_error",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough failed for service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "error": "owned refusal"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_error\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough failed for service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"error\": \"owned refusal\"}}",
+          "accepted": false,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "end_submit_failure_pops",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125,
+            "audit_error": "OSError"
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": "OSError",
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 125}}",
+          "accepted": false,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "repeated_connected_and_single_end",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 125}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "same_id_replacement_keeps_slot",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0,
+            "id": "second"
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect",
+            "now": 20.0,
+            "address": [
+              "replacement.invalid",
+              8443
+            ],
+            "sni": null,
+            "patterns": [
+              "replacement"
+            ]
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 20.5
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.0,
+            "id": "second"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": [
+                {
+                  "id": "conn",
+                  "host": "service.owned.invalid",
+                  "port": 443,
+                  "started_at": 10.0,
+                  "connected": false
+                }
+              ]
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 20.0,
+              "state": [
+                {
+                  "id": "conn",
+                  "host": "service.owned.invalid",
+                  "port": 443,
+                  "started_at": 10.0,
+                  "connected": true
+                },
+                {
+                  "id": "second",
+                  "host": "service.owned.invalid",
+                  "port": 443,
+                  "started_at": 10.0,
+                  "connected": false
+                }
+              ]
+            }
+          ],
+          "selected_destination": [
+            "replacement.invalid",
+            8443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "replacement.invalid",
+              "port": 8443,
+              "started_at": 20.0,
+              "connected": false
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "replacement.invalid",
+              "port": 8443,
+              "started_at": 20.0,
+              "connected": true
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 20.5,
+              "state": [
+                {
+                  "id": "second",
+                  "host": "service.owned.invalid",
+                  "port": 443,
+                  "started_at": 10.0,
+                  "connected": false
+                }
+              ]
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": [
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "step": 4,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to replacement.invalid:8443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "replacement.invalid",
+            "details": {
+              "port": 8443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to replacement.invalid:8443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"replacement.invalid\", \"details\": {\"port\": 8443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "replacement.invalid",
+              "port": 8443,
+              "started_at": 20.0,
+              "connected": true
+            },
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from replacement.invalid:8443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "replacement.invalid",
+            "details": {
+              "port": 8443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 500
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from replacement.invalid:8443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"replacement.invalid\", \"details\": {\"port\": 8443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 500}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "second",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "unmatched_reconnect_retains_original",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect",
+            "now": 20.0,
+            "address": [
+              "other.invalid",
+              80
+            ],
+            "sni": null
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 21.0,
+            "patterns": []
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [],
+          "selected_destination": null,
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 21.0,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 3,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 11000
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 11000}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "emission_uses_current_client_facts",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0,
+            "agent": null,
+            "client_ip": null,
+            "transport": "udp"
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125,
+            "agent": "bob",
+            "client_ip": "192.0.2.11",
+            "transport": "tcp",
+            "address": [
+              "changed.invalid",
+              9443
+            ],
+            "sni": "changed.invalid",
+            "patterns": []
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.125,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "udp",
+              "client": null
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"udp\", \"client\": null}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "bob",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.11",
+              "duration_ms": 125
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"bob\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.11\", \"duration_ms\": 125}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "duration_zero_backward_and_ties",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 0.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 0.0005
+          },
+          {
+            "hook": "server_connect",
+            "now": 0.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 0.0015
+          },
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 9.5
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 0.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 0.0005,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 0.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 0.0015,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 9.5,
+              "state": []
+            },
+            "put_event:traffic.passthrough_end"
+          ],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 1,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 0
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 0}}",
+          "accepted": true,
+          "state_at_submit": []
+        },
+        {
+          "step": 4,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 0.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 5,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 2
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 2}}",
+          "accepted": true,
+          "state_at_submit": []
+        },
+        {
+          "step": 7,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "step": 8,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_end",
+            "kind": "traffic",
+            "severity": "low",
+            "summary": "TLS passthrough disconnected from service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10",
+              "duration_ms": 0
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_end\", \"kind\": \"traffic\", \"severity\": \"low\", \"summary\": \"TLS passthrough disconnected from service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\", \"duration_ms\": 0}}",
+          "accepted": true,
+          "state_at_submit": []
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "clock_failures_preserve_assignment_and_pop",
+        "steps": [
+          {
+            "hook": "server_connect",
+            "now": 10.0
+          },
+          {
+            "hook": "server_connect",
+            "now": 20.0,
+            "clock_error": true,
+            "address": [
+              "replacement.invalid",
+              8443
+            ],
+            "sni": null,
+            "patterns": [
+              "replacement"
+            ]
+          },
+          {
+            "hook": "server_connected",
+            "now": 10.0
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 11.0,
+            "clock_error": true
+          },
+          {
+            "hook": "server_disconnected",
+            "now": 10.125
+          }
+        ]
+      },
+      "steps": [
+        {
+          "hook": "server_connect",
+          "error_class": null,
+          "timeline": [
+            {
+              "monotonic": 10.0,
+              "state": []
+            }
+          ],
+          "selected_destination": [
+            "service.owned.invalid",
+            443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connect",
+          "error_class": "RuntimeError",
+          "timeline": [
+            {
+              "monotonic": 20.0,
+              "state": [
+                {
+                  "id": "conn",
+                  "host": "service.owned.invalid",
+                  "port": 443,
+                  "started_at": 10.0,
+                  "connected": false
+                }
+              ]
+            }
+          ],
+          "selected_destination": [
+            "replacement.invalid",
+            8443
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": false
+            }
+          ]
+        },
+        {
+          "hook": "server_connected",
+          "error_class": null,
+          "timeline": [
+            "put_event:traffic.passthrough_start"
+          ],
+          "state_after": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": "RuntimeError",
+          "timeline": [
+            {
+              "monotonic": 11.0,
+              "state": []
+            }
+          ],
+          "state_after": []
+        },
+        {
+          "hook": "server_disconnected",
+          "error_class": null,
+          "timeline": [],
+          "state_after": []
+        }
+      ],
+      "attempts": [
+        {
+          "step": 2,
+          "event": {
+            "schema_version": 1,
+            "ts": "2026-01-02T03:04:05.123456Z",
+            "event": "traffic.passthrough_start",
+            "kind": "traffic",
+            "severity": "medium",
+            "summary": "TLS passthrough connected to service.owned.invalid:443",
+            "agent": "alice",
+            "addon": "ignored-host-logger",
+            "host": "service.owned.invalid",
+            "details": {
+              "port": 443,
+              "transport": "tcp",
+              "client": "192.0.2.10"
+            }
+          },
+          "event_json": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"traffic.passthrough_start\", \"kind\": \"traffic\", \"severity\": \"medium\", \"summary\": \"TLS passthrough connected to service.owned.invalid:443\", \"agent\": \"alice\", \"addon\": \"ignored-host-logger\", \"host\": \"service.owned.invalid\", \"details\": {\"port\": 443, \"transport\": \"tcp\", \"client\": \"192.0.2.10\"}}",
+          "accepted": true,
+          "state_at_submit": [
+            {
+              "id": "conn",
+              "host": "service.owned.invalid",
+              "port": 443,
+              "started_at": 10.0,
+              "connected": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/mitm_addons/ignored_host_logger.py": "9330a729788a3d05383ebd70850addd817468fc47627f69ab525a7fe3b88a505",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
+    "cli/src/safeyolo/core/audit_writer.py": "7db71d553ef7b1889828d3adabcacb125a12ef1b3f1d070c7948a9e1cf5c5103",
+    "tests/test_ignored_host_logger.py": "20255a2b6b181c36ebd8e0cbdc78f5be781361deddbd8f3763c2582ab48695c3"
+  }
+}

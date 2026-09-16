@@ -1596,6 +1596,58 @@ WebSocket upgrade counters, operator authentication and reload retention.
 These checks are implementation evidence; they do not establish independent
 acceptance or full production-chain equivalence.
 
+### Configured passthrough connection events
+
+For admitted direct CONNECT requests, the native proxy now emits canonical
+`traffic.passthrough_start`, `traffic.passthrough_error` and
+`traffic.passthrough_end` events when the destination matches the existing
+passthrough configuration before dialing. The [connection component](../proxy/src/ignored_host_logger.rs)
+uses the shared audit writer. The events retain the source host, port, transport
+and trusted listener agent/client facts. They contain no request ID, explicit
+attribution, byte count or claim about inspected application content.
+
+Matching happens before DNS and is retained for that physical connection.
+Start follows successful TCP connection, before later protocol processing.
+A final connection-attempt failure consumes the observation before reporting
+the error. End follows release of the physical socket; one EOF or write
+half-close does not end the session. Duration includes connection setup and
+uses the source integer rounding. Existing sessions retain their match across
+reload, while new connections use the new configuration.
+
+Audit submission failures retain the source's reached state and do not deny an
+otherwise allowed connection. A failed start submission still leaves an end
+attempt due. Failed error/end submissions do not resurrect their sessions.
+The [transport owner](../proxy/src/http/ignored_host.rs) closes its socket before
+finalizing evidence and uses the existing shutdown lifetime. It adds no timer,
+body reader or permission decision. Legacy `proxy.tunnel` diagnostics remain
+separate from these canonical events.
+Abrupt task teardown has no final-event drain guarantee.
+
+The initial runtime scope excludes parent routes, ordinary HTTP connections,
+SNI/Host aliases and hosts matched only by a newly resolved IPv4 address.
+D29 remains unresolved. Earlier native reserved/admin containment can also
+omit source connection observations; enforcement order remains unchanged.
+Native connection-error wording and cancellation reasons can differ from the
+Python stack. A canceled pending native attempt uses `connection cancelled`;
+this does not establish source hook/semaphore cancellation equivalence.
+A failure in the native pre-dial diagnostic write is reported as an attempt
+error while retaining its existing transport failure; the source has no
+identical diagnostic stage.
+
+The [source oracle](../proxy/tests/ignored_host_source.py) passes eighteen
+workflows. Four component tests include replay of all 71 lifecycle callbacks
+from sixteen applicable workflows and comparison of 26 accepted canonical
+records. Ten source matching observations remain separate from native matching.
+The [seven connection controls](../proxy/src/http/ignored_host_tests.rs) cover
+owned traffic, both half-close orders, refusal, negative controls, reload,
+graceful shutdown and explicit ownership/failure boundaries. Writer poisoning
+is tested at the already-admitted egress boundary because an earlier network
+audit otherwise fails first. Pending cancellation bookkeeping is an in-memory
+control, not a live cancellation equivalence test. The joined selection passes
+18 native tests, including seven existing transport regressions. These are
+implementation checks; full addon parity and independent acceptance remain
+pending.
+
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
 checks on Linux and macOS. A workflow definition is not evidence that those
 jobs, the macOS VM relay or the Linux guest mount have passed.
