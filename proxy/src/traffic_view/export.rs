@@ -5,8 +5,10 @@
 
 use std::{fmt::Write as _, sync::Arc};
 
+use encoding_rs::{DecoderResult, Encoding};
 use zeroize::{Zeroize, Zeroizing};
 
+use super::codec_tables::python_codec_is_registered;
 use super::{Body, Row};
 
 const EXPORT_CHUNK: usize = 16 * 1024;
@@ -606,17 +608,20 @@ fn request_content_for_console(
 
 fn decode_text(body: &[u8], content_type: Option<&str>) -> Result<Zeroizing<String>, ExportError> {
     let encoding = infer_text_encoding(content_type, body);
-    let normalized = Zeroizing::new(encoding.to_ascii_lowercase());
+    let source_gb18030 =
+        encoding.eq_ignore_ascii_case("gbk") || encoding.eq_ignore_ascii_case("gb2312");
+    let normalized = normalize_python_codec_label(&encoding);
     match normalized.as_str() {
-        "utf-8" | "utf8" => decode_utf8(body),
+        "utf" | "utf-8" | "utf8" => decode_utf8(body),
         "utf-8-sig" => decode_utf8(body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body)),
-        "ascii" | "us-ascii" => {
+        "ascii" | "us-ascii" | "646" | "ansi-x3.4-1968" | "ansi-x3.4-1986" | "ansi-x3-4-1968"
+        | "cp367" | "csascii" | "ibm367" | "iso646-us" | "iso-646.irv-1991" | "iso-ir-6" | "us" => {
             if body.iter().any(|byte| !byte.is_ascii()) {
                 return Err(ExportError::Decode);
             }
             decode_utf8(body)
         }
-        "utf-16" => {
+        "utf-16" | "utf16" => {
             if body.starts_with(b"\xff\xfe") {
                 decode_utf16(&body[2..], true)
             } else if body.starts_with(b"\xfe\xff") {
@@ -625,9 +630,9 @@ fn decode_text(body: &[u8], content_type: Option<&str>) -> Result<Zeroizing<Stri
                 Err(ExportError::Decode)
             }
         }
-        "utf-16le" | "utf16le" => decode_utf16(body, true),
-        "utf-16be" | "utf16be" => decode_utf16(body, false),
-        "utf-32" => {
+        "utf-16le" | "utf16le" | "utf-16-le" => decode_utf16(body, true),
+        "utf-16be" | "utf16be" | "utf-16-be" => decode_utf16(body, false),
+        "utf-32" | "utf32" => {
             if body.starts_with(b"\xff\xfe\x00\x00") {
                 decode_utf32(&body[4..], true)
             } else if body.starts_with(b"\x00\x00\xfe\xff") {
@@ -636,13 +641,706 @@ fn decode_text(body: &[u8], content_type: Option<&str>) -> Result<Zeroizing<Stri
                 Err(ExportError::Decode)
             }
         }
-        "utf-32le" | "utf32le" => decode_utf32(body, true),
-        "utf-32be" | "utf32be" => decode_utf32(body, false),
-        "latin-1" | "latin1" | "iso-8859-1" => Ok(Zeroizing::new(
-            body.iter().map(|byte| char::from(*byte)).collect(),
-        )),
-        _ => Err(ExportError::Unsupported),
+        "utf-32le" | "utf32le" | "utf-32-le" => decode_utf32(body, true),
+        "utf-32be" | "utf32be" | "utf-32-be" => decode_utf32(body, false),
+        "latin" | "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" | "cp819" | "ibm819"
+        | "iso-ir-100" | "csisolatin1" | "l1" | "8859" | "iso8859" | "iso-8859-1-1987" => Ok(
+            Zeroizing::new(body.iter().map(|byte| char::from(*byte)).collect()),
+        ),
+        _ => decode_legacy_text(&normalized, body, source_gb18030),
     }
+}
+
+fn normalize_python_codec_label(label: &str) -> Zeroizing<String> {
+    let mut normalized = Zeroizing::new(String::new());
+    let mut separator = false;
+    for byte in label.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            if separator && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            normalized.push(byte.to_ascii_lowercase() as char);
+            separator = false;
+        } else if byte == b'.' {
+            if separator && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            normalized.push('.');
+            separator = false;
+        } else if byte.is_ascii() {
+            separator = true;
+        } else {
+            normalized.push('\u{fffd}');
+            separator = false;
+        }
+    }
+    normalized
+}
+
+fn decode_legacy_text(
+    label: &str,
+    body: &[u8],
+    source_gb18030: bool,
+) -> Result<Zeroizing<String>, ExportError> {
+    if let Some(result) = decode_python_single_byte(label, body) {
+        return result;
+    }
+    if matches!(
+        label,
+        "shift-jis" | "shiftjis" | "sjis" | "s-jis" | "csshiftjis" | "x-mac-japanese"
+    ) {
+        return decode_python_shift_jis(body);
+    }
+    if matches!(label, "932" | "cp932" | "ms932" | "ms-kanji" | "mskanji") {
+        return decode_python_cp932(body);
+    }
+    if matches!(label, "euc-jp" | "eucjp" | "u-jis" | "ujis") {
+        return decode_python_euc_jp(body);
+    }
+    if matches!(label, "gbk" | "gb2312") {
+        return if source_gb18030 {
+            decode_python_gb18030(body)
+        } else {
+            decode_python_gbk(body)
+        };
+    }
+    if matches!(label, "gb2312-80" | "gb2312-1980" | "iso-ir-58") {
+        return decode_python_gb2312(body);
+    }
+    if matches!(label, "gb-2312" | "gb-2312-80") {
+        // These spellings are not registered by the Python codec registry.
+        return Err(ExportError::Decode);
+    }
+    if matches!(label, "gb18030" | "gb18030-2000") {
+        return decode_python_gb18030(body);
+    }
+    if matches!(label, "936" | "cp936" | "ms936") {
+        return decode_python_gbk(body);
+    }
+    // These labels are accepted by encoding_rs through WHATWG aliases whose
+    // tables are known to differ from CPython's codecs (or are not CPython
+    // labels at all). Returning unavailable is safer than silently changing
+    // the captured body text.
+    if matches!(
+        label,
+        "big5"
+            | "big5-hkscs"
+            | "euc-kr"
+            | "hz-gb-2312"
+            | "iso-2022-jp"
+            | "iso-2022-kr"
+            | "iso-8859-9"
+            | "iso8859-9"
+            | "iso-8859-11"
+            | "iso8859-11"
+    ) {
+        return Err(ExportError::Unsupported);
+    }
+    if let Some(encoding) = encoding_rs_for_python_label(label) {
+        return decode_with_encoding(encoding, body);
+    }
+    if python_codec_is_registered(label) {
+        return Err(ExportError::Unsupported);
+    }
+    Err(ExportError::Decode)
+}
+
+const CP874_UNDEFINED: &[u8] = &[
+    0x81, 0x82, 0x83, 0x84, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x98,
+    0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xdb, 0xdc, 0xdd, 0xde, 0xfc, 0xfd, 0xfe, 0xff,
+];
+const CP1250_UNDEFINED: &[u8] = &[0x81, 0x83, 0x88, 0x90, 0x98];
+const CP1251_UNDEFINED: &[u8] = &[0x98];
+const CP1252_UNDEFINED: &[u8] = &[0x81, 0x8d, 0x8f, 0x90, 0x9d];
+const CP1253_UNDEFINED: &[u8] = &[
+    0x81, 0x88, 0x8a, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x98, 0x9a, 0x9c, 0x9d, 0x9e, 0x9f, 0xaa, 0xd2,
+    0xff,
+];
+const CP1254_UNDEFINED: &[u8] = &[0x81, 0x8d, 0x8e, 0x8f, 0x90, 0x9d, 0x9e];
+const CP1255_UNDEFINED: &[u8] = &[
+    0x81, 0x8a, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x9a, 0x9c, 0x9d, 0x9e, 0x9f, 0xca, 0xd9, 0xda, 0xdb,
+    0xdc, 0xdd, 0xde, 0xdf, 0xfb, 0xfc, 0xff,
+];
+const CP1257_UNDEFINED: &[u8] = &[
+    0x81, 0x83, 0x88, 0x8a, 0x8c, 0x90, 0x98, 0x9a, 0x9c, 0x9f, 0xa1, 0xa5,
+];
+const CP1258_UNDEFINED: &[u8] = &[0x81, 0x8a, 0x8d, 0x8e, 0x8f, 0x90, 0x9a, 0x9d, 0x9e];
+const ISO8859_3_UNDEFINED: &[u8] = &[0xa5, 0xae, 0xbe, 0xc3, 0xd0, 0xe3, 0xf0];
+const ISO8859_6_UNDEFINED: &[u8] = &[
+    0xa1, 0xa2, 0xa3, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xae, 0xaf, 0xb0, 0xb1, 0xb2, 0xb3,
+    0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbc, 0xbd, 0xbe, 0xc0, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+    0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
+];
+const ISO8859_7_UNDEFINED: &[u8] = &[0xae, 0xd2, 0xff];
+const ISO8859_8_UNDEFINED: &[u8] = &[
+    0xa1, 0xbf, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd,
+    0xce, 0xcf, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd,
+    0xde, 0xfb, 0xfc, 0xff,
+];
+const KOI8_U_CORRECTIONS: &[(u8, char)] = &[(0xae, '\u{255d}'), (0xbe, '\u{256c}')];
+
+fn decode_python_single_byte(
+    label: &str,
+    body: &[u8],
+) -> Option<Result<Zeroizing<String>, ExportError>> {
+    let (encoding_label, undefined, corrections): (&[u8], &[u8], &[(u8, char)]) = match label {
+        "cp874" => (b"windows-874", CP874_UNDEFINED, &[]),
+        "cp866" | "866" | "csibm866" | "ibm866" => (b"ibm866", &[], &[]),
+        "mac-roman" | "macintosh" | "macroman" => (b"macintosh", &[], &[]),
+        "mac-cyrillic" | "maccyrillic" => (b"x-mac-cyrillic", &[], &[]),
+        "koi8-r" | "cskoi8r" => (b"koi8-r", &[], &[]),
+        "koi8-u" => (b"koi8-u", &[], KOI8_U_CORRECTIONS),
+        "cp1250" | "1250" | "windows-1250" => (b"windows-1250", CP1250_UNDEFINED, &[]),
+        "cp1251" | "1251" | "windows-1251" => (b"windows-1251", CP1251_UNDEFINED, &[]),
+        "cp1252" | "1252" | "windows-1252" => (b"windows-1252", CP1252_UNDEFINED, &[]),
+        "cp1253" | "1253" | "windows-1253" => (b"windows-1253", CP1253_UNDEFINED, &[]),
+        "cp1254" | "1254" | "windows-1254" => (b"windows-1254", CP1254_UNDEFINED, &[]),
+        "cp1255" | "1255" | "windows-1255" => (b"windows-1255", CP1255_UNDEFINED, &[]),
+        "cp1256" | "1256" | "windows-1256" => (b"windows-1256", &[], &[]),
+        "cp1257" | "1257" | "windows-1257" => (b"windows-1257", CP1257_UNDEFINED, &[]),
+        "cp1258" | "1258" | "windows-1258" => (b"windows-1258", CP1258_UNDEFINED, &[]),
+        "iso-8859-2" | "iso8859-2" | "iso-8859-2-1987" | "iso-ir-101" | "csisolatin2" | "l2"
+        | "latin2" => (b"iso-8859-2", &[], &[]),
+        "iso-8859-3" | "iso8859-3" | "iso-8859-3-1988" | "iso-ir-109" | "csisolatin3" | "l3"
+        | "latin3" => (b"iso-8859-3", ISO8859_3_UNDEFINED, &[]),
+        "iso-8859-4" | "iso8859-4" | "iso-8859-4-1988" | "iso-ir-110" | "csisolatin4" | "l4"
+        | "latin4" => (b"iso-8859-4", &[], &[]),
+        "iso-8859-5" | "iso8859-5" | "iso-8859-5-1988" | "iso-ir-144" | "csisolatincyrillic"
+        | "cyrillic" => (b"iso-8859-5", &[], &[]),
+        "iso-8859-6" | "iso8859-6" | "iso-8859-6-1987" | "iso-ir-127" | "arabic" | "asmo-708"
+        | "csisolatinarabic" | "ecma-114" => (b"iso-8859-6", ISO8859_6_UNDEFINED, &[]),
+        "iso-8859-7" | "iso8859-7" | "iso-8859-7-1987" | "iso-ir-126" | "csisolatingreek"
+        | "ecma-118" | "elot-928" | "greek" | "greek8" => (b"iso-8859-7", ISO8859_7_UNDEFINED, &[]),
+        "iso-8859-8" | "iso8859-8" | "iso-8859-8-1988" | "iso-ir-138" | "csisolatinhebrew"
+        | "hebrew" => (b"iso-8859-8", ISO8859_8_UNDEFINED, &[]),
+        "iso-8859-10" | "iso8859-10" | "iso-8859-10-1992" | "iso-ir-157" | "csisolatin6" | "l6"
+        | "latin6" => (b"iso-8859-10", &[], &[]),
+        "iso-8859-13" | "iso8859-13" | "l7" | "latin7" => (b"iso-8859-13", &[], &[]),
+        "iso-8859-14" | "iso8859-14" | "iso-8859-14-1998" | "iso-ir-199" | "iso-celtic" | "l8"
+        | "latin8" => (b"iso-8859-14", &[], &[]),
+        "iso-8859-15" | "iso8859-15" | "l9" | "latin9" => (b"iso-8859-15", &[], &[]),
+        "iso-8859-16" | "iso8859-16" | "iso-8859-16-2001" | "iso-ir-226" | "l10" | "latin10" => {
+            (b"iso-8859-16", &[], &[])
+        }
+        _ => return None,
+    };
+    let encoding = match Encoding::for_label_no_replacement(encoding_label) {
+        Some(encoding) => encoding,
+        None => return Some(Err(ExportError::Unsupported)),
+    };
+    if body.iter().any(|byte| undefined.contains(byte)) {
+        return Some(Err(ExportError::Decode));
+    }
+    if corrections.is_empty() {
+        return Some(decode_with_encoding(encoding, body));
+    }
+    let capacity = match encoding
+        .new_decoder_without_bom_handling()
+        .max_utf8_buffer_length_without_replacement(body.len())
+    {
+        Some(capacity) => capacity,
+        None => return Some(Err(ExportError::Allocation)),
+    };
+    let mut decoded = Zeroizing::new(String::new());
+    if decoded.try_reserve(capacity).is_err() {
+        return Some(Err(ExportError::Allocation));
+    }
+    for byte in body {
+        if let Some((_, character)) = corrections.iter().find(|(source, _)| source == byte) {
+            decoded.push(*character);
+        } else {
+            let segment = match decode_with_encoding(encoding, std::slice::from_ref(byte)) {
+                Ok(segment) => segment,
+                Err(error) => return Some(Err(error)),
+            };
+            decoded.push_str(&segment);
+        }
+    }
+    Some(Ok(decoded))
+}
+
+fn decode_python_gbk(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            offset += 1;
+            continue;
+        }
+        if !(0x81..=0xfe).contains(&byte) {
+            return Err(ExportError::Decode);
+        }
+        let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+        if !gbk_pair_is_defined(byte, trail) {
+            return Err(ExportError::Decode);
+        }
+        offset += 2;
+    }
+    let encoding = Encoding::for_label_no_replacement(b"gbk").ok_or(ExportError::Unsupported)?;
+    decode_with_encoding(encoding, body)
+}
+
+fn decode_python_gb2312(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let encoding = Encoding::for_label_no_replacement(b"gbk").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(
+            encoding
+                .new_decoder_without_bom_handling()
+                .max_utf8_buffer_length_without_replacement(body.len())
+                .ok_or(ExportError::Allocation)?,
+        )
+        .map_err(|_| ExportError::Allocation)?;
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+        if !gb2312_pair_is_defined(byte, trail) {
+            return Err(ExportError::Decode);
+        }
+        let pair = &body[offset..offset + 2];
+        let character = match pair {
+            [0xa1, 0xa4] => '\u{30fb}',
+            [0xa1, 0xaa] => '\u{2015}',
+            _ => {
+                let segment = decode_with_encoding(encoding, pair)?;
+                decoded.push_str(&segment);
+                offset += 2;
+                continue;
+            }
+        };
+        decoded.push(character);
+        offset += 2;
+    }
+    Ok(decoded)
+}
+
+fn decode_python_gb18030(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    reject_standalone_chinese_80(body)?;
+    let encoding =
+        Encoding::for_label_no_replacement(b"gb18030").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(
+            encoding
+                .new_decoder_without_bom_handling()
+                .max_utf8_buffer_length_without_replacement(body.len())
+                .ok_or(ExportError::Allocation)?,
+        )
+        .map_err(|_| ExportError::Allocation)?;
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        if (0x81..=0xfe).contains(&byte) {
+            if let Some(sequence) = body.get(offset..offset + 4).filter(|sequence| {
+                (0x30..=0x39).contains(&sequence[1])
+                    && (0x81..=0xfe).contains(&sequence[2])
+                    && (0x30..=0x39).contains(&sequence[3])
+            }) {
+                let replacement = match sequence {
+                    [0x81, 0x35, 0xf4, 0x37] => Some('\u{1e3f}'),
+                    _ => None,
+                };
+                if let Some(character) = replacement {
+                    decoded.push(character);
+                } else {
+                    let segment = decode_with_encoding(encoding, sequence)?;
+                    decoded.push_str(&segment);
+                }
+                offset += 4;
+                continue;
+            }
+            let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+            if !(0x40..=0x7e).contains(&trail) && !(0x80..=0xfe).contains(&trail) {
+                return Err(ExportError::Decode);
+            }
+            let pair = &body[offset..offset + 2];
+            let replacement = match pair {
+                [0xa3, 0xa0] => Some('\u{e5e5}'),
+                [0xa6, 0xd9] => Some('\u{e78d}'),
+                [0xa6, 0xda] => Some('\u{e78e}'),
+                [0xa6, 0xdb] => Some('\u{e78f}'),
+                [0xa6, 0xdc] => Some('\u{e790}'),
+                [0xa6, 0xdd] => Some('\u{e791}'),
+                [0xa6, 0xde] => Some('\u{e792}'),
+                [0xa6, 0xdf] => Some('\u{e793}'),
+                [0xa6, 0xec] => Some('\u{e794}'),
+                [0xa6, 0xed] => Some('\u{e795}'),
+                [0xa6, 0xf3] => Some('\u{e796}'),
+                [0xa8, 0xbc] => Some('\u{e7c7}'),
+                [0xfe, 0x59] => Some('\u{e81e}'),
+                [0xfe, 0x61] => Some('\u{e826}'),
+                [0xfe, 0x66] => Some('\u{e82b}'),
+                [0xfe, 0x67] => Some('\u{e82c}'),
+                [0xfe, 0x6d] => Some('\u{e832}'),
+                [0xfe, 0x7e] => Some('\u{e843}'),
+                [0xfe, 0x90] => Some('\u{e854}'),
+                [0xfe, 0xa0] => Some('\u{e864}'),
+                _ => None,
+            };
+            if let Some(character) = replacement {
+                decoded.push(character);
+            } else {
+                let segment = decode_with_encoding(encoding, pair)?;
+                decoded.push_str(&segment);
+            }
+            offset += 2;
+        } else {
+            return Err(ExportError::Decode);
+        }
+    }
+    Ok(decoded)
+}
+
+fn reject_standalone_chinese_80(body: &[u8]) -> Result<(), ExportError> {
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte == 0x80 {
+            return Err(ExportError::Decode);
+        }
+        if byte <= 0x7f {
+            offset += 1;
+        } else if (0x81..=0xfe).contains(&byte)
+            && body
+                .get(offset + 1)
+                .is_some_and(|trail| (0x40..=0x7e).contains(trail) || (0x80..=0xfe).contains(trail))
+        {
+            offset += 2;
+        } else {
+            offset += 1;
+        }
+    }
+    Ok(())
+}
+
+fn matches_byte_ranges(byte: u8, ranges: &[(u8, u8)]) -> bool {
+    ranges
+        .iter()
+        .any(|(first, last)| (*first..=*last).contains(&byte))
+}
+
+fn gbk_pair_is_defined(lead: u8, trail: u8) -> bool {
+    if !(0x81..=0xfe).contains(&lead) {
+        return false;
+    }
+    match lead {
+        0x81..=0xa0 | 0xb0..=0xd6 | 0xd8..=0xf7 => {
+            matches_byte_ranges(trail, &[(0x40, 0x7e), (0x80, 0xfe)])
+        }
+        0xa1 | 0xa3 => (0xa1..=0xfe).contains(&trail),
+        0xa2 => matches_byte_ranges(
+            trail,
+            &[(0xa1, 0xaa), (0xb1, 0xe2), (0xe5, 0xee), (0xf1, 0xfc)],
+        ),
+        0xa4 => (0xa1..=0xf3).contains(&trail),
+        0xa5 => (0xa1..=0xf6).contains(&trail),
+        0xa6 => matches_byte_ranges(
+            trail,
+            &[
+                (0xa1, 0xb8),
+                (0xc1, 0xd8),
+                (0xe0, 0xeb),
+                (0xee, 0xf2),
+                (0xf4, 0xf5),
+            ],
+        ),
+        0xa7 => matches_byte_ranges(trail, &[(0xa1, 0xc1), (0xd1, 0xf1)]),
+        0xa8 => matches_byte_ranges(
+            trail,
+            &[
+                (0x40, 0x7e),
+                (0x80, 0x95),
+                (0xa1, 0xbb),
+                (0xbd, 0xbe),
+                (0xc0, 0xc0),
+                (0xc5, 0xe9),
+            ],
+        ),
+        0xa9 => matches_byte_ranges(
+            trail,
+            &[
+                (0x40, 0x57),
+                (0x59, 0x5a),
+                (0x5c, 0x5c),
+                (0x60, 0x7e),
+                (0x80, 0x88),
+                (0x96, 0x96),
+                (0xa4, 0xef),
+            ],
+        ),
+        0xaa..=0xaf => matches_byte_ranges(trail, &[(0x40, 0x7e), (0x80, 0xa0)]),
+        0xd7 => matches_byte_ranges(trail, &[(0x40, 0x7e), (0x80, 0xf9)]),
+        0xf8..=0xfd => matches_byte_ranges(trail, &[(0x40, 0x7e), (0x80, 0xa0)]),
+        0xfe => (0x40..=0x4f).contains(&trail),
+        _ => false,
+    }
+}
+
+fn gb2312_pair_is_defined(lead: u8, trail: u8) -> bool {
+    if !(0xa1..=0xf7).contains(&lead) || !(0xa1..=0xfe).contains(&trail) {
+        return false;
+    }
+    match lead {
+        0xa1 | 0xa3 | 0xb0..=0xd6 | 0xd8..=0xf7 => true,
+        0xa2 => matches_byte_ranges(trail, &[(0xb1, 0xe2), (0xe5, 0xee), (0xf1, 0xfc)]),
+        0xa4 => (0xa1..=0xf3).contains(&trail),
+        0xa5 => (0xa1..=0xf6).contains(&trail),
+        0xa6 => matches_byte_ranges(trail, &[(0xa1, 0xb8), (0xc1, 0xd8)]),
+        0xa7 => matches_byte_ranges(trail, &[(0xa1, 0xc1), (0xd1, 0xf1)]),
+        0xa8 => matches_byte_ranges(trail, &[(0xa1, 0xba), (0xc5, 0xe9)]),
+        0xa9 => (0xa4..=0xef).contains(&trail),
+        0xd7 => (0xa1..=0xf9).contains(&trail),
+        _ => false,
+    }
+}
+
+fn decode_with_encoding(
+    encoding: &'static Encoding,
+    body: &[u8],
+) -> Result<Zeroizing<String>, ExportError> {
+    let mut decoder = encoding.new_decoder_without_bom_handling();
+    let capacity = decoder
+        .max_utf8_buffer_length_without_replacement(body.len())
+        .ok_or(ExportError::Allocation)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(capacity)
+        .map_err(|_| ExportError::Allocation)?;
+    let (result, read) = decoder.decode_to_string_without_replacement(body, &mut decoded, true);
+    match result {
+        DecoderResult::InputEmpty if read == body.len() => Ok(decoded),
+        DecoderResult::OutputFull => Err(ExportError::Allocation),
+        DecoderResult::Malformed(..) | DecoderResult::InputEmpty => Err(ExportError::Decode),
+    }
+}
+
+fn decode_python_shift_jis(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let encoding =
+        Encoding::for_label_no_replacement(b"shift_jis").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    let capacity = encoding
+        .new_decoder_without_bom_handling()
+        .max_utf8_buffer_length_without_replacement(body.len())
+        .ok_or(ExportError::Allocation)?;
+    decoded
+        .try_reserve(capacity)
+        .map_err(|_| ExportError::Allocation)?;
+
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        if (0xa1..=0xdf).contains(&byte) {
+            decoded
+                .push(char::from_u32(0xff61 + u32::from(byte - 0xa1)).ok_or(ExportError::Decode)?);
+            offset += 1;
+            continue;
+        }
+        if !matches!(byte, 0x81..=0x9f | 0xe0..=0xef) || matches!(byte, 0x85..=0x87 | 0xeb..=0xef) {
+            return Err(ExportError::Decode);
+        }
+        let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+        if !(0x40..=0x7e).contains(&trail) && !(0x80..=0xfc).contains(&trail) {
+            return Err(ExportError::Decode);
+        }
+        let pair = &body[offset..offset + 2];
+        let replacement = match pair {
+            [0x81, 0x60] => Some('\u{301c}'),
+            [0x81, 0x61] => Some('\u{2016}'),
+            [0x81, 0x7c] => Some('\u{2212}'),
+            [0x81, 0x91] => Some('\u{00a2}'),
+            [0x81, 0x92] => Some('\u{00a3}'),
+            [0x81, 0xca] => Some('\u{00ac}'),
+            _ => None,
+        };
+        if let Some(character) = replacement {
+            decoded.push(character);
+        } else {
+            let segment = decode_with_encoding(encoding, pair)?;
+            decoded.push_str(&segment);
+        }
+        offset += 2;
+    }
+    Ok(decoded)
+}
+
+fn decode_python_cp932(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let encoding =
+        Encoding::for_label_no_replacement(b"windows-31j").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(
+            encoding
+                .new_decoder_without_bom_handling()
+                .max_utf8_buffer_length_without_replacement(body.len())
+                .ok_or(ExportError::Allocation)?,
+        )
+        .map_err(|_| ExportError::Allocation)?;
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        if byte == 0x80 {
+            decoded.push('\u{80}');
+            offset += 1;
+            continue;
+        }
+        if (0xa1..=0xdf).contains(&byte) {
+            decoded
+                .push(char::from_u32(0xff61 + u32::from(byte - 0xa1)).ok_or(ExportError::Decode)?);
+            offset += 1;
+            continue;
+        }
+        if byte == 0xa0 {
+            decoded.push('\u{f8f0}');
+            offset += 1;
+            continue;
+        }
+        if (0xfd..=0xff).contains(&byte) {
+            decoded.push(char::from_u32(0xf8f1 + u32::from(byte - 0xfd)).unwrap());
+            offset += 1;
+            continue;
+        }
+        if !matches!(byte, 0x81..=0x9f | 0xe0..=0xfc) {
+            return Err(ExportError::Decode);
+        }
+        let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+        if !(0x40..=0x7e).contains(&trail) && !(0x80..=0xfc).contains(&trail) {
+            return Err(ExportError::Decode);
+        }
+        let segment = decode_with_encoding(encoding, &body[offset..offset + 2])?;
+        decoded.push_str(&segment);
+        offset += 2;
+    }
+    Ok(decoded)
+}
+
+const EUC_JP_CORRECTIONS: &[(&[u8], char)] = &[
+    (b"\x8f\xa2\xb7", '~'),
+    (b"\xa1\xc1", '\u{301c}'),
+    (b"\xa1\xc2", '\u{2016}'),
+    (b"\xa1\xdd", '\u{2212}'),
+    (b"\xa1\xf1", '\u{00a2}'),
+    (b"\xa1\xf2", '\u{00a3}'),
+    (b"\xa2\xcc", '\u{00ac}'),
+];
+
+fn euc_jp_pair_is_defined(lead: u8, trail: u8) -> bool {
+    if !(0xa1..=0xfe).contains(&lead) || !(0xa1..=0xfe).contains(&trail) {
+        return false;
+    }
+    match lead {
+        0xa1 | 0xb0..=0xce | 0xd0..=0xf3 => true,
+        0xa2 => matches_byte_ranges(
+            trail,
+            &[
+                (0xa1, 0xae),
+                (0xba, 0xc1),
+                (0xca, 0xd0),
+                (0xdc, 0xea),
+                (0xf2, 0xf9),
+                (0xfe, 0xfe),
+            ],
+        ),
+        0xa3 => matches_byte_ranges(trail, &[(0xb0, 0xb9), (0xc1, 0xda), (0xe1, 0xfa)]),
+        0xa4 => (0xa1..=0xf3).contains(&trail),
+        0xa5 => (0xa1..=0xf6).contains(&trail),
+        0xa6 => matches_byte_ranges(trail, &[(0xa1, 0xb8), (0xc1, 0xd8)]),
+        0xa7 => matches_byte_ranges(trail, &[(0xa1, 0xc1), (0xd1, 0xf1)]),
+        0xa8 => (0xa1..=0xc0).contains(&trail),
+        0xcf => (0xa1..=0xd3).contains(&trail),
+        0xf4 => (0xa1..=0xa6).contains(&trail),
+        _ => false,
+    }
+}
+
+fn decode_python_euc_jp(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let encoding = Encoding::for_label_no_replacement(b"euc-jp").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(
+            encoding
+                .new_decoder_without_bom_handling()
+                .max_utf8_buffer_length_without_replacement(body.len())
+                .ok_or(ExportError::Allocation)?,
+        )
+        .map_err(|_| ExportError::Allocation)?;
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        let length = if byte == 0x8e {
+            let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+            if !(0xa1..=0xdf).contains(&trail) {
+                return Err(ExportError::Decode);
+            }
+            2
+        } else if byte == 0x8f {
+            let first = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+            let second = *body.get(offset + 2).ok_or(ExportError::Decode)?;
+            if !(0xa1..=0xfe).contains(&first) || !(0xa1..=0xfe).contains(&second) {
+                return Err(ExportError::Decode);
+            }
+            3
+        } else if (0xa1..=0xfe).contains(&byte) {
+            let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+            if !euc_jp_pair_is_defined(byte, trail) {
+                return Err(ExportError::Decode);
+            }
+            2
+        } else {
+            return Err(ExportError::Decode);
+        };
+        let sequence = &body[offset..offset + length];
+        if let Some((_, character)) = EUC_JP_CORRECTIONS
+            .iter()
+            .find(|(source, _)| *source == sequence)
+        {
+            decoded.push(*character);
+        } else {
+            let segment = decode_with_encoding(encoding, sequence)?;
+            decoded.push_str(&segment);
+        }
+        offset += length;
+    }
+    Ok(decoded)
+}
+
+fn encoding_rs_for_python_label(label: &str) -> Option<&'static Encoding> {
+    // Keep this table explicit. encoding_rs also accepts web-only aliases and
+    // aliases whose WHATWG tables differ from the CPython codec named by the
+    // installed source. Single-byte codecs are handled by the table above,
+    // which additionally enforces Python's undefined-byte rules.
+    let canonical = match label {
+        "932" | "cp932" | "ms932" | "ms-kanji" | "mskanji" => "windows-31j",
+        "cp949" | "949" => "windows-949",
+        "euc-jp" | "eucjp" | "u-jis" | "ujis" => "euc-jp",
+        _ => return None,
+    };
+    Encoding::for_label_no_replacement(canonical.as_bytes())
 }
 
 fn infer_text_encoding(content_type: Option<&str>, body: &[u8]) -> Zeroizing<String> {

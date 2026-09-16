@@ -516,16 +516,60 @@ fn expected_fixture_error(name: &str, format: ExportFormat) -> Option<ExportErro
                 return None;
             }
         }
+        "charset_shift_jis_malformed"
+        | "charset_windows_1252_undefined"
+        | "charset_cp1250_undefined"
+        | "charset_cp1251_undefined"
+        | "charset_cp1254_undefined"
+        | "charset_cp936_undefined"
+        | "charset_cp936_rejected_gbk_tables"
+        | "charset_gbk_unassigned_table"
+        | "charset_gb2312_unknown_separator"
+        | "charset_euc_jp_unassigned_table"
+        | "charset_gb18030_malformed" => {
+            if raw_response {
+                ExportError::MissingResponse
+            } else if matches!(format, ExportFormat::Curl | ExportFormat::Httpie) {
+                ExportError::Decode
+            } else {
+                return None;
+            }
+        }
+        "charset_unknown_windows_31j"
+        | "charset_unknown_windows_874"
+        | "charset_unknown_windows_949"
+        | "charset_unknown_x_mac_cyrillic"
+        | "charset_unknown_x_sjis"
+        | "charset_unknown_iso_2022_cn" => {
+            if raw_response {
+                ExportError::MissingResponse
+            } else if matches!(format, ExportFormat::Curl | ExportFormat::Httpie) {
+                ExportError::Decode
+            } else {
+                return None;
+            }
+        }
+        "charset_known_big5_unimplemented"
+        | "charset_known_hex_codec_unimplemented"
+        | "charset_known_rot13_unimplemented" => {
+            if raw_response {
+                ExportError::MissingResponse
+            } else if matches!(format, ExportFormat::Curl | ExportFormat::Httpie) {
+                ExportError::Unsupported
+            } else {
+                return None;
+            }
+        }
         _ => return None,
     })
 }
 
 #[test]
-fn native_export_replays_frozen_source_schema3_observations() {
+fn native_export_replays_frozen_source_schema4_observations() {
     let fixture: Value =
         serde_json::from_str(include_str!("../../../tests/traffic_export_source.json")).unwrap();
-    assert_eq!(fixture["schema"], 3);
-    assert_eq!(fixture["rows"].as_array().unwrap().len(), 31);
+    assert_eq!(fixture["schema"], 4);
+    assert_eq!(fixture["rows"].as_array().unwrap().len(), 72);
     let formats = [
         ("curl", ExportFormat::Curl),
         ("httpie", ExportFormat::Httpie),
@@ -570,7 +614,7 @@ fn native_export_replays_frozen_source_schema3_observations() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 154);
+    assert_eq!(compared, 359);
     assert_eq!(excluded, 1);
 }
 
@@ -887,6 +931,524 @@ fn selected_export_supports_source_text_codecs_and_markup_inference() {
             expected,
             "{id}"
         );
+    }
+}
+
+#[test]
+fn selected_export_supports_python_legacy_codec_aliases_strictly() {
+    let cases = [
+        (
+            "windows-1252",
+            "text/plain; charset=windows-1252",
+            &[0x80, 0x82, 0x91, 0x92, 0x93, 0x94, 0x96, 0x97][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=windows-1252' -X POST http://owned.invalid/windows-1252 -d '€‚‘’“”–—'",
+        ),
+        (
+            "cp1252",
+            "text/plain; charset=cp1252",
+            &[0x80, 0xff][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/cp1252 'Content-Type: text/plain; charset=cp1252' <<< '€ÿ'",
+        ),
+        (
+            "shift-jis",
+            "text/plain; charset=shift_jis",
+            &[0x93, 0xfa, 0x96, 0x7b][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=shift_jis' -X POST http://owned.invalid/shift-jis -d '日本'",
+        ),
+        (
+            "sjis",
+            "text/plain; charset=sjis",
+            &[0x82, 0xa0, 0x82, 0xa2][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/sjis 'Content-Type: text/plain; charset=sjis' <<< 'あい'",
+        ),
+        (
+            "shift-jis-table",
+            "text/plain; charset=shift_jis",
+            &[
+                0x81, 0x60, 0x81, 0x61, 0x81, 0x7c, 0x81, 0x91, 0x81, 0x92, 0x81, 0xca,
+            ][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=shift_jis' -X POST http://owned.invalid/shift-jis-table -d '〜‖−¢£¬'",
+        ),
+        (
+            "iso8859-2",
+            "text/plain; charset=iso8859_2",
+            &[0xa1, 0xa2, 0xa3, 0xaf][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=iso8859_2' -X POST http://owned.invalid/iso8859-2 -d 'Ą˘ŁŻ'",
+        ),
+        (
+            "iso8859-15",
+            "text/plain; charset=iso-8859-15",
+            &[0xa4, 0xa6, 0xbc, 0xb4, 0xbe][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/iso8859-15 'Content-Type: text/plain; charset=iso-8859-15' <<< '€ŠŒŽŸ'",
+        ),
+        (
+            "gbk",
+            "text/plain; charset=gbk",
+            &[0xd6, 0xd0, 0xce, 0xc4][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=gbk' -X POST http://owned.invalid/gbk -d '中文'",
+        ),
+        (
+            "euc-jp",
+            "text/plain; charset=euc_jp",
+            &[0xc6, 0xfc, 0xcb, 0xdc][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/euc-jp 'Content-Type: text/plain; charset=euc_jp' <<< '日本'",
+        ),
+    ];
+    for (id, content_type, body, format, expected) in cases {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![("Content-Type".into(), content_type.into())],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(body));
+        assert_eq!(
+            String::from_utf8(fixture_export_bytes(&view, id, format).unwrap()).unwrap(),
+            expected,
+            "{id}"
+        );
+    }
+
+    let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+    let exchange = view.begin(RequestInfo {
+        id: "shift-jis-malformed".into(),
+        connection_id: "connection".into(),
+        agent: None,
+        method: "POST".into(),
+        url: "http://owned.invalid/shift-jis-malformed".into(),
+        headers: vec![(
+            "Content-Type".into(),
+            "text/plain; charset=shift_jis".into(),
+        )],
+        started: 1.,
+    });
+    exchange.request_line("HTTP/1.1", "/shift-jis-malformed");
+    exchange.request_body(Some(&[0x82]));
+    assert!(matches!(
+        view.export("shift-jis-malformed", ExportFormat::Curl),
+        Err(ExportError::Decode)
+    ));
+    assert!(
+        fixture_export_bytes(&view, "shift-jis-malformed", ExportFormat::RawRequest)
+            .unwrap()
+            .ends_with(b"\r\n\x82")
+    );
+
+    for (id, content_type, body) in [
+        (
+            "windows-1252-undefined",
+            "text/plain; charset=windows-1252",
+            &[0x81][..],
+        ),
+        ("cp936-undefined", "text/plain; charset=cp936", &[0x80][..]),
+    ] {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![("Content-Type".into(), content_type.into())],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(body));
+        assert!(matches!(
+            view.export(id, ExportFormat::Curl),
+            Err(ExportError::Decode)
+        ));
+        assert!(
+            fixture_export_bytes(&view, id, ExportFormat::RawRequest)
+                .unwrap()
+                .ends_with(&[b'\r', b'\n', body[0]])
+        );
+    }
+
+    for (id, content_type) in [
+        ("whatwg-euc-kr", "text/plain; charset=euc-kr"),
+        ("whatwg-iso8859-9", "text/plain; charset=iso-8859-9"),
+    ] {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![("Content-Type".into(), content_type.into())],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(b"codec-gap"));
+        assert!(matches!(
+            view.export(id, ExportFormat::Curl),
+            Err(ExportError::Unsupported)
+        ));
+    }
+    for (id, label, error) in [
+        (
+            "python-unknown-windows-31j",
+            "windows-31j",
+            ExportError::Decode,
+        ),
+        (
+            "python-unknown-windows-874",
+            "windows-874",
+            ExportError::Decode,
+        ),
+        (
+            "python-unknown-windows-949",
+            "windows-949",
+            ExportError::Decode,
+        ),
+        (
+            "python-unknown-x-mac-cyrillic",
+            "x-mac-cyrillic",
+            ExportError::Decode,
+        ),
+        ("python-unknown-x-sjis", "x-sjis", ExportError::Decode),
+        (
+            "python-unknown-iso-2022-cn",
+            "iso-2022-cn",
+            ExportError::Decode,
+        ),
+        (
+            "python-known-but-unimplemented",
+            "cp437",
+            ExportError::Unsupported,
+        ),
+        ("python-known-big5", "big5", ExportError::Unsupported),
+        (
+            "python-known-hex-codec",
+            "hex_codec",
+            ExportError::Unsupported,
+        ),
+        ("python-known-rot13", "rot_13", ExportError::Unsupported),
+        (
+            "python-unknown-label",
+            "x-no-such-codec",
+            ExportError::Decode,
+        ),
+    ] {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![(
+                "Content-Type".into(),
+                format!("text/plain; charset={label}"),
+            )],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(b"codec-category"));
+        assert!(matches!(
+            view.export(id, ExportFormat::Curl),
+            Err(actual) if actual == error
+        ));
+    }
+}
+
+#[test]
+fn selected_export_matches_python_single_byte_tables_and_chinese_sequences() {
+    let undefined = [
+        (
+            "cp874",
+            &[
+                0x81, 0x82, 0x83, 0x84, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+                0x90, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f, 0xdb, 0xdc, 0xdd, 0xde, 0xfc,
+                0xfd, 0xfe, 0xff,
+            ][..],
+        ),
+        ("cp1250", &[0x81, 0x83, 0x88, 0x90, 0x98][..]),
+        ("cp1251", &[0x98][..]),
+        ("cp1252", &[0x81, 0x8d, 0x8f, 0x90, 0x9d][..]),
+        (
+            "cp1253",
+            &[
+                0x81, 0x88, 0x8a, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x98, 0x9a, 0x9c, 0x9d, 0x9e, 0x9f,
+                0xaa, 0xd2, 0xff,
+            ][..],
+        ),
+        ("cp1254", &[0x81, 0x8d, 0x8e, 0x8f, 0x90, 0x9d, 0x9e][..]),
+        (
+            "cp1255",
+            &[
+                0x81, 0x8a, 0x8c, 0x8d, 0x8e, 0x8f, 0x90, 0x9a, 0x9c, 0x9d, 0x9e, 0x9f, 0xca, 0xd9,
+                0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf, 0xfb, 0xfc, 0xff,
+            ][..],
+        ),
+        (
+            "cp1257",
+            &[
+                0x81, 0x83, 0x88, 0x8a, 0x8c, 0x90, 0x98, 0x9a, 0x9c, 0x9f, 0xa1, 0xa5,
+            ][..],
+        ),
+        (
+            "cp1258",
+            &[0x81, 0x8a, 0x8d, 0x8e, 0x8f, 0x90, 0x9a, 0x9d, 0x9e][..],
+        ),
+        ("iso8859-3", &[0xa5, 0xae, 0xbe, 0xc3, 0xd0, 0xe3, 0xf0][..]),
+        (
+            "iso8859-6",
+            &[
+                0xa1, 0xa2, 0xa3, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xae, 0xaf, 0xb0, 0xb1,
+                0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbc, 0xbd, 0xbe, 0xc0, 0xdb,
+                0xdc, 0xdd, 0xde, 0xdf, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc,
+                0xfd, 0xfe, 0xff,
+            ][..],
+        ),
+        ("iso8859-7", &[0xae, 0xd2, 0xff][..]),
+        (
+            "iso8859-8",
+            &[
+                0xa1, 0xbf, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb,
+                0xcc, 0xcd, 0xce, 0xcf, 0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
+                0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xfb, 0xfc, 0xff,
+            ][..],
+        ),
+    ];
+    for (label, body) in undefined {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: format!("undefined-{label}"),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/undefined-{label}"),
+            headers: vec![(
+                "Content-Type".into(),
+                format!("text/plain; charset={label}"),
+            )],
+            started: 1.,
+        });
+        let id = format!("undefined-{label}");
+        exchange.request_line("HTTP/1.1", &format!("/undefined-{label}"));
+        exchange.request_body(Some(body));
+        assert!(matches!(
+            view.export(&id, ExportFormat::Curl),
+            Err(ExportError::Decode)
+        ));
+    }
+
+    let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+    let exchange = view.begin(RequestInfo {
+        id: "koi8-u".into(),
+        connection_id: "connection".into(),
+        agent: None,
+        method: "POST".into(),
+        url: "http://owned.invalid/koi8-u".into(),
+        headers: vec![("Content-Type".into(), "text/plain; charset=koi8_u".into())],
+        started: 1.,
+    });
+    exchange.request_line("HTTP/1.1", "/koi8-u");
+    exchange.request_body(Some(&[0xae, 0xbe]));
+    assert_eq!(
+        fixture_export_bytes(&view, "koi8-u", ExportFormat::Curl).unwrap(),
+        b"curl -H 'Content-Type: text/plain; charset=koi8_u' -X POST http://owned.invalid/koi8-u -d '\xe2\x95\x9d\xe2\x95\xac'"
+    );
+
+    for (label, body) in [("gbk", &[0x81, 0x80][..]), ("cp936", &[0x81, 0x80][..])] {
+        let id = format!("chinese-{label}");
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.clone(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{label}"),
+            headers: vec![(
+                "Content-Type".into(),
+                format!("text/plain; charset={label}"),
+            )],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{label}"));
+        exchange.request_body(Some(body));
+        assert!(
+            fixture_export_bytes(&view, &id, ExportFormat::Curl)
+                .unwrap()
+                .windows("\u{4e90}".len())
+                .any(|window| window == "\u{4e90}".as_bytes())
+        );
+    }
+
+    let export_text = |id: &str, label: &str, body: &[u8]| {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![(
+                "Content-Type".into(),
+                format!("text/plain; charset={label}"),
+            )],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(body));
+        fixture_export_bytes(&view, id, ExportFormat::Curl)
+    };
+    assert_eq!(
+        String::from_utf8(
+            export_text(
+                "cp932-table",
+                "cp932",
+                &[
+                    0xa0, 0xfd, 0xfe, 0xff, 0x81, 0x60, 0x87, 0x40, 0xed, 0x40, 0xfa, 0x40, 0xf0,
+                    0x40
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        "curl -H 'Content-Type: text/plain; charset=cp932' -X POST http://owned.invalid/cp932-table -d '\u{f8f0}\u{f8f1}\u{f8f2}\u{f8f3}\u{ff5e}\u{2460}\u{7e8a}\u{2170}\u{e000}'"
+    );
+    assert_eq!(
+        String::from_utf8(
+            export_text(
+                "euc-jp-table",
+                "euc_jp",
+                &[
+                    0xa1, 0xc1, 0xa1, 0xc2, 0xa1, 0xdd, 0xa1, 0xf1, 0xa1, 0xf2, 0xa2, 0xcc, 0x8f,
+                    0xa2, 0xaf, 0x8e, 0xb1
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        "curl -H 'Content-Type: text/plain; charset=euc_jp' -X POST http://owned.invalid/euc-jp-table -d '\u{301c}\u{2016}\u{2212}\u{a2}\u{a3}\u{ac}\u{2d8}\u{ff71}'"
+    );
+    for (id, label, body) in [
+        ("gbk-unassigned-a8bc", "cp936", &[0xa8, 0xbc][..]),
+        ("gbk-unassigned-a6d9", "cp936", &[0xa6, 0xd9][..]),
+        ("gbk-four-byte", "cp936", &[0x81, 0x30, 0x81, 0x30][..]),
+        (
+            "gb18030-malformed",
+            "gb18030",
+            &[0xe3, 0x32, 0x9a, 0x36][..],
+        ),
+    ] {
+        assert!(
+            matches!(export_text(id, label, body), Err(ExportError::Decode)),
+            "{id}"
+        );
+    }
+    assert_eq!(
+        String::from_utf8(
+            export_text(
+                "gb18030-table",
+                "gb18030",
+                &[
+                    0xa8, 0xbc, 0xa6, 0xd9, 0xa6, 0xda, 0xfe, 0x59, 0x81, 0x35, 0xf4, 0x37
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+        "curl -H 'Content-Type: text/plain; charset=gb18030' -X POST http://owned.invalid/gb18030-table -d '\u{e7c7}\u{e78d}\u{e78e}\u{e81e}\u{1e3f}'"
+    );
+}
+
+#[test]
+fn selected_export_matches_complete_multibyte_codec_boundaries() {
+    let export_text = |id: &str, label: &str, body: &[u8]| {
+        let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "connection".into(),
+            agent: None,
+            method: "POST".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![(
+                "Content-Type".into(),
+                format!("text/plain; charset={label}"),
+            )],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", &format!("/{id}"));
+        exchange.request_body(Some(body));
+        fixture_export_bytes(&view, id, ExportFormat::Curl)
+    };
+
+    let cp932 = export_text(
+        "cp932-python-private-singles",
+        "cp932",
+        &[0x80, 0xa0, 0xfd, 0xfe, 0xff],
+    )
+    .unwrap();
+    assert!(cp932.ends_with("\u{80}\u{f8f0}\u{f8f1}\u{f8f2}\u{f8f3}'".as_bytes()));
+
+    let gbk_cross_boundary =
+        export_text("gbk-cross-boundary", "cp936", &[0x81, 0xa8, 0xbc, 0x40]).unwrap();
+    assert!(gbk_cross_boundary.ends_with("'\u{4efa}\u{7cbf}'".as_bytes()));
+    for (id, body) in [
+        ("gbk-unassigned-table-a140", &[0xa1, 0x40][..]),
+        ("gbk-unassigned-table-a8bc", &[0xa8, 0xbc][..]),
+    ] {
+        assert!(
+            matches!(export_text(id, "cp936", body), Err(ExportError::Decode)),
+            "{id}"
+        );
+    }
+
+    let gb2312 = export_text(
+        "gb2312-registered-alias",
+        "gb2312-80",
+        &[0xa1, 0xa4, 0xa1, 0xaa],
+    )
+    .unwrap();
+    assert!(gb2312.ends_with("'\u{30fb}\u{2015}'".as_bytes()));
+    assert!(matches!(
+        export_text("gb2312-unknown-separator", "gb_2312", &[0x81, 0x80]),
+        Err(ExportError::Decode)
+    ));
+
+    let euc_ss3 = export_text("euc-jp-ss3-source-table", "euc_jp", &[0x8f, 0xa2, 0xb7]).unwrap();
+    assert!(euc_ss3.ends_with(b"'~'"));
+    assert!(matches!(
+        export_text("euc-jp-unassigned-table", "euc_jp", &[0xad, 0xa1]),
+        Err(ExportError::Decode)
+    ));
+
+    let gb18030 = export_text(
+        "gb18030-python-table",
+        "gb18030",
+        &[
+            0xa3, 0xa0, 0xa6, 0xd9, 0xa6, 0xda, 0xa6, 0xdb, 0xa6, 0xdc, 0xa6, 0xdd, 0xa6, 0xde,
+            0xa6, 0xdf, 0xa6, 0xec, 0xa6, 0xed, 0xa6, 0xf3, 0xa8, 0xbc, 0xfe, 0x59, 0xfe, 0x61,
+            0xfe, 0x66, 0xfe, 0x67, 0xfe, 0x6d, 0xfe, 0x7e, 0xfe, 0x90, 0xfe, 0xa0, 0x81, 0x35,
+            0xf4, 0x37,
+        ],
+    )
+    .unwrap();
+    let gb18030 = String::from_utf8(gb18030).unwrap();
+    for character in [
+        '\u{e5e5}', '\u{e78d}', '\u{e78e}', '\u{e78f}', '\u{e790}', '\u{e791}', '\u{e792}',
+        '\u{e793}', '\u{e794}', '\u{e795}', '\u{e796}', '\u{e7c7}', '\u{e81e}', '\u{e826}',
+        '\u{e82b}', '\u{e82c}', '\u{e832}', '\u{e843}', '\u{e854}', '\u{e864}', '\u{1e3f}',
+    ] {
+        assert!(gb18030.contains(character), "missing {character:?}");
     }
 }
 

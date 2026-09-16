@@ -312,6 +312,377 @@ WORKFLOWS = [
         },
     ),
     workflow(
+        "charset_utf8_spaced_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/utf8-spaced",
+            "headers": [["Content-Type", "text/plain; charset=utf 8"]],
+            "body": {"text": "utf8-spaced"},
+        },
+    ),
+    workflow(
+        "charset_windows_1252_declared",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/windows-1252",
+            "headers": [["Content-Type", "text/plain; charset=windows-1252"]],
+            "body": {"hex": "8082919293949697"},
+        },
+    ),
+    workflow(
+        "charset_windows_1252_cp1252_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp1252",
+            "headers": [["Content-Type", "text/plain; charset=cp1252"]],
+            "body": {"hex": "80ff"},
+        },
+    ),
+    workflow(
+        "charset_windows_1252_undefined",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/windows-1252-undefined",
+            "headers": [["Content-Type", "text/plain; charset=windows-1252"]],
+            "body": {"hex": "81"},
+        },
+    ),
+    workflow(
+        "charset_cp1250_undefined",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp1250-undefined",
+            "headers": [["Content-Type", "text/plain; charset=cp1250"]],
+            "body": {"hex": "81"},
+        },
+    ),
+    workflow(
+        "charset_cp1251_undefined",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp1251-undefined",
+            "headers": [["Content-Type", "text/plain; charset=cp1251"]],
+            "body": {"hex": "98"},
+        },
+    ),
+    workflow(
+        "charset_cp1254_undefined",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp1254-undefined",
+            "headers": [["Content-Type", "text/plain; charset=cp1254"]],
+            "body": {"hex": "81"},
+        },
+    ),
+    workflow(
+        "charset_shift_jis_declared",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/shift-jis",
+            "headers": [["Content-Type", "text/plain; charset=shift_jis"]],
+            "body": {"hex": "93fa967b"},
+        },
+    ),
+    workflow(
+        "charset_shift_jis_sjis_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/sjis",
+            "headers": [["Content-Type", "text/plain; charset=sjis"]],
+            "body": {"hex": "82a082a2"},
+        },
+    ),
+    workflow(
+        "charset_shift_jis_python_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/shift-jis-table",
+            "headers": [["Content-Type", "text/plain; charset=shift_jis"]],
+            "body": {"hex": "81608161817c8191819281ca"},
+        },
+    ),
+    workflow(
+        "charset_cp932_python_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp932-table",
+            "headers": [["Content-Type", "text/plain; charset=cp932"]],
+            "body": {"hex": "a0fdfeff81608740ed40fa40f040"},
+        },
+    ),
+    workflow(
+        "charset_iso8859_2_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/iso8859-2",
+            "headers": [["Content-Type", "text/plain; charset=iso8859_2"]],
+            "body": {"hex": "a1a2a3af"},
+        },
+    ),
+    workflow(
+        "charset_iso8859_15_declared",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/iso8859-15",
+            "headers": [["Content-Type", "text/plain; charset=iso-8859-15"]],
+            "body": {"hex": "a4a6bcb4be"},
+        },
+    ),
+    workflow(
+        "charset_gbk_source_normalization",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gbk",
+            "headers": [["Content-Type", "text/plain; charset=gbk"]],
+            "body": {"hex": "d6d0cec481308130"},
+        },
+    ),
+    workflow(
+        "charset_gb2312_source_normalization",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb2312",
+            "headers": [["Content-Type", "text/plain; charset=gb2312"]],
+            "body": {"hex": "d6d0cec481308130"},
+        },
+    ),
+    workflow(
+        "charset_cp936_undefined",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp936-undefined",
+            "headers": [["Content-Type", "text/plain; charset=cp936"]],
+            "body": {"hex": "80"},
+        },
+    ),
+    workflow(
+        "charset_cp936_valid_sequence",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp936-valid",
+            "headers": [["Content-Type", "text/plain; charset=cp936"]],
+            "body": {"hex": "8180"},
+        },
+    ),
+    workflow(
+        "charset_cp936_rejected_gbk_tables",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp936-rejected",
+            "headers": [["Content-Type", "text/plain; charset=cp936"]],
+            "body": {"hex": "a8bc"},
+        },
+    ),
+    workflow(
+        "charset_euc_jp_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/euc-jp",
+            "headers": [["Content-Type", "text/plain; charset=euc_jp"]],
+            "body": {"hex": "c6fccbdc"},
+        },
+    ),
+    workflow(
+        "charset_euc_jp_python_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/euc-jp-table",
+            "headers": [["Content-Type", "text/plain; charset=euc_jp"]],
+            "body": {"hex": "a1c1a1c2a1dda1f1a1f2a2cc8fa2af8eb1"},
+        },
+    ),
+    workflow(
+        "charset_gb18030_python_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb18030-table",
+            "headers": [["Content-Type", "text/plain; charset=gb18030"]],
+            "body": {"hex": "a8bca6d9a6dafe598135f4378130813090308130e3329a35"},
+        },
+    ),
+    workflow(
+        "charset_gb18030_malformed",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb18030-malformed",
+            "headers": [["Content-Type", "text/plain; charset=gb18030"]],
+            "body": {"hex": "e3329a36"},
+        },
+    ),
+    workflow(
+        "charset_cp932_python_private_singles",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp932-private",
+            "headers": [["Content-Type", "text/plain; charset=cp932"]],
+            "body": {"hex": "80a0fdfeff"},
+        },
+    ),
+    workflow(
+        "charset_cp936_cross_boundary",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp936-cross",
+            "headers": [["Content-Type", "text/plain; charset=cp936"]],
+            "body": {"hex": "81a8bc40"},
+        },
+    ),
+    workflow(
+        "charset_gbk_unassigned_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/cp936-unassigned-table",
+            "headers": [["Content-Type", "text/plain; charset=cp936"]],
+            "body": {"hex": "a140"},
+        },
+    ),
+    workflow(
+        "charset_gb2312_registered_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb2312-80",
+            "headers": [["Content-Type", "text/plain; charset=gb2312-80"]],
+            "body": {"hex": "a1a4a1aa"},
+        },
+    ),
+    workflow(
+        "charset_gb2312_unknown_separator",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb-2312",
+            "headers": [["Content-Type", "text/plain; charset=gb_2312"]],
+            "body": {"hex": "8180"},
+        },
+    ),
+    workflow(
+        "charset_euc_jp_ss3_mapping",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/euc-jp-ss3",
+            "headers": [["Content-Type", "text/plain; charset=euc_jp"]],
+            "body": {"hex": "8fa2b7"},
+        },
+    ),
+    workflow(
+        "charset_euc_jp_unassigned_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/euc-jp-unassigned",
+            "headers": [["Content-Type", "text/plain; charset=euc_jp"]],
+            "body": {"hex": "ada1"},
+        },
+    ),
+    workflow(
+        "charset_gb18030_pair_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/gb18030-pairs",
+            "headers": [["Content-Type", "text/plain; charset=gb18030"]],
+            "body": {
+                "hex": "a3a0a6d9a6daa6dba6dca6dda6dea6dfa6eca6eda6f3a8bcfe59fe61fe66fe67fe6dfe7efe90fea0"
+            },
+        },
+    ),
+    workflow(
+        "charset_unknown_windows_31j",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-windows-31j",
+            "headers": [["Content-Type", "text/plain; charset=windows-31j"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_unknown_windows_874",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-windows-874",
+            "headers": [["Content-Type", "text/plain; charset=windows-874"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_unknown_windows_949",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-windows-949",
+            "headers": [["Content-Type", "text/plain; charset=windows-949"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_unknown_x_mac_cyrillic",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-x-mac-cyrillic",
+            "headers": [["Content-Type", "text/plain; charset=x-mac-cyrillic"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_unknown_x_sjis",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-x-sjis",
+            "headers": [["Content-Type", "text/plain; charset=x-sjis"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_unknown_iso_2022_cn",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/unknown-iso-2022-cn",
+            "headers": [["Content-Type", "text/plain; charset=iso-2022-cn"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_known_big5_unimplemented",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/known-big5",
+            "headers": [["Content-Type", "text/plain; charset=big5"]],
+            "body": {"hex": "81"},
+        },
+    ),
+    workflow(
+        "charset_known_hex_codec_unimplemented",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/known-hex-codec",
+            "headers": [["Content-Type", "text/plain; charset=hex_codec"]],
+            "body": {"text": "not hex"},
+        },
+    ),
+    workflow(
+        "charset_known_rot13_unimplemented",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/known-rot13",
+            "headers": [["Content-Type", "text/plain; charset=rot_13"]],
+            "body": {"text": "codec-category"},
+        },
+    ),
+    workflow(
+        "charset_koi8_u_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/koi8-u",
+            "headers": [["Content-Type", "text/plain; charset=koi8_u"]],
+            "body": {"hex": "aebe"},
+        },
+    ),
+    workflow(
+        "charset_shift_jis_malformed",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/shift-jis-malformed",
+            "headers": [["Content-Type", "text/plain; charset=shift_jis"]],
+            "body": {"hex": "82"},
+        },
+    ),
+    workflow(
         "bom_utf16le_retains_bom",
         {
             "method": "POST",
@@ -633,6 +1004,123 @@ def assert_url_and_header_bytes_controls(rows):
 
 def assert_text_decoding_controls(rows):
     assert "ascii-body" in text_value(rows, "charset_ascii_valid", "curl")
+    assert text_value(rows, "charset_utf8_spaced_alias", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=utf 8' -X POST "
+        "http://source.fixture.invalid/utf8-spaced -d utf8-spaced"
+    )
+    assert text_value(rows, "charset_windows_1252_declared", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=windows-1252' -X POST "
+        "http://source.fixture.invalid/windows-1252 -d '€‚‘’“”–—'"
+    )
+    assert text_value(rows, "charset_windows_1252_cp1252_alias", "httpie") == (
+        "http POST http://source.fixture.invalid/cp1252 "
+        "'Content-Type: text/plain; charset=cp1252' <<< '€ÿ'"
+    )
+    for name, invalid_byte in (
+        ("charset_windows_1252_undefined", b"\x81"),
+        ("charset_cp1250_undefined", b"\x81"),
+        ("charset_cp1251_undefined", b"\x98"),
+        ("charset_cp1254_undefined", b"\x81"),
+        ("charset_cp936_undefined", b"\x80"),
+    ):
+        assert_error(rows, name, "curl", "CommandError")
+        assert_error(rows, name, "httpie", "CommandError")
+        assert bytes_value(rows, name, "raw_request").endswith(b"\r\n" + invalid_byte)
+    assert text_value(rows, "charset_shift_jis_declared", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=shift_jis' -X POST "
+        "http://source.fixture.invalid/shift-jis -d '日本'"
+    )
+    assert text_value(rows, "charset_shift_jis_sjis_alias", "httpie") == (
+        "http POST http://source.fixture.invalid/sjis "
+        "'Content-Type: text/plain; charset=sjis' <<< 'あい'"
+    )
+    assert text_value(rows, "charset_shift_jis_python_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=shift_jis' -X POST "
+        "http://source.fixture.invalid/shift-jis-table -d '〜‖−¢£¬'"
+    )
+    assert text_value(rows, "charset_cp932_python_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=cp932' -X POST "
+        "http://source.fixture.invalid/cp932-table -d '\uf8f0\uf8f1\uf8f2\uf8f3\uff5e\u2460\u7e8a\u2170\ue000'"
+    )
+    assert text_value(rows, "charset_iso8859_2_alias", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=iso8859_2' -X POST "
+        "http://source.fixture.invalid/iso8859-2 -d 'Ą˘ŁŻ'"
+    )
+    assert text_value(rows, "charset_iso8859_15_declared", "httpie") == (
+        "http POST http://source.fixture.invalid/iso8859-15 "
+        "'Content-Type: text/plain; charset=iso-8859-15' <<< '€ŠŒŽŸ'"
+    )
+    assert text_value(rows, "charset_gbk_source_normalization", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=gbk' -X POST "
+        "http://source.fixture.invalid/gbk -d '中文\u0080'"
+    )
+    assert text_value(rows, "charset_gb2312_source_normalization", "httpie") == (
+        "http POST http://source.fixture.invalid/gb2312 "
+        "'Content-Type: text/plain; charset=gb2312' <<< '中文\u0080'"
+    )
+    assert text_value(rows, "charset_euc_jp_alias", "httpie") == (
+        "http POST http://source.fixture.invalid/euc-jp "
+        "'Content-Type: text/plain; charset=euc_jp' <<< '日本'"
+    )
+    assert text_value(rows, "charset_euc_jp_python_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=euc_jp' -X POST "
+        "http://source.fixture.invalid/euc-jp-table -d '\u301c\u2016\u2212\u00a2\u00a3\u00ac\u02d8\uff71'"
+    )
+    assert text_value(rows, "charset_cp936_valid_sequence", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=cp936' -X POST "
+        "http://source.fixture.invalid/cp936-valid -d '\u4e90'"
+    )
+    assert text_value(rows, "charset_cp932_python_private_singles", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=cp932' -X POST "
+        "http://source.fixture.invalid/cp932-private -d '\u0080\uf8f0\uf8f1\uf8f2\uf8f3'"
+    )
+    assert text_value(rows, "charset_cp936_cross_boundary", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=cp936' -X POST "
+        "http://source.fixture.invalid/cp936-cross -d '\u4efa\u7cbf'"
+    )
+    assert_error(rows, "charset_gbk_unassigned_table", "curl", "CommandError")
+    assert text_value(rows, "charset_gb2312_registered_alias", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=gb2312-80' -X POST "
+        "http://source.fixture.invalid/gb2312-80 -d '\u30fb\u2015'"
+    )
+    assert_error(rows, "charset_gb2312_unknown_separator", "curl", "CommandError")
+    assert text_value(rows, "charset_euc_jp_ss3_mapping", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=euc_jp' -X POST "
+        "http://source.fixture.invalid/euc-jp-ss3 -d '~'"
+    )
+    assert_error(rows, "charset_euc_jp_unassigned_table", "curl", "CommandError")
+    assert text_value(rows, "charset_gb18030_pair_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=gb18030' -X POST "
+        "http://source.fixture.invalid/gb18030-pairs -d "
+        "'\ue5e5\ue78d\ue78e\ue78f\ue790\ue791\ue792\ue793\ue794\ue795\ue796\ue7c7\ue81e\ue826\ue82b\ue82c\ue832\ue843\ue854\ue864'"
+    )
+    assert_error(rows, "charset_cp936_rejected_gbk_tables", "curl", "CommandError")
+    assert text_value(rows, "charset_gb18030_python_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=gb18030' -X POST "
+        "http://source.fixture.invalid/gb18030-table -d '\ue7c7\ue78d\ue78e\ue81e\u1e3f\u0080\U00010000\U0010ffff'"
+    )
+    assert_error(rows, "charset_gb18030_malformed", "curl", "CommandError")
+    assert "╝╬" in text_value(rows, "charset_koi8_u_table", "curl")
+    assert_error(rows, "charset_shift_jis_malformed", "curl", "CommandError")
+    malformed = bytes_value(rows, "charset_shift_jis_malformed", "raw_request")
+    assert malformed.endswith(b"\r\n\x82")
+    for name in (
+        "charset_unknown_windows_31j",
+        "charset_unknown_windows_874",
+        "charset_unknown_windows_949",
+        "charset_unknown_x_mac_cyrillic",
+        "charset_unknown_x_sjis",
+        "charset_unknown_iso_2022_cn",
+    ):
+        assert_error(rows, name, "curl", "CommandError")
+        assert_error(rows, name, "httpie", "CommandError")
+        assert bytes_value(rows, name, "raw_request").endswith(b"codec-category")
+    assert_error(rows, "charset_known_big5_unimplemented", "curl", "CommandError")
+    assert_error(rows, "charset_known_big5_unimplemented", "httpie", "CommandError")
+    assert_error(rows, "charset_known_hex_codec_unimplemented", "curl", "CommandError")
+    assert_error(rows, "charset_known_hex_codec_unimplemented", "httpie", "CommandError")
+    assert_error(rows, "charset_known_rot13_unimplemented", "curl", "TypeError")
+    assert_error(rows, "charset_known_rot13_unimplemented", "httpie", "TypeError")
     for name in (
         "bom_utf16le_retains_bom",
         "bom_utf16be_retains_bom",
@@ -765,7 +1253,7 @@ REPRESENTATION_DIFFERENCES = [
     {
         "name": "peer_ip_option",
         "source": "the finite true control can add curl --resolve from the synthetic server peername",
-        "native": "actual peer address is unavailable in the current native snapshot; do not claim this source control is native parity",
+        "native": "current main retains the observed peer address, but the native exporter does not implement curl --resolve and the candidate base snapshot lacks those peer facts",
     },
     {
         "name": "websocket_export",
@@ -782,6 +1270,12 @@ REPRESENTATION_DIFFERENCES = [
         "source": "get_text gives BOMs highest priority, accepts declared ASCII, and infers declared HTML/XML/CSS encodings from in-body markers",
         "native": "native text commands need the demonstrated decoder behavior or an explicit unavailable result",
     },
+    {
+        "name": "declared_character_codecs",
+        "source": "get_text dispatches declared labels through Python's strict codecs registry; gbk and gb2312 are first mapped to gb18030 by the installed source",
+        "native": "encoding_rs-backed native decoding uses Python-derived byte tables for the admitted single-byte families, complete one/two-byte validity and mapping corrections for Shift_JIS/CP932/EUC-JP/GBK/GB2312, and source-version GB18030 pair/four-byte corrections; known Python labels remain explicit and unknown labels are decode failures",
+        "remaining_gaps": "The compared domains are all 256 single-byte inputs for 27 admitted families, all structurally valid one/two-byte inputs for Shift_JIS, CP932, EUC-JP, GBK, and GB2312, and all 1,587,600 structural GB18030 four-byte sequences; exact CPython codecs outside the compared families still need a Rust table backend, including big5, euc-kr, iso-8859-9, iso-8859-11, ISO-2022 variants, HZ, the CP437/720/737/850/852/855/857/858/860/861/862/863/864/865/869 DOS families, EBCDIC code pages, JOHAB, and Unicode escape codecs",
+    },
 ]
 
 
@@ -789,7 +1283,7 @@ def document():
     rows = [observe(spec) for spec in WORKFLOWS]
     assert_contract(rows)
     return {
-        "schema": 3,
+        "schema": 4,
         "source": "installed_mitmproxy_export_functions",
         "versions": {
             "python": sys.version.split()[0],

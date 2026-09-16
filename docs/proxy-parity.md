@@ -2305,27 +2305,42 @@ The raw transcript includes dropped messages and omits message type and drop
 metadata. Those facts remain available in the inspector.
 
 The [source export fixture](../proxy/tests/traffic_export_source.py) records
-31 workflows and 155 formatter observations. Independent assertions cover
+72 workflows and 360 formatter observations. Independent assertions cover
 missing versus empty content, retained encoding headers for empty bodies,
 repeated headers, command quoting, finite trailers, and full WebSocket bytes
 across the display-page boundary. Added controls cover explicit default ports,
 raw header bytes, valid ASCII, retained Unicode byte-order marks, and encoding
 declarations in HTML, XML and CSS bodies. Command observations preserve exact
 bytes even when the source string contains surrogateescaped header bytes.
+Codec controls distinguish valid mappings, malformed byte sequences, unknown
+labels and registered codecs that the native formatter has not implemented.
 These source checks do not establish native formatter parity or independent
 acceptance.
 
-The native formatter replay compares 154 of those observations. It excludes
+The native formatter replay checks 359 of those observations. It excludes
 only curl's optional original-IP preservation output because the exporter
 does not implement that option. The replay preserves the
 input's explicit default ports and compares command bytes, including header
-values that are not valid UTF-8. It constructs retained observations from the
-fixture; it does not establish complete runtime capture equivalence. Native
+values that are not valid UTF-8. Some checks explicitly expect an unsupported
+native representation for a source-supported codec; those checks record a gap
+and do not establish equal output. The replay constructs retained observations
+from the fixture; it does not establish complete runtime capture equivalence. Native
 URL and header projections retain the differences documented in the development
 workflow.
-Command body decoding currently covers ASCII, Latin-1 and UTF-8/16/32. Other
-source-supported codecs and additional aliases remain a compatibility gap;
-the native formatter reports an unsupported representation for those labels.
+Command body decoding covers ASCII, Latin-1, UTF-8/16/32, 27 additional
+single-byte families, and the implemented Shift_JIS, CP932, EUC-JP, GBK,
+GB2312, GB18030 and CP949 paths. Source-derived validity and mapping corrections
+account for differences in the encoding library. Team review compared all
+single-byte inputs for those 27 families, all one- and two-byte inputs for the
+reviewed multibyte paths, and all EUC-JP SS3 sequences. GB18030 four-byte evidence
+includes the implementation comparison and independent boundary controls.
+
+The [registry generator](../proxy/tools/generate_export_codec_tables.py)
+reproduces 420 normalized labels from pinned CPython 3.12.14 data. Unknown
+labels return a decoding error. Registered but unimplemented codecs, including
+Big5 and transform codecs, return an unsupported representation. More codec
+families, aliases and nontext transformations remain compatibility work; these
+checks do not establish complete Python codec parity.
 
 The [live view](../proxy/src/traffic_view.rs) now retains request completion,
 first response-head observation and successful response completion separately

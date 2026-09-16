@@ -13,6 +13,7 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
+mod codec_tables;
 mod export;
 mod filter;
 mod websocket;
