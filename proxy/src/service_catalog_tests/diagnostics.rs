@@ -87,7 +87,8 @@ fn diagnostic_submission_failure_keeps_all_file_problems_and_directory_omissions
             attempted.push(problem.path.file_name().unwrap().to_owned());
             record_service_problem(&writer, problem);
         },
-    );
+    )
+    .unwrap();
     assert!(load.result.is_err());
     assert_eq!(
         attempted,
@@ -102,7 +103,8 @@ fn diagnostic_submission_failure_keeps_all_file_problems_and_directory_omissions
     let non_directory = directory.path().join("user-file");
     std::fs::write(&non_directory, "owned file").unwrap();
     let mut calls = 0;
-    let load = services::Registry::load_directories(&missing, &non_directory, &mut |_| calls += 1);
+    let load = services::Registry::load_directories(&missing, &non_directory, &mut |_| calls += 1)
+        .unwrap();
     assert!(load.result.is_err());
     assert_eq!(calls, 0);
     assert!(load.metadata.is_empty());

@@ -347,7 +347,7 @@ fn directory_problems_are_aggregated_without_file_callbacks() {
     std::fs::write(&builtin, "owned file").unwrap();
     std::fs::write(&user, "owned file").unwrap();
     let mut calls = 0;
-    let attempt = Registry::load_directories(&builtin, &user, &mut |_| calls += 1);
+    let attempt = Registry::load_directories(&builtin, &user, &mut |_| calls += 1).unwrap();
     assert!(attempt.metadata.is_empty());
     let error = attempt.result.unwrap_err();
     assert_eq!(calls, 0);
@@ -379,7 +379,7 @@ fn metadata_precedes_reads_and_problem_callback_precedes_later_read() {
     let (_root, builtin, user) = directories();
     std::fs::write(builtin.join("10-empty.yaml"), "").unwrap();
     write(&builtin, "20-next.yaml", "before", "owned".into());
-    let before = scan_service_files(&builtin, &user);
+    let before = scan_service_files(&builtin, &user).unwrap();
     let mut calls = 0;
     let attempt =
         Registry::load_directories(&builtin, &user, &mut |problem: &ServiceLoadProblem| {
@@ -392,15 +392,16 @@ fn metadata_precedes_reads_and_problem_callback_precedes_later_read() {
             // A callback is reached before the next file is read. Replacing that
             // file with an invalid mapping must create a second later problem.
             std::fs::write(builtin.join("20-next.yaml"), "schema_version: 2\n").unwrap();
-        });
+        })
+        .unwrap();
     assert_eq!(attempt.metadata, before);
-    assert_ne!(scan_service_files(&builtin, &user), before);
+    assert_ne!(scan_service_files(&builtin, &user).unwrap(), before);
     assert_eq!(calls, 2);
     assert_eq!(attempt.result.unwrap_err().problems.len(), 2);
 }
 
 #[test]
-fn metadata_key_is_mtime_and_size_not_contents_or_directory_health() {
+fn metadata_key_is_mtime_and_size_with_optional_absent_directory() {
     use std::time::{Duration, UNIX_EPOCH};
     let (_root, builtin, user) = directories();
     let path = builtin.join("owned.yaml");
@@ -409,31 +410,31 @@ fn metadata_key_is_mtime_and_size_not_contents_or_directory_health() {
     let modified = UNIX_EPOCH - Duration::from_nanos(123_456_789);
     file.set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
-    let before: CatalogMetadata = scan_service_files(&builtin, &user);
+    let before: CatalogMetadata = scan_service_files(&builtin, &user).unwrap();
     assert_eq!(before[&path], (-123_456_789, 4));
     std::fs::write(&path, "diff").unwrap();
     file.set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
-    assert_eq!(scan_service_files(&builtin, &user), before);
+    assert_eq!(scan_service_files(&builtin, &user).unwrap(), before);
     std::fs::write(&path, "larger").unwrap();
     file.set_times(std::fs::FileTimes::new().set_modified(modified))
         .unwrap();
-    assert_ne!(scan_service_files(&builtin, &user), before);
-    let larger = scan_service_files(&builtin, &user);
+    assert_ne!(scan_service_files(&builtin, &user).unwrap(), before);
+    let larger = scan_service_files(&builtin, &user).unwrap();
     file.set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
         .unwrap();
-    assert_ne!(scan_service_files(&builtin, &user), larger);
+    assert_ne!(scan_service_files(&builtin, &user).unwrap(), larger);
     std::fs::write(builtin.join("ignored.yml"), "ignored").unwrap();
     std::fs::create_dir(builtin.join("nested")).unwrap();
     std::fs::write(builtin.join("nested/ignored.yaml"), "ignored").unwrap();
     std::os::unix::fs::symlink("absent", builtin.join("dangling.yaml")).unwrap();
-    assert_eq!(scan_service_files(&builtin, &user).len(), 1);
+    assert_eq!(scan_service_files(&builtin, &user).unwrap().len(), 1);
     std::fs::remove_file(&path).unwrap();
-    assert!(scan_service_files(&builtin, &user).is_empty());
+    assert!(scan_service_files(&builtin, &user).unwrap().is_empty());
     std::fs::create_dir(&user).unwrap();
-    let empty = scan_service_files(&builtin, &user);
+    let empty = scan_service_files(&builtin, &user).unwrap();
     std::fs::remove_dir(&user).unwrap();
-    assert_eq!(scan_service_files(&builtin, &user), empty);
+    assert_eq!(scan_service_files(&builtin, &user).unwrap(), empty);
 }
 
 #[test]
@@ -500,7 +501,8 @@ fn source_diagnostic_order_and_continuation_with_contained_writer_failure() {
                     assert_eq!(error.kind(), crate::audit::ErrorKind::Poisoned);
                     failed_submissions += 1;
                 }
-            });
+            })
+            .unwrap();
         let problems = attempt.result.unwrap_err().problems;
         assert_eq!(problems.len(), 10);
         assert_eq!(failed_submissions, if poison { 10 } else { 0 });
@@ -551,4 +553,113 @@ fn source_diagnostic_order_and_continuation_with_contained_writer_failure() {
         );
     }
     assert_eq!(rows, 2);
+}
+
+#[test]
+fn directory_metadata_failure_escapes_before_reads_and_public_loader_preserves_io() {
+    let (root, builtin, user) = directories();
+    std::fs::write(builtin.join("10-empty.yaml"), "").unwrap();
+    let bad = root.path().join("long-target");
+    // Creating the symlink is valid; following its single oversized target
+    // component fails deterministically without uid-sensitive permission setup.
+    std::os::unix::fs::symlink("x".repeat(256), &bad).unwrap();
+    for (builtin, user) in [(&builtin, &bad), (&bad, &user)] {
+        assert_eq!(
+            scan_service_files(builtin, user)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        let mut calls = 0;
+        let error = Registry::load_directories(builtin, user, &mut |_| calls += 1)
+            .err()
+            .expect("directory metadata failure escapes the attempt");
+        assert_eq!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+        assert_eq!(calls, 0, "initial scan fails before reading definitions");
+        let error = Registry::from_directories(builtin, user).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+    }
+}
+
+#[test]
+fn absent_non_directory_dangling_looping_and_nul_sources_keep_inner_problem_contract() {
+    use super::catalog::ProblemKind;
+    let (root, builtin, _) = directories();
+    write(&builtin, "owned.yaml", "owned", "owned".into());
+    let file = root.path().join("ordinary-file");
+    std::fs::write(&file, "owned").unwrap();
+    let missing = root.path().join("missing");
+    let not_directory = file.join("child");
+    let dangling = root.path().join("dangling");
+    std::os::unix::fs::symlink("absent", &dangling).unwrap();
+    let looping = root.path().join("looping");
+    std::os::unix::fs::symlink("looping", &looping).unwrap();
+    let nul = root.path().join("nul\0directory");
+    for path in [&missing, &not_directory, &dangling, &looping, &nul] {
+        let mut calls = 0;
+        let attempt = Registry::load_directories(&builtin, path, &mut |_| calls += 1).unwrap();
+        assert_eq!(attempt.metadata.len(), 1);
+        assert!(attempt.result.unwrap().services.contains_key("owned"));
+        let attempt = Registry::load_directories(path, &missing, &mut |_| calls += 1).unwrap();
+        let error = attempt.result.unwrap_err();
+        assert_eq!(error.problems.len(), 1);
+        assert_eq!(error.problems[0].kind, ProblemKind::MissingBuiltin);
+        assert_eq!(calls, 0);
+    }
+    let attempt =
+        Registry::load_directories(&builtin, &file, &mut |_| panic!("not a file problem")).unwrap();
+    assert_eq!(
+        attempt.result.unwrap_err().problems[0].kind,
+        ProblemKind::NotDirectory
+    );
+}
+
+#[test]
+fn late_directory_metadata_failure_keeps_reached_callback_without_completed_attempt() {
+    let (_root, builtin, user) = directories();
+    std::fs::create_dir(&user).unwrap();
+    std::fs::write(builtin.join("10-empty.yaml"), "").unwrap();
+    let before = scan_service_files(&builtin, &user).unwrap();
+    assert_eq!(before.len(), 1);
+    let mut observed = Vec::new();
+    let result = Registry::load_directories(&builtin, &user, &mut |problem| {
+        observed.push(problem.path.clone());
+        std::fs::remove_dir(&user).unwrap();
+        std::os::unix::fs::symlink("x".repeat(256), &user).unwrap();
+    });
+    let error = result
+        .err()
+        .expect("no CatalogLoad/attempt key escapes a late directory error");
+    assert_eq!(error.raw_os_error(), Some(libc::ENAMETOOLONG));
+    assert_eq!(observed, [builtin.join("10-empty.yaml")]);
+}
+
+#[test]
+fn per_file_stat_failure_is_omitted_then_remains_an_ordered_file_problem() {
+    use super::catalog::{ProblemKind, ProblemOrigin};
+    let (_root, builtin, user) = directories();
+    let path = builtin.join("10-long.yaml");
+    std::os::unix::fs::symlink("x".repeat(256), &path).unwrap();
+    write(&builtin, "20-valid.yaml", "valid", "owned".into());
+    let metadata = scan_service_files(&builtin, &user).unwrap();
+    assert_eq!(metadata.len(), 1);
+    assert!(!metadata.contains_key(&path));
+    let mut calls = Vec::new();
+    let attempt = Registry::load_directories(&builtin, &user, &mut |problem| {
+        calls.push(problem.path.clone());
+    })
+    .unwrap();
+    assert_eq!(attempt.metadata, metadata);
+    let problems = attempt.result.unwrap_err().problems;
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].path, path);
+    assert_eq!(problems[0].origin, ProblemOrigin::File);
+    assert!(matches!(problems[0].kind, ProblemKind::Io(_)));
+    assert_eq!(calls, [path]);
 }

@@ -235,7 +235,7 @@ impl Registry {
     /// Construct one strict catalog candidate. Only top-level `*.yaml`
     /// entries participate; user definitions replace builtin definitions.
     pub fn from_directories(builtin: &Path, user: &Path) -> Result<Self, Error> {
-        Self::load_directories(builtin, user, &mut |_| {})
+        Self::load_directories(builtin, user, &mut |_| {})?
             .result
             .map_err(|error| Box::new(error) as Error)
     }

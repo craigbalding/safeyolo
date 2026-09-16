@@ -900,11 +900,22 @@ Checks compare full paths, modification times in nanoseconds and file sizes.
 They detect additions, removals and metadata changes. They do not detect content
 changes that retain both size and modification time, or the disappearance of an
 empty directory. Each load captures its metadata before reading definitions.
-A failed automatic load consumes that attempted metadata, as the source does;
-unchanged files do not retry. Repairing only the policy file therefore requires
-an explicit reload or another service-file change. Failed loads retain the old
-published catalog, policy and tokens. Accepted path changes replace the watched
-metadata together with the runtime.
+A completed catalog attempt consumes that metadata, including file validation
+or subsequent policy failure; unchanged files do not retry. Repairing only the
+policy file therefore requires an explicit reload or another service-file
+change. Failed loads retain the old published catalog, policy and tokens.
+Accepted path changes replace the watched metadata together with the runtime.
+
+Directory metadata checks preserve the source Python 3.12 error behavior.
+Missing paths, non-directory parents, bad descriptors and symlink loops count
+as absent paths. A path containing a NUL byte also counts as absent at this
+check. Other metadata errors propagate without replacing the last attempted
+file state. These errors remain retryable on the next check, after
+the same two-second delay. They produce no per-file or baseline-policy event
+before a file or policy load is reached. A later directory check can fail after
+earlier file diagnostics were emitted; those diagnostics remain observable.
+Directory-enumeration errors still contribute no entries, and failed metadata
+reads for individual matched files still omit only those entries.
 
 Automatic checks reload only the catalog and baseline policy. They retain
 transport, inspection and evidence owners; they do not reread unrelated TLS or
@@ -962,11 +973,11 @@ non-string-key and numeric representation gaps. Source filenames that require
 Python surrogateescape are not representable in the current native string
 provenance. Native parser/schema failures use explicit native error classes
 where the current frontend cannot establish the source exception class. Exact
-parser and operating-system message wording is not a parity claim. These
-limits include directory metadata errors: native `Path::is_dir` suppresses
-errors that Python's path checks can propagate. The installed builtin-path
-resolver and packaging, task-file activation, and HTTP selection/injection
-remain required migration work.
+parser and operating-system message wording is not a parity claim. The installed
+builtin-path resolver and packaging, task-file activation, and HTTP
+selection/injection remain required migration work. Initial path resolution,
+including source symlink resolution before loading, remains separate from
+metadata checks on already configured directories.
 
 ### Baseline policy reload events
 

@@ -96,11 +96,11 @@ impl Registry {
         builtin: &Path,
         user: &Path,
         on_file_problem: &mut impl FnMut(&ServiceLoadProblem),
-    ) -> CatalogLoad {
-        let metadata = scan_service_files(builtin, user);
+    ) -> io::Result<CatalogLoad> {
+        let metadata = scan_service_files(builtin, user)?;
         let mut problems = Vec::new();
         let mut registry = Self::default();
-        if !builtin.is_dir() {
+        if !directory_metadata(builtin)?.is_some_and(|metadata| metadata.is_dir()) {
             problems.push(problem(
                 builtin,
                 ProblemOrigin::Directory,
@@ -109,9 +109,9 @@ impl Registry {
             ));
         }
         for directory in [builtin, user] {
-            match std::fs::metadata(directory) {
-                Ok(metadata) if metadata.is_dir() => (),
-                Ok(_) => {
+            match directory_metadata(directory)? {
+                Some(metadata) if metadata.is_dir() => (),
+                Some(_) => {
                     problems.push(problem(
                         directory,
                         ProblemOrigin::Directory,
@@ -120,23 +120,7 @@ impl Registry {
                     ));
                     continue;
                 }
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    continue;
-                }
-                Err(error) => {
-                    problems.push(problem(
-                        directory,
-                        ProblemOrigin::Directory,
-                        ProblemKind::Io(error.kind()),
-                        error.to_string(),
-                    ));
-                    continue;
-                }
+                None => continue,
             }
             let mut names = BTreeMap::<String, PathBuf>::new();
             for path in source_files(directory) {
@@ -175,23 +159,23 @@ impl Registry {
                 }
             }
         }
-        CatalogLoad {
+        Ok(CatalogLoad {
             metadata,
             result: if problems.is_empty() {
                 Ok(registry)
             } else {
                 Err(ServiceLoadError { problems })
             },
-        }
+        })
     }
 }
 
-/// Source metadata-only change detection; failed stat entries contribute nothing.
-/// Capture this before reading any definition, including on a rejected attempt.
-pub(crate) fn scan_service_files(builtin: &Path, user: &Path) -> CatalogMetadata {
+/// Source metadata-only change detection; failed per-file stats contribute nothing.
+/// Directory errors escape before a completed attempt can publish its metadata.
+pub(crate) fn scan_service_files(builtin: &Path, user: &Path) -> io::Result<CatalogMetadata> {
     let mut state = BTreeMap::new();
     for directory in [builtin, user] {
-        if !directory.is_dir() {
+        if !directory_metadata(directory)?.is_some_and(|metadata| metadata.is_dir()) {
             continue;
         }
         for path in source_files(directory) {
@@ -207,7 +191,29 @@ pub(crate) fn scan_service_files(builtin: &Path, user: &Path) -> CatalogMetadata
             }
         }
     }
-    state
+    Ok(state)
+}
+
+fn directory_metadata(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
+    // A concrete NUL-bearing path raises ValueError in the source predicates,
+    // which they treat as absent. Do not suppress unrelated InvalidInput errors.
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Ok(None);
+    }
+    // Python 3.12 Path.exists/is_dir suppress these POSIX stat errors only.
+    // Other directory errors escape before the loader commits its attempt key.
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOENT | libc::ENOTDIR | libc::EBADF | libc::ELOOP)
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn source_files(directory: &Path) -> Vec<PathBuf> {

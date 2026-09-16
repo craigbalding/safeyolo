@@ -396,7 +396,7 @@ fn load_service_catalog(
         (Some(builtin), Some(user)) => {
             let load = services::Registry::load_directories(builtin, user, &mut |problem| {
                 record_service_problem(writer, problem);
-            });
+            })?;
             *service_files = Some(load.metadata);
             Ok(Some(Arc::new(load.result?)))
         }
@@ -824,7 +824,7 @@ impl Proxy {
             &config.gateway_services_dir,
         ) {
             (Some(builtin), Some(user)) => {
-                let files = services::scan_service_files(builtin, user);
+                let files = services::scan_service_files(builtin, user)?;
                 if self.service_files.as_ref() == Some(&files) {
                     Ok(false)
                 } else {
