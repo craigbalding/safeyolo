@@ -1,0 +1,1115 @@
+{
+  "schema": 1,
+  "source": "installed_mitmproxy_savehar",
+  "versions": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3"
+  },
+  "source_sha256": {
+    "mitmproxy/addons/savehar.py": "488bc3fe9d338b1825f042a3ddfe085814b4340f965a8cb0cf9aa9bfcd84a02c",
+    "mitmproxy/connection.py": "e8e7f3a695e17cd134be6728258a98bdcbda52304655532595b31564732ca726",
+    "mitmproxy/flow.py": "7d013511593f0c4fa370cd58118edb52d0841a1b81a0f846ea512482fbcd9c63",
+    "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+    "mitmproxy/coretypes/multidict.py": "d8cf7fdc1896241c94a611e940654f30f028e0823c272771ba36519336ce6f57",
+    "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea",
+    "mitmproxy/net/http/headers.py": "6a2ac2db6b7c3e5891b9dbd243dc83b6651939056f28bb6c64254979dd1392b9",
+    "mitmproxy/tools/cmdline.py": "811212c9c009634aa09b811eb1160d21286f8253ea478cbf21b16962ed89c37b",
+    "mitmproxy/tools/main.py": "014339be3f863460097f502d16c4931a807d9d640c2a0b7cb88a8a995d63ad2d",
+    "mitmproxy/utils/strutils.py": "de6bacada4d4ed26f6555472ae48466dba969bb60c57fbc5a0d3c14c77743e09",
+    "mitmproxy/version.py": "081de8d22ceeea6267ddf573b39c6f33b79d90dd2e18265e1f74a135124c64fe",
+    "mitmproxy/websocket.py": "efdfc38b017f36e14fa3f58d8c101493af58f4469edd115ce690fb17e0eaba7b"
+  },
+  "public_surface": {
+    "command": {
+      "name": "save.har",
+      "arguments": [
+        "flows: Sequence[flow.Flow]",
+        "path: types.Path"
+      ],
+      "behavior": "writes json.dumps(make_har(flows), indent=4).encode() to path"
+    },
+    "option": {
+      "cli": "--set hardump=PATH",
+      "name": "hardump",
+      "type": "str",
+      "default": "",
+      "behavior": "save a HAR file with all flows on exit; flows are kept in memory"
+    },
+    "selection": {
+      "command": "save.har receives the explicit selected flow sequence",
+      "hardump_filter": "save_stream_filter optionally filters flows collected for hardump",
+      "stock_mitmdump_filter_arg": "stock mitmdump positional filter_args sets view_filter and save_stream_filter",
+      "safeyolo_entrypoint": "SafeYolo starts safeyolo.traffic_master, whose _make_parser calls cmdline.mitmproxy; this is distinct from stock mitmdump",
+      "non_http": "make_har skips selected flows that are not HTTPFlow"
+    },
+    "archive_suffixes": {
+      ".har": "indented UTF-8 JSON bytes without a trailing newline",
+      ".zhar": "zlib.compress(json_bytes, 9)"
+    }
+  },
+  "selections": [
+    {
+      "name": "empty_selection",
+      "selected": [],
+      "entry_count": 0,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": []
+        }
+      }
+    },
+    {
+      "name": "http_body_variants",
+      "selected": [
+        "rich_http",
+        "encoded_text",
+        "binary_bodies"
+      ],
+      "entry_count": 3,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:04+00:00",
+              "time": 5000.0,
+              "request": {
+                "method": "POST",
+                "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+                "httpVersion": "HTTP/2",
+                "cookies": [
+                  {
+                    "name": "a",
+                    "value": "1"
+                  },
+                  {
+                    "name": "b",
+                    "value": "two"
+                  }
+                ],
+                "headers": [
+                  {
+                    "name": "X-Dup",
+                    "value": "one"
+                  },
+                  {
+                    "name": "x-dup",
+                    "value": "two"
+                  },
+                  {
+                    "name": "Cookie",
+                    "value": "a=1; b=two"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "12"
+                  }
+                ],
+                "queryString": [
+                  {
+                    "name": "q",
+                    "value": "one"
+                  },
+                  {
+                    "name": "q",
+                    "value": "two"
+                  },
+                  {
+                    "name": "space",
+                    "value": "a b"
+                  }
+                ],
+                "headersSize": 137,
+                "bodySize": 12,
+                "postData": {
+                  "mimeType": "text/plain",
+                  "text": "request body",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 299,
+                "statusText": "Synthetic Reason",
+                "httpVersion": "HTTP/1.0",
+                "cookies": [
+                  {
+                    "name": "c",
+                    "value": "3",
+                    "path": "/",
+                    "domain": "",
+                    "httpOnly": false,
+                    "secure": true
+                  },
+                  {
+                    "name": "d",
+                    "value": "4",
+                    "path": "/",
+                    "domain": "",
+                    "httpOnly": true,
+                    "secure": false
+                  }
+                ],
+                "headers": [
+                  {
+                    "name": "Set-Cookie",
+                    "value": "c=3; Path=/; Secure"
+                  },
+                  {
+                    "name": "Set-Cookie",
+                    "value": "d=4; HttpOnly"
+                  },
+                  {
+                    "name": "X-Dup",
+                    "value": "reply-one"
+                  },
+                  {
+                    "name": "x-dup",
+                    "value": "reply-two"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "13"
+                  }
+                ],
+                "content": {
+                  "size": 13,
+                  "compression": 0,
+                  "mimeType": "text/plain",
+                  "text": "response body"
+                },
+                "redirectURL": "",
+                "headersSize": 197,
+                "bodySize": 13
+              },
+              "cache": {},
+              "timings": {
+                "connect": 1000.0,
+                "ssl": 1000.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 1000.0
+              },
+              "serverIPAddress": "198.51.100.30"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:31+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/encoded",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Encoding",
+                    "value": "gzip"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "35"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 101,
+                "bodySize": 35,
+                "postData": {
+                  "mimeType": "text/plain",
+                  "text": "encoded request",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Encoding",
+                    "value": "gzip"
+                  },
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "36"
+                  }
+                ],
+                "content": {
+                  "size": 36,
+                  "compression": -20,
+                  "mimeType": "text/plain",
+                  "text": "encoded response"
+                },
+                "redirectURL": "",
+                "headersSize": 101,
+                "bodySize": 36
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.33"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:41+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/binary",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/octet-stream"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "4"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 82,
+                "bodySize": 4,
+                "postData": {
+                  "mimeType": "application/octet-stream",
+                  "text": "\u0000\u00ff\u0001a",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/octet-stream"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "4"
+                  }
+                ],
+                "content": {
+                  "size": 4,
+                  "compression": 0,
+                  "mimeType": "application/octet-stream",
+                  "text": "AP8BYQ==",
+                  "encoding": "base64"
+                },
+                "redirectURL": "",
+                "headersSize": 82,
+                "bodySize": 4
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.34"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "body_availability",
+      "selected": [
+        "empty_response",
+        "response_body_missing"
+      ],
+      "entry_count": 2,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:10+00:00",
+              "time": 1000.0,
+              "request": {
+                "method": "GET",
+                "url": "http://source.fixture.invalid/empty",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 204,
+                "statusText": "No Content",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "content": {
+                  "size": 0,
+                  "compression": 0,
+                  "mimeType": "text/plain",
+                  "text": ""
+                },
+                "redirectURL": "",
+                "headersSize": 68,
+                "bodySize": 0
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 0.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.31"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:12+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "GET",
+                "url": "http://source.fixture.invalid/missing-body",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "content": {
+                  "size": 0,
+                  "compression": 0,
+                  "mimeType": "text/plain",
+                  "text": ""
+                },
+                "redirectURL": "",
+                "headersSize": 68,
+                "bodySize": 0
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.32"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "request_body_availability",
+      "selected": [
+        "request_body_empty",
+        "request_body_missing"
+      ],
+      "entry_count": 2,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:14+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/request-empty",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0,
+                "postData": {
+                  "mimeType": "",
+                  "text": "",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "18"
+                  }
+                ],
+                "content": {
+                  "size": 18,
+                  "compression": 0,
+                  "mimeType": "",
+                  "text": "empty acknowledged"
+                },
+                "redirectURL": "",
+                "headersSize": 35,
+                "bodySize": 18
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.40"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:17+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/request-missing",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0,
+                "postData": {
+                  "mimeType": "",
+                  "text": null,
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "20"
+                  }
+                ],
+                "content": {
+                  "size": 20,
+                  "compression": 0,
+                  "mimeType": "",
+                  "text": "missing acknowledged"
+                },
+                "redirectURL": "",
+                "headersSize": 35,
+                "bodySize": 20
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.41"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "failure_and_incomplete",
+      "selected": [
+        "response_unavailable",
+        "error_without_response"
+      ],
+      "entry_count": 2,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:20+00:00",
+              "time": 1000.0,
+              "request": {
+                "method": "GET",
+                "url": "http://source.fixture.invalid/unavailable",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 0,
+                "statusText": "",
+                "httpVersion": "",
+                "headers": [],
+                "cookies": [],
+                "content": {},
+                "redirectURL": "",
+                "headersSize": -1,
+                "bodySize": -1,
+                "_transferSize": 0,
+                "_error": null
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 0,
+                "wait": 0
+              }
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:20+00:00",
+              "time": 1000.0,
+              "request": {
+                "method": "GET",
+                "url": "http://source.fixture.invalid/unavailable",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 0,
+                "statusText": "",
+                "httpVersion": "",
+                "headers": [],
+                "cookies": [],
+                "content": {},
+                "redirectURL": "",
+                "headersSize": -1,
+                "bodySize": -1,
+                "_transferSize": 0,
+                "_error": "fixture timeout"
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 0,
+                "wait": 0
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "charset_and_binary_request",
+      "selected": [
+        "latin1_charset",
+        "binary_bodies"
+      ],
+      "entry_count": 2,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:44+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/latin1",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=iso-8859-1"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "10"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 89,
+                "bodySize": 10,
+                "postData": {
+                  "mimeType": "text/plain; charset=iso-8859-1",
+                  "text": "left\u00e9right",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "text/plain; charset=iso-8859-1"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "6"
+                  }
+                ],
+                "content": {
+                  "size": 6,
+                  "compression": 0,
+                  "mimeType": "text/plain; charset=iso-8859-1",
+                  "text": "reply\u00e9"
+                },
+                "redirectURL": "",
+                "headersSize": 88,
+                "bodySize": 6
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.42"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:41+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "POST",
+                "url": "http://source.fixture.invalid/binary",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/octet-stream"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "4"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 82,
+                "bodySize": 4,
+                "postData": {
+                  "mimeType": "application/octet-stream",
+                  "text": "\u0000\u00ff\u0001a",
+                  "params": []
+                }
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Content-Type",
+                    "value": "application/octet-stream"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "4"
+                  }
+                ],
+                "content": {
+                  "size": 4,
+                  "compression": 0,
+                  "mimeType": "application/octet-stream",
+                  "text": "AP8BYQ==",
+                  "encoding": "base64"
+                },
+                "redirectURL": "",
+                "headersSize": 82,
+                "bodySize": 4
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.34"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "websocket_and_selection",
+      "selected": [
+        "websocket",
+        "non_http"
+      ],
+      "entry_count": 1,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:51+00:00",
+              "time": 2000.0,
+              "request": {
+                "method": "GET",
+                "url": "http://source.fixture.invalid/socket",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Connection",
+                    "value": "Upgrade"
+                  },
+                  {
+                    "name": "Upgrade",
+                    "value": "websocket"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 91,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 101,
+                "statusText": "Switching Protocols",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "Upgrade",
+                    "value": "websocket"
+                  },
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "content": {
+                  "size": 0,
+                  "compression": 0,
+                  "mimeType": "",
+                  "text": ""
+                },
+                "redirectURL": "",
+                "headersSize": 62,
+                "bodySize": 0
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 0.0
+              },
+              "serverIPAddress": "198.51.100.35",
+              "_resourceType": "websocket",
+              "_webSocketMessages": [
+                {
+                  "type": "send",
+                  "time": 61.0,
+                  "opcode": 1,
+                  "data": "outgoing"
+                },
+                {
+                  "type": "receive",
+                  "time": 62.0,
+                  "opcode": 2,
+                  "data": "/wA="
+                },
+                {
+                  "type": "receive",
+                  "time": 63.0,
+                  "opcode": 1,
+                  "data": "incoming"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "connection_reuse",
+      "selected": [
+        "timed_first",
+        "timed_reused"
+      ],
+      "entry_count": 2,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": [
+            {
+              "startedDateTime": "1970-01-01T00:00:04+00:00",
+              "time": 5000.0,
+              "request": {
+                "method": "GET",
+                "url": "https://source.fixture.invalid/first",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "5"
+                  }
+                ],
+                "content": {
+                  "size": 5,
+                  "compression": 0,
+                  "mimeType": "",
+                  "text": "first"
+                },
+                "redirectURL": "",
+                "headersSize": 34,
+                "bodySize": 5
+              },
+              "cache": {},
+              "timings": {
+                "connect": 1000.0,
+                "ssl": 1000.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 1000.0
+              },
+              "serverIPAddress": "198.51.100.36"
+            },
+            {
+              "startedDateTime": "1970-01-01T00:00:08+00:00",
+              "time": 3000.0,
+              "request": {
+                "method": "GET",
+                "url": "https://source.fixture.invalid/second",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "0"
+                  }
+                ],
+                "queryString": [],
+                "headersSize": 34,
+                "bodySize": 0
+              },
+              "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": [
+                  {
+                    "name": "content-length",
+                    "value": "6"
+                  }
+                ],
+                "content": {
+                  "size": 6,
+                  "compression": 0,
+                  "mimeType": "",
+                  "text": "second"
+                },
+                "redirectURL": "",
+                "headersSize": 34,
+                "bodySize": 6
+              },
+              "cache": {},
+              "timings": {
+                "connect": -1.0,
+                "ssl": -1.0,
+                "send": 1000.0,
+                "receive": 1000.0,
+                "wait": 1000.0
+              },
+              "serverIPAddress": "198.51.100.36"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "non_http_is_skipped",
+      "selected": [
+        "non_http"
+      ],
+      "entry_count": 0,
+      "har": {
+        "log": {
+          "version": "1.2",
+          "creator": {
+            "name": "mitmproxy",
+            "version": "12.2.3",
+            "comment": ""
+          },
+          "pages": [],
+          "entries": []
+        }
+      }
+    }
+  ],
+  "archives": {
+    ".har": {
+      "length": 4919,
+      "sha256": "5e070fbed4dbf55f5889c3a8a0aab54ff3439701c36f1bb0af7db03086467d50",
+      "prefix_hex": "7b0a20202020226c6f67223a207b0a20202020202020202276657273696f6e223a2022312e32222c0a20202020202020202263726561746f72223a207b0a202020202020202020202020226e616d65223a20226d69746d70726f7879222c0a20",
+      "suffix_hex": "20202020202020202020207d2c0a2020202020202020202020202020202022736572766572495041646472657373223a20223139382e35312e3130302e3330220a2020202020202020202020207d0a20202020202020205d0a202020207d0a7d",
+      "decoded_sha256": "5e070fbed4dbf55f5889c3a8a0aab54ff3439701c36f1bb0af7db03086467d50",
+      "decoded_trailing_newline": false
+    },
+    ".zhar": {
+      "length": 773,
+      "sha256": "4a0a6cf053fd289d6fe9a155394418eacefbf6e2db2b33869e6857596683ed3d",
+      "prefix_hex": "78daed585d6fda30147de7574448ebcb209f542da0689ad6874e9a5454b269d2d407e3dc42b4c40eb643c92afefbec044a69931056b2f1309407621fdbc7c7f7fa1ee5b1a5c95f3ba4d3f6407bcc5eb28605301e50221bdb966eb73bdb1ecc00",
+      "suffix_hex": "c525fbd23ef5ebd827a796fdc008cf32efb12afebe21ad382fb726f2988864af962bf906921f140ff74280f8fb3052280816b00ff680822da35a2270600b609f471f7d5fc54afe1de8523fb7743989ee98bb67ba8de4dcf7ad5aabdf753d84d0",
+      "decoded_sha256": "5e070fbed4dbf55f5889c3a8a0aab54ff3439701c36f1bb0af7db03086467d50",
+      "decoded_trailing_newline": false
+    }
+  }
+}
