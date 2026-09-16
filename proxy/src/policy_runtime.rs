@@ -18,8 +18,8 @@ pub(crate) fn load(
     writer: &Writer,
 ) -> Result<Policy, Error> {
     let result = match previous {
-        Some(policy) => policy.reload_baseline_at(path, registry, policy::current_time_ms()),
-        None => Policy::load_baseline_at(path, registry, policy::current_time_ms()),
+        Some(policy) => policy.reload_baseline_at(path, registry, policy::current_time_ms(), true),
+        None => Policy::load_baseline_at(path, registry, policy::current_time_ms(), true),
     };
     let mut policy = result.map_err(|failure| {
         if writer.emit(rejected(&failure)).is_err() {

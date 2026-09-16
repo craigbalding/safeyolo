@@ -3,7 +3,7 @@ use super::*;
 use serde_json::json;
 
 fn error(path: &Path, stage: PolicyLoadStage) -> PolicyLoadError {
-    let error = Policy::load_baseline_at(path, None, 0.0).unwrap_err();
+    let error = Policy::load_baseline_at(path, None, 0.0, false).unwrap_err();
     assert_eq!(
         error.stage,
         stage,
@@ -60,7 +60,7 @@ fn owned_file_decode_document_and_null_failures_keep_distinct_phases() {
         let path = root.path().join(filename);
         std::fs::write(&path, contents).unwrap();
         assert_eq!(
-            Policy::load_baseline_at(&path, None, 0.0)
+            Policy::load_baseline_at(&path, None, 0.0, false)
                 .unwrap()
                 .baseline_permissions_count(),
             Some(0)
@@ -93,7 +93,7 @@ fn baseline_processing_read_errors_and_addon_defaults_are_not_file_decode_errors
     // Malformed sibling decoding remains ignored by the original public loader.
     std::fs::write(&addons, "[invalid").unwrap();
     assert_eq!(
-        Policy::load_baseline_at(&path, None, 0.0)
+        Policy::load_baseline_at(&path, None, 0.0, false)
             .unwrap()
             .baseline_permissions_count(),
         Some(0)
@@ -122,7 +122,7 @@ fn typed_reload_retains_counter_and_task_owners_only_on_success() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("policy.json");
     std::fs::write(&path, r#"{"hosts":{"owned.invalid":{"rate_limit":10}}}"#).unwrap();
-    let previous = Policy::load_baseline_at(&path, None, 0.0)
+    let previous = Policy::load_baseline_at(&path, None, 0.0, false)
         .unwrap()
         .with_task_source("permissions: []", Format::Yaml)
         .unwrap();
@@ -140,12 +140,16 @@ fn typed_reload_retains_counter_and_task_owners_only_on_success() {
     let budgets = previous.budgets.lock().unwrap().clone();
     assert!(!budgets.is_empty());
     std::fs::write(&path, r#"{"permissions":42}"#).unwrap();
-    let failed = previous.reload_baseline_at(&path, None, 0.0).unwrap_err();
+    let failed = previous
+        .reload_baseline_at(&path, None, 0.0, false)
+        .unwrap_err();
     assert_eq!(failed.stage, PolicyLoadStage::Prepare);
     assert_eq!(previous.baseline_permissions_count(), Some(1));
     assert_eq!(*previous.budgets.lock().unwrap(), budgets);
     std::fs::write(&path, r#"{"hosts":{"new.invalid":{"egress":"allow"}}}"#).unwrap();
-    let accepted = previous.reload_baseline_at(&path, None, 0.0).unwrap();
+    let accepted = previous
+        .reload_baseline_at(&path, None, 0.0, false)
+        .unwrap();
     assert_eq!(accepted.baseline_permissions_count(), Some(0));
     assert!(Arc::ptr_eq(&accepted.budgets, &previous.budgets));
     assert!(Arc::ptr_eq(&accepted.evaluations, &previous.evaluations));
@@ -155,6 +159,58 @@ fn typed_reload_retains_counter_and_task_owners_only_on_success() {
     ));
     assert_eq!(*accepted.budgets.lock().unwrap(), budgets);
     assert_eq!(previous.baseline_permissions_count(), Some(1));
+}
+
+#[test]
+fn expiry_persistence_is_runtime_only_and_toml_only() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("policy.toml");
+    let source = "# retained heading\n[hosts]\n'expired.invalid'={egress='deny', expires=2001-01-01T00:00:00Z}\n'future.invalid'={egress='allow', expires=3000-01-01T00:00:00Z}\n";
+    std::fs::write(&path, source).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    let now = 1_800_000_000_000.0;
+    let pure = Policy::from_path_at(&path, now).unwrap();
+    let reloaded = pure.reload_from_path_at(&path, now).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    let unchanged = std::fs::metadata(&path).unwrap();
+    assert_eq!(unchanged.ino(), metadata.ino());
+    assert_eq!(unchanged.modified().unwrap(), metadata.modified().unwrap());
+    assert_eq!(unchanged.permissions().mode() & 0o777, 0o644);
+
+    let runtime = Policy::load_baseline_at(&path, None, now, true).unwrap();
+    assert_eq!(runtime.baseline(), reloaded.baseline());
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.starts_with("# retained heading\n"));
+    assert!(!saved.contains("expired.invalid"));
+    assert!(saved.contains("future.invalid"));
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    for (name, source) in [
+        (
+            "policy.yaml",
+            "hosts: {expired.invalid: {egress: deny, expires: '2001-01-01T00:00:00Z'}}\n",
+        ),
+        (
+            "policy.json",
+            r#"{"hosts":{"expired.invalid":{"egress":"deny","expires":"2001-01-01T00:00:00Z"}}}"#,
+        ),
+    ] {
+        let path = root.path().join(name);
+        std::fs::write(&path, source).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let policy = Policy::load_baseline_at(&path, None, now, true).unwrap();
+        assert_eq!(policy.baseline_permissions_count(), Some(0));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+        let unchanged = std::fs::metadata(&path).unwrap();
+        assert_eq!(unchanged.ino(), metadata.ino());
+        assert_eq!(unchanged.modified().unwrap(), metadata.modified().unwrap());
+    }
 }
 
 #[test]
@@ -247,7 +303,7 @@ fn frozen_source_load_controls_match_counts_and_reached_failure_phases() {
         let event = &attempts[0]["event"];
         match stage {
             None => {
-                let loaded = Policy::load_baseline_at(&path, None, 0.0).unwrap();
+                let loaded = Policy::load_baseline_at(&path, None, 0.0, false).unwrap();
                 assert_eq!(row["return"], true, "{name}");
                 assert_eq!(event["event"], "ops.policy_reload", "{name}");
                 assert_eq!(
@@ -258,7 +314,7 @@ fn frozen_source_load_controls_match_counts_and_reached_failure_phases() {
             }
             Some(stage) => {
                 assert_eq!(
-                    Policy::load_baseline_at(&path, None, 0.0)
+                    Policy::load_baseline_at(&path, None, 0.0, false)
                         .unwrap_err()
                         .stage,
                     stage,

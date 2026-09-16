@@ -28,6 +28,7 @@ use serde_json::{Map, Value};
 mod baseline;
 mod budgets;
 pub(crate) mod circuit_settings;
+mod expiry;
 mod model_json;
 mod sensor_config;
 mod source;
@@ -511,19 +512,21 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
-        self.reload_baseline_at(path, registry, now_ms)
+        self.reload_baseline_at(path, registry, now_ms, false)
             .map_err(|error| error.error)
     }
 
-    /// The audit owner needs the reached failure phase while public loaders
-    /// continue to return their original policy error unchanged.
+    /// Runtime also persists expired TOML entries. Public file loaders remain
+    /// read-only and return their original policy error without phase metadata.
     pub(crate) fn reload_baseline_at(
         &self,
         path: &Path,
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
+        persist_expired_hosts: bool,
     ) -> std::result::Result<Self, PolicyLoadError> {
-        let mut replacement = Self::load_baseline_at(path, registry, now_ms)?;
+        let mut replacement =
+            Self::load_baseline_at(path, registry, now_ms, persist_expired_hosts)?;
         replacement.budgets = self.budgets.clone();
         replacement.evaluations = self.evaluations.clone();
         replacement.task = self.task.clone();
@@ -596,13 +599,16 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
     ) -> Result<Self> {
-        Self::load_baseline_at(path, registry, now_ms).map_err(|error| error.error)
+        Self::load_baseline_at(path, registry, now_ms, false).map_err(|error| error.error)
     }
 
+    /// Keep disk pruning at the reached source load phase. Only Runtime opts
+    /// into that write; candidate rejection later in the load does not undo it.
     pub(crate) fn load_baseline_at(
         path: &Path,
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
+        persist_expired_hosts: bool,
     ) -> std::result::Result<Self, PolicyLoadError> {
         let source = std::fs::read_to_string(path).map_err(|error| {
             load_error(
@@ -621,8 +627,14 @@ impl Policy {
         let mut parsed = parse_policy_document_staged(&source, format)?;
         // Production expires baseline entries before merging addon defaults or
         // opening list files, so an expired reference cannot require its file.
-        prune_parsed_document(&mut parsed, now_ms)
+        let expired = prune_parsed_document(&mut parsed, now_ms)
             .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
+        if persist_expired_hosts && matches!(format, Format::Toml) && !expired.is_empty() {
+            // Source persists the removed names before addon/list processing or
+            // validation. A later rejected candidate does not undo this write.
+            expiry::persist_expired_hosts(path, &expired)
+                .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
+        }
         // Existing loader merges sibling addons.yaml defaults before compilation.
         let addons = path.with_file_name("addons.yaml");
         if addons.exists() && addons != path {
@@ -1574,10 +1586,13 @@ impl Policy {
     }
 }
 
-fn prune_parsed_document(parsed: &mut ParsedPolicy, now_ms: f64) -> Result<()> {
-    prune_document(&mut parsed.document, now_ms)?;
+fn prune_parsed_document(
+    parsed: &mut ParsedPolicy,
+    now_ms: f64,
+) -> Result<Vec<(Option<String>, String)>> {
+    let expired = prune_document(&mut parsed.document, now_ms)?;
     parsed.timestamps.retain_document(&parsed.document);
-    Ok(())
+    Ok(expired)
 }
 
 fn merge_parsed_defaults(authored: ParsedPolicy, defaults: ParsedPolicy) -> Result<ParsedPolicy> {
@@ -1633,20 +1648,24 @@ fn merge_parsed_defaults(authored: ParsedPolicy, defaults: ParsedPolicy) -> Resu
     })
 }
 
-fn prune_document(document: &mut Map<String, Value>, now_ms: f64) -> Result<()> {
-    for (agent, host) in expired_host_entries(&Value::Object(document.clone()), now_ms)? {
+fn prune_document(
+    document: &mut Map<String, Value>,
+    now_ms: f64,
+) -> Result<Vec<(Option<String>, String)>> {
+    let expired = expired_host_entries(&Value::Object(document.clone()), now_ms)?;
+    for (agent, host) in &expired {
         let hosts = match agent {
             Some(agent) => document
                 .get_mut("agents")
-                .and_then(|agents| agents.get_mut(&agent))
+                .and_then(|agents| agents.get_mut(agent))
                 .and_then(|agent| agent.get_mut("hosts")),
             None => document.get_mut("hosts"),
         };
         if let Some(hosts) = hosts.and_then(Value::as_object_mut) {
-            hosts.shift_remove(&host);
+            hosts.shift_remove(host);
         }
     }
-    Ok(())
+    Ok(expired)
 }
 
 /// Existing lists are local files. URL-looking values are filenames too: the

@@ -1,0 +1,2356 @@
+{
+  "rows": [
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "mixed_toml_expiry_and_comments",
+        "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2026-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2026-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2026-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+        "steps": [
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2026-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2026-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2026-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "future.invalid",
+                "invalid.invalid",
+                "integer.invalid",
+                "date.invalid",
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "mixed expiry",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "future.invalid/*",
+                      "permanent.invalid/*"
+                    ]
+                  },
+                  {
+                    "action": "network:request",
+                    "effect": "deny",
+                    "resources": [
+                      "date.invalid/*",
+                      "integer.invalid/*",
+                      "invalid.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01}\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Host 'invalid.invalid' has unparseable expires value 'next tuesday' \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'integer.invalid' has expires of type int (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'date.invalid' has expires of type date (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            }
+          ],
+          "after_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01}\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "mixed expiry",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "future.invalid/*",
+                  "permanent.invalid/*"
+                ]
+              },
+              {
+                "action": "network:request",
+                "effect": "deny",
+                "resources": [
+                  "date.invalid/*",
+                  "integer.invalid/*",
+                  "invalid.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "no_expired_entry_no_write",
+        "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+        "steps": [
+          {
+            "operation": "load"
+          },
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "past.invalid",
+                "equal.invalid",
+                "naive.invalid",
+                "future.invalid",
+                "invalid.invalid",
+                "integer.invalid",
+                "date.invalid",
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "mixed expiry",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "deny",
+                    "resources": [
+                      "date.invalid/*",
+                      "equal.invalid/*",
+                      "integer.invalid/*",
+                      "invalid.invalid/*",
+                      "naive.invalid/*",
+                      "past.invalid/*"
+                    ]
+                  },
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "future.invalid/*",
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Host 'invalid.invalid' has unparseable expires value 'next tuesday' \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'integer.invalid' has expires of type int (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'date.invalid' has expires of type date (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            }
+          ],
+          "after_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "mixed expiry",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "deny",
+                "resources": [
+                  "date.invalid/*",
+                  "equal.invalid/*",
+                  "integer.invalid/*",
+                  "invalid.invalid/*",
+                  "naive.invalid/*",
+                  "past.invalid/*"
+                ]
+              },
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "future.invalid/*",
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "past.invalid",
+                "equal.invalid",
+                "naive.invalid",
+                "future.invalid",
+                "invalid.invalid",
+                "integer.invalid",
+                "date.invalid",
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "mixed expiry",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "deny",
+                    "resources": [
+                      "date.invalid/*",
+                      "equal.invalid/*",
+                      "integer.invalid/*",
+                      "invalid.invalid/*",
+                      "naive.invalid/*",
+                      "past.invalid/*"
+                    ]
+                  },
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "future.invalid/*",
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Host 'invalid.invalid' has unparseable expires value 'next tuesday' \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'integer.invalid' has expires of type int (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            },
+            {
+              "level": "WARNING",
+              "message": "Host 'date.invalid' has expires of type date (expected datetime or ISO string) \u2014 host will NOT expire until this is fixed"
+            }
+          ],
+          "after_disk": {
+            "text": "# Keep this heading.\ndescription = \"mixed expiry\"\n[hosts]\n\"past.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00Z }\n\"equal.invalid\" = { egress = \"deny\", expires = \"2027-01-02T00:00:00+00:00\" }\n\"naive.invalid\" = { egress = \"deny\", expires = 2027-01-01T00:00:00 }\n\"future.invalid\" = { egress = \"allow\", expires = 2027-01-01T00:00:00Z } # retain future\n\"invalid.invalid\" = { egress = \"deny\", expires = \"next tuesday\" }\n\"integer.invalid\" = { egress = \"deny\", expires = 42 }\n\"date.invalid\" = { egress = \"deny\", expires = 2020-01-01 }\n\"permanent.invalid\" = { egress = \"allow\" }\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "mixed expiry",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "deny",
+                "resources": [
+                  "date.invalid/*",
+                  "equal.invalid/*",
+                  "integer.invalid/*",
+                  "invalid.invalid/*",
+                  "naive.invalid/*",
+                  "past.invalid/*"
+                ]
+              },
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "future.invalid/*",
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "prune_precedes_compile_rejection",
+        "text": "description=\"accepted\"\n[hosts]\n\"accepted.invalid\"={egress=\"allow\"}\n",
+        "steps": [
+          {
+            "operation": "load"
+          },
+          {
+            "operation": "load",
+            "write": "budget = 10\n# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\"invalid-rate.invalid\" = { rate = 0 }\n",
+            "mtime_ns": 2000000000000
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "description=\"accepted\"\n[hosts]\n\"accepted.invalid\"={egress=\"allow\"}\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "accepted.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "accepted",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "accepted.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "description=\"accepted\"\n[hosts]\n\"accepted.invalid\"={egress=\"allow\"}\n",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "description=\"accepted\"\n[hosts]\n\"accepted.invalid\"={egress=\"allow\"}\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "accepted",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "accepted.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "budget = 10\n# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\"invalid-rate.invalid\" = { rate = 0 }\n",
+            "mode": "0o640",
+            "mtime_ns": 2000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid",
+                "invalid-rate.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_error"
+            },
+            {
+              "phase": "load_return",
+              "result": false
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_error",
+                "kind": "ops",
+                "severity": "high",
+                "summary": "Baseline policy load failed: policy host 'invalid-rate.invalid' rate must be a positive integer",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "error": "policy host 'invalid-rate.invalid' rate must be a positive integer"
+                }
+              },
+              "policy": {
+                "description": "accepted",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "accepted.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "budget = 10\n# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\"invalid-rate.invalid\" = { rate = 0 }\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            false
+          ],
+          "callbacks": 0,
+          "warnings": [
+            {
+              "level": "ERROR",
+              "message": "Failed to load baseline policy: ValueError: policy host 'invalid-rate.invalid' rate must be a positive integer"
+            }
+          ],
+          "after_disk": {
+            "text": "budget = 10\n# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\"invalid-rate.invalid\" = { rate = 0 }\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "accepted",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "accepted.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.yaml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "yaml_prunes_without_disk_write",
+        "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+        "steps": [
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": null,
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": null,
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.yaml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.json",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "json_prunes_without_disk_write",
+        "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+        "steps": [
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": null,
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "{\"hosts\": {\"expired.invalid\": {\"egress\": \"deny\", \"expires\": \"2026-01-02T00:00:00+00:00\"}, \"permanent.invalid\": {\"egress\": \"allow\"}}}",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": null,
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.json"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "top_level_only_agent_host_retained",
+        "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\n[agents.alice.hosts]\n\"agent-expired.invalid\" = { egress = \"allow\", expires = 2020-01-01T00:00:00Z, rate = 3 } # agent survives\n",
+        "steps": [
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\n[agents.alice.hosts]\n\"agent-expired.invalid\" = { egress = \"allow\", expires = 2020-01-01T00:00:00Z, rate = 3 } # agent survives\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {
+                "alice": [
+                  "agent-expired.invalid"
+                ]
+              }
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 1 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 1
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [
+                  {
+                    "action": "network:request",
+                    "resource": "agent-expired.invalid/*",
+                    "effect": "budget",
+                    "budget": 3,
+                    "tier": "explicit",
+                    "condition": {
+                      "agent": "alice"
+                    }
+                  }
+                ],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\n[agents.alice.hosts]\n\"agent-expired.invalid\" = { egress = \"allow\", expires = 2020-01-01T00:00:00Z, rate = 3 } # agent survives\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n\n[agents.alice.hosts]\n\"agent-expired.invalid\" = { egress = \"allow\", expires = 2020-01-01T00:00:00Z, rate = 3 } # agent survives\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [
+              {
+                "action": "network:request",
+                "resource": "agent-expired.invalid/*",
+                "effect": "budget",
+                "budget": 3,
+                "tier": "explicit",
+                "condition": {
+                  "agent": "alice"
+                }
+              }
+            ],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "configured_symlink_is_replaced",
+        "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+        "symlink": true,
+        "steps": [
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": true
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml",
+            "target.toml"
+          ],
+          "target_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          }
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "move_error_keeps_disk_and_accepts_pruned_memory",
+        "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+        "steps": [
+          {
+            "operation": "load",
+            "fault": "move"
+          },
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": true
+            },
+            {
+              "phase": "save_error",
+              "class": "OSError",
+              "committed": null
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Failed to prune expired hosts from TOML: [Errno 5] owned move failure"
+            }
+          ],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "directory_fsync_error_after_visible_replacement",
+        "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+        "steps": [
+          {
+            "operation": "load",
+            "fault": "directory_fsync"
+          },
+          {
+            "operation": "load"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": true
+            },
+            {
+              "phase": "save_error",
+              "class": "PolicySaveError",
+              "committed": true
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [
+            {
+              "level": "WARNING",
+              "message": "Failed to prune expired hosts from TOML: policy replacement is visible but directory fsync failed: [Errno 5] owned directory fsync failure"
+            }
+          ],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    },
+    {
+      "input": {
+        "filename": "policy.toml",
+        "mode": "0o640",
+        "mtime_ns": 1000000000000,
+        "now": "2026-01-02T00:00:00+00:00",
+        "name": "watcher_time_alone_does_not_prune",
+        "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+        "steps": [
+          {
+            "operation": "load",
+            "now": "2026-01-01T00:00:00+00:00"
+          },
+          {
+            "operation": "watch"
+          },
+          {
+            "operation": "watch",
+            "touch_ns": 2000000000000
+          },
+          {
+            "operation": "watch"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "operation": "load",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-01T00:00:00+00:00"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "expired.invalid",
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "deny",
+                    "resources": [
+                      "expired.invalid/*"
+                    ]
+                  },
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": 1000.0,
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o640",
+                "mtime_ns": 1000000000000,
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "deny",
+                "resources": [
+                  "expired.invalid/*"
+                ]
+              },
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "watch",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "timeline": [],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 1000000000000,
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "deny",
+                "resources": [
+                  "expired.invalid/*"
+                ]
+              },
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": 1000.0,
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "watch",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"expired.invalid\" = { egress = \"deny\", expires = 2026-01-02T00:00:00Z } # remove this line\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o640",
+            "mtime_ns": 2000000000000,
+            "is_symlink": false
+          },
+          "timeline": [
+            {
+              "phase": "load_enter"
+            },
+            {
+              "phase": "expiry_clock",
+              "now": "2026-01-02T00:00:00+00:00"
+            },
+            {
+              "phase": "save_enter"
+            },
+            {
+              "phase": "fsync",
+              "directory": false,
+              "injected_error": false
+            },
+            {
+              "phase": "move",
+              "injected_error": false
+            },
+            {
+              "phase": "fsync",
+              "directory": true,
+              "injected_error": false
+            },
+            {
+              "phase": "save_return"
+            },
+            {
+              "phase": "compile",
+              "hosts": [
+                "permanent.invalid"
+              ],
+              "agent_hosts": {}
+            },
+            {
+              "phase": "validate"
+            },
+            {
+              "phase": "audit",
+              "event": "ops.policy_reload"
+            },
+            {
+              "phase": "callback"
+            },
+            {
+              "phase": "load_return",
+              "result": true
+            }
+          ],
+          "events": [
+            {
+              "event": {
+                "schema_version": 1,
+                "ts": "<canonical timestamp>",
+                "event": "ops.policy_reload",
+                "kind": "ops",
+                "severity": "medium",
+                "summary": "Baseline policy reloaded: 0 permissions",
+                "addon": "policy-loader",
+                "details": {
+                  "policy_type": "baseline",
+                  "permissions_count": 0
+                }
+              },
+              "policy": {
+                "description": "expiry fixture",
+                "permissions": [],
+                "simple": [
+                  {
+                    "action": "network:request",
+                    "effect": "allow",
+                    "resources": [
+                      "permanent.invalid/*"
+                    ]
+                  }
+                ],
+                "watermarks": {
+                  "baseline": "<save 1 mtime>",
+                  "addons": 0,
+                  "lists": 0.0
+                }
+              },
+              "disk": {
+                "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+                "mode": "0o600",
+                "mtime_ns": "<save 1 mtime>",
+                "is_symlink": false
+              }
+            }
+          ],
+          "loads": [
+            true
+          ],
+          "callbacks": 1,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": true,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        },
+        {
+          "operation": "watch",
+          "before_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "timeline": [],
+          "events": [],
+          "loads": [],
+          "callbacks": 0,
+          "warnings": [],
+          "wait_seconds": 2.0,
+          "after_disk": {
+            "text": "# Keep the operator's leading comment.\ndescription = \"expiry fixture\"\n\n[hosts]\n\"permanent.invalid\" = { egress = \"allow\" } # retain this comment\n",
+            "mode": "0o600",
+            "mtime_ns": "<save 1 mtime>",
+            "is_symlink": false
+          },
+          "inode_replaced": false,
+          "policy": {
+            "description": "expiry fixture",
+            "permissions": [],
+            "simple": [
+              {
+                "action": "network:request",
+                "effect": "allow",
+                "resources": [
+                  "permanent.invalid/*"
+                ]
+              }
+            ],
+            "watermarks": {
+              "baseline": "<save 1 mtime>",
+              "addons": 0,
+              "lists": 0.0
+            }
+          },
+          "remaining_files": [
+            "policy.toml"
+          ]
+        }
+      ],
+      "actual_thread_started": false
+    }
+  ],
+  "source_sha256": {
+    "cli/src/safeyolo/policy/loader.py": "74f7da6c9c80c0b6e0cd1780a4d40e8c8e2e3ed81d4371da6cd8e9570c59ace4",
+    "cli/src/safeyolo/policy/toml_roundtrip.py": "4f0c5df6189751e0f486283043c0da91d8fe99dda2b84a2354aba6b9bc0c563e",
+    "cli/src/safeyolo/policy/toml_normalize.py": "24511e6669a6a96414ca40236c225b6038f21da6538becc0280b9c922567968d",
+    "cli/src/safeyolo/policy/compiler.py": "56ce5b6a203fed9b43152c94695184f85ca334aab4507f22d84df1c8f9f3d77e",
+    "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
+  }
+}

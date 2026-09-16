@@ -424,13 +424,16 @@ impl Drop for TemporaryPolicy {
     }
 }
 
-struct SaveError {
-    error: std::io::Error,
+pub(crate) struct SaveError {
+    pub(crate) error: std::io::Error,
     committed: bool,
 }
 
-fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let temporary =
         TemporaryPolicy(parent.join(format!(".policy-{}.toml", uuid::Uuid::new_v4().simple())));
     let mut committed = false;

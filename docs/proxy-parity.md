@@ -544,8 +544,12 @@ Replacing an ID retains the registry count; an invalid update retains the prior
 document. Restart starts a new empty registry. Validation reuses the canonical
 loader's schema helpers without its matcher, host expansion or token issuance.
 Schema-valid budgets or regex strings can therefore register even when native
-activation remains unsupported. HTTP task activation and standalone PDP deletion
-are still separate work.
+activation remains unsupported. Source task-file activation is a loader/engine
+library method; the inspected CLI, proxy configuration and operator API have no
+caller for it. The source standalone PDP can select a registered task through
+an explicit evaluation context, which is a separate path from file activation.
+That standalone-PDP path and its deletion remain unintegrated. Native does not
+add a task-file option or turn registration into activation.
 
 Operator replies use Python's indented JSON presentation and the shared scalar
 formatter. GET borrows the stored document into one sized, zeroizing response
@@ -636,7 +640,8 @@ local containment response; they are not renamed to Python exceptions. Python
 can represent surrogate-escaped paths that the native report cannot encode.
 The generic `NoEngine` development state still cannot distinguish a corrupted
 local client from a remote client, whose source status results differ.
-This provider distinction and task activation remain unimplemented.
+This provider distinction and source library task-file activation remain
+unimplemented in the native process.
 
 Owner validation on Linux aarch64 passed 268 selected Rust tests across 20
 targets, including the live source oracles, plus 15 compile-fail documentation
@@ -831,8 +836,8 @@ An initialized policy with no baseline returns empty fields and the hash of empt
 bytes; an explicitly loaded empty baseline includes model defaults in its hash.
 Unavailable policy returns 503. Remote policy-client cache TTL, fallback and
 previously populated cache behavior remain unintegrated. D45 records the source
-task-clear cache defect and the native snapshot-level behavior. HTTP task
-management and sensor activation remain separate integration work.
+task-clear cache defect and the native snapshot-level behavior. Operator task
+registration is implemented separately; it does not activate sensor rules.
 
 The [hash fixtures](../proxy/src/policy/model_json/tests.rs) retain 30 actual
 source cases: 23 match native model bytes and hashes, while seven expose existing
@@ -925,7 +930,8 @@ configuration reload retains its existing full-runtime construction path.
 
 The source watcher also attempts a configured task-policy file reload. The
 native process has no active task-policy file configuration; its existing task
-snapshot is retained. Task-file activation remains a separate migration gap.
+snapshot is retained. No shipped proxy caller of the source task-file activation
+method was found; the library capability is tracked separately from registration.
 The native process has no source watcher timeout-and-restart race because one
 control-loop owner completes each check before admitting another reload.
 
@@ -975,8 +981,9 @@ Python surrogateescape are not representable in the current native string
 provenance. Native parser/schema failures use explicit native error classes
 where the current frontend cannot establish the source exception class. Exact
 parser and operating-system message wording is not a parity claim. The installed
-builtin-path resolver and packaging, task-file activation, and HTTP
-selection/injection remain required migration work. Initial path resolution,
+builtin-path resolver and packaging, and HTTP selection/injection remain required
+migration work. Source task-file activation remains separately inventoried.
+Initial path resolution,
 including source symlink resolution before loading, remains separate from
 metadata checks on already configured directories.
 
@@ -1040,10 +1047,67 @@ migration acceptance.
 The observation is not a filesystem snapshot: a file can change between its
 content read and subsequent stat. Native preserves the reached observation
 phases without claiming the source's exact repeated-stat races or thread
-interleaving. Task-policy file activation, source watcher restart races and
-source TOML pruning on disk remain separate work. Time passing without a file
-change does not itself trigger host-expiry pruning. Native startup continues
-to reject an invalid initial configuration.
+interleaving. Task-file activation remains a separate library capability. Source
+watcher restart races remain outside this native control-loop comparison. Time
+passing without a file change does not itself trigger host-expiry pruning.
+Native startup continues to reject an invalid initial configuration.
+
+### Expired hosts in policy TOML
+
+Runtime baseline loads now remove expired host entries from a configured TOML
+file before addon merging, host-list expansion and policy compilation. This
+applies to startup, explicit reload and both automatic reload paths. The source
+performs the same early write for top-level hosts. D15 retains the native
+correction for expired agent-scoped hosts as well.
+
+The loader uses the names already removed from its parsed candidate. It rereads
+the TOML with a comment-preserving parser and removes only those names. It does
+not recompute expiry from that second read. An unchanged document is not written.
+The existing low-level policy writer creates a mode-0600 temporary file, syncs
+it, replaces the configured path and syncs the parent directory. A configured
+symlink is replaced; its former target is unchanged. Public `Policy` file
+constructors and reload methods remain read-only, and YAML/JSON loads do not
+write their source files.
+
+Read or save I/O failures report a diagnostic and allow the already-pruned
+candidate to continue, as the source does. This includes a directory-sync failure
+after replacement is visible. A second-read decoding or TOML parse failure
+rejects the candidate at the later processing-error boundary. A successful
+pruning write is not undone if later compilation or observation rejects the
+candidate: the old policy remains active while the disk edit remains visible.
+Successful observation captures the post-replacement timestamp, preventing an
+extra watcher reload for that write.
+
+This load-time cleanup uses the existing atomic file writer without the approval
+transaction's lock, activation callback or rollback. It is not a transaction
+across disk and Runtime. A concurrent edit between the first read and the pruning
+read can still lose a renewed entry with the same name; source has the same race.
+Native temporary-file ownership removes its temporary on an earlier write or
+rename failure. Source's `delete=False` temporary can remain if write, flush or
+file sync fails before its cleanup variable is assigned; that difference is a
+static control-flow observation.
+
+Native keeps atomic rename and does not reproduce `shutil.move`'s copy fallback
+after a source rename failure. Arbitrary changes to document shape between the
+two reads, directory replacement races and exact comment reattachment by two
+different TOML parsers remain outside the comparison.
+
+The [source oracle](../proxy/tests/policy_expiry_source.py) records ten workflows
+and 17 load/watch steps. The [native replay](../proxy/src/policy/watch/expiry_replay.rs)
+selects seven workflows and 12 steps, comparing reached loads, saved bytes,
+mode, symlink and inode replacement, modification-time relationships, accepted
+timestamps and selected policy fields. Six workflows compare exact source file
+bytes. In the mixed-expiry workflow, source removes one space after a retained
+date scalar; native preserves the authored line. The replay asserts that specific
+formatting difference and equality of every other saved byte. The agent-expiry
+row remains the D15 source witness; two source save-failure rows use disclosed move and directory-sync
+seams. Native [helper tests](../proxy/src/policy/expiry/tests.rs) separately
+exercise reached read/decode/parse errors and real rename-failure cleanup.
+The [Runtime workflow](../proxy/src/service_catalog_tests/policy_expiry.rs) checks
+startup, watcher, explicit and catalog loads, rejection/retry, HTTP/1 views and
+retained budgets. This is finite implementation evidence; source fault seams,
+bare-relative directory sync and arbitrary filesystem races are not a complete
+native equivalence claim.
 
 ### Baseline policy reload events
 
@@ -1087,8 +1151,9 @@ remaining source observations inform component and Runtime controls or retain
 explicit gaps; they are not an 18-case native parity claim. D65 keeps the source
 audit-failure outcomes alongside the native correction.
 
-The source loader also has task-policy activation and task-specific event
-behavior. Those producers remain separate migration work.
+The source loader also has task-file activation and task-specific event
+behavior. Those library producers remain separate from the implemented operator
+registration workflow; no shipped proxy activation caller was found.
 Source/native stat-error phase differences and existing YAML/TOML/JSON
 representation limits remain explicit gaps; these events do not close them.
 
