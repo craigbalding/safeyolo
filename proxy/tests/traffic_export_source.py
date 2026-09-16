@@ -647,6 +647,60 @@ WORKFLOWS = [
         },
     ),
     workflow(
+        "charset_big5_valid",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/big5-valid",
+            "headers": [["Content-Type", "text/plain; charset=big5"]],
+            "body": {"hex": "a440"},
+        },
+    ),
+    workflow(
+        "charset_big5_python_table",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/big5-table",
+            "headers": [["Content-Type", "text/plain; charset=big5"]],
+            "body": {"hex": "a145a14ec6a1c7e9"},
+        },
+    ),
+    workflow(
+        "charset_big5_big5_tw_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/big5-tw",
+            "headers": [["Content-Type", "text/plain; charset=big5_tw"]],
+            "body": {"hex": "a440"},
+        },
+    ),
+    workflow(
+        "charset_big5_csbig5_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/csbig5",
+            "headers": [["Content-Type", "text/plain; charset=csbig5"]],
+            "body": {"hex": "a440"},
+        },
+    ),
+    workflow(
+        "charset_big5_x_mac_trad_chinese_alias",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/x-mac-trad-chinese",
+            "headers": [["Content-Type", "text/plain; charset=x_mac_trad_chinese"]],
+            "body": {"hex": "a440"},
+        },
+    ),
+    workflow(
+        "charset_big5_malformed_after_valid_prefix",
+        {
+            "method": "POST",
+            "url": "http://source.fixture.invalid/big5-malformed",
+            "headers": [["Content-Type", "text/plain; charset=big5"]],
+            "body": {"hex": "a4408140"},
+        },
+    ),
+    workflow(
         "charset_known_hex_codec_unimplemented",
         {
             "method": "POST",
@@ -1117,6 +1171,33 @@ def assert_text_decoding_controls(rows):
         assert bytes_value(rows, name, "raw_request").endswith(b"codec-category")
     assert_error(rows, "charset_known_big5_unimplemented", "curl", "CommandError")
     assert_error(rows, "charset_known_big5_unimplemented", "httpie", "CommandError")
+    for name, path, header in (
+        ("charset_big5_valid", "big5-valid", "big5"),
+        ("charset_big5_big5_tw_alias", "big5-tw", "big5_tw"),
+        ("charset_big5_csbig5_alias", "csbig5", "csbig5"),
+        (
+            "charset_big5_x_mac_trad_chinese_alias",
+            "x-mac-trad-chinese",
+            "x_mac_trad_chinese",
+        ),
+    ):
+        assert text_value(rows, name, "curl") == (
+            f"curl -H 'Content-Type: text/plain; charset={header}' -X POST "
+            f"http://source.fixture.invalid/{path} -d '\u4e00'"
+        )
+        assert text_value(rows, name, "httpie") == (
+            f"http POST http://source.fixture.invalid/{path} "
+            f"'Content-Type: text/plain; charset={header}' <<< '\u4e00'"
+        )
+    assert text_value(rows, "charset_big5_python_table", "curl") == (
+        "curl -H 'Content-Type: text/plain; charset=big5' -X POST "
+        "http://source.fixture.invalid/big5-table -d '\u2022\uff64\u30fe\u2460'"
+    )
+    assert_error(rows, "charset_big5_malformed_after_valid_prefix", "curl", "CommandError")
+    assert_error(rows, "charset_big5_malformed_after_valid_prefix", "httpie", "CommandError")
+    assert bytes_value(rows, "charset_big5_malformed_after_valid_prefix", "raw_request").endswith(
+        b"\r\n\xa4@\x81@"
+    )
     assert_error(rows, "charset_known_hex_codec_unimplemented", "curl", "CommandError")
     assert_error(rows, "charset_known_hex_codec_unimplemented", "httpie", "CommandError")
     assert_error(rows, "charset_known_rot13_unimplemented", "curl", "TypeError")
@@ -1273,8 +1354,8 @@ REPRESENTATION_DIFFERENCES = [
     {
         "name": "declared_character_codecs",
         "source": "get_text dispatches declared labels through Python's strict codecs registry; gbk and gb2312 are first mapped to gb18030 by the installed source",
-        "native": "encoding_rs-backed native decoding uses Python-derived byte tables for the admitted single-byte families, complete one/two-byte validity and mapping corrections for Shift_JIS/CP932/EUC-JP/GBK/GB2312, and source-version GB18030 pair/four-byte corrections; known Python labels remain explicit and unknown labels are decode failures",
-        "remaining_gaps": "The compared domains are all 256 single-byte inputs for 27 admitted families, all structurally valid one/two-byte inputs for Shift_JIS, CP932, EUC-JP, GBK, and GB2312, and all 1,587,600 structural GB18030 four-byte sequences; exact CPython codecs outside the compared families still need a Rust table backend, including big5, euc-kr, iso-8859-9, iso-8859-11, ISO-2022 variants, HZ, the CP437/720/737/850/852/855/857/858/860/861/862/863/864/865/869 DOS families, EBCDIC code pages, JOHAB, and Unicode escape codecs",
+        "native": "encoding_rs-backed native decoding uses Python-derived byte tables for the admitted single-byte families, complete one/two-byte validity and mapping corrections for Shift_JIS/CP932/EUC-JP/GBK/GB2312/Big5, and source-version GB18030 pair/four-byte corrections; known Python labels remain explicit and unknown labels are decode failures",
+        "remaining_gaps": "The compared domains are all 256 single-byte inputs for 27 admitted families, all 256 single-byte and 65,536 two-byte inputs for Big5, all structurally valid one/two-byte inputs for Shift_JIS, CP932, EUC-JP, GBK, and GB2312, and all 1,587,600 structural GB18030 four-byte sequences; exact CPython codecs outside the compared families still need a Rust table backend, including euc-kr, iso-8859-9, iso-8859-11, ISO-2022 variants, HZ, the CP437/720/737/850/852/855/857/858/860/861/862/863/864/865/869 DOS families, EBCDIC code pages, JOHAB, and Unicode escape codecs",
     },
 ]
 

@@ -549,9 +549,16 @@ fn expected_fixture_error(name: &str, format: ExportFormat) -> Option<ExportErro
                 return None;
             }
         }
-        "charset_known_big5_unimplemented"
-        | "charset_known_hex_codec_unimplemented"
-        | "charset_known_rot13_unimplemented" => {
+        "charset_known_big5_unimplemented" | "charset_big5_malformed_after_valid_prefix" => {
+            if raw_response {
+                ExportError::MissingResponse
+            } else if matches!(format, ExportFormat::Curl | ExportFormat::Httpie) {
+                ExportError::Decode
+            } else {
+                return None;
+            }
+        }
+        "charset_known_hex_codec_unimplemented" | "charset_known_rot13_unimplemented" => {
             if raw_response {
                 ExportError::MissingResponse
             } else if matches!(format, ExportFormat::Curl | ExportFormat::Httpie) {
@@ -569,7 +576,7 @@ fn native_export_replays_frozen_source_schema4_observations() {
     let fixture: Value =
         serde_json::from_str(include_str!("../../../tests/traffic_export_source.json")).unwrap();
     assert_eq!(fixture["schema"], 4);
-    assert_eq!(fixture["rows"].as_array().unwrap().len(), 72);
+    assert_eq!(fixture["rows"].as_array().unwrap().len(), 78);
     let formats = [
         ("curl", ExportFormat::Curl),
         ("httpie", ExportFormat::Httpie),
@@ -614,7 +621,7 @@ fn native_export_replays_frozen_source_schema4_observations() {
             compared += 1;
         }
     }
-    assert_eq!(compared, 359);
+    assert_eq!(compared, 389);
     assert_eq!(excluded, 1);
 }
 
@@ -952,6 +959,41 @@ fn selected_export_supports_python_legacy_codec_aliases_strictly() {
             "http POST http://owned.invalid/cp1252 'Content-Type: text/plain; charset=cp1252' <<< '€ÿ'",
         ),
         (
+            "big5",
+            "text/plain; charset=big5",
+            &[0xa4, 0x40][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=big5' -X POST http://owned.invalid/big5 -d '一'",
+        ),
+        (
+            "big5-table",
+            "text/plain; charset=big5",
+            &[0xa1, 0x45, 0xa1, 0x4e, 0xc6, 0xa1, 0xc7, 0xe9][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=big5' -X POST http://owned.invalid/big5-table -d '•､ヾ①'",
+        ),
+        (
+            "big5-tw",
+            "text/plain; charset=big5_tw",
+            &[0xa4, 0x40][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/big5-tw 'Content-Type: text/plain; charset=big5_tw' <<< '一'",
+        ),
+        (
+            "csbig5",
+            "text/plain; charset=csbig5",
+            &[0xa4, 0x40][..],
+            ExportFormat::Curl,
+            "curl -H 'Content-Type: text/plain; charset=csbig5' -X POST http://owned.invalid/csbig5 -d '一'",
+        ),
+        (
+            "x-mac-trad-chinese",
+            "text/plain; charset=x_mac_trad_chinese",
+            &[0xa4, 0x40][..],
+            ExportFormat::Httpie,
+            "http POST http://owned.invalid/x-mac-trad-chinese 'Content-Type: text/plain; charset=x_mac_trad_chinese' <<< '一'",
+        ),
+        (
             "shift-jis",
             "text/plain; charset=shift_jis",
             &[0x93, 0xfa, 0x96, 0x7b][..],
@@ -1048,6 +1090,28 @@ fn selected_export_supports_python_legacy_codec_aliases_strictly() {
             .ends_with(b"\r\n\x82")
     );
 
+    let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
+    let exchange = view.begin(RequestInfo {
+        id: "big5-malformed".into(),
+        connection_id: "connection".into(),
+        agent: None,
+        method: "POST".into(),
+        url: "http://owned.invalid/big5-malformed".into(),
+        headers: vec![("Content-Type".into(), "text/plain; charset=big5".into())],
+        started: 1.,
+    });
+    exchange.request_line("HTTP/1.1", "/big5-malformed");
+    exchange.request_body(Some(&[0xa4, 0x40, 0x81, 0x40]));
+    assert!(matches!(
+        view.export("big5-malformed", ExportFormat::Curl),
+        Err(ExportError::Decode)
+    ));
+    assert!(
+        fixture_export_bytes(&view, "big5-malformed", ExportFormat::RawRequest)
+            .unwrap()
+            .ends_with(b"\r\n\xa4@\x81@")
+    );
+
     for (id, content_type, body) in [
         (
             "windows-1252-undefined",
@@ -1082,6 +1146,8 @@ fn selected_export_supports_python_legacy_codec_aliases_strictly() {
     for (id, content_type) in [
         ("whatwg-euc-kr", "text/plain; charset=euc-kr"),
         ("whatwg-iso8859-9", "text/plain; charset=iso-8859-9"),
+        ("python-known-big5-hkscs", "text/plain; charset=big5-hkscs"),
+        ("python-known-cp950", "text/plain; charset=cp950"),
     ] {
         let view = Arc::new(TrafficView::new(5000, 1024 * 1024));
         let exchange = view.begin(RequestInfo {
@@ -1132,7 +1198,6 @@ fn selected_export_supports_python_legacy_codec_aliases_strictly() {
             "cp437",
             ExportError::Unsupported,
         ),
-        ("python-known-big5", "big5", ExportError::Unsupported),
         (
             "python-known-hex-codec",
             "hex_codec",

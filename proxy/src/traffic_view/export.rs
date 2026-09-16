@@ -8,7 +8,7 @@ use std::{fmt::Write as _, sync::Arc};
 use encoding_rs::{DecoderResult, Encoding};
 use zeroize::{Zeroize, Zeroizing};
 
-use super::codec_tables::python_codec_is_registered;
+use super::codec_tables::{big5_correction, python_codec_is_registered};
 use super::{Body, Row};
 
 const EXPORT_CHUNK: usize = 16 * 1024;
@@ -606,7 +606,10 @@ fn request_content_for_console(
     Ok(output)
 }
 
-fn decode_text(body: &[u8], content_type: Option<&str>) -> Result<Zeroizing<String>, ExportError> {
+pub(super) fn decode_text(
+    body: &[u8],
+    content_type: Option<&str>,
+) -> Result<Zeroizing<String>, ExportError> {
     let encoding = infer_text_encoding(content_type, body);
     let source_gb18030 =
         encoding.eq_ignore_ascii_case("gbk") || encoding.eq_ignore_ascii_case("gb2312");
@@ -717,14 +720,16 @@ fn decode_legacy_text(
     if matches!(label, "936" | "cp936" | "ms936") {
         return decode_python_gbk(body);
     }
+    if matches!(label, "big5" | "big5-tw" | "csbig5" | "x-mac-trad-chinese") {
+        return decode_python_big5(body);
+    }
     // These labels are accepted by encoding_rs through WHATWG aliases whose
     // tables are known to differ from CPython's codecs (or are not CPython
     // labels at all). Returning unavailable is safer than silently changing
     // the captured body text.
     if matches!(
         label,
-        "big5"
-            | "big5-hkscs"
+        "big5-hkscs"
             | "euc-kr"
             | "hz-gb-2312"
             | "iso-2022-jp"
@@ -878,6 +883,57 @@ fn decode_python_gbk(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
     }
     let encoding = Encoding::for_label_no_replacement(b"gbk").ok_or(ExportError::Unsupported)?;
     decode_with_encoding(encoding, body)
+}
+
+fn decode_python_big5(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
+    let encoding = Encoding::for_label_no_replacement(b"big5").ok_or(ExportError::Unsupported)?;
+    let mut decoded = Zeroizing::new(String::new());
+    decoded
+        .try_reserve(
+            encoding
+                .new_decoder_without_bom_handling()
+                .max_utf8_buffer_length_without_replacement(body.len())
+                .ok_or(ExportError::Allocation)?,
+        )
+        .map_err(|_| ExportError::Allocation)?;
+    let mut offset = 0;
+    while offset < body.len() {
+        let byte = body[offset];
+        if byte <= 0x7f {
+            decoded.push(byte as char);
+            offset += 1;
+            continue;
+        }
+        let trail = *body.get(offset + 1).ok_or(ExportError::Decode)?;
+        if !big5_pair_is_defined(byte, trail) {
+            return Err(ExportError::Decode);
+        }
+        let character = big5_correction(byte, trail);
+        if let Some(character) = character {
+            decoded.push(character);
+        } else {
+            let segment = decode_with_encoding(encoding, &body[offset..offset + 2])?;
+            decoded.push_str(&segment);
+        }
+        offset += 2;
+    }
+    Ok(decoded)
+}
+
+fn big5_pair_is_defined(lead: u8, trail: u8) -> bool {
+    if !(0xa1..=0xf9).contains(&lead) || lead == 0xc8 {
+        return false;
+    }
+    if (0x40..=0x7e).contains(&trail) {
+        return true;
+    }
+    let last = match lead {
+        0xa3 => 0xbf,
+        0xc7 => 0xfc,
+        0xf9 => 0xd5,
+        _ => 0xfe,
+    };
+    (0xa1..=last).contains(&trail)
 }
 
 fn decode_python_gb2312(body: &[u8]) -> Result<Zeroizing<String>, ExportError> {
@@ -1520,4 +1576,40 @@ fn command_url(url: &str) -> Zeroizing<String> {
         &authority[..authority.len() - port.len()],
         path
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selected_export_big5_pair_domain_accepts_every_source_defined_pair() {
+        let encoding = Encoding::for_label_no_replacement(b"big5").unwrap();
+        let mut defined = 0;
+        let mut source_sequences = 0;
+        let mut corrected = 0;
+        for first in u8::MIN..=u8::MAX {
+            for second in u8::MIN..=u8::MAX {
+                if first <= 0x7f {
+                    if second <= 0x7f {
+                        source_sequences += 1;
+                    }
+                    continue;
+                }
+                if !big5_pair_is_defined(first, second) {
+                    continue;
+                }
+                source_sequences += 1;
+                defined += 1;
+                if big5_correction(first, second).is_some() {
+                    corrected += 1;
+                } else {
+                    assert!(decode_with_encoding(encoding, &[first, second]).is_ok());
+                }
+            }
+        }
+        assert_eq!(defined, 13_710);
+        assert_eq!(source_sequences, 30_094);
+        assert_eq!(corrected, 260);
+    }
 }
