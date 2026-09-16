@@ -1,9 +1,10 @@
-//! Inactive HTTP credential guard over the shared policy and Python-regex adapter.
+//! Native HTTP credential guard over the shared policy and Python-regex adapter.
 //!
 //! The caller supplies already reconciled identity and mitmproxy-equivalent ordered,
 //! combined header strings, after service injection. No secret header or match is
 //! retained in outcomes, errors, traces or audit intents. Raw-header decoding and
-//! the existing regex compatibility gaps remain activation prerequisites.
+//! The HTTP caller must adapt parser-owned bytes through `credential_text` and
+//! contain an unsupported encoding before releasing application bytes.
 //!
 //! The historical PDP evaluates credential policy then NETWORK for every allowed
 //! credential, with no agent context. That additional charge is intentional source
@@ -35,6 +36,7 @@ use zeroize::Zeroizing;
 pub enum Error {
     InvalidConfig,
     InvalidEvent,
+    InvalidHeaderEncoding,
     RegexCompatibility,
     RegexRuntime,
     EntropyRuntime,
@@ -45,6 +47,7 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::InvalidConfig => "invalid credential detection configuration",
             Self::InvalidEvent => "invalid credential policy event",
+            Self::InvalidHeaderEncoding => "security header text encoding is unsupported",
             Self::RegexCompatibility => "credential pattern requires Python regex compatibility",
             Self::RegexRuntime => "credential pattern evaluation failed",
             Self::EntropyRuntime => "credential entropy evaluation failed",
@@ -139,6 +142,49 @@ pub struct AuditIntent {
     pub request_id: Option<String>,
     pub approval: Option<ApprovalIntent>,
     pub details: Value,
+}
+
+impl AuditIntent {
+    /// Convert one guard intent at its source hook.  Attribution is supplied
+    /// by the trusted transport owner; no HTTP header or secret value is used
+    /// to construct the canonical event.
+    pub fn event(&self, attribution: crate::audit::Attribution) -> crate::audit::Event {
+        let mut event = crate::audit::Event::new(
+            self.event,
+            crate::audit::Kind::Security,
+            match self.severity {
+                Severity::Low => crate::audit::Severity::Low,
+                Severity::Medium => crate::audit::Severity::Medium,
+                Severity::High => crate::audit::Severity::High,
+                Severity::Critical => crate::audit::Severity::Critical,
+            },
+            &self.summary,
+        );
+        event.addon = Some(self.addon.into());
+        event.decision = Some(match self.decision {
+            AuditDecision::Allow => crate::audit::Decision::Allow,
+            AuditDecision::Deny => crate::audit::Decision::Deny,
+            AuditDecision::Warn => crate::audit::Decision::Warn,
+            AuditDecision::RequireApproval => crate::audit::Decision::RequireApproval,
+            AuditDecision::BudgetExceeded => crate::audit::Decision::BudgetExceeded,
+        });
+        event.host = Some(self.host.clone());
+        event.agent = self.agent.clone();
+        event.request_id = self.request_id.clone();
+        event.attribution = Some(attribution);
+        event.approval = self
+            .approval
+            .as_ref()
+            .map(|approval| crate::audit::Approval {
+                required: approval.required,
+                approval_type: crate::audit::ApprovalType::Credential,
+                key: approval.key.clone(),
+                target: approval.target.clone(),
+                scope_hint: approval.scope_hint.clone().into(),
+            });
+        event.details = self.details.clone().into();
+        event
+    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TraceIntent {
@@ -303,6 +349,50 @@ impl CredentialGuard {
                 Ok(detection.finding)
             })
             .collect::<Result<Vec<_>>>()
+    }
+
+    /// Adapt parser-owned ordered/combined bytes and enforce one request in a
+    /// single guard call.  This is the forwarding integration seam: it never
+    /// consults the post-parser `HeaderMap`, so duplicate order and original
+    /// spelling remain the source view.  A conversion error is distinct from
+    /// no detection and must be contained by the caller before egress.
+    #[allow(clippy::too_many_arguments)]
+    pub fn enforce_ordered<'a, 'b>(
+        &self,
+        pdp: Pdp<'_>,
+        identity: Identity<'a>,
+        host: &'a str,
+        port: u16,
+        method: &'a str,
+        path: &'a str,
+        scheme: &'a str,
+        request_id: Option<&'a str>,
+        connection_id: &'a str,
+        prior_response: bool,
+        fields: impl IntoIterator<Item = (&'b [u8], &'b [u8])>,
+        options: Options,
+        now_ms: f64,
+    ) -> Result<Outcome> {
+        let adapted = crate::credential_text::Headers::from_ordered(fields)
+            .map_err(|_| Error::InvalidHeaderEncoding)?;
+        let headers = adapted.as_guard_headers();
+        self.enforce(
+            pdp,
+            Request {
+                identity,
+                host,
+                port,
+                method,
+                path,
+                scheme,
+                request_id,
+                connection_id,
+                prior_response,
+                headers: &headers,
+            },
+            options,
+            now_ms,
+        )
     }
     fn fingerprint(&self, value: &str) -> String {
         hmac::sign(&self.key, value.as_bytes()).as_ref()[..8]

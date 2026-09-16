@@ -16,6 +16,7 @@ mod connection_tasks;
 pub mod contracts;
 pub mod credential_guard;
 pub mod credential_injection;
+mod credential_text;
 pub mod credentials;
 mod flow_recorder;
 #[cfg(test)]
