@@ -197,6 +197,20 @@ def identity(
     return result
 
 
+def _write_failure_evidence(output: Path, backend: str, error: str) -> None:
+    """Leave an explicit artifact when a selected backend cannot be run."""
+    result = {
+        "schema": 1,
+        "backend": backend,
+        "status": "infrastructure_failure",
+        "error": error,
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--backend", choices=("python", "rust"), required=True)
@@ -213,7 +227,19 @@ def main(argv: list[str] | None = None) -> int:
             test_suite_root=args.test_suite_root,
         )
     except SelectionError as exc:
-        parser.error(str(exc))
+        try:
+            _write_failure_evidence(args.output, args.backend, str(exc))
+        except OSError as write_error:
+            print(
+                f"ERROR: {exc} (unable to record infrastructure evidence: {write_error})",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"ERROR: {exc}; infrastructure evidence: {args.output}",
+                file=sys.stderr,
+            )
+        return 2
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"backend": args.backend, "evidence": str(args.output)}))

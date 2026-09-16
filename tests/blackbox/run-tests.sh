@@ -190,13 +190,6 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
     if [ -n "$RUST_BIN" ]; then
         SELECTOR_ARGS+=(--rust-bin "$RUST_BIN")
     fi
-    for backend in "${SELECTED_BACKENDS[@]}"; do
-        evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
-        if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
-            "${SELECTOR_ARGS[@]}" --output "$evidence"; then
-            exit 2
-        fi
-    done
     if [ -n "$EXPECTED_PLATFORM" ]; then
         echo "ERROR: --expect-platform cannot be combined with the proxy-only backend selector" >&2
         exit 2
@@ -220,8 +213,20 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
     fi
     selected_result=0
     for backend in "${SELECTED_BACKENDS[@]}"; do
+        evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
         echo "=== Selected proxy backend: $backend ==="
         echo "  Runtime evidence: $ARTIFACTS_DIR/proxy-${backend}-runtime.json"
+        # Validate immediately before this backend's independent process run.
+        # A missing second backend must leave the first run's evidence intact
+        # and must not prevent the remaining selected backends from running.
+        if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
+            "${SELECTOR_ARGS[@]}" --output "$evidence"; then
+            echo "Infrastructure failure selecting proxy backend '$backend'; continuing" >&2
+            if [ "$selected_result" -eq 0 ]; then
+                selected_result=2
+            fi
+            continue
+        fi
         set +e
         pytest "${PYTEST_ARGS[@]}" \
             --junitxml="$ARTIFACTS_DIR/proxy-${backend}-junit.xml" \
@@ -229,7 +234,9 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
         backend_result=$?
         set -e
         if [ "$backend_result" -ne 0 ]; then
-            selected_result="$backend_result"
+            if [ "$selected_result" -eq 0 ]; then
+                selected_result=1
+            fi
         fi
     done
     exit "$selected_result"

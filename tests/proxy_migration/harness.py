@@ -17,6 +17,27 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
+def python_proxy_command():
+    """Launch the reviewed suite fixture by its file path.
+
+    The source checkout selected for the product packages belongs on
+    ``PYTHONPATH``.  The migration fixture itself belongs to this test suite,
+    so invoking it as a module would let a selected source checkout shadow it.
+    """
+    return [sys.executable, str(REPO / "tests/proxy_migration/old_proxy.py")]
+
+
+def python_proxy_environment(*, python_source=None):
+    """Build the import path for a selected Python product checkout."""
+    source_root = Path(python_source).expanduser().resolve() if python_source else REPO
+    return {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            [str(source_root / "cli/src"), str(source_root), str(REPO)]
+        ),
+    }
+
+
 def read_events(path):
     if not path.exists():
         return []
@@ -38,7 +59,13 @@ class RunningProxy:
 @contextmanager
 def child_process(command, directory, env):
     with (directory / "process.log").open("w") as log:
-        process = subprocess.Popen(command, env=env, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(
+            command,
+            cwd=directory,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
         try:
             yield process
         finally:
@@ -51,26 +78,50 @@ def child_process(command, directory, env):
                 raise AssertionError(f"Process did not shut down: {command}")
 
 
-def wait_ready(process, paths, log, *, readiness_file=None):
-    deadline = time.monotonic() + 15
+def _connectable_unix_socket(path, *, timeout=0.25):
+    """Return whether ``path`` is a real, accepting Unix stream socket."""
+    try:
+        if not path.is_socket():
+            return False
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(timeout)
+            client.connect(str(path))
+    except OSError:
+        return False
+    return True
+
+
+def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=None,
+               timeout=15, socket_timeout=0.25):
+    paths = [Path(path) for path in paths]
+    marker_path = Path(readiness_file) if readiness_file is not None else None
+    if marker_path is not None and expected_backend is None:
+        raise ValueError("expected_backend is required with a readiness marker")
+    socket_paths = [path for path in paths if path != marker_path]
+    deadline = time.monotonic() + timeout
     while True:
         if process.poll() is not None:
             raise AssertionError(f"Proxy process exited {process.returncode}:\n{log.read_text()}")
-        ready = all(path.exists() for path in paths)
-        if ready and readiness_file is not None:
+        ready = all(_connectable_unix_socket(path, timeout=socket_timeout) for path in socket_paths)
+        if ready and marker_path is not None:
             try:
-                marker = json.loads(readiness_file.read_text())
+                marker = json.loads(marker_path.read_text())
             except (FileNotFoundError, json.JSONDecodeError):
                 # The fixture may be replacing its marker; only a complete
                 # marker naming this child can establish startup completion.
                 ready = False
             else:
-                ready = isinstance(marker, dict) and marker.get("ready") is True and marker.get("pid") == process.pid
+                ready = (
+                    isinstance(marker, dict)
+                    and marker.get("ready") is True
+                    and marker.get("pid") == process.pid
+                    and (expected_backend is None or marker.get("backend") == expected_backend)
+                )
         if ready:
             return
         if time.monotonic() >= deadline:
             raise AssertionError(f"Readiness timed out: {paths}\n{log.read_text()}")
-        time.sleep(0.025)
+        time.sleep(min(0.025, max(0, deadline - time.monotonic())))
 
 
 @contextmanager
@@ -117,10 +168,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         # test modules from this checkout on the inherited path while making
         # the launched Python proxy import the caller-selected package.
         python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
-        source_root = Path(python_source).expanduser().resolve() if python_source else REPO
-        env = {**os.environ,
-               "PYTHONPATH": os.pathsep.join([str(source_root / "cli/src"), str(source_root), str(REPO)]),
-               "SAFEYOLO_LOG_PATH": str(directory / "audit.jsonl")}
+        env = python_proxy_environment(python_source=python_source)
+        env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         if agent_api:
             api_data = directory / "api-data"
             api_data.mkdir()
@@ -141,7 +190,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             config["fixture_agent_api"] = agent_api
-            command = [sys.executable, "-m", "tests.proxy_migration.old_proxy"]
+            command = python_proxy_command()
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
@@ -169,7 +218,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         config_path.write_text(json.dumps(config))
         process = stack.enter_context(child_process(command + ["--config", str(config_path)], directory, env))
         readiness = Path(config["readiness_file"])
-        wait_ready(process, [readiness, *map(Path, paths.values())], directory / "process.log", readiness_file=readiness)
+        wait_ready(
+            process,
+            [readiness, *map(Path, paths.values())],
+            directory / "process.log",
+            readiness_file=readiness,
+            expected_backend="python" if backend == "python" else "rust-m2",
+        )
         yield RunningProxy(paths, Path(config["event_log"]), process, readiness, bridge)
 
 

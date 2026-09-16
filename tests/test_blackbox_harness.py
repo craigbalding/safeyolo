@@ -1,11 +1,14 @@
 """Regression tests for blackbox harness isolation and backend selection."""
 
+import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
+from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
 
 
 def test_harness_assigns_distinct_proxy_admin_and_web_ports():
@@ -17,6 +20,42 @@ def test_harness_assigns_distinct_proxy_admin_and_web_ports():
     assert "config['proxy']['port'] = $TEST_PROXY_PORT" in harness
     assert "config['proxy']['admin_port'] = $TEST_ADMIN_PORT" in harness
     assert "config['proxy']['web_port'] = $TEST_WEB_PORT" in harness
+
+
+def test_python_proxy_cross_checkout_keeps_suite_fixture_and_selected_packages(tmp_path):
+    """A source checkout cannot shadow the suite fixture launched by the harness."""
+    selected = tmp_path / "selected-checkout"
+    safeyolo = selected / "cli" / "src" / "safeyolo"
+    pdp = selected / "pdp"
+    selected_old_proxy = selected / "tests" / "proxy_migration"
+    safeyolo.mkdir(parents=True)
+    pdp.mkdir(parents=True)
+    selected_old_proxy.mkdir(parents=True)
+    (safeyolo / "__init__.py").write_text("ORIGIN = 'selected-safeyolo'\n")
+    (pdp / "__init__.py").write_text("ORIGIN = 'selected-pdp'\n")
+    (selected_old_proxy / "__init__.py").write_text("")
+    (selected_old_proxy / "old_proxy.py").write_text("ORIGIN = 'selected-old-proxy'\n")
+
+    env = python_proxy_environment(python_source=selected)
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, safeyolo, pdp; print(json.dumps({'safeyolo': safeyolo.__file__, 'pdp': pdp.__file__}))",
+        ],
+        env=env,
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    origins = json.loads(probe.stdout)
+    assert str(selected / "cli" / "src") in origins["safeyolo"]
+    assert str(selected / "pdp") in origins["pdp"]
+
+    command = python_proxy_command()
+    assert Path(command[1]).resolve() == REPO / "tests" / "proxy_migration" / "old_proxy.py"
+    assert Path(command[1]).resolve() != selected_old_proxy / "old_proxy.py"
 
 
 def test_kvm_lane_prepares_operator_access_before_product_bootstrap():
@@ -139,3 +178,47 @@ def test_both_backend_runner_forwards_args_and_runs_second_after_failure(tmp_pat
     assert forwarded.count("--proxy-backend") == 2
     assert forwarded.count("rust") >= 1
     assert "Selected proxy backend: rust" in result.stdout
+
+
+def test_both_backend_runner_records_missing_rust_after_python_and_continues(tmp_path):
+    """Each backend is selected at its own run boundary."""
+    log = tmp_path / "pytest-args"
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$@\" >> \"$BLACKBOX_ARGS_LOG\"\n"
+        "exit 0\n"
+    )
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    artifacts = tmp_path / "artifacts"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "BLACKBOX_ARGS_LOG": str(log),
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
+    }
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "both",
+            "--rust-bin",
+            str(tmp_path / "missing-rust"),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    forwarded = log.read_text().splitlines()
+    assert forwarded.count("--proxy-backend") == 1
+    assert forwarded.count("python") == 1
+    assert "rust" not in forwarded
+    assert "Infrastructure failure selecting proxy backend 'rust'; continuing" in result.stderr
+    rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
+    assert rust_evidence["backend"] == "rust"
+    assert rust_evidence["status"] == "infrastructure_failure"
