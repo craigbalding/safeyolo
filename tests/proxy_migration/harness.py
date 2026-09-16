@@ -17,6 +17,10 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 
 
+class ReadinessError(AssertionError):
+    """A selected proxy could not establish its owned startup contract."""
+
+
 def python_proxy_command():
     """Launch the reviewed suite fixture by its file path.
 
@@ -101,7 +105,7 @@ def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=Non
     deadline = time.monotonic() + timeout
     while True:
         if process.poll() is not None:
-            raise AssertionError(f"Proxy process exited {process.returncode}:\n{log.read_text()}")
+            raise ReadinessError(f"Proxy process exited {process.returncode}:\n{log.read_text()}")
         ready = all(_connectable_unix_socket(path, timeout=socket_timeout) for path in socket_paths)
         if ready and marker_path is not None:
             try:
@@ -120,7 +124,7 @@ def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=Non
         if ready:
             return
         if time.monotonic() >= deadline:
-            raise AssertionError(f"Readiness timed out: {paths}\n{log.read_text()}")
+            raise ReadinessError(f"Readiness timed out: {paths}\n{log.read_text()}")
         time.sleep(min(0.025, max(0, deadline - time.monotonic())))
 
 

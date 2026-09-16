@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
 from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
 
@@ -222,3 +224,98 @@ def test_both_backend_runner_records_missing_rust_after_python_and_continues(tmp
     rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
     assert rust_evidence["backend"] == "rust"
     assert rust_evidence["status"] == "infrastructure_failure"
+
+
+def test_both_backend_runner_infrastructure_dominates_earlier_test_failure(tmp_path):
+    """A later selection failure cannot be hidden by an earlier pytest 1."""
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text("#!/bin/sh\nexit 1\n")
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    artifacts = tmp_path / "artifacts"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
+    }
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "both",
+            "--rust-bin",
+            str(tmp_path / "missing-rust"),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
+    assert rust_evidence["status"] == "infrastructure_failure"
+
+
+@pytest.mark.parametrize(
+    "pytest_exit,expected",
+    [(1, 1), (2, 2), (3, 2), (4, 2), (5, 2)],
+    ids=["test-failure", "interrupted", "internal", "usage", "no-collection"],
+)
+def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, expected):
+    """Only pytest's ordinary test-failure code remains a test failure."""
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text(f"#!/bin/sh\nexit {pytest_exit}\n")
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "python",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == expected
+
+
+def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path):
+    """A legacy pytest plugin's code-1 readiness report is still infrastructure."""
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do\n"
+        "  case \"$arg\" in --junitxml=*) junit=\"${arg#*=}\";; esac\n"
+        "done\n"
+        "printf '%s\\n' '<testsuite><testcase><failure>ReadinessError: timed out</failure></testcase></testsuite>' > \"$junit\"\n"
+        "exit 1\n"
+    )
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    artifacts = tmp_path / "artifacts"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
+    }
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "python",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2

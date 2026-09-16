@@ -211,9 +211,11 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
     if [ "${#PYTEST_FORWARD_ARGS[@]}" -gt 0 ]; then
         PYTEST_ARGS+=("${PYTEST_FORWARD_ARGS[@]}")
     fi
-    selected_result=0
+    test_failure=false
+    infrastructure_failure=false
     for backend in "${SELECTED_BACKENDS[@]}"; do
         evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
+        junit="$ARTIFACTS_DIR/proxy-${backend}-junit.xml"
         echo "=== Selected proxy backend: $backend ==="
         echo "  Runtime evidence: $ARTIFACTS_DIR/proxy-${backend}-runtime.json"
         # Validate immediately before this backend's independent process run.
@@ -222,24 +224,39 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
         if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
             "${SELECTOR_ARGS[@]}" --output "$evidence"; then
             echo "Infrastructure failure selecting proxy backend '$backend'; continuing" >&2
-            if [ "$selected_result" -eq 0 ]; then
-                selected_result=2
-            fi
+            infrastructure_failure=true
             continue
         fi
         set +e
         pytest "${PYTEST_ARGS[@]}" \
-            --junitxml="$ARTIFACTS_DIR/proxy-${backend}-junit.xml" \
+            --junitxml="$junit" \
             "$REPO_ROOT/tests/proxy_migration" --proxy-backend "$backend"
         backend_result=$?
         set -e
-        if [ "$backend_result" -ne 0 ]; then
-            if [ "$selected_result" -eq 0 ]; then
-                selected_result=1
-            fi
-        fi
+        case "$backend_result" in
+            0) ;;
+            1)
+                # The migration conftest promotes ReadinessError to pytest
+                # code 2.  Keep this JUnit check as a guard for older/custom
+                # pytest plugins that leave a readiness failure as code 1.
+                if [ -s "$junit" ] && grep -Eq 'ReadinessError|Readiness timed out' "$junit"; then
+                    infrastructure_failure=true
+                else
+                    test_failure=true
+                fi
+                ;;
+            2|3|4|5|*)
+                infrastructure_failure=true
+                ;;
+        esac
     done
-    exit "$selected_result"
+    if [ "$infrastructure_failure" = true ]; then
+        exit 2
+    fi
+    if [ "$test_failure" = true ]; then
+        exit 1
+    fi
+    exit 0
 fi
 
 if [ "$PROXY_IMPL" != "python" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; then
