@@ -2029,7 +2029,7 @@ where
     // and the published snapshot, then applies a vault credential before body
     // observation or outbound dial.
     let mut grant_lease = None;
-    let mut gateway_injected = false;
+    let mut gateway_injected_header = None;
     let mut gateway_evidence = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
@@ -2222,7 +2222,7 @@ where
                         } else {
                             ordered_headers.remove(&name);
                         }
-                        gateway_injected = true;
+                        gateway_injected_header = Some(name);
                         gateway_evidence = Some(evidence);
                     }
                     crate::credential_injection::Start::Blocked(blocked) => {
@@ -2272,11 +2272,21 @@ where
     // header view before dialing so a refreshed access token cannot bypass a
     // credential:use deny rule. This second observation is still header-only;
     // it does not inspect body bytes or create another guard owner.
-    if gateway_injected && let Some(policy) = runtime.policy.as_ref() {
+    if let Some(name) = gateway_injected_header
+        && let Some(policy) = runtime.policy.as_ref()
+    {
         let guard = runtime
             .credential_guard
             .as_ref()
             .ok_or("native credential guard is unavailable")?;
+        // The incoming request was already evaluated before gateway selection.
+        // Re-evaluate only the header whose value the gateway replaced or
+        // added. Replaying every incoming field here would charge budgets and
+        // publish duplicate audit intents for unrelated credentials.
+        let (field_name, field_value) = ordered_headers
+            .iter()
+            .find(|(field_name, _)| field_name.eq_ignore_ascii_case(name.as_str().as_bytes()))
+            .ok_or("injected credential header disappeared")?;
         let guard_trace = trace.as_ref().and_then(|trace| {
             trace.hook(
                 "credential-guard",
@@ -2298,7 +2308,7 @@ where
             Some(request_id),
             &identity.connection_id,
             false,
-            ordered_headers.iter(),
+            std::iter::once((field_name, field_value)),
             crate::credential_guard::Options {
                 block: runtime.config.credential_guard_block(),
             },

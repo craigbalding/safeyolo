@@ -380,6 +380,7 @@ impl Runtime {
                 .map(Arc::new);
             let tls = if parent.as_ref().is_some_and(|parent| parent.tls)
                 || certificate_authority.is_some()
+                || config.upstream_ca_file.is_some()
             {
                 Some(http::parent_tls(&config)?)
             } else {
