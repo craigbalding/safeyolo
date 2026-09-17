@@ -193,11 +193,12 @@ async fn owned_child(directory: &Path) {
             canonical(&rows[0],event,auth.then_some("deny"));
             assert_eq!(rows[0]["severity"],if auth {"high"}else{"low"});
             assert_eq!(rows[0]["addon"],"agent-api");
-            assert!(rows[0].get("request_id").is_none());
             if auth {
+                assert!(rows[0].get("request_id").is_none());
                 assert!(rows[0].get("agent").is_none()&&rows[0].get("host").is_none());
                 assert_eq!(rows[0]["details"],json!({"client_ip":"192.0.2.10","path":"/api/test-context/current"}));
             } else {
+                assert_eq!(rows[0]["request_id"], rows[1]["request_id"]);
                 assert_eq!(rows[0]["agent"],"alice");assert_eq!(rows[0]["host"],"_safeyolo.proxy.internal");
                 assert_eq!(rows[0]["details"]["source_id"],"192.0.2.10");
                 assert_eq!(rows[0]["details"]["trusted_agent"],"alice");
@@ -691,4 +692,140 @@ async fn discovery_child(directory: &Path) {
             .unwrap()
             .contains(TOKEN)
     );
+}
+
+#[test]
+fn conflicted_request_snapshot_quarantines_scoped_consumers() {
+    const CHILD: &str = "SAFEYOLO_IDENTITY_CONSUMER_FIXTURE";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(conflicted_child(Path::new(&directory)));
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "http::agent_audit_tests::conflicted_request_snapshot_quarantines_scoped_consumers",
+            "--nocapture",
+        ])
+        .env(CHILD, directory.path())
+        .env("SAFEYOLO_DATA_DIR", directory.path())
+        .env(
+            "SAFEYOLO_LOG_PATH",
+            directory.path().join("unused-fallback.jsonl"),
+        )
+        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
+        .env_remove("SAFEYOLO_LOG_MAX_MB")
+        .env_remove("SAFEYOLO_LOG_BACKUPS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn conflicted_child(directory: &Path) {
+    let mut configuration = config(directory);
+    configuration.agent_map_file = directory
+        .join("agent-map.json")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({"bob":{"ip":"192.0.2.10"}}),
+        100,
+    );
+    let proxy = Proxy::start(configuration).await.unwrap();
+    let startup = drained(&proxy, directory);
+    assert_eq!(
+        names(&startup),
+        ["agent.discovered", "ops.policy_reload", "ops.startup"]
+    );
+
+    // A malformed body and a forged query value must not be read or become
+    // an owner when the listener/map sources disagree.
+    let declaration = send_as(
+        directory,
+        "alice",
+        "POST",
+        "/api/test-context/current?agent=forged",
+        Some(TOKEN),
+        b"not-json",
+    )
+    .await;
+    assert!(declaration.starts_with(b"HTTP/1.1 403"));
+    assert!(String::from_utf8_lossy(body(&declaration)).contains("Could not identify agent"));
+
+    // Flow, trace and gateway access routes all consume the same ownerless
+    // snapshot before scoped providers or request-body decoding.
+    for (method, path, content) in [
+        (
+            "GET",
+            "/api/flows/search?evidence_owner=bob&agent=forged",
+            b"".as_slice(),
+        ),
+        (
+            "GET",
+            "/trace?request_id=req-00000000000000000000000000000000&agent=bob",
+            b"".as_slice(),
+        ),
+        (
+            "POST",
+            "/gateway/request-access?agent=bob",
+            b"[]".as_slice(),
+        ),
+    ] {
+        let reply = send_as(directory, "alice", method, path, Some(TOKEN), content).await;
+        assert!(reply.starts_with(b"HTTP/1.1 403"), "{method} {path}");
+    }
+
+    // Discovery reporting remains a local administrative read, but it must
+    // show no last-seen owner for either side of the conflict.
+    let report = send_as(
+        directory,
+        "alice",
+        "GET",
+        "/agents?agent=forged",
+        Some(TOKEN),
+        b"",
+    )
+    .await;
+    assert!(report.starts_with(b"HTTP/1.1 200"));
+    let report: Value = serde_json::from_slice(body(&report)).unwrap();
+    assert!(report["agents"]["bob"].get("last_seen").is_none());
+    assert!(!serde_json::to_string(&report).unwrap().contains("forged"));
+
+    let records = drained(&proxy, directory);
+    let conflicts: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["event"] == "security.agent_identity_conflict")
+        .collect();
+    assert_eq!(conflicts.len(), 5);
+    for record in conflicts {
+        assert!(record.get("agent").is_none());
+        assert_eq!(record["details"]["uds_agent"], "alice");
+        assert_eq!(record["details"]["mapped_agent"], "bob");
+        assert_eq!(
+            record["details"]["attribution"]["attribution_status"],
+            "conflict"
+        );
+        assert!(
+            record["details"]["attribution"]
+                .get("evidence_owner")
+                .is_none()
+        );
+    }
+    assert!(!records.iter().any(|record| {
+        record.to_string().contains("forged") || record.to_string().contains("agent\\\":\\\"bob")
+    }));
 }

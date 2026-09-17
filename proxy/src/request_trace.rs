@@ -22,7 +22,7 @@ pub(crate) struct RequestTrace {
     store: Arc<TraceStore>,
     enabled: AtomicBool,
     request_id: Zeroizing<String>,
-    agent: Zeroizing<String>,
+    agent: Option<Zeroizing<String>>,
     connection_id: Zeroizing<String>,
     method: String,
     host: Zeroizing<String>,
@@ -44,7 +44,9 @@ impl RequestTrace {
             store,
             enabled: AtomicBool::new(false),
             request_id: Zeroizing::new(request_id.into()),
-            agent: Zeroizing::new(identity.agent_id.clone()),
+            agent: identity
+                .request_agent()
+                .map(|agent| Zeroizing::new(agent.to_owned())),
             connection_id: Zeroizing::new(identity.connection_id.clone()),
             method: method.into(),
             host: Zeroizing::new(host.into()),
@@ -123,7 +125,7 @@ impl TraceHook {
         };
         if let Err(error) = self.request.store.append(
             &self.request.request_id,
-            Some(&self.request.agent),
+            self.request.agent.as_deref().map(String::as_str),
             step,
             crate::circuit_runtime::now(),
         ) {

@@ -637,7 +637,7 @@ async fn open_egress_for_flow(
     }
     let record_egress = || {
         runtime.record(json!({
-            "event": "proxy.egress", "agent": allowed.identity.agent_id,
+            "event": "proxy.egress", "agent": allowed.identity.request_agent(),
             "connection_id": allowed.identity.connection_id, "request_id": allowed.request_id,
             "host": destination.host, "port": destination.port, "route": route_name,
         }))
@@ -838,7 +838,7 @@ async fn decide(
     tasks: &UpgradeTasks,
 ) -> Result<PolicyDecision, Error> {
     if let Some(policy) = &runtime.policy {
-        use crate::network_guard::{Identity, Options, OutcomeKind, Pdp, Request};
+        use crate::network_guard::{Options, OutcomeKind, Pdp, Request};
 
         let trace = trace.and_then(|trace| {
             trace.hook(
@@ -853,7 +853,7 @@ async fn decide(
         let result = runtime.network_guard.enforce_with_audit_and_trace(
             Pdp::Ready(policy),
             Request {
-                identity: Identity::Resolved(request.agent_id),
+                identity: identity.request_identity(),
                 host: request.host,
                 decode_ace_for_inspection: true,
                 port: request.port,
@@ -890,7 +890,7 @@ async fn decide(
         // Development guard evidence excludes the URL query and application
         // bytes. Canonical security audit has its own process-owned writer.
         runtime.record(json!({
-            "event": "proxy.network_guard", "agent": request.agent_id,
+            "event": "proxy.network_guard", "agent": identity.request_agent(),
             "connection_id": request.connection_id, "request_id": request.request_id,
             "host": request.host, "port": request.port,
             "outcome": outcome.kind, "trace": outcome.trace,
@@ -1044,7 +1044,7 @@ fn record_agent_api(
     // synchronous submission failure, retain the attempted intent/status before
     // recording the changed terminal outcome; neither row is a second emission.
     runtime.record(json!({
-        "event": "proxy.agent_api", "agent": identity.agent_id,
+        "event": "proxy.agent_api", "agent": identity.transport_agent(),
         "connection_id": identity.connection_id, "request_id": request_id,
         "status": outcome.response.status, "blocked_by": outcome.blocked_by,
         "handler_owned": outcome.handler_owned, "audit": audit,
@@ -1111,7 +1111,7 @@ where
         method: method.as_str(),
         path_and_query: &destination.path,
         authorization: present.then_some(authorization.as_slice()),
-        identity: crate::network_guard::Identity::Resolved(&identity.agent_id),
+        identity: identity.request_identity(),
         client_ip: identity.source_id.as_deref(),
         request_id,
     };
@@ -1125,7 +1125,7 @@ where
             .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
-        agent_api::respond_with_body(
+        agent_api::respond_with_body_and_audit_id(
             api_request,
             &token_path,
             policy,
@@ -1171,6 +1171,7 @@ where
                 content_length,
                 observation: Some(&mut local_observation),
             },
+            Some(request_id),
         )
         .await?
     } else {
@@ -1321,7 +1322,7 @@ fn circuit_admission(
             policy_bypassed: !policy.is_addon_enabled(
                 crate::policy::Addon::CircuitBreaker,
                 Some(host),
-                Some(&identity.agent_id),
+                identity.request_agent(),
             ),
         },
         crate::circuit_runtime::now(),
@@ -1372,7 +1373,7 @@ fn circuit_admission(
         );
         security.addon = Some("circuit-breaker".into());
         security.host = Some(host.to_owned());
-        security.agent = Some(identity.agent_id.clone());
+        security.agent = identity.request_agent().map(str::to_owned);
         security.request_id = Some(request_id.to_owned());
         security.decision = Some(crate::audit::Decision::Deny);
         security.attribution = Some(identity.audit_attribution());
@@ -1389,7 +1390,7 @@ fn circuit_admission(
             ("addon".into(), json!("circuit-breaker").into()),
             ("decision".into(), json!("deny").into()),
             ("host".into(), json!(host).into()),
-            ("agent".into(), json!(identity.agent_id).into()),
+            ("agent".into(), json!(identity.request_agent()).into()),
             ("request_id".into(), json!(request_id).into()),
             (
                 "summary".into(),
@@ -1498,7 +1499,7 @@ fn publish_gateway_evidence(
     }
     runtime.record(json!({
         "event": "proxy.gateway",
-        "agent": identity.agent_id,
+        "agent": identity.request_agent(),
         "connection_id": identity.connection_id,
         "request_id": request_id,
         "metadata": evidence.metadata,
@@ -1688,7 +1689,7 @@ async fn resolve_refresh(
             // live workflow before its held leader is released.
             runtime.record(json!({
                 "event": "proxy.gateway",
-                "agent": identity.agent_id,
+                "agent": identity.request_agent(),
                 "connection_id": identity.connection_id,
                 "request_id": request_id,
                 "outcome": "refresh_follower",
@@ -1735,10 +1736,15 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let pipeline_probe = probe::is_host(&destination.host);
-    // CONNECT has its own source hook before destination policy and no
-    // ordinary HTTP request body lifecycle. Observe each admission once.
-    if request.method() == Method::CONNECT {
-        runtime.observe_agent(&identity.agent_id, identity.source_id.as_deref());
+    // CONNECT has no ordinary traffic request hook; retain its source
+    // observation at the reached admission point after the snapshot exists.
+    if request.method() == Method::CONNECT
+        && let Some(snapshot) = identity.reconciled_snapshot()
+        && let Err(error) = runtime
+            .agent_discovery
+            .observe_reconciled(&snapshot, crate::circuit_runtime::now)
+    {
+        eprintln!("Agent discovery observation failed: {error}");
     }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
@@ -1855,7 +1861,7 @@ where
         &runtime,
         identity,
         &PolicyRequest {
-            agent_id: &identity.agent_id,
+            agent_id: identity.request_agent().unwrap_or(""),
             connection_id: &identity.connection_id,
             request_id,
             method: request.method().as_str(),
@@ -1975,7 +1981,7 @@ where
                     let started = std::time::Instant::now();
                     let result = tunnels::relay(client, server, stop).await;
                     runtime.record(json!({
-                        "event": "proxy.tunnel", "agent": identity.agent_id,
+                        "event": "proxy.tunnel", "agent": identity.request_agent(),
                         "connection_id": identity.connection_id, "request_id": request_id,
                         "host": destination.host, "port": destination.port,
                         "coverage": if passthrough { "configured_passthrough" } else { "opaque" },
@@ -2063,7 +2069,7 @@ where
         });
         let outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
-            crate::network_guard::Identity::Resolved(&identity.agent_id),
+            identity.request_identity(),
             &destination.policy_host,
             destination.port,
             request.method().as_str(),
@@ -2099,7 +2105,7 @@ where
         }
         runtime.record(json!({
             "event": "proxy.credential_guard",
-            "agent": identity.agent_id,
+            "agent": identity.request_agent(),
             "connection_id": identity.connection_id,
             "request_id": request_id,
             "host": destination.policy_host,
@@ -2164,7 +2170,17 @@ where
             .collect();
         let gateway_decision = snapshot.map(|snapshot| {
             snapshot.select(crate::services::GatewayRequest {
-                identity: crate::services::TrustedIdentity::Agent(&identity.agent_id),
+                identity: match identity.request_identity() {
+                    crate::network_guard::Identity::Resolved(agent) => {
+                        crate::services::TrustedIdentity::Agent(agent)
+                    }
+                    crate::network_guard::Identity::Conflict => {
+                        crate::services::TrustedIdentity::Conflict
+                    }
+                    crate::network_guard::Identity::Unavailable => {
+                        crate::services::TrustedIdentity::Missing
+                    }
+                },
                 host: &destination.policy_host,
                 request: crate::contracts::ContractRequest {
                     method: request.method().as_str(),
@@ -2222,7 +2238,9 @@ where
                         granted = store
                             .check_grant(
                                 crate::grants::RequestScope {
-                                    agent: &identity.agent_id,
+                                    agent: identity
+                                        .request_agent()
+                                        .expect("selected gateway identity"),
                                     service: &credential.service,
                                     method: request.method().as_str(),
                                     path: risky_path,
@@ -2235,7 +2253,7 @@ where
                     if granted.is_none() {
                         let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
                             service: &credential.service,
-                            agent: &identity.agent_id,
+                            agent: identity.request_agent().expect("selected gateway identity"),
                             account: &credential.account,
                             tactics: &risky.tactics,
                             enables: &risky.enables,
@@ -2251,7 +2269,7 @@ where
                             };
                             runtime.record(json!({
                                 "event":"proxy.gateway",
-                                "agent":identity.agent_id,
+                                "agent":identity.request_agent(),
                                 "connection_id":identity.connection_id,
                                 "request_id":request_id,
                                 "outcome":"risky_route_blocked",
@@ -2269,7 +2287,7 @@ where
                     grant_lease = granted;
                     runtime.record(json!({
                         "event":"proxy.gateway",
-                        "agent":identity.agent_id,
+                        "agent":identity.request_agent(),
                         "connection_id":identity.connection_id,
                         "request_id":request_id,
                         "outcome":if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
@@ -2424,7 +2442,7 @@ where
         });
         let outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
-            crate::network_guard::Identity::Resolved(&identity.agent_id),
+            identity.request_identity(),
             &destination.policy_host,
             destination.port,
             request.method().as_str(),
@@ -2455,7 +2473,7 @@ where
         }
         runtime.record(json!({
             "event": "proxy.credential_guard",
-            "agent": identity.agent_id,
+            "agent": identity.request_agent(),
             "connection_id": identity.connection_id,
             "request_id": request_id,
             "host": destination.policy_host,
@@ -2774,7 +2792,7 @@ where
                     &runtime, &session.identity.connection_id, &memory_host,
                 );
                 runtime.record(json!({
-                    "event": "proxy.websocket.start", "agent": session.identity.agent_id,
+                    "event": "proxy.websocket.start", "agent": session.identity.request_agent(),
                     "connection_id": session.identity.connection_id, "request_id": session.request_id,
                     "host": session.host, "port": session.port,
                     "subprotocol": negotiated.subprotocol,
@@ -2872,12 +2890,34 @@ pub(crate) fn serve_request(
     Box::pin(async move {
         let runtime = state.read().expect("runtime read lock").clone();
         let request_id = format!("req-{}", uuid::Uuid::new_v4().simple());
+        let identity = match runtime.agent_discovery.reconcile(
+            crate::agent_discovery::IdentitySources {
+                uds_agent: Some(&identity.agent_id),
+                client_ip: identity.source_id.as_deref(),
+                request_id: Some(&request_id),
+                defer_observation: true,
+                ..Default::default()
+            },
+            &runtime.audit,
+            crate::circuit_runtime::now,
+        ) {
+            Ok(reconciled) => identity.with_reconciled(reconciled),
+            Err(error) => {
+                // A request-boundary identity event is part of the source
+                // hook. Preserve its reached error and do not run consumers
+                // against an unverified listener/map result.
+                eprintln!("request {request_id} identity reconciliation failed: {error}");
+                return Ok(response(StatusCode::BAD_GATEWAY, "Proxy request failed"));
+            }
+        };
         let connect = request.method() == Method::CONNECT;
-        let recording = flow_recording::Recording::new(
+        let recording = flow_recording::Recording::new_with_discovery(
             runtime.flow_recorder.clone(),
             identity.clone(),
             request_id.clone(),
             !connect,
+            runtime.agent_discovery.clone(),
+            runtime.audit.clone(),
         );
         let _pending_recording = recording.pending();
         let destination =
@@ -3066,7 +3106,7 @@ pub(crate) fn serve_request(
         // Upstream response headers cannot classify a local enforcement action.
         let admin_blocked = decision == "admin_port_access";
         let mut record = json!({
-            "event": "proxy.request", "agent": identity.agent_id,
+            "event": "proxy.request", "agent": identity.request_agent(),
             "connection_id": identity.connection_id, "request_id": request_id,
             "host": destination.as_ref().ok().map(|d| &d.policy_host),
             "port": destination.as_ref().ok().map(|d| d.port),

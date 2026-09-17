@@ -169,7 +169,7 @@ impl Completion {
                 let _ = runtime.record(serde_json::json!({
                     "event":"proxy.gateway",
                     "request_id":self.request_id,
-                    "agent":self.identity.agent_id,
+                    "agent":self.identity.request_agent(),
                     "host":self.host,
                     "grant_id":grant_id,
                     "outcome":outcome,
@@ -432,6 +432,7 @@ mod tests {
                     agent_id: "alice".into(),
                     connection_id: "owned-connection".into(),
                     source_id: None,
+                    reconciled: None,
                 },
                 "owned-request".into(),
                 "owned.invalid".into(),
@@ -514,7 +515,7 @@ mod tests {
                 runtime.audit.poison_for_test();
             }
             let identity = ConnectionIdentity {
-                agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None,
+                agent_id: "alice".into(), connection_id: "owned-connection".into(), source_id: None, reconciled: None,
             };
             let mut request = Request::builder().uri("http://owned.invalid/")
                 .body(Empty::<Bytes>::new()).unwrap();
@@ -676,6 +677,7 @@ mod tests {
                 agent_id: "alice".into(),
                 connection_id: "owned-connection".into(),
                 source_id: None,
+                reconciled: None,
             },
             "owned-request".into(),
             "owned.invalid".into(),

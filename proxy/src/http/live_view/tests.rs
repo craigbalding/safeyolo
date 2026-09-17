@@ -67,6 +67,7 @@ impl Fixture {
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
+            reconciled: None,
         }
     }
 

@@ -106,7 +106,8 @@ pub(super) fn prepare<B>(
     let trusted = identity
         .source_id
         .as_ref()
-        .and_then(|source| TrustedIdentity::new(source.clone(), identity.agent_id.clone()).ok());
+        .zip(identity.request_agent())
+        .and_then(|(source, agent)| TrustedIdentity::new(source.clone(), agent.to_owned()).ok());
     let head_hook = trace
         .as_ref()
         .and_then(|trace| trace.hook("test-context", "request"));
@@ -116,7 +117,7 @@ pub(super) fn prepare<B>(
             host: &destination.policy_host,
             prior_response: false,
             identity: trusted.as_ref(),
-            metadata_agent: Some(&identity.agent_id),
+            metadata_agent: identity.request_agent(),
         },
         &mut headers,
         super::declaration_time(),

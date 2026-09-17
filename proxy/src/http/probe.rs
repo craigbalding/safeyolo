@@ -113,7 +113,7 @@ pub(super) fn refuse_transport(
     event.decision = Some(audit::Decision::Deny);
     event.addon = Some("transport-guard".into());
     event.host = Some(HOST.into());
-    event.agent = Some(identity.agent_id.clone());
+    event.agent = identity.request_agent().map(str::to_owned);
     event.details = json!({
         "reason_code":"probe_reached_upstream", "client_ip":identity.source_id,
         "server_address":[destination.host, destination.port], "sni":null

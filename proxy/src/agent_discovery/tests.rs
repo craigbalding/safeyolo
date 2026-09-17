@@ -521,6 +521,7 @@ fn identity_reconciliation_metadata_conflict_never_reowns_a_flow() {
                 client_ip: Some("10.0.0.1"),
                 metadata_agent: Some("spoofed"),
                 request_id: Some("req-metadata-conflict"),
+                defer_observation: false,
             },
             &owned.writer,
             || 300.0,
@@ -835,6 +836,7 @@ fn identity_events_bound_projected_names_but_keep_full_canonical_values() {
                 client_ip: Some("10.0.0.1"),
                 metadata_agent: Some(&metadata),
                 request_id: Some("req-long-metadata"),
+                defer_observation: false,
             },
             &owned.writer,
             || 601.0,
@@ -865,4 +867,46 @@ fn identity_events_bound_projected_names_but_keep_full_canonical_values() {
             assert_eq!(value.as_str().unwrap().chars().count(), IDENTITY_MAX_CHARS);
         }
     }
+}
+
+#[test]
+fn late_identity_change_preserves_snapshot_owner_and_suppresses_new_owner_seen() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+    let snapshot = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: None,
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-late"),
+                defer_observation: true,
+                ..Default::default()
+            },
+            &owned.writer,
+            || 10.0,
+        )
+        .unwrap();
+    assert_eq!(snapshot.status, IdentityStatus::Resolved);
+    assert_eq!(snapshot.agent.as_deref(), Some("alice"));
+    put(&path, br#"{"bob":{"ip":"10.0.0.1"}}"#, 2.0);
+    let changed = owner
+        .detect_late_change(&snapshot, Some("10.0.0.1"), &owned.writer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed.status, IdentityStatus::Resolved);
+    assert_eq!(changed.agent.as_deref(), Some("bob"));
+    owner.observe_reconciled(&snapshot, || 20.0).unwrap();
+    let report = owner
+        .get_agents(&owned.writer, || 21.0)
+        .unwrap()
+        .render_json(false)
+        .unwrap();
+    let report: Value = serde_json::from_str(&report).unwrap();
+    assert!(report["agents"]["bob"].get("last_seen").is_none());
+    assert!(report["agents"].get("alice").is_none());
 }

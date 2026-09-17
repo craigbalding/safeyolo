@@ -30,7 +30,7 @@ enum Phase {
 pub(super) struct ConnectionAudit {
     connection: IgnoredHostConnection,
     writer: Arc<Writer>,
-    agent: Zeroizing<String>,
+    agent: Option<Zeroizing<String>>,
     client: Option<Zeroizing<String>>,
     phase: Phase,
 }
@@ -46,7 +46,9 @@ impl ConnectionAudit {
         Self {
             connection,
             writer,
-            agent: Zeroizing::new(identity.agent_id.clone()),
+            agent: identity
+                .request_agent()
+                .map(|agent| Zeroizing::new(agent.to_owned())),
             client: identity.source_id.clone().map(Zeroizing::new),
             phase: Phase::Connecting,
         }
@@ -55,7 +57,10 @@ impl ConnectionAudit {
     pub(super) fn connected(&mut self) {
         self.phase = Phase::Connected;
         report(self.connection.connected(
-            facts(&self.agent, self.client.as_deref().map(String::as_str)),
+            facts(
+                self.agent.as_deref().map(String::as_str),
+                self.client.as_deref().map(String::as_str),
+            ),
             &self.writer,
         ));
     }
@@ -63,7 +68,10 @@ impl ConnectionAudit {
     pub(super) fn failed(&mut self, error: &str) {
         self.phase = Phase::Finished;
         report(self.connection.connect_error(
-            facts(&self.agent, self.client.as_deref().map(String::as_str)),
+            facts(
+                self.agent.as_deref().map(String::as_str),
+                self.client.as_deref().map(String::as_str),
+            ),
             Some(error),
             &self.writer,
         ));
@@ -77,7 +85,10 @@ impl Drop for ConnectionAudit {
             Phase::Connected => {
                 self.phase = Phase::Finished;
                 report(self.connection.disconnected(
-                    facts(&self.agent, self.client.as_deref().map(String::as_str)),
+                    facts(
+                        self.agent.as_deref().map(String::as_str),
+                        self.client.as_deref().map(String::as_str),
+                    ),
                     monotonic_time,
                     &self.writer,
                 ));
@@ -87,9 +98,9 @@ impl Drop for ConnectionAudit {
     }
 }
 
-fn facts<'a>(agent: &'a str, client: Option<&'a str>) -> Facts<'a> {
+fn facts<'a>(agent: Option<&'a str>, client: Option<&'a str>) -> Facts<'a> {
     Facts {
-        agent: Some(agent),
+        agent,
         client,
         transport: "tcp",
     }

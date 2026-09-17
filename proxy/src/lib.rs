@@ -122,10 +122,68 @@ pub(crate) struct ConnectionIdentity {
     agent_id: String,
     connection_id: String,
     source_id: Option<String>,
+    /// The immutable request-boundary reconciliation, when this identity is
+    /// being consumed by request hooks. Listener accept identities leave this
+    /// empty and are reconciled once for each request.
+    reconciled: Option<Arc<agent_discovery::ReconciledIdentity>>,
 }
 
 impl ConnectionIdentity {
+    fn request_agent(&self) -> Option<&str> {
+        self.reconciled
+            .as_deref()
+            .map(|identity| identity.agent.as_deref())
+            .unwrap_or(Some(&self.agent_id))
+            .filter(|agent| !agent.is_empty())
+    }
+
+    /// Preserve the accepted listener label for diagnostic records. This is
+    /// transport provenance only; scoped consumers use `request_agent`, which
+    /// remains empty for unavailable or conflicting snapshots.
+    fn transport_agent(&self) -> Option<&str> {
+        self.reconciled
+            .as_deref()
+            .and_then(|identity| identity.uds_agent.as_deref())
+            .or_else(|| {
+                self.reconciled
+                    .as_deref()
+                    .filter(|identity| {
+                        identity.status == agent_discovery::IdentityStatus::Unavailable
+                    })
+                    .map(|_| self.agent_id.as_str())
+            })
+            .or_else(|| self.reconciled.is_none().then_some(self.agent_id.as_str()))
+            .filter(|agent| !agent.is_empty())
+    }
+
+    fn request_identity(&self) -> network_guard::Identity<'_> {
+        match self.reconciled.as_deref() {
+            Some(identity) => match identity.status {
+                agent_discovery::IdentityStatus::Resolved => network_guard::Identity::Resolved(
+                    identity.agent.as_deref().expect("resolved identity owner"),
+                ),
+                agent_discovery::IdentityStatus::Conflict => network_guard::Identity::Conflict,
+                agent_discovery::IdentityStatus::Unavailable => {
+                    network_guard::Identity::Unavailable
+                }
+            },
+            None => network_guard::Identity::Resolved(&self.agent_id),
+        }
+    }
+
+    fn with_reconciled(mut self, identity: agent_discovery::ReconciledIdentity) -> Self {
+        self.reconciled = Some(Arc::new(identity));
+        self
+    }
+
+    fn reconciled_snapshot(&self) -> Option<Arc<agent_discovery::ReconciledIdentity>> {
+        self.reconciled.clone()
+    }
+
     fn audit_attribution(&self) -> audit::Attribution {
+        if let Some(identity) = self.reconciled.as_deref() {
+            return identity.audit_attribution();
+        }
         audit::Attribution {
             evidence_owner: Some(self.agent_id.clone()),
             trusted_transport_identity: Some(self.agent_id.clone()),
@@ -533,29 +591,6 @@ impl Runtime {
         Ok(())
     }
 
-    fn observe_agent(&self, agent: &str, source: Option<&str>) {
-        // Source identity resolution catches lookup/reload failures before
-        // recording the already trusted UDS owner. Discovery metadata never
-        // supplies or replaces the native listener identity.
-        if source.is_some()
-            && let Err(error) = self.agent_discovery.reload(&self.audit)
-        {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Agent discovery refresh failed: {error}"
-            );
-        }
-        if let Err(error) = self
-            .agent_discovery
-            .observe_trusted(agent, circuit_runtime::now)
-        {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Agent discovery observation failed: {error}"
-            );
-        }
-    }
-
     fn record(&self, event: Value) -> Result<(), Error> {
         self.record_bytes(serde_json::to_vec(&event)?)
     }
@@ -836,6 +871,7 @@ async fn accept_agents(
                         agent_id: agent_id.clone(),
                         connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
                         source_id: source_id.clone(),
+                        reconciled: None,
                     };
                     // Register before spawning so even an unpolled canceled
                     // task owns cleanup. One guard spans all inner upgrades.

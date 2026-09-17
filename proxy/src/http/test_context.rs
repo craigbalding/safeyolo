@@ -168,8 +168,9 @@ impl Provenance {
         );
         event.addon = Some("test-context".into());
         event.host = Some(self.host.clone());
-        event.agent = Some(self.identity.agent_id.clone());
+        event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
+        event.attribution = Some(self.identity.audit_attribution());
         event.details = details.clone().into();
         self.runtime.audit.emit(event)?;
         Ok(self
@@ -177,7 +178,7 @@ impl Provenance {
             .record(json!({
                 "event": "security.test_context", "kind": "security", "severity": "low",
                 "addon": "test-context", "host": self.host,
-                "agent": self.identity.agent_id, "request_id": self.request_id,
+                "agent": self.identity.request_agent(), "request_id": self.request_id,
                 "summary": summary, "details": details,
             }))
             .is_err())
@@ -228,10 +229,17 @@ impl Provenance {
             audit::Decision::Warn
         });
         event.host = Some(self.host.clone());
-        event.agent = Some(self.identity.agent_id.clone());
+        event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
-        event.attribution = Some(self.identity.audit_attribution());
+        let attribution = self.identity.audit_attribution();
+        event.attribution = Some(attribution.clone());
         event.details = details.clone().into();
+        let attribution_provenance = attribution
+            .provenance
+            .as_ref()
+            .and_then(|value| value.render_json(false).ok())
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok())
+            .unwrap_or_else(|| json!({}));
         self.runtime.audit.emit(event)?;
         Ok(self
             .runtime
@@ -240,11 +248,12 @@ impl Provenance {
                 "severity": if optional { "medium" } else { "high" },
                 "addon": "test-context", "decision": if blocked { "deny" } else { "warn" },
                 "summary": summary, "host": self.host, "request_id": self.request_id,
-                "agent": self.identity.agent_id, "evidence_owner": self.identity.agent_id,
-                "trusted_transport_identity": self.identity.agent_id,
-                "initiator": "unknown", "attribution_status": "resolved",
-                "attribution_provenance": { "transport_source": "uds",
-                    "uds_agent": self.identity.agent_id.chars().take(128).collect::<String>() },
+                "agent": self.identity.request_agent(),
+                "evidence_owner": attribution.evidence_owner,
+                "trusted_transport_identity": attribution.trusted_transport_identity,
+                "initiator": "unknown",
+                "attribution_status": attribution.status.map(audit::AttributionStatus::as_str),
+                "attribution_provenance": attribution_provenance,
                 "details": details,
             }))
             .is_err())
@@ -294,8 +303,9 @@ impl Provenance {
         );
         event.addon = Some("test-context".into());
         event.host = Some(self.host.clone());
-        event.agent = Some(self.identity.agent_id.clone());
+        event.agent = self.identity.request_agent().map(str::to_owned);
         event.request_id = Some(self.request_id.clone());
+        event.attribution = Some(self.identity.audit_attribution());
         event.details = details.clone().into();
         self.runtime.audit.emit(event)?;
         Ok((
@@ -303,7 +313,7 @@ impl Provenance {
                 .record(json!({
                     "event": "security.test_context", "kind": "security", "severity": "low",
                     "addon": "test-context", "host": self.host,
-                    "agent": self.identity.agent_id, "request_id": self.request_id,
+                    "agent": self.identity.request_agent(), "request_id": self.request_id,
                     "summary": summary, "details": details,
                 }))
                 .is_err(),
@@ -823,6 +833,7 @@ mod tests {
                     agent_id: "alice".into(),
                     connection_id: "connection".into(),
                     source_id: None,
+                    reconciled: None,
                 },
                 "request".into(),
                 method.into(),

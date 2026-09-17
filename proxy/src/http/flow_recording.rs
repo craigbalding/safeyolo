@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
 use crate::{
-    ConnectionIdentity,
+    ConnectionIdentity, audit,
     flow_recorder::FlowRecorder,
     flow_store::{FlowStore, Side},
     flow_writer::QueuedRecord,
@@ -62,6 +62,8 @@ pub(super) struct Recording {
     identity: ConnectionIdentity,
     request_id: String,
     enabled_exchange: bool,
+    discovery: Option<Arc<crate::agent_discovery::AgentDiscovery>>,
+    audit: Option<Arc<crate::audit::Writer>>,
     state: Mutex<State>,
 }
 
@@ -76,17 +78,49 @@ impl Drop for PendingRecording {
 }
 
 impl Recording {
+    #[cfg(test)]
     pub(super) fn new(
         recorder: Arc<FlowRecorder>,
         identity: ConnectionIdentity,
         request_id: String,
         enabled_exchange: bool,
     ) -> Arc<Self> {
+        Self::new_inner(recorder, identity, request_id, enabled_exchange, None, None)
+    }
+
+    pub(super) fn new_with_discovery(
+        recorder: Arc<FlowRecorder>,
+        identity: ConnectionIdentity,
+        request_id: String,
+        enabled_exchange: bool,
+        discovery: Arc<crate::agent_discovery::AgentDiscovery>,
+        audit: Arc<crate::audit::Writer>,
+    ) -> Arc<Self> {
+        Self::new_inner(
+            recorder,
+            identity,
+            request_id,
+            enabled_exchange,
+            Some(discovery),
+            Some(audit),
+        )
+    }
+
+    fn new_inner(
+        recorder: Arc<FlowRecorder>,
+        identity: ConnectionIdentity,
+        request_id: String,
+        enabled_exchange: bool,
+        discovery: Option<Arc<crate::agent_discovery::AgentDiscovery>>,
+        audit: Option<Arc<crate::audit::Writer>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             recorder,
             identity,
             request_id,
             enabled_exchange,
+            discovery,
+            audit,
             state: Mutex::new(State {
                 record: Some(Record::default()),
                 deferred: false,
@@ -388,6 +422,64 @@ impl Recording {
         if record.probe || !record.applied || record.metadata.is_empty() {
             return Ok(None);
         }
+        // An unresolved or conflicting request snapshot has no evidence owner.
+        // Do not construct a durable row with a null owner that a later reader
+        // could accidentally treat as agent-scoped evidence.
+        if self.identity.audit_attribution().evidence_owner.is_none() {
+            return Ok(None);
+        }
+        if let (Some(snapshot), Some(discovery), Some(writer)) = (
+            self.identity.reconciled_snapshot(),
+            self.discovery.as_ref(),
+            self.audit.as_ref(),
+        ) && let Ok(Some(current)) =
+            discovery.detect_late_change(&snapshot, self.identity.source_id.as_deref(), writer)
+        {
+            let status = if current.status == crate::agent_discovery::IdentityStatus::Conflict
+                || (snapshot.status == crate::agent_discovery::IdentityStatus::Resolved
+                    && current.status == crate::agent_discovery::IdentityStatus::Resolved
+                    && snapshot.agent != current.agent)
+            {
+                audit::AttributionStatus::Conflict
+            } else {
+                audit::AttributionStatus::Unavailable
+            };
+            let current_attribution = current.audit_attribution();
+            let provenance = current_attribution
+                .provenance
+                .as_ref()
+                .and_then(|value| value.render_json(false).ok())
+                .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+                .unwrap_or_else(|| json!({}));
+            let mut event = audit::Event::new(
+                "security.agent_identity_late_change",
+                audit::Kind::Security,
+                audit::Severity::Critical,
+                "Trusted agent identity changed after request attribution",
+            );
+            event.addon = Some("identity".into());
+            event.decision = Some(audit::Decision::Log);
+            event.request_id = Some(self.request_id.clone());
+            event.attribution = Some(audit::Attribution {
+                evidence_owner: None,
+                trusted_transport_identity: None,
+                initiator: Some(audit::Initiator::Unknown),
+                status: Some(status),
+                provenance: current_attribution.provenance,
+            });
+            event.details = json!({
+                "quarantined": true,
+                "snapshot_status": snapshot.status_name(),
+                "current_status": current.status_name(),
+                "attribution_provenance": provenance,
+            })
+            .into();
+            let _ = writer.emit(event);
+            // A late source change is an intentional quarantine. Keep the
+            // original immutable snapshot for traces/live evidence while
+            // preventing this record from entering an agent partition.
+            return Ok(None);
+        }
         if let Some(error) = record.failure {
             return Err(error);
         }
@@ -424,14 +516,27 @@ impl Recording {
             },
             None => String::new(),
         };
-        let agent = &self.identity.agent_id;
+        let agent = self.identity.request_agent();
+        let attribution = self.identity.audit_attribution();
+        let provenance = attribution
+            .provenance
+            .clone()
+            .unwrap_or_else(|| crate::circuits::CircuitValue::Object(Default::default()));
+        let attribution_status = attribution.status.map(audit::AttributionStatus::as_str);
+        let evidence_owner = attribution.evidence_owner;
+        let trusted_transport_identity = attribution.trusted_transport_identity;
+        let provenance_json = provenance
+            .render_json(false)
+            .ok()
+            .and_then(|value| serde_json::from_str::<Value>(&value).ok())
+            .unwrap_or_else(|| json!({}));
         let fields = &mut record.metadata;
         fields.extend(object(json!({
             "request_id": self.request_id, "ts_start": ts_start, "ts_end": ts_end,
             "duration_ms": ts_end - ts_start, "engagement_id": agent, "agent_id": agent,
-            "evidence_owner": agent, "trusted_transport_identity": agent, "initiator": "unknown",
-            "attribution_status": "resolved", "attribution_provenance_json": python_json::encode(&json!({
-                "transport_source": "uds", "uds_agent": agent.chars().take(128).collect::<String>() })),
+            "evidence_owner": evidence_owner, "trusted_transport_identity": trusted_transport_identity,
+            "initiator": "unknown", "attribution_status": attribution_status,
+            "attribution_provenance_json": python_json::encode(&provenance_json),
             "source_id": self.identity.source_id.as_deref().unwrap_or("unknown"), "source_type": null,
             "flow_state": if success { "completed" } else { "error" },
             "status_code": record.head.as_ref().map(|head| head.status.as_u16()),

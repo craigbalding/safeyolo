@@ -29,7 +29,7 @@ pub(super) struct Traffic {
     parsed: Result<super::traffic_url::PrettyUrl, Error>,
     request_parsed: OnceLock<Result<super::traffic_url::PrettyUrl, Error>>,
     request_id: String,
-    agent: Zeroizing<String>,
+    identity_snapshot: Option<Arc<crate::agent_discovery::ReconciledIdentity>>,
     client: Option<Zeroizing<String>>,
     connection_id: Zeroizing<String>,
     memory_encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
@@ -49,7 +49,7 @@ impl Traffic {
             hooks: Mutex::new(HookState {
                 exchange: logger::Exchange::new(
                     identity.audit_attribution(),
-                    Some(identity.agent_id.clone()),
+                    identity.request_agent().map(str::to_owned),
                 ),
                 metrics_start: None,
                 started: None,
@@ -61,7 +61,7 @@ impl Traffic {
             parsed,
             request_parsed: OnceLock::new(),
             request_id: request_id.to_owned(),
-            agent: Zeroizing::new(identity.agent_id.clone()),
+            identity_snapshot: identity.reconciled_snapshot(),
             client: identity.source_id.clone().map(Zeroizing::new),
             connection_id: Zeroizing::new(identity.connection_id.clone()),
             // MemoryMonitor runs before source header hygiene. Keep this
@@ -144,10 +144,15 @@ impl Traffic {
             return started;
         }
         let started = crate::circuit_runtime::now();
-        hooks.started = Some(started);
-        if let Ok(runtime) = self.state.read() {
-            runtime.observe_agent(&self.agent, self.client.as_deref().map(String::as_str));
+        if let Some(snapshot) = self.identity_snapshot.as_deref()
+            && let Ok(runtime) = self.state.read()
+            && let Err(error) = runtime
+                .agent_discovery
+                .observe_reconciled(snapshot, crate::circuit_runtime::now)
+        {
+            eprintln!("Agent discovery observation failed: {error}");
         }
+        hooks.started = Some(started);
         started
     }
 

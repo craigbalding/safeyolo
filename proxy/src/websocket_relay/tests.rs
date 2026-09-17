@@ -65,6 +65,7 @@ fn session(runtime: &Arc<Runtime>) -> Session {
             agent_id: "alice".into(),
             connection_id: ID.into(),
             source_id: None,
+            reconciled: None,
         },
         request_id: "req-owned".into(),
         host: "owned.invalid".into(),

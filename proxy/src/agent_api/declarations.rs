@@ -90,6 +90,22 @@ where
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
     }
+    // Reconciliation is the single request-boundary owner decision. Scoped
+    // routes reject a quarantined snapshot before reading a body or invoking
+    // a provider, so a stale legacy agent field cannot re-open ownership.
+    if matches!(request.identity, Identity::Conflict | Identity::Unavailable)
+        && (matches!(
+            route(request),
+            "/explain"
+                | "/trace"
+                | "/gateway/services"
+                | "/gateway/request-access"
+                | "/gateway/submit-binding"
+                | "/api/test-context/current"
+        ) || route(request).starts_with("/api/flows"))
+    {
+        return Ok(response(403, json!({"error":"Could not identify agent"})));
+    }
     if route(request) == "/memory" {
         return Ok(memory::respond(request, controls.memory).await);
     }

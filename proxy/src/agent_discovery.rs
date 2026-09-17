@@ -67,6 +67,9 @@ pub struct IdentitySources<'a> {
     pub client_ip: Option<&'a str>,
     pub metadata_agent: Option<&'a str>,
     pub request_id: Option<&'a str>,
+    /// Keep the resolved last-seen write at the existing reached request hook
+    /// when a local report must render before observing that same request.
+    pub defer_observation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,6 +85,47 @@ pub struct ReconciledIdentity {
 impl ReconciledIdentity {
     pub fn is_resolved(&self) -> bool {
         self.status == IdentityStatus::Resolved
+    }
+
+    pub(crate) fn status_name(&self) -> &'static str {
+        match self.status {
+            IdentityStatus::Resolved => "resolved",
+            IdentityStatus::Unavailable => "unavailable",
+            IdentityStatus::Conflict => "conflict",
+        }
+    }
+
+    /// Build the one request snapshot consumed by security and evidence
+    /// writers. Canonical values remain available on this object for
+    /// comparison; audit provenance uses the bounded projection.
+    pub(crate) fn audit_attribution(&self) -> audit::Attribution {
+        let status = match self.status {
+            IdentityStatus::Resolved => audit::AttributionStatus::Resolved,
+            IdentityStatus::Unavailable => audit::AttributionStatus::Unavailable,
+            IdentityStatus::Conflict => audit::AttributionStatus::Conflict,
+        };
+        let mut provenance = IndexMap::new();
+        if let Some(source) = self.source {
+            provenance.insert("transport_source".into(), text(source));
+        }
+        if let Some(agent) = self.uds_agent.as_deref() {
+            provenance.insert("uds_agent".into(), text(&projected_identity(agent)));
+        }
+        if let Some(agent) = self.mapped_agent.as_deref() {
+            provenance.insert("ip_map_agent".into(), text(&projected_identity(agent)));
+        }
+        if let Some(reason) = self.reason {
+            provenance.insert("reason".into(), text(reason));
+        }
+        audit::Attribution {
+            evidence_owner: (self.status == IdentityStatus::Resolved)
+                .then(|| self.agent.clone())
+                .flatten(),
+            trusted_transport_identity: self.uds_agent.clone(),
+            initiator: Some(audit::Initiator::Unknown),
+            status: Some(status),
+            provenance: Some(C::Object(provenance)),
+        }
     }
 }
 
@@ -296,9 +340,10 @@ impl AgentDiscovery {
         };
 
         match identity.status {
-            IdentityStatus::Resolved => {
+            IdentityStatus::Resolved if !sources.defer_observation => {
                 self.observe_trusted(identity.agent.as_deref().unwrap(), clock)?;
             }
+            IdentityStatus::Resolved => {}
             IdentityStatus::Conflict => {
                 emit_identity_event(writer, sources.request_id, &identity, true)?;
             }
@@ -307,6 +352,84 @@ impl AgentDiscovery {
             }
         }
         Ok(identity)
+    }
+
+    /// Apply a resolved request snapshot's source last-seen update. The
+    /// snapshot's owner is retained even if the map changes after admission.
+    pub fn observe_reconciled(
+        &self,
+        identity: &ReconciledIdentity,
+        clock: impl FnOnce() -> f64,
+    ) -> Result<()> {
+        if identity.status == IdentityStatus::Resolved {
+            self.observe_trusted(identity.agent.as_deref().unwrap(), clock)?;
+        }
+        Ok(())
+    }
+
+    /// Compare current trusted sources with a request snapshot without
+    /// changing that snapshot or advancing last-seen. A changed resolved
+    /// owner, or a resolved owner becoming unavailable/conflicted, is returned
+    /// for the caller's one-time quarantine event.
+    pub fn detect_late_change(
+        &self,
+        snapshot: &ReconciledIdentity,
+        client_ip: Option<&str>,
+        writer: &Writer,
+    ) -> Result<Option<ReconciledIdentity>> {
+        let Some(ip) = client_ip.filter(|ip| !ip.is_empty()) else {
+            return Ok(None);
+        };
+        // Source late inspection rereads the discovery file for comparison;
+        // a reload failure leaves the accepted cached snapshot untouched.
+        // A reload may publish a new map before its discovery event writer
+        // reports an error. Continue with the in-memory reverse index so a
+        // late owner change is still quarantined.
+        let _reload_failed = self.reload(writer).is_err();
+        let mapped_agent = self.map_agent(ip)?;
+        let uds_agent = snapshot.uds_agent.clone();
+        let agent = uds_agent.clone().or_else(|| mapped_agent.clone());
+        let current = if let (Some(uds), Some(mapped)) = (&uds_agent, &mapped_agent)
+            && uds != mapped
+        {
+            ReconciledIdentity {
+                status: IdentityStatus::Conflict,
+                agent: None,
+                source: None,
+                uds_agent,
+                mapped_agent,
+                metadata_agent: None,
+                reason: Some("uds_ip_map_mismatch"),
+            }
+        } else if let Some(agent) = agent {
+            ReconciledIdentity {
+                status: IdentityStatus::Resolved,
+                agent: Some(agent),
+                source: if snapshot.uds_agent.is_some() {
+                    Some("uds")
+                } else {
+                    Some("ip_map")
+                },
+                uds_agent,
+                mapped_agent,
+                metadata_agent: None,
+                reason: None,
+            }
+        } else {
+            ReconciledIdentity {
+                status: IdentityStatus::Unavailable,
+                agent: None,
+                source: None,
+                uds_agent,
+                mapped_agent,
+                metadata_agent: None,
+                reason: Some("no_trusted_identity"),
+            }
+        };
+        Ok(
+            (current.status != snapshot.status || current.agent != snapshot.agent)
+                .then_some(current),
+        )
     }
 
     /// Return the host map's current owner for a source peer address. The

@@ -42,7 +42,7 @@ pub(super) fn begin<B>(
     let exchange = runtime.traffic_view.begin(RequestInfo {
         id: request_id.to_owned(),
         connection_id: identity.connection_id.clone(),
-        agent: Some(identity.agent_id.clone()),
+        agent: identity.request_agent().map(str::to_owned),
         method: request.method().to_string(),
         url: format!(
             "{}://{}{}",

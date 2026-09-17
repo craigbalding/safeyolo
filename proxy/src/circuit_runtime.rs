@@ -77,7 +77,7 @@ pub(crate) fn record_transition(
     );
     fields.insert(
         "agent".into(),
-        serde_json::json!(scope.map(|(identity, _)| &identity.agent_id)).into(),
+        serde_json::json!(scope.and_then(|(identity, _)| identity.request_agent())).into(),
     );
     let bytes = circuits::CircuitValue::Object(fields)
         .render_audit_json()?
@@ -172,7 +172,7 @@ fn response_operation(
     let audit = circuits::Audit::new(
         &runtime.audit,
         source_scope.map(|(_, request_id)| request_id),
-        source_scope.map(|(identity, _)| identity.agent_id.as_str()),
+        source_scope.and_then(|(identity, _)| identity.request_agent()),
     );
     let result = runtime.circuits.response_current_with_audit(
         policy,

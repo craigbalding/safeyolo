@@ -242,6 +242,7 @@ fn append_guard_trace(
         agent_id,
         connection_id: format!("trace-connection-{request_id}"),
         source_id: None,
+        reconciled: None,
     };
     let request = Arc::new(crate::request_trace::RequestTrace::new(
         store.clone(),
@@ -376,6 +377,7 @@ fn credential_trace_store_failure_does_not_change_guard_outcome() {
         agent_id: "alice".into(),
         connection_id: "trace-observation-failure".into(),
         source_id: None,
+        reconciled: None,
     };
     let request = Arc::new(crate::request_trace::RequestTrace::new(
         store,
@@ -634,6 +636,7 @@ async fn failed_network_audit_retains_only_reached_trace_steps() {
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
+            reconciled: None,
         };
         let request = PolicyRequest {
             agent_id: "alice",
@@ -716,6 +719,7 @@ async fn trace_store_failure_does_not_change_guard_decision_or_counts() {
             agent_id: "alice".into(),
             connection_id: "owned-connection".into(),
             source_id: None,
+            reconciled: None,
         };
         let request = PolicyRequest {
             agent_id: "alice",

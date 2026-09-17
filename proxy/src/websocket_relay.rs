@@ -212,7 +212,7 @@ async fn read_messages<R: AsyncRead + Unpin>(
                         return Ok((message, true));
                     }
                     runtime.record(json!({
-                        "event": "proxy.websocket.message", "agent": state.identity.agent_id,
+                        "event": "proxy.websocket.message", "agent": state.identity.request_agent(),
                         "connection_id": state.identity.connection_id, "request_id": state.request_id,
                         "host": state.host, "port": state.port, "from_client": from_client,
                         "message_type": kind, "message_bytes": message.len(),
@@ -455,7 +455,7 @@ pub(crate) async fn relay(
         .map_err(|_| "runtime state unavailable")?
         .clone();
     runtime.record(json!({
-        "event": "proxy.websocket.end", "agent": session.identity.agent_id,
+        "event": "proxy.websocket.end", "agent": session.identity.request_agent(),
         "connection_id": session.identity.connection_id, "request_id": session.request_id,
         "host": session.host, "port": session.port, "close_code": end.code,
         "closed_by_client": end.from_client, "outcome": end.outcome,
