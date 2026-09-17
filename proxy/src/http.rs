@@ -118,6 +118,8 @@ fn prior_block(mut response: Response<Body>) -> Response<Body> {
 struct UpstreamBody<B = Incoming> {
     body: B,
     _connection: HttpTask,
+    completion: Option<Arc<circuit_completion::Completion>>,
+    incomplete_reported: bool,
     live: Option<Arc<crate::traffic_view::Exchange>>,
 }
 
@@ -178,10 +180,34 @@ where
         {
             live.response_trailers(live_view::header_map(trailers));
         }
+        if matches!(&frame, Poll::Ready(None))
+            && !this.incomplete_reported
+            && this
+                .completion
+                .as_ref()
+                .is_some_and(|completion| completion.response_incomplete())
+        {
+            this.incomplete_reported = true;
+            return Poll::Ready(Some(Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "upstream response ended before protocol completion",
+            )))));
+        }
         frame.map(|frame| frame.map(|result| result.map_err(|error| -> Error { Box::new(error) })))
     }
     fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
+        // H2 Incoming maps RST_STREAM(NO_ERROR) to clean EOF. Keep the
+        // downstream response in streaming mode until the application owner
+        // polls that EOF and converts the parser-aborted result to an error.
+        if self
+            .completion
+            .as_ref()
+            .is_some_and(|completion| completion.response_incomplete())
+        {
+            false
+        } else {
+            self.body.is_end_stream()
+        }
     }
     fn size_hint(&self) -> SizeHint {
         self.body.size_hint()
@@ -3189,6 +3215,8 @@ where
                 UpstreamBody {
                     body: prepared.body,
                     _connection: connection,
+                    completion: Some(completion.clone()),
+                    incomplete_reported: false,
                     live: live.clone(),
                 }
                 .boxed(),
@@ -3226,6 +3254,8 @@ where
             UpstreamBody {
                 body,
                 _connection: connection,
+                completion: Some(completion.clone()),
+                incomplete_reported: false,
                 live: live.clone(),
             }
             .boxed(),

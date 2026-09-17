@@ -16,7 +16,7 @@ use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixListener, UnixStream},
     sync::Notify,
     task::JoinHandle,
@@ -1108,6 +1108,86 @@ async fn connect_tls_with_alpn(
         .await?)
 }
 
+fn h2_wire_frame(kind: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+    let mut frame = vec![
+        (payload.len() >> 16) as u8,
+        (payload.len() >> 8) as u8,
+        payload.len() as u8,
+        kind,
+        flags,
+        (stream_id >> 24) as u8,
+        (stream_id >> 16) as u8,
+        (stream_id >> 8) as u8,
+        stream_id as u8,
+    ];
+    frame.extend_from_slice(payload);
+    frame
+}
+
+async fn read_h2_wire<S: AsyncRead + Unpin>(stream: &mut S) -> (u8, u8, u32, Vec<u8>) {
+    let mut header = [0_u8; 9];
+    stream.read_exact(&mut header).await.unwrap();
+    let length = ((header[0] as usize) << 16) | ((header[1] as usize) << 8) | header[2] as usize;
+    let stream_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]) & 0x7fff_ffff;
+    let mut payload = vec![0; length];
+    stream.read_exact(&mut payload).await.unwrap();
+    (header[3], header[4], stream_id, payload)
+}
+
+async fn raw_h2_origin(listener: TcpListener, tls: rustls::ServerConfig, partial_reset: bool) {
+    let (socket, _) = listener.accept().await.unwrap();
+    let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+        .accept(socket)
+        .await
+        .unwrap();
+    assert_eq!(stream.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    let mut preface = [0_u8; 24];
+    stream.read_exact(&mut preface).await.unwrap();
+    assert_eq!(&preface, b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+    stream
+        .write_all(&h2_wire_frame(4, 0, 0, &[]))
+        .await
+        .unwrap();
+    loop {
+        let (kind, flags, _, _) = read_h2_wire(&mut stream).await;
+        if kind == 4 && flags == 0 {
+            stream
+                .write_all(&h2_wire_frame(4, 1, 0, &[]))
+                .await
+                .unwrap();
+        }
+        if kind == 1 {
+            break;
+        }
+    }
+    // Frozen D54 response head and body prefix: status 503 followed by DATA
+    // and either END_STREAM or RST_STREAM(NO_ERROR).
+    stream
+        .write_all(&h2_wire_frame(1, 4, 1, b"\x08\x03\x35\x30\x33"))
+        .await
+        .unwrap();
+    stream
+        .write_all(&h2_wire_frame(0, u8::from(!partial_reset), 1, b"body"))
+        .await
+        .unwrap();
+    if partial_reset {
+        stream
+            .write_all(&h2_wire_frame(3, 0, 1, &0_u32.to_be_bytes()))
+            .await
+            .unwrap();
+    }
+    stream
+        .write_all(&h2_wire_frame(6, 0, 0, b"d54-ready"))
+        .await
+        .unwrap();
+    loop {
+        let (kind, flags, _, payload) = read_h2_wire(&mut stream).await;
+        if kind == 6 && flags == 1 && payload == b"d54-ready" {
+            break;
+        }
+    }
+}
+
 struct PausedBody {
     first: bool,
     finished: bool,
@@ -1288,6 +1368,91 @@ async fn http2_cancellation_releases_a_paused_upstream_stream() {
 #[tokio::test]
 async fn http2_shutdown_drains_a_paused_response() {
     http2_stream_lifecycle(false).await;
+}
+
+async fn full_proxy_h2_response_outcome(partial_reset: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let origin_cert = cert.der().clone();
+    let ca_path = directory.path().join("upstream.pem");
+    std::fs::write(&ca_path, cert.pem()).unwrap();
+    config.upstream_ca_file = Some(ca_path);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_cert],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let origin = tokio::spawn(raw_h2_origin(listener, tls, partial_reset));
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let socket = connect_tls_with_alpn(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        proxy_ca,
+        &[b"h2"],
+    )
+    .await
+    .unwrap();
+    assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(socket))
+            .await
+            .unwrap();
+    let client = tokio::spawn(connection);
+    let mut response = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/d54"))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let first = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.into_data().unwrap(), b"body".as_slice());
+    let terminal = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+        .await
+        .unwrap();
+    if partial_reset {
+        assert!(
+            matches!(terminal, Some(Err(_))),
+            "reset must fail downstream"
+        );
+    } else {
+        assert!(terminal.is_none(), "END_STREAM must remain clean");
+    }
+    drop(response);
+    drop(sender);
+    client.abort();
+    proxy.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn full_proxy_h2_partial_reset_fails_while_same_prefix_end_stream_is_clean() {
+    full_proxy_h2_response_outcome(false).await;
+    full_proxy_h2_response_outcome(true).await;
 }
 
 #[tokio::test]

@@ -697,6 +697,8 @@ async fn upstream_response_body_publishes_reached_trailers_to_live_export() {
     let mut body = super::super::UpstreamBody {
         body: incoming,
         _connection: super::super::HttpTask::unobserved(task.abort_handle()),
+        completion: None,
+        incomplete_reported: false,
         live: Some(live.clone()),
     };
     assert_eq!(
