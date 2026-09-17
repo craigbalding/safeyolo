@@ -107,6 +107,13 @@ impl AdminShield {
         self.ports.contains(&port)
     }
 
+    /// Add the process-local operator listener after an ephemeral bind.
+    /// Startup port zero is a request for an OS-selected port, so the bound
+    /// port must be retained in the same shield used by request admission.
+    pub(crate) fn protect_bound_port(&mut self, bound: SocketAddr) {
+        self.ports.insert(bound.port());
+    }
+
     /// Apply the source's exact local IP set to each resolved immediate-route
     /// candidate. Extra ports protect existing local control endpoints too.
     /// This closes their alias hole without classifying all loopback IPs or

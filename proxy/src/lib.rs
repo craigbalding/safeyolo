@@ -274,10 +274,13 @@ impl Runtime {
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         config.validate()?;
-        let admin_shield = admin_shield::AdminShield::new(
+        let mut admin_shield = admin_shield::AdminShield::new(
             config.admin_port.unwrap_or(9090),
             &config.admin_shield_extra_ports,
         )?;
+        if let Some(bound) = admin_address {
+            admin_shield.protect_bound_port(bound);
+        }
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
             .unwrap_or_default();

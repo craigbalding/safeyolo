@@ -267,6 +267,31 @@ fn assert_blocked(reply: &Reply) {
     assert!(reply.body == REJECTION.body, "source shield body is exact");
 }
 
+#[tokio::test]
+async fn ephemeral_operator_port_is_shielded_before_agent_egress() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let config = config(directory.path(), &token);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let before = events(&config)
+        .into_iter()
+        .filter(|row| row["event"] == "proxy.egress")
+        .count();
+
+    let target = format!("http://127.0.0.1:{port}{TASK_PATH}");
+    let host = format!("127.0.0.1:{port}");
+    assert_blocked(&agent(&config, "alice", "GET", &target, &host, Some(&token), b"").await);
+    assert_blocked(&agent(&config, "bob", "CONNECT", &host, &host, Some(&token), b"").await);
+
+    let after = events(&config)
+        .into_iter()
+        .filter(|row| row["event"] == "proxy.egress")
+        .count();
+    assert_eq!(after, before, "shielded operator requests do not dial");
+    assert_shutdown(proxy, &config, port).await;
+}
+
 fn events(config: &Config) -> Vec<Value> {
     std::fs::read_to_string(&config.event_log)
         .unwrap()
