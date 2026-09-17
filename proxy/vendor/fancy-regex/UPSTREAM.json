@@ -128,7 +128,7 @@
     },
     "src/lib.rs": {
       "upstream_sha256": "39bafd33072a9372e86f12de42677fde8e662ade48d26a3ea4276eeb59e32f03",
-      "vendored_sha256": "cb6336352f4d8bf64d28aa804435dfe18e01bd019aeb44fd147c05b529fdd199"
+      "vendored_sha256": "b97d61112096c8587890965731cad956769008eec53392772f841bcf3b047c48"
     },
     "src/optimize.rs": {
       "upstream_sha256": "7db7522f6abe56b652f6f85385b25b0d5a34417e362f7fcc10e6d64ac61aa17d",

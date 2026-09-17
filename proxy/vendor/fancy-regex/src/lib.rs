@@ -140,7 +140,10 @@ pub enum BytesMode {
     UnicodeBytes,
 }
 
-const MAX_RECURSION: usize = 64;
+// Python 3.12's parser accepts the supported nested-group forms through
+// depth 495 and raises RecursionError at depth 496. Keep the same finite
+// source boundary while parsing on the scanner's bounded child stack.
+const MAX_RECURSION: usize = 496;
 
 // the public API
 

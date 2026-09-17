@@ -454,7 +454,8 @@ fn reload_is_atomic_ordered_and_surfaces_engine_incompatibility_without_skipping
             .unwrap()
             .is_none()
     );
-    let unsupported = format!("{}a{}", "(?:".repeat(64), ")".repeat(64));
+    // Python accepts this form through depth 495 and rejects depth 496.
+    let unsupported = format!("{}a{}", "(?:".repeat(496), ")".repeat(496));
     let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",&unsupported,"body","block")]});
     let failure = scanner.maybe_reload(Some(&invalid)).unwrap_err();
     assert_eq!(failure.kind, ErrorKind::RegexCompatibility);
@@ -1543,34 +1544,52 @@ fn d33_named_unicode_and_nesting_rows_keep_python_boundaries() {
         assert_eq!(report.skipped[0].reason, SkipReason::InvalidPattern);
     }
 
-    let nested = format!("{}a{}", "(?:".repeat(8), ")".repeat(8));
-    let scanner = make_scanner(json!([rule("nested", &nested, "body", "log")]));
-    assert_eq!(
-        scanner
-            .scan_websocket_text(
-                Direction::Request,
-                MessageType::Text,
-                "a",
-                Options::default()
-            )
-            .unwrap()
-            .outcome,
-        Outcome::MatchLogged
-    );
+    for (name, open) in [("capturing", "("), ("noncapturing", "(?:")] {
+        let nested = format!("{}a{}", open.repeat(495), ")".repeat(495));
+        let scanner = make_scanner(json!([rule(name, &nested, "body", "log")]));
+        assert_eq!(
+            scanner
+                .scan_websocket_text(
+                    Direction::Request,
+                    MessageType::Text,
+                    "a",
+                    Options::default()
+                )
+                .unwrap()
+                .outcome,
+            Outcome::MatchLogged,
+            "Python-compatible depth 495 should reach the scanner consumer: {name}"
+        );
 
-    // fancy-regex reports its parser recursion boundary as compatibility;
-    // retaining that explicit failure is safer than accepting a different
-    // grammar or silently dropping the source rule.
-    let too_deep = format!("{}a{}", "(?:".repeat(64), ")".repeat(64));
-    assert_eq!(
-        Scanner::default()
+        let malformed_deep = format!("{}a{}", open.repeat(495), ")".repeat(494));
+        let report = Scanner::default()
             .load_policy_config(&json!({
-                "scan_patterns": [rule("too-deep", &too_deep, "body", "log")]
+                "scan_patterns": [rule("malformed-deep", &malformed_deep, "body", "log")]
             }))
-            .unwrap_err()
-            .kind,
-        ErrorKind::RegexCompatibility
-    );
+            .expect("malformed deep pattern should be classified without a parser panic");
+        assert_eq!(report.rules_total, 0, "{name}");
+        assert_eq!(report.skipped.len(), 1, "{name}");
+        assert_eq!(
+            report.skipped[0].reason,
+            SkipReason::InvalidPattern,
+            "{name}"
+        );
+
+        // The source parser raises RecursionError at depth 496. Preserve that
+        // source-backed compatibility boundary instead of silently accepting
+        // a different grammar or introducing an operator-specific cap.
+        let too_deep = format!("{}a{}", open.repeat(496), ")".repeat(496));
+        assert_eq!(
+            Scanner::default()
+                .load_policy_config(&json!({
+                    "scan_patterns": [rule("too-deep", &too_deep, "body", "log")]
+                }))
+                .unwrap_err()
+                .kind,
+            ErrorKind::RegexCompatibility,
+            "Python-compatible depth 496 should remain a compatibility failure: {name}"
+        );
+    }
 }
 
 #[test]

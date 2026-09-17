@@ -16,6 +16,8 @@
 //! removes the scanner's private stack cutoff: VM buffers grow fallibly and are
 //! released after each scan. The complete-message regression matches at 1,000,100
 //! bytes, 4 MiB and 8 MiB. Remaining gaps still block production acceptance.
+//! Patterns deeper than the ordinary worker-stack handoff compile on a bounded
+//! 8 MiB child stack; the source-backed parser boundary remains depth 496.
 //! Configurable backtracking and compiled-size cutoffs use usize::MAX without
 //! eager capacity allocation.
 //!
@@ -507,6 +509,12 @@ pub(crate) enum PatternIssue {
     Compatibility,
 }
 
+// This is a resource selector for the ordinary worker stack, not an accepted
+// pattern limit. Patterns above it use the bounded child stack below; the
+// parser's source-backed acceptance boundary remains MAX_RECURSION (496).
+const DEEP_PARSE_HANDOFF_DEPTH: usize = 64;
+const DEEP_PARSE_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 /// One Python-pattern adapter for the scanner and credential-header detector.
 /// Callers classify invalid rules separately from engine compatibility gaps;
 /// neither path exposes the operator's expression in diagnostic errors.
@@ -530,6 +538,53 @@ fn compile_scanner_pattern(
     compile_python_pattern(&adapted, insensitive)
 }
 fn compile_engine_pattern(
+    adapted: &str,
+    insensitive: bool,
+) -> std::result::Result<Regex, PatternIssue> {
+    // The vendored parser keeps its source-backed Python depth boundary, but
+    // parsing 495 nested groups consumes more native call stack than the
+    // ordinary worker stack provides. Move only these deep, finite parses to a
+    // bounded child stack; matching remains on the caller and no policy rule
+    // is rejected at this resource handoff.
+    if pattern_group_depth(adapted) > DEEP_PARSE_HANDOFF_DEPTH {
+        let pattern = adapted.to_owned();
+        return std::thread::Builder::new()
+            .name("safeyolo-regex-parser".into())
+            .stack_size(DEEP_PARSE_STACK_BYTES)
+            .spawn(move || compile_engine_pattern_local(&pattern, insensitive))
+            .map_err(|_| PatternIssue::Compatibility)?
+            .join()
+            .unwrap_or(Err(PatternIssue::Compatibility));
+    }
+    compile_engine_pattern_local(adapted, insensitive)
+}
+
+fn pattern_group_depth(pattern: &str) -> usize {
+    let mut depth: usize = 0;
+    let mut maximum: usize = 0;
+    let mut in_class = false;
+    let mut escaped = false;
+    for byte in pattern.bytes() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'[' if !in_class => in_class = true,
+            b']' if in_class => in_class = false,
+            b'(' if !in_class => {
+                depth += 1;
+                maximum = maximum.max(depth);
+            }
+            b')' if !in_class => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    maximum
+}
+
+fn compile_engine_pattern_local(
     adapted: &str,
     insensitive: bool,
 ) -> std::result::Result<Regex, PatternIssue> {
@@ -2314,5 +2369,18 @@ mod tests {
             .unwrap()
             .expect("named Unicode pattern should match");
         assert_eq!((matched.start(), matched.end()), (2, 17));
+
+        for open in ["(", "(?:"] {
+            let nested = format!("prefix-{}a{}-suffix", open.repeat(495), ")".repeat(495));
+            let expression = match compile_python_pattern(&nested, false) {
+                Ok(expression) => expression,
+                Err(_) => panic!("depth-495 pattern should compile: {open:?}"),
+            };
+            let matched = expression
+                .find("xxprefix-a-suffixyy")
+                .unwrap()
+                .expect("depth-495 pattern should match");
+            assert_eq!((matched.start(), matched.end()), (2, 17), "{open:?}");
+        }
     }
 }
