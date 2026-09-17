@@ -423,7 +423,13 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let origin_ca = cert.der().clone();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let authority = format!("localhost:{}", listener.local_addr().unwrap().port());
+    let port = listener.local_addr().unwrap().port();
+    let authority = format!("localhost:{port}");
+    let adjacent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let adjacent_authority = format!(
+        "localhost:{}",
+        adjacent_listener.local_addr().unwrap().port()
+    );
     config.ignore_hosts = vec![authority.clone()];
     let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
@@ -436,6 +442,9 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
     )
     .unwrap();
+    let exact_request =
+        format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    let expected_request = exact_request.clone();
     let origin = tokio::spawn(async move {
         let (socket, _) = listener.accept().await.unwrap();
         let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
@@ -446,7 +455,7 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         while !head.ends_with(b"\r\n\r\n") {
             head.push(stream.read_u8().await.unwrap());
         }
-        assert!(head.starts_with(b"GET /deny-inner HTTP/1.1\r\n"));
+        assert_eq!(head, expected_request.as_bytes());
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\norigin")
             .await
@@ -458,26 +467,48 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         socket.read_to_end(&mut bytes).await.unwrap();
         assert!(bytes.is_empty());
     });
+    let adjacent_origin = tokio::spawn(async move {
+        let (mut socket, _) = adjacent_listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            bytes.is_empty(),
+            "intercepted control leaked inner bytes: {bytes:?}"
+        );
+    });
     let mut proxy = Proxy::start(config.clone()).await.unwrap();
     let mut client = connect_tls(
         &config.listeners[0].socket_path,
         &authority,
         "localhost",
-        origin_ca,
+        origin_ca.clone(),
     )
     .await
     .unwrap();
-    client
-        .write_all(
-            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .await
-        .unwrap();
+    client.write_all(exact_request.as_bytes()).await.unwrap();
     let mut received = Vec::new();
     client.read_to_end(&mut received).await.unwrap();
     assert!(received.ends_with(b"origin"));
+    assert_eq!(
+        client
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref()
+    );
     drop(client);
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert_eq!(lifecycle[0]["host"], "localhost");
+    assert_eq!(lifecycle[0]["details"]["port"], port);
     assert!(
         policy
             .requests
@@ -486,6 +517,42 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
             .iter()
             .all(|request| request["method"] == "CONNECT")
     );
+    let mut adjacent = connect_tls(
+        &config.listeners[0].socket_path,
+        &adjacent_authority,
+        "localhost",
+        proxy_ca.clone(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        adjacent
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref()
+    );
+    adjacent
+        .write_all(
+            format!(
+                "GET /deny-inner HTTP/1.1\r\nHost: {adjacent_authority}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut adjacent_received = Vec::new();
+    adjacent.read_to_end(&mut adjacent_received).await.unwrap();
+    assert!(adjacent_received.starts_with(b"HTTP/1.1 403"));
+    drop(adjacent);
+    tokio::time::timeout(Duration::from_secs(2), adjacent_origin)
+        .await
+        .unwrap()
+        .unwrap();
     config.ignore_hosts.clear();
     proxy.reload(config.clone()).await.unwrap();
     let mut client = connect_tls(
@@ -496,13 +563,7 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
     )
     .await
     .unwrap();
-    client
-        .write_all(
-            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
-                .as_bytes(),
-        )
-        .await
-        .unwrap();
+    client.write_all(exact_request.as_bytes()).await.unwrap();
     let mut received = Vec::new();
     let _ = client.read_to_end(&mut received).await;
     assert!(received.starts_with(b"HTTP/1.1 403"));
@@ -510,7 +571,38 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(passthrough_events(&config), lifecycle);
     proxy.shutdown().await;
+}
+
+fn passthrough_events(config: &Config) -> Vec<Value> {
+    let Some(path) = config.audit_log_path.as_ref() else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|event: &Value| event["addon"] == "ignored-host-logger")
+        .collect()
+}
+
+async fn wait_passthrough_events(config: &Config, count: usize) -> Vec<Value> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let events = passthrough_events(config);
+            if events.len() == count {
+                return events;
+            }
+            assert!(
+                events.len() < count,
+                "unexpected duplicate passthrough events: {events:?}"
+            );
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
 }
 
 fn events(config: &Config) -> Vec<Value> {
