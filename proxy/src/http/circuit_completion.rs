@@ -909,6 +909,11 @@ mod tests {
             "reset" => h2_frame(3, 0, &0_u32.to_be_bytes()),
             "partial" => h2_frame(0, 0, b"body"),
             "complete" => h2_frame(0, 1, b"body"),
+            "partial_reset" => {
+                let mut frames = h2_frame(0, 0, b"body");
+                frames.extend_from_slice(&h2_frame(3, 0, &0_u32.to_be_bytes()));
+                frames
+            }
             _ => panic!("unknown owned H2 fixture"),
         };
         let task = tokio::spawn(async move {
@@ -1054,6 +1059,53 @@ mod tests {
             // remains successful even though none of its buffered body was read.
             drop(response);
             assert_eq!(completion.try_finish(), Some(false));
+            drop(driver);
+            assert_eq!(
+                fixture.failures(),
+                (terminal == "complete").then(|| json!(1)),
+                "{terminal}"
+            );
+            assert_eq!(fixture.events().len(), usize::from(terminal == "complete"));
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_h2_partial_data_reset_is_incomplete_while_same_prefix_completes() {
+        for terminal in ["partial_reset", "complete"] {
+            let fixture = Fixture::new(false);
+            let (client, peer) = tokio::io::duplex(4096);
+            let (mut sender, connection) =
+                hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(client))
+                    .await
+                    .unwrap();
+            let (request, completion) = fixture.register(true);
+            let response = sender.send_request(request);
+            let (_peer, barrier) = h2_peer(peer, terminal);
+            let driver = Task(tokio::spawn(completion.clone().drive(connection)));
+            tokio::time::timeout(LIMIT, barrier).await.unwrap().unwrap();
+
+            let response = tokio::time::timeout(LIMIT, response)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let mut body = response.into_body();
+            let first = tokio::time::timeout(LIMIT, body.frame())
+                .await
+                .unwrap()
+                .expect("the shared DATA prefix is delivered")
+                .expect("the shared DATA prefix is valid");
+            assert_eq!(first.into_data().unwrap(), Bytes::from_static(b"body"));
+            // Hyper deliberately maps RST_STREAM(NO_ERROR) to a clean
+            // StreamEnded body. The completion observer remains the authority
+            // that distinguishes this from validated EOM.
+            assert!(body.frame().await.is_none(), "{terminal} body ended");
+
+            // Both cases have a 503 head and the same DATA prefix. Only the
+            // END_STREAM control is a validated terminal response, so the
+            // reset path cannot count as a circuit failure.
+            assert_eq!(completion.try_finish(), Some(false), "{terminal}");
+            drop(body);
             drop(driver);
             assert_eq!(
                 fixture.failures(),
