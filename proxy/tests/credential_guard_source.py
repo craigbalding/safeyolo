@@ -7,8 +7,8 @@ import unicodedata
 from pathlib import Path
 
 from mitmproxy.http import Headers
-from safeyolo.detection.credentials import CredentialRule, analyze_headers
 
+from safeyolo.detection.credentials import CredentialRule, analyze_headers
 
 CASES = [
     ("authorization_ff", b"Bearer key-\xff"),
