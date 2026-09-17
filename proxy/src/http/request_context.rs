@@ -11,7 +11,7 @@ use std::{
 };
 
 use http_body_util::BodyExt;
-use hyper::{Request, Response, body::Incoming, header};
+use hyper::{Request, Response, body::Body, header};
 use zeroize::Zeroizing;
 
 use crate::{
@@ -243,12 +243,30 @@ impl RequestContext {
 
     /// Small buffered requests must cross the independent parser barrier before
     /// the caller may dial. Streamed bodies retain their still-pending permit.
-    pub(super) async fn buffer(
-        mut self,
-        body: Incoming,
+    pub(super) async fn buffer<B>(
+        self,
+        body: B,
         content_length: Option<u64>,
-    ) -> Result<(super::Body, Self), Error> {
+    ) -> Result<(super::Body, Self), Error>
+    where
+        B: Body<Data = hyper::body::Bytes> + Unpin + Send + Sync + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         let prepared = super::request_body::prepare(body, content_length, false).await?;
+        self.buffer_prepared(prepared).await
+    }
+
+    /// Consume a body that was prepared before gateway selection. This keeps
+    /// the source body owner and its parser frames intact while allowing the
+    /// contract matcher to inspect the bytes at admission.
+    pub(super) async fn buffer_prepared<B>(
+        mut self,
+        prepared: super::request_body::Prepared<B>,
+    ) -> Result<(super::Body, Self), Error>
+    where
+        B: Body<Data = hyper::body::Bytes> + Unpin + Send + Sync + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         if let Some(content) = prepared.unvalidated_content {
             self.apply_buffered(&content).await?;
         } else {
@@ -266,11 +284,15 @@ impl RequestContext {
     /// A local probe can reach its sink only through the source-buffered path.
     /// Streaming selects transport before the source request hook, so return
     /// None without applying context or consuming the remaining upload.
-    pub(super) async fn buffer_probe(
+    pub(super) async fn buffer_probe<B>(
         mut self,
-        body: Incoming,
+        body: B,
         content_length: Option<u64>,
-    ) -> Result<Option<Self>, Error> {
+    ) -> Result<Option<Self>, Error>
+    where
+        B: Body<Data = hyper::body::Bytes> + Unpin + Send + Sync + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         let prepared = super::request_body::prepare(body, content_length, false).await?;
         let Some(content) = prepared.unvalidated_content else {
             return Ok(None);

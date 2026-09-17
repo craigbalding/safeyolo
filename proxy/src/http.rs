@@ -899,15 +899,19 @@ fn record_agent_api(
     }))
 }
 
-async fn local_agent_api(
+async fn local_agent_api<B>(
     runtime: &Runtime,
     traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
-    request: &mut Request<Incoming>,
+    request: &mut Request<B>,
     destination: &Destination,
     trace: Option<&Arc<RequestTrace>>,
-) -> Result<Response<Body>, Error> {
+) -> Result<Response<Body>, Error>
+where
+    B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     use crate::agent_api::{self, Failure, PolicyState};
 
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(request)?;
@@ -1346,7 +1350,7 @@ fn publish_gateway_evidence(
         "metadata": evidence.metadata,
         "trace": evidence.trace,
         "stats": evidence.stats,
-        "body_scope": "simple_service_empty_contract_body",
+        "body_scope": "contract_body_checked_when_buffered",
         "query_scope": "signed_query_preserved_in_full_url",
     }))?;
     Ok(())
@@ -1369,20 +1373,24 @@ fn gateway_response(status: u16, code: &str, request_id: &str) -> Result<Respons
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
-async fn forward(
+async fn forward<B>(
     runtime: Arc<Runtime>,
     state: RuntimeState,
     upgrades: UpgradeTasks,
     allow_upgrades: bool,
     identity: &ConnectionIdentity,
     request_id: &str,
-    mut request: Request<Incoming>,
+    mut request: Request<B>,
     recording: Arc<flow_recording::Recording>,
     live: Option<Arc<crate::traffic_view::Exchange>>,
     destination: &Destination,
     tunnel: Option<&Tunnel>,
     trace: Option<Arc<RequestTrace>>,
-) -> Result<(Response<Body>, String), Error> {
+) -> Result<(Response<Body>, String), Error>
+where
+    B: HttpBody<Data = Bytes> + Unpin + Send + Sync + 'static,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let pipeline_probe = probe::is_host(&destination.host);
     // CONNECT has its own source hook before destination policy and no
     // ordinary HTTP request body lifecycle. Observe each admission once.
@@ -1690,10 +1698,112 @@ async fn forward(
         )?;
         return Ok((prior_block(reply), "deny".into()));
     }
-    // Service-gateway selection is a request-local operation after network and
-    // circuit admission. It consumes the trusted UDS identity and the
-    // published snapshot, then applies a vault credential before the later
-    // credential guard and before any body observation or outbound dial.
+    // Credential enforcement is deliberately after network and circuit
+    // admission, but before test-context observation, body buffering, or any
+    // outbound connection. The ordered parser view remains alive here so the
+    // guard sees first spelling and grouped duplicate values exactly once.
+    if let Some(policy) = runtime.policy.as_ref() {
+        let guard = runtime
+            .credential_guard
+            .as_ref()
+            .ok_or("native credential guard is unavailable")?;
+        let guard_trace = trace.as_ref().and_then(|trace| {
+            trace.hook(
+                "credential-guard",
+                if request.method() == Method::CONNECT {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
+        let outcome = match guard.enforce_ordered(
+            crate::credential_guard::Pdp::Ready(policy),
+            crate::network_guard::Identity::Resolved(&identity.agent_id),
+            &destination.policy_host,
+            destination.port,
+            request.method().as_str(),
+            &destination.path,
+            &destination.scheme,
+            Some(request_id),
+            &identity.connection_id,
+            false,
+            ordered_headers.iter(),
+            crate::credential_guard::Options {
+                block: runtime.config.credential_guard_block(),
+            },
+            crate::policy::current_time_ms(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(hook) = &guard_trace {
+                    hook.error("CredentialGuardError");
+                }
+                // A decoder, matcher, or policy observation error is a
+                // terminal local failure. It cannot be interpreted as
+                // no-detection and cannot reach open_outbound.
+                return Err(error.into());
+            }
+        };
+        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
+        // Canonical audit is emitted exactly once per guard intent. The
+        // attribution is trusted UDS identity; no credential value enters it.
+        for intent in &outcome.audit {
+            runtime
+                .audit
+                .emit(intent.event(identity.audit_attribution()))?;
+        }
+        runtime.record(json!({
+            "event": "proxy.credential_guard",
+            "agent": identity.agent_id,
+            "connection_id": identity.connection_id,
+            "request_id": request_id,
+            "host": destination.policy_host,
+            "port": destination.port,
+            "outcome": outcome.kind,
+            "trace": outcome.trace,
+            "audit": outcome.audit,
+            "metadata": outcome.metadata,
+            "evaluations": outcome.evaluations,
+            "body_scope": "headers_only",
+            "query_scope": "policy_context_only",
+        }))?;
+        if let Some(enforcement) = outcome.response {
+            let body = enforcement.body_bytes();
+            let mut blocked = Response::builder()
+                .status(StatusCode::from_u16(enforcement.status)?)
+                .body(full(body))?;
+            for (name, value) in enforcement.headers {
+                blocked
+                    .headers_mut()
+                    .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            strip_hop_headers(blocked.headers_mut());
+            traffic::local_reply(
+                traffic.as_ref(),
+                &mut request,
+                &mut blocked,
+                outcome.metadata.get("blocked_by").cloned(),
+                outcome.metadata.get("block_reason").cloned(),
+                destination,
+                true,
+                trace.as_ref(),
+            )?;
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+    }
+    // Prepare the source body after the credential guard has run, but before
+    // gateway admission. A replay owner keeps every buffered frame (including
+    // trailers) available for the eventual upstream request.
+    let content_length = request.body().size_hint().exact();
+    let (parts, body) = request.into_parts();
+    let prepared = request_body::prepare(body, content_length, false).await?;
+    let contract_body = prepared.unvalidated_content;
+    let mut request = Request::from_parts(parts, prepared.body);
+    // Service-gateway selection is a request-local operation after network,
+    // circuit and credential admission. It consumes the trusted UDS identity
+    // and the published snapshot, then applies a vault credential before body
+    // observation or outbound dial.
     let mut grant_lease = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
@@ -1714,9 +1824,11 @@ async fn forward(
                     method: request.method().as_str(),
                     target: &destination.path,
                     headers: &gateway_headers,
-                    // Simple service routes have no contract body binding. The
-                    // body remains owned by Hyper and is forwarded unchanged.
-                    body: &[],
+                    // Contract selection runs only after request-body preparation;
+                    // the prepared bytes remain owned by the replay body below.
+                    body: contract_body
+                        .as_ref()
+                        .map_or(&[][..], |value| value.as_slice()),
                 },
                 route_mode: crate::services::RouteMode::CompiledPolicy(policy),
             })
@@ -1750,6 +1862,13 @@ async fn forward(
                 return Ok((prior_block(reply), "deny".into()));
             }
             crate::services::GatewayDecision::Selected { credential } => {
+                if credential.contract_operation.is_some() && contract_body.is_none() {
+                    // A streamed body cannot be checked against a contract
+                    // without first owning its complete parser terminal. Do
+                    // not inject or dial while its constraint is unknown.
+                    let reply = gateway_response(503, "GATEWAY_BODY_UNAVAILABLE", request_id)?;
+                    return Ok((prior_block(reply), "deny".into()));
+                }
                 if let Some(risky) = credential.risky_route.as_ref() {
                     let risky_path = destination.path.split('?').next().unwrap_or("/");
                     let mut granted = None;
@@ -1896,100 +2015,6 @@ async fn forward(
                     }
                 }
             }
-        }
-    }
-    // Credential enforcement is deliberately after network and circuit
-    // admission, but before test-context observation, body buffering, or any
-    // outbound connection. The ordered parser view remains alive here so the
-    // guard sees first spelling and grouped duplicate values exactly once.
-    if let Some(policy) = runtime.policy.as_ref() {
-        let guard = runtime
-            .credential_guard
-            .as_ref()
-            .ok_or("native credential guard is unavailable")?;
-        let guard_trace = trace.as_ref().and_then(|trace| {
-            trace.hook(
-                "credential-guard",
-                if request.method() == Method::CONNECT {
-                    "http_connect"
-                } else {
-                    "request"
-                },
-            )
-        });
-        let outcome = match guard.enforce_ordered(
-            crate::credential_guard::Pdp::Ready(policy),
-            crate::network_guard::Identity::Resolved(&identity.agent_id),
-            &destination.policy_host,
-            destination.port,
-            request.method().as_str(),
-            &destination.path,
-            &destination.scheme,
-            Some(request_id),
-            &identity.connection_id,
-            false,
-            ordered_headers.iter(),
-            crate::credential_guard::Options {
-                block: runtime.config.credential_guard_block(),
-            },
-            crate::policy::current_time_ms(),
-        ) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                if let Some(hook) = &guard_trace {
-                    hook.error("CredentialGuardError");
-                }
-                // A decoder, matcher, or policy observation error is a
-                // terminal local failure. It cannot be interpreted as
-                // no-detection and cannot reach open_outbound.
-                return Err(error.into());
-            }
-        };
-        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
-        // Canonical audit is emitted exactly once per guard intent. The
-        // attribution is trusted UDS identity; no credential value enters it.
-        for intent in &outcome.audit {
-            runtime
-                .audit
-                .emit(intent.event(identity.audit_attribution()))?;
-        }
-        runtime.record(json!({
-            "event": "proxy.credential_guard",
-            "agent": identity.agent_id,
-            "connection_id": identity.connection_id,
-            "request_id": request_id,
-            "host": destination.policy_host,
-            "port": destination.port,
-            "outcome": outcome.kind,
-            "trace": outcome.trace,
-            "audit": outcome.audit,
-            "metadata": outcome.metadata,
-            "evaluations": outcome.evaluations,
-            "body_scope": "headers_only",
-            "query_scope": "policy_context_only",
-        }))?;
-        if let Some(enforcement) = outcome.response {
-            let body = enforcement.body_bytes();
-            let mut blocked = Response::builder()
-                .status(StatusCode::from_u16(enforcement.status)?)
-                .body(full(body))?;
-            for (name, value) in enforcement.headers {
-                blocked
-                    .headers_mut()
-                    .append(header::HeaderName::try_from(name)?, value.parse()?);
-            }
-            strip_hop_headers(blocked.headers_mut());
-            traffic::local_reply(
-                traffic.as_ref(),
-                &mut request,
-                &mut blocked,
-                outcome.metadata.get("blocked_by").cloned(),
-                outcome.metadata.get("block_reason").cloned(),
-                destination,
-                true,
-                trace.as_ref(),
-            )?;
-            return Ok((prior_block(blocked), "deny".into()));
         }
     }
     let admission = if circuit_hook_failed {
@@ -2155,6 +2180,8 @@ async fn forward(
         request_id.to_owned(),
         destination.policy_host.clone(),
         Some(context),
+        grant_lease.take(),
+        runtime.gateway_grants.clone(),
     );
     let mut request = request.map(|body| ForwardedRequestBody {
         body,
@@ -2200,18 +2227,6 @@ async fn forward(
     };
     completion.headers_received();
     let _ = completion.try_finish();
-    if let Some(lease) = grant_lease.take()
-        && let Some(store) = runtime.gateway_grants.as_ref()
-    {
-        store
-            .finish_response(
-                lease,
-                Some(upstream.status().as_u16()),
-                time::OffsetDateTime::now_utc(),
-                |_| Ok(()),
-            )
-            .map_err(|error| -> Error { Box::new(error) })?;
-    }
     if let Some(live) = &live {
         let version = format!("{:?}", upstream.version());
         let reason = upstream

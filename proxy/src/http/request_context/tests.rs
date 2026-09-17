@@ -503,6 +503,8 @@ async fn forwarded_request_body_publishes_reached_trailers_to_live_export() {
         "request-trailer-observer".into(),
         "owned.invalid".into(),
         None,
+        None,
+        None,
     );
     let mut body = super::super::ForwardedRequestBody {
         body: outbound.into_body(),
@@ -695,6 +697,8 @@ async fn streamed_drop_has_no_effects_and_forwarded_terminal_applies_once() {
                 "forwarded-request".into(),
                 "owned.invalid".into(),
                 Some(context),
+                None,
+                None,
             );
             let mut body = super::super::ForwardedRequestBody {
                 body: outbound.into_body(),

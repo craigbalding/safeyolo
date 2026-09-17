@@ -40,6 +40,7 @@ struct Observation {
     request: Option<RequestContext>,
     request_failed: bool,
     live_error: Option<zeroize::Zeroizing<String>>,
+    gateway_lease: Option<crate::grants::GrantLease>,
 }
 
 /// Trusted request context and cached application outcomes. Selected response
@@ -54,9 +55,11 @@ pub(super) struct Completion {
     recording: Option<Arc<super::flow_recording::Recording>>,
     traffic: Option<Arc<super::traffic::Traffic>>,
     trace: Option<Arc<crate::request_trace::RequestTrace>>,
+    gateway_store: Option<crate::grants::Store>,
 }
 
 impl Completion {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn register<B>(
         request: &mut Request<B>,
         http2: bool,
@@ -65,6 +68,8 @@ impl Completion {
         request_id: String,
         host: String,
         context: Option<RequestContext>,
+        gateway_lease: Option<crate::grants::GrantLease>,
+        gateway_store: Option<crate::grants::Store>,
     ) -> Arc<Self> {
         let recording = request
             .extensions_mut()
@@ -107,6 +112,7 @@ impl Completion {
                 request: context,
                 request_failed,
                 live_error: None,
+                gateway_lease,
             }),
             state,
             identity,
@@ -116,6 +122,7 @@ impl Completion {
             recording,
             traffic,
             trace,
+            gateway_store,
         })
     }
 
@@ -131,6 +138,47 @@ impl Completion {
     fn apply(&self, observation: &mut Observation, result: Result<StatusCode, ()>) -> bool {
         observation.applied = Some(true);
         observation.protocol = None;
+        if let Some(lease) = observation.gateway_lease.take() {
+            let grant_id = lease.grant().grant_id.clone();
+            let outcome = if let Some(store) = self.gateway_store.as_ref()
+                && matches!(result, Ok(status) if status.is_success())
+            {
+                // Consumption is tied to the parser's terminal response
+                // completion, after all response bytes have been accepted.
+                // A stale lease is intentionally released by Store rather
+                // than reviving a replaced approval.
+                match store.finish_response(
+                    lease,
+                    result.ok().map(|status| status.as_u16()),
+                    time::OffsetDateTime::now_utc(),
+                    |_| Ok(()),
+                ) {
+                    Ok(crate::grants::ResponseOutcome::Consumed) => "grant_consumed",
+                    Ok(crate::grants::ResponseOutcome::Stale) => "grant_stale",
+                    Ok(crate::grants::ResponseOutcome::Retained) => "grant_retained",
+                    Err(_) => "grant_completion_error",
+                }
+            } else {
+                drop(lease);
+                "grant_retained"
+            };
+            // Completion outcomes are safe metadata: grant IDs contain no
+            // credential material. Recording failure cannot alter the already
+            // applied response or release a fail-closed reservation.
+            if let Ok(runtime) = self.state.read() {
+                let _ = runtime.record(serde_json::json!({
+                    "event":"proxy.gateway",
+                    "request_id":self.request_id,
+                    "agent":self.identity.agent_id,
+                    "host":self.host,
+                    "grant_id":grant_id,
+                    "outcome":outcome,
+                    "status":result.ok().map(|status| status.as_u16()),
+                }));
+            }
+        }
+        // Non-2xx, reset and downstream cancellation drop the lease and
+        // release its reservation through GrantLease's owner.
         if result.is_ok()
             && let Some(capture) = &self.capture
         {
@@ -388,6 +436,8 @@ mod tests {
                 "owned-request".into(),
                 "owned.invalid".into(),
                 None,
+                None,
+                None,
             );
             (request, completion)
         }
@@ -487,11 +537,12 @@ mod tests {
             let completion = Arc::new(Completion {
                 observation: Mutex::new(Observation {
                     protocol: Some(protocol), applied: None, request: None, request_failed: false,
-                    live_error: None,
+                    live_error: None, gateway_lease: None,
                 }),
                 state: fixture.state.clone(), identity, request_id: "owned-request".into(),
                 host: "owned.invalid".into(), capture: Some(capture), recording: None,
                 traffic: Some(traffic), trace: None,
+                gateway_store: None,
             });
             let (client, mut peer) = tokio::io::duplex(4096);
             let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client)).await.unwrap();
