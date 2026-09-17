@@ -449,6 +449,63 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
 }
 
 #[tokio::test]
+async fn native_http_client_disconnect_cancels_scan_without_late_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [{"action":"network:request", "resource":"*", "effect":"allow"}],
+            "scan_patterns": [{"name":"cancellation","pattern":"^(a|aa)*\\1$","scope":["body"],"target":"request","action":"log"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready));
+    let mut proxy_config = config(&directory, &policy_path, &socket, false);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: false,
+        block_response: false,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+    let mut peer = UnixStream::connect(&socket).await.unwrap();
+    let body = vec![b'a'; 4096];
+    let head = format!(
+        "POST http://127.0.0.1:{origin_port}/cancel HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len() + 1
+    );
+    peer.write_all(head.as_bytes()).await.unwrap();
+    peer.write_all(&body).await.unwrap();
+    peer.write_all(b"b").await.unwrap();
+    // Give the scanner a chance to start, then close the client while its
+    // backtracking VM is active. Shutdown must not wait for the old scan.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(peer);
+    tokio::time::timeout(Duration::from_secs(3), proxy.shutdown())
+        .await
+        .expect("disconnect left HTTP inspection worker running");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "disconnected request reached origin"
+    );
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap_or_default();
+    assert!(!audit.lines().any(|line| {
+        serde_json::from_str::<Value>(line)
+            .ok()
+            .is_some_and(|event| event["event"] == "security.pattern_scanner")
+    }));
+    origin_task.abort();
+}
+
+#[tokio::test]
 async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");

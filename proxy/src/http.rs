@@ -3,7 +3,10 @@ use std::{
     future::Future,
     io::BufReader,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -80,6 +83,32 @@ impl Drop for HttpTask {
 /// claim this classification or suppress an upstream failure observation.
 #[derive(Clone)]
 struct CircuitPriorBlock;
+
+/// Keeps an asynchronous owner alive through scan-result publication. If the
+/// service future is dropped by downstream cancellation, the blocking scanner
+/// receives the same cooperative stop signal used by the WebSocket owner.
+struct PatternScanLifetime {
+    cancelled: Arc<AtomicBool>,
+    publication: Mutex<()>,
+}
+
+impl PatternScanLifetime {
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    fn publication(&self) -> Result<std::sync::MutexGuard<'_, ()>, Error> {
+        self.publication
+            .lock()
+            .map_err(|_| "pattern inspection publication unavailable".into())
+    }
+}
+
+impl Drop for PatternScanLifetime {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
 
 fn prior_block(mut response: Response<Body>) -> Response<Body> {
     response.extensions_mut().insert(CircuitPriorBlock);
@@ -266,6 +295,52 @@ fn pattern_local_response(
         blocked_by: Some(json!("pattern-scanner").into()),
         block_reason: failure.map(|failure| json!(failure).into()),
     });
+}
+
+async fn scan_response_with_lifetime(
+    scanner: crate::inspection::Scanner,
+    headers: Vec<(Vec<u8>, Vec<u8>)>,
+    body: Option<Arc<zeroize::Zeroizing<Vec<u8>>>>,
+    options: crate::inspection::Options,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<(crate::inspection::Decision, PatternScanLifetime), Error> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let lifetime = PatternScanLifetime {
+        cancelled: cancel.clone(),
+        publication: Mutex::new(()),
+    };
+    if *stop.borrow() {
+        return Err("response inspection cancelled".into());
+    }
+    let worker_cancel = cancel.clone();
+    let scan = tokio::task::spawn_blocking(move || {
+        let headers = headers
+            .iter()
+            .map(|(name, value)| (name.as_slice(), value.as_slice()))
+            .collect::<Vec<_>>();
+        scanner.scan_http_response_bytes_cancellable(
+            true,
+            &headers,
+            body.as_ref().map(|body| body.as_slice()),
+            options,
+            worker_cancel.as_ref(),
+        )
+    });
+    tokio::pin!(scan);
+    let inspected = tokio::select! {
+        biased;
+        _ = stop.changed() => {
+            cancel.store(true, Ordering::Relaxed);
+            let _ = scan.await;
+            return Err("response inspection cancelled".into());
+        }
+        result = &mut scan => result
+            .map_err(|_| -> Error { "pattern inspection task failed".into() })??,
+    };
+    if lifetime.cancelled() {
+        return Err("response inspection cancelled".into());
+    }
+    Ok((inspected, lifetime))
 }
 
 pub(crate) fn response(status: StatusCode, message: &str) -> Response<Body> {
@@ -3012,13 +3087,18 @@ where
         .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect::<Vec<_>>();
     if let Some(options) = response_scan {
-        let headers = response_headers
-            .iter()
-            .map(|(name, value)| (name.as_slice(), value.as_slice()))
-            .collect::<Vec<_>>();
-        let inspected = runtime
-            .scanner
-            .scan_http_response_bytes(true, &headers, None, options)?;
+        let (inspected, _scan_lifetime) = scan_response_with_lifetime(
+            runtime.scanner.clone(),
+            response_headers.clone(),
+            None,
+            options,
+            upgrades.stop.clone(),
+        )
+        .await?;
+        let _publication = _scan_lifetime.publication()?;
+        if _scan_lifetime.cancelled() || *upgrades.stop.borrow() {
+            return Err("response inspection cancelled".into());
+        }
         if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
             record_pattern_decision(
                 &runtime,
@@ -3053,16 +3133,19 @@ where
     if response_buffering {
         let prepared = request_body::prepare(body, response_length, false).await?;
         if let Some(body) = prepared.unvalidated_content {
-            let headers = response_headers
-                .iter()
-                .map(|(name, value)| (name.as_slice(), value.as_slice()))
-                .collect::<Vec<_>>();
-            let inspected = runtime.scanner.scan_http_response_bytes(
-                true,
-                &headers,
-                Some(body.as_slice()),
+            let body = Arc::new(body);
+            let (inspected, _scan_lifetime) = scan_response_with_lifetime(
+                runtime.scanner.clone(),
+                response_headers.clone(),
+                Some(body.clone()),
                 response_body_scan.expect("body scanner selected"),
-            )?;
+                upgrades.stop.clone(),
+            )
+            .await?;
+            let _publication = _scan_lifetime.publication()?;
+            if _scan_lifetime.cancelled() || *upgrades.stop.borrow() {
+                return Err("response inspection cancelled".into());
+            }
             if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
                 record_pattern_decision(
                     &runtime,

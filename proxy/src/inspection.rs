@@ -1460,6 +1460,17 @@ impl Scanner {
         self.scan_http_response_bytes_with_cancel(present, headers, body, options, None)
     }
 
+    pub fn scan_http_response_bytes_cancellable(
+        &self,
+        present: bool,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+        cancel: &AtomicBool,
+    ) -> Result<Decision> {
+        self.scan_http_response_bytes_with_cancel(present, headers, body, options, Some(cancel))
+    }
+
     fn scan_http_response_bytes_with_cancel(
         &self,
         present: bool,
