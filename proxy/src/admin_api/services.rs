@@ -111,7 +111,7 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
     let path = path.to_owned();
     // Request cancellation drops only this receiver. The process owner retains
     // the worker and its audit attempt until graceful shutdown joins it.
-    let result = mutation_owner
+    mutation_owner
         .spawn_blocking(move || {
             let outcome = persist(path, authorization)?;
             let mut outcome = outcome.submit_audit(&writer, &client_ip, &target)?;
@@ -122,8 +122,7 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         })
         .await?
         .await
-        .map_err(|_| Error::ServiceMutation)?;
-    result
+        .map_err(|_| Error::ServiceMutation)?
 }
 
 fn persist(path: PathBuf, authorization: Authorization) -> Result<Outcome, Error> {
