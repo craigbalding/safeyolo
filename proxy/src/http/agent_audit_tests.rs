@@ -62,6 +62,43 @@ async fn send_as(
         .unwrap();
     reply
 }
+
+/// Read exactly one framed response from a persistent H1 connection. The
+/// ordinary helper above deliberately closes the socket; this helper keeps
+/// the listener-owned identity alive across request boundaries so discovery
+/// replacement can be observed without reconnecting.
+async fn read_response(stream: &mut UnixStream) -> Vec<u8> {
+    let mut reply = Vec::new();
+    loop {
+        let read = stream.read_buf(&mut reply).await.unwrap();
+        assert!(read > 0, "persistent local API connection closed early");
+        let Some(separator) = reply.windows(4).position(|part| part == b"\r\n\r\n") else {
+            continue;
+        };
+        let content_length = std::str::from_utf8(&reply[..separator])
+            .unwrap()
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        let end = separator + 4 + content_length;
+        if reply.len() >= end {
+            reply.truncate(end);
+            return reply;
+        }
+    }
+}
+
+async fn keepalive_request(stream: &mut UnixStream, method: &str, path: &str) -> Vec<u8> {
+    let head = format!(
+        "{method} http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {TOKEN}\r\nX-SafeYolo-Agent: forged\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n"
+    );
+    stream.write_all(head.as_bytes()).await.unwrap();
+    read_response(stream).await
+}
 fn body(reply: &[u8]) -> &[u8] {
     &reply[reply
         .windows(4)
@@ -828,4 +865,164 @@ async fn conflicted_child(directory: &Path) {
     assert!(!records.iter().any(|record| {
         record.to_string().contains("forged") || record.to_string().contains("agent\\\":\\\"bob")
     }));
+}
+
+#[test]
+fn map_replacement_quarantines_two_reused_agent_connections() {
+    const CHILD: &str = "SAFEYOLO_IDENTITY_REUSE_FIXTURE";
+    if let Some(directory) = std::env::var_os(CHILD) {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(reused_identity_child(Path::new(&directory)));
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("agent_token"), TOKEN).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "http::agent_audit_tests::map_replacement_quarantines_two_reused_agent_connections",
+            "--nocapture",
+        ])
+        .env(CHILD, directory.path())
+        .env("SAFEYOLO_DATA_DIR", directory.path())
+        .env(
+            "SAFEYOLO_LOG_PATH",
+            directory.path().join("unused-fallback.jsonl"),
+        )
+        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
+        .env_remove("SAFEYOLO_LOG_MAX_MB")
+        .env_remove("SAFEYOLO_LOG_BACKUPS")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for name in [
+        "alice.sock",
+        "bob.sock",
+        "ready",
+        "unused.sqlite3",
+        "unused-fallback.jsonl",
+    ] {
+        assert!(!directory.path().join(name).exists(), "{name}");
+    }
+}
+
+async fn reused_identity_child(directory: &Path) {
+    let mut configuration = config(directory);
+    let mut bob = configuration.listeners[0].clone();
+    bob.agent_id = "bob".into();
+    bob.socket_path = directory.join("bob.sock");
+    bob.source_id = Some("192.0.2.11".into());
+    configuration.listeners.push(bob);
+    configuration.agent_map_file = directory
+        .join("agent-map.json")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({
+            "alice":{"ip":"192.0.2.10"},
+            "bob":{"ip":"192.0.2.11"}
+        }),
+        100,
+    );
+    let proxy = Proxy::start(configuration.clone()).await.unwrap();
+    let startup = drained(&proxy, directory);
+    assert_eq!(
+        names(&startup),
+        [
+            "agent.discovered",
+            "agent.discovered",
+            "ops.policy_reload",
+            "ops.startup"
+        ]
+    );
+
+    let mut alice_connection = UnixStream::connect(directory.join("alice.sock"))
+        .await
+        .unwrap();
+    let mut bob_connection = UnixStream::connect(directory.join("bob.sock"))
+        .await
+        .unwrap();
+
+    // Both real listener identities can use one persistent H1 connection at
+    // the same time while the map still agrees with the host-owned sockets.
+    let (alice_ok, bob_ok) = tokio::join!(
+        keepalive_request(&mut alice_connection, "GET", "/health"),
+        keepalive_request(&mut bob_connection, "GET", "/health"),
+    );
+    assert!(alice_ok.starts_with(b"HTTP/1.1 200"));
+    assert!(bob_ok.starts_with(b"HTTP/1.1 200"));
+    let before = discovery_document(&proxy.runtime.read().unwrap());
+    let alice_seen = before["agents"]["alice"].get("last_seen").cloned();
+    let bob_seen = before["agents"]["bob"].get("last_seen").cloned();
+
+    // A changed map is observed on the next request boundary. The existing
+    // connections retain their listener owners, but both requests are
+    // quarantined because the map now claims the opposite owner.
+    discovery_map(
+        Path::new(&configuration.agent_map_file),
+        json!({
+            "alice":{"ip":"192.0.2.11"},
+            "bob":{"ip":"192.0.2.10"}
+        }),
+        200,
+    );
+    let (alice_denied, bob_denied) = tokio::join!(
+        keepalive_request(
+            &mut alice_connection,
+            "GET",
+            "/api/test-context/current?agent=forged",
+        ),
+        keepalive_request(
+            &mut bob_connection,
+            "GET",
+            "/api/test-context/current?agent=forged",
+        ),
+    );
+    assert!(alice_denied.starts_with(b"HTTP/1.1 403"));
+    assert!(bob_denied.starts_with(b"HTTP/1.1 403"));
+    drop(alice_connection);
+    drop(bob_connection);
+
+    // Conflict handling cannot update either side's last-seen state, and the
+    // event retains both trusted sources for independent attribution review.
+    let after = discovery_document(&proxy.runtime.read().unwrap());
+    assert_eq!(
+        after["agents"]["alice"].get("last_seen").cloned(),
+        alice_seen
+    );
+    assert_eq!(after["agents"]["bob"].get("last_seen").cloned(), bob_seen);
+    let records = drained(&proxy, directory);
+    let conflicts: Vec<&Value> = records
+        .iter()
+        .filter(|record| record["event"] == "security.agent_identity_conflict")
+        .collect();
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.iter().any(|record| {
+        record["details"]["uds_agent"] == "alice"
+            && record["details"]["mapped_agent"] == "bob"
+            && record["details"]["attribution"]["attribution_status"] == "conflict"
+    }));
+    assert!(conflicts.iter().any(|record| {
+        record["details"]["uds_agent"] == "bob"
+            && record["details"]["mapped_agent"] == "alice"
+            && record["details"]["attribution"]["attribution_status"] == "conflict"
+    }));
+    assert!(conflicts.iter().all(|record| {
+        record.get("agent").is_none()
+            && record["details"]["attribution"]
+                .get("evidence_owner")
+                .is_none()
+    }));
+    proxy.shutdown().await;
 }
