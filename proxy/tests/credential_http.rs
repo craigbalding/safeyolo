@@ -208,6 +208,85 @@ fn invalid_h1_request(port: u16, path: &str, byte: u8) -> Vec<u8> {
     request
 }
 
+fn h1_request_with_value(port: u16, path: &str, value: &[u8]) -> Vec<u8> {
+    let mut request = format!(
+        "GET http://127.0.0.1:{port}/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: "
+    )
+    .into_bytes();
+    request.extend_from_slice(value);
+    request.extend_from_slice(b"\r\nConnection: keep-alive\r\n\r\n");
+    request
+}
+
+fn hex_bytes(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|offset| u8::from_str_radix(&text[offset..offset + 2], 16).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn native_parser_to_guard_invalid_utf8_matches_source_detector() {
+    let source: Value = serde_json::from_str(include_str!("credential_guard_source.json")).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"deny"}
+            ],
+            "credential_rules": [{
+                "name":"synthetic-invalid-byte",
+                "patterns":[source["pattern"].as_str().unwrap()],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    for row in source["rows"].as_array().unwrap() {
+        let value = hex_bytes(row["fields"][0][1].as_str().unwrap());
+        let path = row["id"].as_str().unwrap();
+        let request = h1_request_with_value(origin_port, path, &value);
+        let response = raw_round_trip(&socket, &request).await;
+        if row["detected"].as_bool().unwrap() {
+            assert!(response.starts_with(b"HTTP/1.1 403"), "{path}");
+            assert!(seen.lock().unwrap().is_empty(), "{path}");
+        } else {
+            assert!(response.starts_with(b"HTTP/1.1 200"), "{path}");
+            tokio::time::timeout(Duration::from_secs(2), ready.notified())
+                .await
+                .unwrap();
+            let requests = seen.lock().unwrap();
+            assert_eq!(requests.len(), 1, "{path}");
+            assert!(
+                requests[0]
+                    .windows(value.len())
+                    .any(|window| window == value),
+                "{path}"
+            );
+            drop(requests);
+            seen.lock().unwrap().clear();
+        }
+    }
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
 #[tokio::test]
 async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     let directory = tempfile::tempdir().unwrap();
