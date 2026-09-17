@@ -583,8 +583,37 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     status(&blocked, 428);
     assert_eq!(seen.lock().unwrap().len(), 1);
 
-    // A new process owner does not replay the session grant. The same live
-    // origin remains untouched after restart.
+    // Establish a fresh, non-expired session immediately before restart. This
+    // request proves the restart assertion is independent of expiry.
+    let restart_session = admin(
+        admin_port,
+        &admin_request(
+            "/admin/gateway/grant",
+            br#"{"agent":"alice","service":"contract","method":"POST","path":"/v1/write","lifetime":"session"}"#,
+        ),
+    )
+    .await;
+    status(&restart_session, 200);
+    let before_restart = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &current_gateway_token(&root_path.join("alice.sock")).await,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&before_restart, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // A new process owner does not replay the still-valid session grant. The
+    // same live origin remains untouched after restart.
     proxy.shutdown().await;
     let mut restarted = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
@@ -607,7 +636,7 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     )
     .await;
     status(&restarted_blocked, 428);
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(seen.lock().unwrap().len(), 2);
 
     // Add a legacy remembered record through the authored policy, then let
     // the existing policy reload normalize and publish it. It authorizes one
@@ -671,7 +700,7 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     )
     .await;
     status(&after_removal, 428);
-    assert_eq!(seen.lock().unwrap().len(), 2);
+    assert_eq!(seen.lock().unwrap().len(), 3);
     restarted.shutdown().await;
     origin_task.abort();
 }
