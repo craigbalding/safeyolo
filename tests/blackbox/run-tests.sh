@@ -163,6 +163,15 @@ if [ -n "$RUST_BIN" ] && [[ "$RUST_BIN" != /* ]] && [[ "$RUST_BIN" != "~/"* ]]; 
     RUST_BIN="$CALLER_DIR/$RUST_BIN"
 fi
 
+# The VM compatibility lane accepts a command string, so quote forwarded
+# pytest arguments before embedding them in that string.  Host-side pytest
+# calls below continue to use the original array directly.
+PYTEST_FORWARD_SHELL=""
+for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]}"; do
+    printf -v quoted_arg '%q' "$forwarded_arg"
+    PYTEST_FORWARD_SHELL+=" $quoted_arg"
+done
+
 # The focused migration harness owns explicit backend runs.  It launches each
 # selected process in disposable state and already has the shared assertions,
 # independent origins, readiness ownership and cleanup checks.  Keep the
@@ -392,7 +401,43 @@ STARTED_SINKHOLE=false
 STARTED_PROXY=false
 STARTED_VM=false
 SINKHOLE_PID=""
+SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"
 HOST_LISTENER_PID=""
+
+stop_owned_pid_file() {
+    local pid_file="$1"
+    local executable="$2"
+    local pid command_line
+
+    if [ ! -f "$pid_file" ]; then
+        return 0
+    fi
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        # A PID file alone is not sufficient because the kernel may have
+        # reused the number.  Check the exact command path before stopping it.
+        if [ -r "/proc/$pid/cmdline" ]; then
+            command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+        else
+            # macOS has no procfs; `ps` still lets us verify ownership.
+            command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        fi
+        case "$command_line" in
+            *"$executable"*)
+                echo "Stopping owned process $pid ($executable)..."
+                kill "$pid" 2>/dev/null || true
+                for _ in 1 2 3 4 5 6 7 8 9 10; do
+                    kill -0 "$pid" 2>/dev/null || break
+                    sleep 0.1
+                done
+                if kill -0 "$pid" 2>/dev/null; then
+                    kill -KILL "$pid" 2>/dev/null || true
+                fi
+                ;;
+        esac
+    fi
+    rm -f "$pid_file"
+}
 
 cleanup() {
     # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
@@ -409,6 +454,7 @@ cleanup() {
         echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
         kill "$SINKHOLE_PID" 2>/dev/null || true
         wait "$SINKHOLE_PID" 2>/dev/null || true
+        rm -f "$SINKHOLE_PID_FILE"
     fi
 
     if [ -n "$HOST_LISTENER_PID" ]; then
@@ -433,11 +479,10 @@ safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
 safeyolo agent remove "$AGENT_NAME" 2>/dev/null || true
 rm -rf "$SAFEYOLO_CONFIG_DIR/agents/"
 rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
-# Kill stale test processes — certs are regenerated each run, so
-# anything from a previous run holds old state. Match on test-specific
-# paths to avoid killing production agents.
-pkill -f "sinkhole/server.py" 2>/dev/null || true
-pkill -f "safeyolo-test.*safeyolo-vm" 2>/dev/null || true
+# Recover only a sinkhole process owned by a previous run.  The PID file and
+# command-path check prevent an unrelated process or another test instance
+# from being stopped.
+stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py"
 safeyolo stop 2>/dev/null || true
 
 # --- Phase 1: Start infrastructure (idempotent) ---
@@ -464,6 +509,7 @@ else
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
+    printf '%s\n' "$SINKHOLE_PID" > "$SINKHOLE_PID_FILE"
 
     for i in $(seq 1 30); do
         if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
@@ -597,7 +643,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
     set -e
     echo ""
@@ -606,7 +652,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" --root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py"
     ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""

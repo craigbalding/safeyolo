@@ -24,6 +24,22 @@ def test_harness_assigns_distinct_proxy_admin_and_web_ports():
     assert "config['proxy']['web_port'] = $TEST_WEB_PORT" in harness
 
 
+def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
+    """The compatibility lane must not kill unrelated process names."""
+    runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
+
+    assert "pkill" not in runner
+    assert 'SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"' in runner
+    assert (
+        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py"'
+        in runner
+    )
+    assert 'printf \'%s\\n\' "$SINKHOLE_PID" > "$SINKHOLE_PID_FILE"' in runner
+    assert 'kill "$HOST_LISTENER_PID"' in runner
+    assert "printf -v quoted_arg '%q' \"$forwarded_arg\"" in runner
+    assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
+
+
 def test_python_proxy_cross_checkout_keeps_suite_fixture_and_selected_packages(tmp_path):
     """A source checkout cannot shadow the suite fixture launched by the harness."""
     selected = tmp_path / "selected-checkout"
