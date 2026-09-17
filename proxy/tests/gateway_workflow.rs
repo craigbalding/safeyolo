@@ -1,11 +1,14 @@
+use ring::digest::{SHA256, digest};
 use safeyolo_proxy::{
     AgentListener, Config, Proxy,
     credentials::{Credential, Secret, Vault},
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
+    io::Write,
+    os::unix::fs::PermissionsExt,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -3160,4 +3163,382 @@ async fn gateway_no_auth_selection_removes_token_before_https_origin() {
     );
     proxy.shutdown().await;
     origin_task.abort();
+}
+
+fn state_sha256(path: &Path) -> String {
+    let bytes = std::fs::read(path).unwrap();
+    digest(&SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn file_mode(path: &Path) -> u32 {
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+fn git_output(directory: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn comparator_python_stage(script: &str, input: &Value) -> Value {
+    let source = Path::new(
+        &std::env::var("SAFEYOLO_STATE_PYTHON_SOURCE")
+            .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the selected comparator checkout"),
+    )
+    .canonicalize()
+    .unwrap();
+    let executable_path = std::env::var("SAFEYOLO_POLICY_PYTHON")
+        .expect("set SAFEYOLO_POLICY_PYTHON to the selected comparator interpreter");
+    let executable = Path::new(&executable_path);
+    let expected_executable = source.join(".venv/bin/python");
+    assert_eq!(
+        executable.canonicalize().unwrap(),
+        expected_executable.canonicalize().unwrap()
+    );
+    let mut child = Command::new(executable)
+        .args(["-c", script])
+        .env(
+            "PYTHONPATH",
+            format!("{}:{}", source.join("cli/src").display(), source.display()),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(serde_json::to_vec(input).unwrap().as_slice())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "comparator stage failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Exercise the encrypted vault through the actual gateway consumer across
+/// both implementations. Python creates the initial file, Rust reads and
+/// writes it before serving a gateway injection, Python reads and mutates it,
+/// and a fresh Rust gateway reads and injects that mutation. The rejected Rust
+/// activation is retained as encrypted bytes and observed by Python.
+#[tokio::test]
+#[ignore = "selected Python→Rust→Python→Rust vault consumer transition"]
+async fn selected_python_native_python_native_gateway_vault_transition() {
+    let comparator = Path::new(
+        &std::env::var("SAFEYOLO_STATE_PYTHON_SOURCE")
+            .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the selected comparator checkout"),
+    )
+    .canonicalize()
+    .unwrap();
+    assert_eq!(
+        git_output(&comparator, &["rev-parse", "HEAD"]),
+        "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
+    );
+    assert!(git_output(&comparator, &["status", "--porcelain"]).is_empty());
+    let comparator_python = comparator.join(".venv/bin/python");
+    assert!(comparator_python.is_file());
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    std::fs::set_permissions(
+        root_path.join("data/vault.key"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    std::fs::write(root_path.join("services/simple.yaml"), SERVICE).unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port));
+    std::fs::write(
+        root_path.join("policy.toml"),
+        bound_gateway_policy(origin_port),
+    )
+    .unwrap();
+    let vault_path = root_path.join("data/vault.yaml.enc");
+    let input = json!({"path":vault_path,"password":PASS});
+    let initial = comparator_python_stage(
+        r#"
+import hashlib,importlib.metadata,json,sys
+from pathlib import Path
+import mitmproxy,safeyolo
+from safeyolo.core.vault import Vault,VaultCredential
+x=json.load(sys.stdin);p=Path(x['path']);v=Vault(p);v.unlock(x['password'])
+v.store(VaultCredential('simple-secret','bearer','synthetic-python-access'))
+v.store(VaultCredential('python-only','api_key','synthetic-python-api-key'))
+raw=p.read_bytes()
+print(json.dumps({'program':sys.executable,'python_version':sys.version.split()[0],
+ 'safeyolo':importlib.metadata.version('safeyolo'),'mitmproxy':importlib.metadata.version('mitmproxy'),
+ 'safeyolo_file':str(Path(safeyolo.__file__).resolve()),'mitmproxy_file':str(Path(mitmproxy.__file__).resolve()),
+ 'names':v.list_names(),'mode':p.stat().st_mode&0o777,'sha256':hashlib.sha256(raw).hexdigest()}))
+"#,
+        &input,
+    );
+    assert_eq!(
+        initial["program"],
+        comparator_python.to_string_lossy().as_ref()
+    );
+    assert_eq!(initial["python_version"], "3.12.14");
+    assert_eq!(initial["safeyolo"], "0.1.0");
+    assert_eq!(initial["mitmproxy"], "12.2.3");
+    assert!(
+        Path::new(initial["safeyolo_file"].as_str().unwrap())
+            .starts_with(comparator.join("cli/src"))
+    );
+    assert!(
+        Path::new(initial["mitmproxy_file"].as_str().unwrap())
+            .starts_with(comparator.join(".venv"))
+    );
+    assert_eq!(initial["mode"], 0o600);
+    assert_eq!(initial["sha256"], state_sha256(&vault_path));
+
+    let mut stages = vec![json!({
+        "backend":"python-comparator",
+        "operation":"write-initial-vault",
+        "path":vault_path,
+        "sha256":initial["sha256"],
+        "mode":initial["mode"],
+        "names":initial["names"],
+        "effective":{"credential":"simple-secret","version":"python-v1"}
+    })];
+    let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    assert_eq!(
+        vault.list_names().unwrap(),
+        ["simple-secret", "python-only"]
+    );
+    assert_eq!(
+        vault
+            .get("simple-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-python-access"
+    );
+    let original = std::fs::read(&vault_path).unwrap();
+    let mut activation_calls = 0;
+    assert_eq!(
+        vault
+            .store_with_activation(
+                Credential::new(
+                    "rejected",
+                    "bearer",
+                    Secret::new("synthetic-rejected-value"),
+                ),
+                |_| {
+                    activation_calls += 1;
+                    (activation_calls > 1).then_some(()).ok_or(())
+                },
+            )
+            .unwrap_err()
+            .kind,
+        safeyolo_proxy::credentials::ErrorKind::Activation
+    );
+    assert_eq!(activation_calls, 2);
+    assert_eq!(std::fs::read(&vault_path).unwrap(), original);
+    assert!(vault.get("rejected").unwrap().is_none());
+    stages.push(json!({
+        "backend":"rust-native-vault",
+        "operation":"read-and-reject-activation-with-rollback",
+        "path":vault_path,
+        "sha256":state_sha256(&vault_path),
+        "mode":file_mode(&vault_path),
+        "names":vault.list_names().unwrap(),
+        "effective":{"activation":"rejected","rollback_bytes_equal":true}
+    }));
+    let mut rust_credential = Credential::new(
+        "simple-secret",
+        "bearer",
+        Secret::new("synthetic-rust-access"),
+    );
+    rust_credential.token_url = None;
+    vault.store(rust_credential).unwrap();
+    assert_eq!(
+        vault
+            .get("simple-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-rust-access"
+    );
+    stages.push(json!({
+        "backend":"rust-native-vault",
+        "operation":"write-rust-v1",
+        "path":vault_path,
+        "sha256":state_sha256(&vault_path),
+        "mode":file_mode(&vault_path),
+        "names":vault.list_names().unwrap(),
+        "effective":{"credential":"simple-secret","version":"rust-v1"}
+    }));
+
+    let socket = root_path.join("alice.sock");
+    let proxy = Proxy::start(config(root_path)).await.unwrap();
+    let view = wait_for_alice(&socket).await;
+    let gateway_token = view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let response = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
+    status(&response, "200");
+    {
+        let seen = origin_seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let request = String::from_utf8_lossy(&seen[0]).to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer synthetic-rust-access"));
+    }
+    proxy.shutdown().await;
+    stages.push(json!({
+        "backend":"rust-native-gateway",
+        "operation":"read-rust-v1-and-inject",
+        "path":vault_path,
+        "sha256":state_sha256(&vault_path),
+        "mode":file_mode(&vault_path),
+        "effective":{"credential":"simple-secret","version":"rust-v1","origin_contacts":1}
+    }));
+
+    let python_after = comparator_python_stage(
+        r#"
+import hashlib,json,sys
+from pathlib import Path
+from safeyolo.core.vault import Vault,VaultCredential
+x=json.load(sys.stdin);p=Path(x['path']);v=Vault(p);v.unlock(x['password'])
+assert v.get('simple-secret').value=='synthetic-rust-access'
+assert v.get('python-only').value=='synthetic-python-api-key'
+v.store(VaultCredential('simple-secret','bearer','synthetic-python-access-v2'))
+raw=p.read_bytes()
+print(json.dumps({'names':v.list_names(),'mode':p.stat().st_mode&0o777,'sha256':hashlib.sha256(raw).hexdigest()}))
+"#,
+        &input,
+    );
+    assert_eq!(
+        python_after["names"],
+        json!(["simple-secret", "python-only"])
+    );
+    assert_eq!(python_after["mode"], 0o600);
+    assert_eq!(python_after["sha256"], state_sha256(&vault_path));
+    stages.push(json!({
+        "backend":"python-comparator",
+        "operation":"read-rust-v1-and-write-python-v2",
+        "path":vault_path,
+        "sha256":python_after["sha256"],
+        "mode":python_after["mode"],
+        "names":python_after["names"],
+        "effective":{"credential":"simple-secret","version":"python-v2"}
+    }));
+
+    let final_vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    assert_eq!(
+        final_vault
+            .get("simple-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-python-access-v2"
+    );
+    assert_eq!(
+        final_vault.list_names().unwrap(),
+        ["simple-secret", "python-only"]
+    );
+    let final_proxy = Proxy::start(config(root_path)).await.unwrap();
+    let final_view = wait_for_alice(&socket).await;
+    let final_token = final_view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let final_response = send_agent(&socket, origin_port, &final_token, "127.0.0.1").await;
+    status(&final_response, "200");
+    {
+        let seen = origin_seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let request = String::from_utf8_lossy(&seen[1]).to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer synthetic-python-access-v2"));
+    }
+    final_proxy.shutdown().await;
+    stages.push(json!({
+        "backend":"rust-native-gateway",
+        "operation":"read-python-v2-and-inject",
+        "path":vault_path,
+        "sha256":state_sha256(&vault_path),
+        "mode":file_mode(&vault_path),
+        "names":final_vault.list_names().unwrap(),
+        "effective":{"credential":"simple-secret","version":"python-v2","origin_contacts":2}
+    }));
+    origin_task.abort();
+
+    let manifest = json!({
+        "schema":1,
+        "family":"encrypted-vault",
+        "comparator":{
+            "source":comparator,
+            "commit":"7e934a5470f1aa9b74052fea08c6bae9b5f32e8a",
+            "launcher":comparator_python,
+            "program":initial["program"],
+            "python_version":initial["python_version"],
+            "safeyolo":initial["safeyolo"],
+            "mitmproxy":initial["mitmproxy"],
+            "safeyolo_file":initial["safeyolo_file"],
+            "mitmproxy_file":initial["mitmproxy_file"]
+        },
+        "native":{
+            "source":git_output(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(), &["rev-parse", "HEAD"]),
+            "package":"safeyolo-proxy",
+            "version":env!("CARGO_PKG_VERSION")
+        },
+        "files":{
+            "data_dir":root_path.join("data"),
+            "vault":vault_path,
+            "vault_key":root_path.join("data/vault.key"),
+            "vault_mode":format!("{:04o}", file_mode(&vault_path)),
+            "vault_key_mode":format!("{:04o}", file_mode(&root_path.join("data/vault.key")))
+        },
+        "vault_path":vault_path,
+        "stages":stages
+    });
+    let manifest_text = serde_json::to_string_pretty(&manifest).unwrap();
+    for secret in [
+        "synthetic-vault-passphrase",
+        "synthetic-python-access",
+        "synthetic-python-api-key",
+        "synthetic-rust-access",
+        "synthetic-python-access-v2",
+        "synthetic-rejected-value",
+    ] {
+        assert!(!manifest_text.contains(secret));
+    }
+    println!("vault cross-version manifest: {manifest_text}");
+    if let Some(directory) = std::env::var_os("SAFEYOLO_STATE_EVIDENCE_DIR") {
+        let directory = Path::new(&directory);
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("vault-python-rust-python-rust.json"),
+            format!("{manifest_text}\n"),
+        )
+        .unwrap();
+    }
 }
