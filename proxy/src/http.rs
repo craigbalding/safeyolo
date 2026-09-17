@@ -86,8 +86,8 @@ fn prior_block(mut response: Response<Body>) -> Response<Body> {
     response
 }
 
-struct UpstreamBody {
-    body: Incoming,
+struct UpstreamBody<B = Incoming> {
+    body: B,
     _connection: HttpTask,
     live: Option<Arc<crate::traffic_view::Exchange>>,
 }
@@ -130,7 +130,11 @@ impl HttpBody for ForwardedRequestBody {
     }
 }
 
-impl HttpBody for UpstreamBody {
+impl<B> HttpBody for UpstreamBody<B>
+where
+    B: HttpBody<Data = Bytes> + Unpin,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     type Data = Bytes;
     type Error = Error;
     fn poll_frame(
@@ -2997,9 +3001,7 @@ where
         .headers()
         .get(header::CONTENT_TYPE)
         .map_or(&b""[..], |value| value.as_bytes());
-    let response_buffered = response_body_scan.is_some()
-        && response_length
-            .is_some_and(|length| length <= crate::http_content::BUFFERED_BODY_THRESHOLD as u64)
+    let response_buffering = response_body_scan.is_some()
         && !test_context::source_streamed(&runtime, &destination.policy_host, content_type);
     // Keep the parser's response header view through hop-header cleanup. The
     // source response hook sees every header, while downstream transport must
@@ -3009,7 +3011,7 @@ where
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect::<Vec<_>>();
-    if !response_buffered && let Some(options) = response_scan {
+    if let Some(options) = response_scan {
         let headers = response_headers
             .iter()
             .map(|(name, value)| (name.as_slice(), value.as_slice()))
@@ -3048,53 +3050,64 @@ where
     let (mut parts, body) = upstream.into_parts();
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
-    if response_buffered {
-        let body = UpstreamBody {
-            body,
-            _connection: connection,
-            live: live.clone(),
-        }
-        .collect()
-        .await?
-        .to_bytes();
-        let headers = response_headers
-            .iter()
-            .map(|(name, value)| (name.as_slice(), value.as_slice()))
-            .collect::<Vec<_>>();
-        let inspected = runtime.scanner.scan_http_response_bytes(
-            true,
-            &headers,
-            Some(&body),
-            response_body_scan.expect("body scanner selected"),
-        )?;
-        if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
-            record_pattern_decision(
-                &runtime,
-                identity,
-                request_id,
-                destination,
-                crate::inspection::Direction::Response,
-                &inspected,
+    if response_buffering {
+        let prepared = request_body::prepare(body, response_length, false).await?;
+        if let Some(body) = prepared.unvalidated_content {
+            let headers = response_headers
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                .collect::<Vec<_>>();
+            let inspected = runtime.scanner.scan_http_response_bytes(
+                true,
+                &headers,
+                Some(body.as_slice()),
+                response_body_scan.expect("body scanner selected"),
             )?;
+            if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
+                record_pattern_decision(
+                    &runtime,
+                    identity,
+                    request_id,
+                    destination,
+                    crate::inspection::Direction::Response,
+                    &inspected,
+                )?;
+            }
+            if matches!(
+                inspected.outcome,
+                crate::inspection::Outcome::MatchBlocked
+                    | crate::inspection::Outcome::InspectionError
+            ) {
+                let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
+                let body = inspected
+                    .body
+                    .map(|body| body.to_string())
+                    .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
+                let mut blocked = Response::builder()
+                    .status(status)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-blocked-by", "pattern-scanner")
+                    .body(full(body))?;
+                pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
+                return Ok((prior_block(blocked), "deny".into()));
+            }
+            return Ok((
+                Response::from_parts(parts, full(Bytes::copy_from_slice(body.as_slice()))),
+                decision.decision,
+            ));
         }
-        if matches!(
-            inspected.outcome,
-            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
-        ) {
-            let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
-            let body = inspected
-                .body
-                .map(|body| body.to_string())
-                .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
-            let mut blocked = Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("x-blocked-by", "pattern-scanner")
-                .body(full(body))?;
-            pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
-            return Ok((prior_block(blocked), "deny".into()));
-        }
-        return Ok((Response::from_parts(parts, full(body)), decision.decision));
+        return Ok((
+            Response::from_parts(
+                parts,
+                UpstreamBody {
+                    body: prepared.body,
+                    _connection: connection,
+                    live: live.clone(),
+                }
+                .boxed(),
+            ),
+            decision.decision,
+        ));
     }
     Ok((
         Response::from_parts(

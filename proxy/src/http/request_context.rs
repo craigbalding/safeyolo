@@ -6,7 +6,10 @@
 use std::{
     future::Future,
     pin::Pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 
@@ -80,6 +83,17 @@ struct RequestInspection {
     headers: InspectionHeaders,
     options: inspection::Options,
     result: Option<Result<inspection::Decision, inspection::Error>>,
+}
+
+/// A dropped service future must stop a blocking inspection even when its
+/// JoinHandle cannot interrupt the worker thread. The flag is also checked
+/// immediately before the decision is stored on the request owner.
+struct CancelInspectionOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelInspectionOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
 }
 
 pub(super) struct RequestContext {
@@ -315,7 +329,7 @@ impl RequestContext {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         if let Some(content) = prepared.unvalidated_content {
-            self.apply_buffered(&content).await?;
+            self.apply_buffered(content).await?;
         } else {
             // A streamed body cannot be inspected by the bounded owner, but
             // URL and header scopes still run before the outbound dial.  The
@@ -349,18 +363,84 @@ impl RequestContext {
         let Some(content) = prepared.unvalidated_content else {
             return Ok(None);
         };
-        self.apply_buffered(&content).await?;
+        self.apply_buffered(content).await?;
         Ok(Some(self))
     }
 
-    async fn apply_buffered(&mut self, content: &[u8]) -> Result<(), Error> {
+    async fn apply_buffered(&mut self, content: Zeroizing<Vec<u8>>) -> Result<(), Error> {
         if let Some(mut pending) = self.pending.take() {
-            if (&mut pending.observer).await.is_err() {
+            let content = Arc::new(content);
+            if self.inspection.is_some() {
+                let cancel = Arc::new(AtomicBool::new(false));
+                let _cancel_guard = CancelInspectionOnDrop(cancel.clone());
+                let Some(scan) = self.start_inspection_scan(content.clone(), cancel.clone()) else {
+                    return Err("pattern inspection unavailable".into());
+                };
+                tokio::pin!(scan);
+                let inspected = tokio::select! {
+                    result = &mut pending.observer => {
+                        if result.is_err() {
+                            cancel.store(true, Ordering::Relaxed);
+                            let _ = scan.await;
+                            return Err("request completion aborted".into());
+                        }
+                        scan.await.map_err(|_| -> Error { "pattern inspection task failed".into() })?
+                    }
+                    result = &mut scan => {
+                        let result = result.map_err(|_| -> Error { "pattern inspection task failed".into() })?;
+                        if (&mut pending.observer).await.is_err() {
+                            cancel.store(true, Ordering::Relaxed);
+                            return Err("request completion aborted".into());
+                        }
+                        result
+                    }
+                };
+                if let Some(inspection) = self.inspection.as_mut() {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("request completion aborted".into());
+                    }
+                    inspection.result = Some(inspected);
+                }
+            } else if (&mut pending.observer).await.is_err() {
                 return Err("request completion aborted".into());
             }
-            self.apply(pending, Some(content));
+            self.apply(pending, Some(content.as_slice()));
         }
         Ok(())
+    }
+
+    fn start_inspection_scan(
+        &self,
+        content: Arc<Zeroizing<Vec<u8>>>,
+        cancel: Arc<AtomicBool>,
+    ) -> Option<tokio::task::JoinHandle<Result<inspection::Decision, inspection::Error>>> {
+        let inspection = self.inspection.as_ref()?.result.is_none().then(|| {
+            let inspection = self.inspection.as_ref().expect("inspection is present");
+            (
+                inspection.scanner.clone(),
+                inspection.path.clone(),
+                inspection
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.to_vec(), value.to_vec()))
+                    .collect::<Vec<_>>(),
+                inspection.options,
+            )
+        })?;
+        Some(tokio::task::spawn_blocking(move || {
+            let (scanner, path, headers, options) = inspection;
+            let headers = headers
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                .collect::<Vec<_>>();
+            scanner.scan_http_request_bytes_cancellable(
+                inspection::UrlInput::Text(&path),
+                &headers,
+                Some(content.as_slice()),
+                options,
+                cancel.as_ref(),
+            )
+        }))
     }
 
     fn apply_inspection(&mut self, content: Option<&[u8]>) {

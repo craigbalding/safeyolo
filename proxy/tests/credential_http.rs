@@ -9,6 +9,65 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+#[test]
+fn native_http_body_adapter_skips_decode_without_body_scope() {
+    let scanner = safeyolo_proxy::inspection::Scanner::default();
+    scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "header-only",
+                "pattern": "X-Trace",
+                "scope": ["headers"],
+                "target": "request",
+                "action": "block"
+            }]
+        }))
+        .unwrap();
+    let decision = scanner
+        .scan_http_request_bytes(
+            safeyolo_proxy::inspection::UrlInput::Text("/path"),
+            &[(b"content-encoding".as_slice(), b"gzip".as_slice())],
+            Some(b"not-gzip"),
+            safeyolo_proxy::inspection::Options::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        decision.outcome,
+        safeyolo_proxy::inspection::Outcome::NoMatch
+    );
+}
+
+#[test]
+fn native_http_scan_honors_cancellation_before_work_or_publication() {
+    let scanner = safeyolo_proxy::inspection::Scanner::default();
+    scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "body",
+                "pattern": "SECRET",
+                "scope": ["body"],
+                "target": "request",
+                "action": "block"
+            }]
+        }))
+        .unwrap();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let result = scanner.scan_http_request_bytes_cancellable(
+        safeyolo_proxy::inspection::UrlInput::Text("/path"),
+        &[],
+        Some(b"SECRET"),
+        safeyolo_proxy::inspection::Options {
+            block_request: true,
+            ..Default::default()
+        },
+        &cancelled,
+    );
+    assert_eq!(
+        result.unwrap_err().kind,
+        safeyolo_proxy::inspection::ErrorKind::Cancelled
+    );
+}
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -123,15 +182,26 @@ async fn origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, ready: Ar
                     break;
                 }
             }
+            let chunked = request
+                .windows(b"/chunked".len())
+                .any(|window| window == b"/chunked");
             seen.lock().unwrap().push(request);
             ready.notify_one();
             let body = b"origin-ok";
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-                body.len()
-            );
-            let _ = socket.write_all(response.as_bytes()).await;
-            let _ = socket.write_all(body).await;
+            if chunked {
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n8\r\norigin-ok\r\n0\r\n\r\n",
+                    )
+                    .await;
+            } else {
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+            }
         });
     }
 }
@@ -188,6 +258,7 @@ async fn raw_round_trip(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
                 .windows(b"origin-ok".len())
                 .any(|window| window == b"origin-ok")
                 || response.starts_with(b"HTTP/1.1 403")
+                || response.starts_with(b"HTTP/1.1 502")
             {
                 break;
             }
@@ -341,6 +412,21 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
         .await
         .unwrap();
     assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // H1 chunked responses do not carry Content-Length. They still use the
+    // existing bounded replay owner and must reach the body scanner.
+    let chunked_request = format!(
+        "GET http://127.0.0.1:{origin_port}/chunked HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nConnection: close\r\n\r\n"
+    );
+    let blocked_chunked = raw_round_trip(&socket, chunked_request.as_bytes()).await;
+    assert!(
+        blocked_chunked.starts_with(b"HTTP/1.1 502"),
+        "{blocked_chunked:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
     proxy.shutdown().await;
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     let pattern_events = audit

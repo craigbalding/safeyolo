@@ -1406,19 +1406,47 @@ impl Scanner {
         body: Option<&[u8]>,
         options: Options,
     ) -> Result<Decision> {
+        self.scan_http_request_bytes_with_cancel(path, headers, body, options, None)
+    }
+
+    pub fn scan_http_request_bytes_cancellable(
+        &self,
+        path: UrlInput<'_>,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+        cancel: &AtomicBool,
+    ) -> Result<Decision> {
+        self.scan_http_request_bytes_with_cancel(path, headers, body, options, Some(cancel))
+    }
+
+    fn scan_http_request_bytes_with_cancel(
+        &self,
+        path: UrlInput<'_>,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let headers = source_headers(headers)?;
         let header_refs = headers
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        let decision = self.scan_http_request(path, &header_refs, None, options)?;
+        let decision =
+            self.scan_http_request_with_cancel(path, &header_refs, None, options, cancel)?;
+        check_cancelled(cancel)?;
         if !matches!(decision.outcome, Outcome::NoMatch) {
             return Ok(decision);
         }
         let Some(body) = body.filter(|body| !body.is_empty()) else {
             return Ok(decision);
         };
-        self.scan_http_body_bytes(Direction::Request, &headers, body, options)
+        let decision =
+            self.scan_http_body_bytes(Direction::Request, &headers, body, options, cancel)?;
+        check_cancelled(cancel)?;
+        Ok(decision)
     }
 
     /// Byte-oriented response counterpart to [`scan_http_request_bytes`].
@@ -1429,19 +1457,36 @@ impl Scanner {
         body: Option<&[u8]>,
         options: Options,
     ) -> Result<Decision> {
+        self.scan_http_response_bytes_with_cancel(present, headers, body, options, None)
+    }
+
+    fn scan_http_response_bytes_with_cancel(
+        &self,
+        present: bool,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let headers = source_headers(headers)?;
         let header_refs = headers
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        let decision = self.scan_http_response(present, &header_refs, None, options)?;
+        let decision =
+            self.scan_http_response_with_cancel(present, &header_refs, None, options, cancel)?;
+        check_cancelled(cancel)?;
         if !matches!(decision.outcome, Outcome::NoMatch) {
             return Ok(decision);
         }
         let Some(body) = body.filter(|body| !body.is_empty()) else {
             return Ok(decision);
         };
-        self.scan_http_body_bytes(Direction::Response, &headers, body, options)
+        let decision =
+            self.scan_http_body_bytes(Direction::Response, &headers, body, options, cancel)?;
+        check_cancelled(cancel)?;
+        Ok(decision)
     }
 
     fn scan_http_body_bytes(
@@ -1450,16 +1495,25 @@ impl Scanner {
         headers: &[(String, String)],
         body: &[u8],
         options: Options,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let rules = self.rules()?;
         if rules.is_empty() {
             return Ok(Decision::plain(Outcome::NoRules));
         }
+        if !self.has_scope(direction, "body")? {
+            return Ok(Decision::plain(Outcome::NoMatch));
+        }
         let encoding = combined_header(headers, "content-encoding");
         let decoded = match crate::http_content::decode(body, encoding.as_bytes()) {
             Ok(decoded) => decoded,
-            Err(_) => return Ok(content_failure(direction, "content_decode")),
+            Err(_) => {
+                check_cancelled(cancel)?;
+                return Ok(content_failure(direction, "content_decode"));
+            }
         };
+        check_cancelled(cancel)?;
         let content_type = combined_header(headers, "content-type");
         let text = crate::traffic_view::export::decode_text(
             &decoded,
@@ -1467,14 +1521,18 @@ impl Scanner {
         );
         let text = match text {
             Ok(text) => text,
-            Err(_) => return Ok(content_failure(direction, "content_decode")),
+            Err(_) => {
+                check_cancelled(cancel)?;
+                return Ok(content_failure(direction, "content_decode"));
+            }
         };
         if text.is_empty() {
             return Ok(Decision::plain(Outcome::NoMatch));
         }
-        if let Some(rule) = self.scan_scope(&rules, "body", &text, direction, None)? {
-            return self.matched(rule, direction, "body".into(), None, options, None);
+        if let Some(rule) = self.scan_scope(&rules, "body", &text, direction, cancel)? {
+            return self.matched(rule, direction, "body".into(), None, options, cancel);
         }
+        check_cancelled(cancel)?;
         Ok(Decision::plain(Outcome::NoMatch))
     }
     fn count(&self, scans: u64, matches: u64, blocks: u64) -> Result<()> {
@@ -1535,22 +1593,38 @@ impl Scanner {
         }
         Ok(None)
     }
-    fn scan_url<'a>(&self, rules: &'a [Rule], text: &UrlText) -> Result<Option<&'a Rule>> {
-        self.count(2, 0, 0)?;
+    fn scan_url_with_cancel<'a>(
+        &self,
+        rules: &'a [Rule],
+        text: &UrlText,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Option<&'a Rule>> {
+        self.count_cancellable(2, 0, 0, cancel)?;
         for (index, rule) in rules.iter().enumerate() {
+            check_cancelled(cancel)?;
             if !rule.applies(Direction::Request, "url") {
                 continue;
             }
             let raw = rule
                 .pattern
                 .is_match(&text.raw)
-                .map_err(|_| error(ErrorKind::RegexRuntime, Some(index)))?;
-            let decoded = rule
-                .pattern
-                .is_match(&text.decoded)
-                .map_err(|_| error(ErrorKind::RegexRuntime, Some(index)))?;
+                .map_err(|failure| match failure {
+                    fancy_regex::Error::RuntimeError(fancy_regex::RuntimeError::Cancelled) => {
+                        error(ErrorKind::Cancelled, None)
+                    }
+                    _ => error(ErrorKind::RegexRuntime, Some(index)),
+                })?;
+            let decoded =
+                rule.pattern
+                    .is_match(&text.decoded)
+                    .map_err(|failure| match failure {
+                        fancy_regex::Error::RuntimeError(fancy_regex::RuntimeError::Cancelled) => {
+                            error(ErrorKind::Cancelled, None)
+                        }
+                        _ => error(ErrorKind::RegexRuntime, Some(index)),
+                    })?;
             if raw || decoded {
-                self.count(0, 1, 0)?;
+                self.count_cancellable(0, 1, 0, cancel)?;
                 return Ok(Some(rule));
             }
         }
@@ -1648,6 +1722,18 @@ impl Scanner {
         body: Option<&str>,
         options: Options,
     ) -> Result<Decision> {
+        self.scan_http_request_with_cancel(path, headers, body, options, None)
+    }
+
+    fn scan_http_request_with_cancel(
+        &self,
+        path: UrlInput<'_>,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+        options: Options,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let rules = self.rules()?;
         if rules.is_empty() {
             return Ok(Decision::plain(Outcome::NoRules));
@@ -1660,11 +1746,18 @@ impl Scanner {
                 Ok(text) => text,
                 Err(failure) => return self.url_failure(failure),
             };
-            if let Some(rule) = self.scan_url(&rules, &text)? {
-                return self.matched(rule, Direction::Request, "url".into(), None, options, None);
+            if let Some(rule) = self.scan_url_with_cancel(&rules, &text, cancel)? {
+                return self.matched(
+                    rule,
+                    Direction::Request,
+                    "url".into(),
+                    None,
+                    options,
+                    cancel,
+                );
             }
         }
-        self.scan_http_content(&rules, Direction::Request, headers, body, options)
+        self.scan_http_content(&rules, Direction::Request, headers, body, options, cancel)
     }
     pub fn scan_http_response(
         &self,
@@ -1673,6 +1766,18 @@ impl Scanner {
         body: Option<&str>,
         options: Options,
     ) -> Result<Decision> {
+        self.scan_http_response_with_cancel(present, headers, body, options, None)
+    }
+
+    fn scan_http_response_with_cancel(
+        &self,
+        present: bool,
+        headers: &[(&str, &str)],
+        body: Option<&str>,
+        options: Options,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Decision> {
+        check_cancelled(cancel)?;
         let rules = self.rules()?;
         if rules.is_empty() {
             return Ok(Decision::plain(Outcome::NoRules));
@@ -1680,7 +1785,7 @@ impl Scanner {
         if !present {
             return Ok(Decision::plain(Outcome::NoMessage));
         }
-        self.scan_http_content(&rules, Direction::Response, headers, body, options)
+        self.scan_http_content(&rules, Direction::Response, headers, body, options, cancel)
     }
     fn scan_http_content(
         &self,
@@ -1689,17 +1794,21 @@ impl Scanner {
         headers: &[(&str, &str)],
         body: Option<&str>,
         options: Options,
+        cancel: Option<&AtomicBool>,
     ) -> Result<Decision> {
         for (name, value) in headers {
-            if let Some(rule) = self.scan_scope(rules, "headers", value, direction, None)? {
-                return self.matched(rule, direction, safe_location(name), None, options, None);
+            check_cancelled(cancel)?;
+            if let Some(rule) = self.scan_scope(rules, "headers", value, direction, cancel)? {
+                return self.matched(rule, direction, safe_location(name), None, options, cancel);
             }
         }
         if let Some(body) = body.filter(|body| !body.is_empty())
-            && let Some(rule) = self.scan_scope(rules, "body", body, direction, None)?
+            && self.has_scope(direction, "body")?
+            && let Some(rule) = self.scan_scope(rules, "body", body, direction, cancel)?
         {
-            return self.matched(rule, direction, "body".into(), None, options, None);
+            return self.matched(rule, direction, "body".into(), None, options, cancel);
         }
+        check_cancelled(cancel)?;
         Ok(Decision::plain(Outcome::NoMatch))
     }
     fn websocket_failure(

@@ -171,7 +171,7 @@ mod tests {
         time::Duration,
     };
 
-    use http_body_util::Empty;
+    use http_body_util::{BodyExt, Empty, Full};
     use hyper::{HeaderMap, Request, Response, service::service_fn};
     use hyper_util::rt::{TokioExecutor, TokioIo};
     use tokio::{
@@ -653,5 +653,54 @@ mod tests {
                 "both paths yield captured bytes, but only END_STREAM is valid completion"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn actual_h2_unknown_response_body_is_bounded_bufferable() {
+        let (client, server) = tokio::io::duplex(16_384);
+        let _server = Task(tokio::spawn(async move {
+            hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                .serve_connection(
+                    TokioIo::new(server),
+                    service_fn(|_request| async {
+                        Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                            b"origin-secret",
+                        ))))
+                    }),
+                )
+                .await
+                .unwrap();
+        }));
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(client))
+                .await
+                .unwrap();
+        let _client = Task(tokio::spawn(connection));
+        let response = sender
+            .send_request(
+                Request::builder()
+                    .method("GET")
+                    .uri("https://owned.invalid/")
+                    .body(Empty::<Bytes>::new())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response =
+            tokio::time::timeout(Duration::from_secs(3), async { Ok::<_, ()>(response) })
+                .await
+                .unwrap()
+                .unwrap();
+        let prepared = tokio::time::timeout(
+            Duration::from_secs(3),
+            prepare(response.into_body(), None, false),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            prepared.unvalidated_content.unwrap().as_slice(),
+            b"origin-secret"
+        );
     }
 }
