@@ -6,6 +6,8 @@
 //! accepts an agent identity. Other management routes remain unimplemented.
 
 use std::fmt;
+use std::net::SocketAddr;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -131,6 +133,26 @@ pub enum Audit {
         task_id: String,
         permission_count: usize,
     },
+    PolicyMutation(PolicyMutationAudit),
+    ModeChanged {
+        addon: String,
+        mode: String,
+        client_ip: String,
+    },
+}
+
+/// Structured intent for one committed operator policy mutation. The details
+/// are retained only until the canonical audit writer accepts the event.
+pub struct PolicyMutationAudit {
+    pub(super) event: &'static str,
+    pub(super) summary: String,
+    pub(super) details: Value,
+}
+
+impl Drop for PolicyMutationAudit {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.details);
+    }
 }
 
 /// The raw scope request is retained only for its canonical audit event.
@@ -255,7 +277,7 @@ pub struct Outcome {
     audit: Option<Audit>,
 }
 
-type AdminBody = BoxBody<Bytes, Error>;
+pub(crate) type AdminBody = BoxBody<Bytes, Error>;
 
 /// A bounded private export stream. The worker owns the source snapshot and
 /// stops when the receiver is dropped; body errors abort the HTTP response
@@ -478,7 +500,7 @@ fn path(uri: &hyper::Uri) -> &str {
         .map_or(path, |index| &path[..segment + index])
 }
 
-fn authenticate(headers: &HeaderMap, expected: &str) -> Result<bool, Error> {
+pub(crate) fn authenticate(headers: &HeaderMap, expected: &str) -> Result<bool, Error> {
     if expected.is_empty() {
         return Ok(false);
     }
@@ -496,6 +518,18 @@ fn authenticate(headers: &HeaderMap, expected: &str) -> Result<bool, Error> {
     Ok(bool::from(provided.ct_eq(expected.as_bytes())))
 }
 
+pub(crate) fn unauthorized() -> Outcome {
+    let mut outcome = response(
+        StatusCode::UNAUTHORIZED,
+        json!({
+            "error":"Unauthorized", "message":"Missing or invalid Bearer token",
+            "hint":"Add header: Authorization: Bearer <token>"
+        }),
+    );
+    outcome.audit = Some(Audit::AuthenticationFailed);
+    outcome
+}
+
 fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -505,6 +539,224 @@ fn truthy(value: &Value) -> bool {
         Value::Array(value) => !value.is_empty(),
         Value::Object(value) => !value.is_empty(),
     }
+}
+
+fn mode_document(modes: &crate::OperatorModes) -> Value {
+    let mut values = serde_json::Map::new();
+    for addon in ["network-guard", "credential-guard", "pattern-scanner"] {
+        let Some(options) = modes.options(addon) else {
+            continue;
+        };
+        let any_blocking = options.iter().any(|(_, value)| *value);
+        values.insert(
+            addon.into(),
+            Value::String(if any_blocking { "block" } else { "warn" }.into()),
+        );
+    }
+    Value::Object(values)
+}
+
+fn operator_mode(modes: &crate::OperatorModes, addon: &str) -> Option<Outcome> {
+    let options = modes.options(addon)?;
+    let mode = if options.iter().any(|(_, value)| *value) {
+        "block"
+    } else {
+        "warn"
+    };
+    let options = options
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), Value::Bool(value)))
+        .collect::<serde_json::Map<_, _>>();
+    Some(response(
+        StatusCode::OK,
+        json!({"addon":addon,"mode":mode,"options":options}),
+    ))
+}
+
+fn parse_mode(data: &Value) -> Option<&str> {
+    data.as_object()
+        .and_then(|object| object.get("mode"))
+        .and_then(Value::as_str)
+        .filter(|mode| matches!(*mode, "warn" | "block"))
+}
+
+fn mutation(event: &'static str, summary: impl Into<String>, details: Value) -> Audit {
+    Audit::PolicyMutation(PolicyMutationAudit {
+        event,
+        summary: summary.into(),
+        details,
+    })
+}
+
+fn require_policy_path(path: Option<&Path>) -> Result<&Path, Box<Outcome>> {
+    path.ok_or_else(|| {
+        Box::new(response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"error":"native policy path is unavailable"}),
+        ))
+    })
+}
+
+fn policy_error(error: impl std::fmt::Display) -> Outcome {
+    // Policy parser diagnostics can contain authored values. Expose only the
+    // stable operator-facing category; the canonical audit retains no input.
+    let _ = error;
+    response(StatusCode::BAD_REQUEST, json!({"error":"invalid policy"}))
+}
+
+async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
+    let Some(policy) = policy else {
+        return response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"No baseline policy loaded"}),
+        );
+    };
+    match policy.baseline() {
+        Ok(Some(value)) => response(
+            StatusCode::OK,
+            json!({"baseline":value,"path":path.map(Path::display).map(|value| value.to_string())}),
+        ),
+        Ok(None) => response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"No baseline policy loaded"}),
+        ),
+        Err(_) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({"error":"baseline response unavailable"}),
+        ),
+    }
+}
+
+fn read_audit_events(path: &Path) -> Vec<Value> {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    source
+        .lines()
+        .rev()
+        .take(50_000)
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+fn approval_key(event: &Value) -> Option<String> {
+    let approval = event.get("approval")?.as_object()?;
+    let key = approval.get("key")?.as_str()?;
+    let target = approval.get("target")?.as_str()?;
+    Some(format!("{key}:{target}"))
+}
+
+fn resolved_approval_keys(event: &Value) -> Vec<String> {
+    let Some(event_name) = event.get("event").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Some(details) = event.get("details").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    match event_name {
+        "admin.approval_added" | "admin.denial" => {
+            let destination = details.get("destination").and_then(Value::as_str);
+            let Some(destination) = destination else {
+                return Vec::new();
+            };
+            match details.get("cred_id") {
+                Some(Value::String(credential)) => vec![format!("{credential}:{destination}")],
+                Some(Value::Array(credentials)) => credentials
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|credential| format!("{credential}:{destination}"))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        }
+        "admin.host_allowed" | "admin.host_denied" => {
+            let Some(host) = details.get("host").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let agent = details.get("agent").and_then(Value::as_str);
+            let port = details
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|port| u16::try_from(port).ok());
+            crate::approvals::NetworkScope::new(host, agent, port)
+                .ok()
+                .and_then(|scope| scope.resolved_key().ok())
+                .into_iter()
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn pending_approvals(path: &Path) -> Value {
+    let events = read_audit_events(path);
+    let resolved = events
+        .iter()
+        .flat_map(resolved_approval_keys)
+        .collect::<std::collections::HashSet<_>>();
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = Vec::new();
+    // `read_audit_events` returns newest first. Keep the first matching row so
+    // repeated prompts are coalesced to the latest request, then restore the
+    // source's chronological response order below.
+    for event in events {
+        let Some(approval) = event.get("approval") else {
+            continue;
+        };
+        if !approval
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || approval.get("approval_type").and_then(Value::as_str) == Some("desktop_present")
+        {
+            continue;
+        }
+        let Some(key) = approval_key(&event) else {
+            continue;
+        };
+        if resolved.contains(&key) || !seen.insert(key) {
+            continue;
+        }
+        pending.push(event);
+    }
+    pending.reverse();
+    Value::Array(pending)
+}
+
+fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
+    Ok(match value {
+        Value::String(value) => toml_edit::Value::from(value.clone()),
+        Value::Bool(value) => toml_edit::Value::from(*value),
+        Value::Number(value) if value.is_i64() => toml_edit::Value::from(value.as_i64().ok_or(())?),
+        Value::Number(value) if value.is_u64() => {
+            toml_edit::Value::from(i64::try_from(value.as_u64().ok_or(())?).map_err(|_| ())?)
+        }
+        Value::Number(value) => toml_edit::Value::from(value.as_f64().ok_or(())?),
+        Value::Array(values) => {
+            let mut array = toml_edit::Array::new();
+            for value in values {
+                array.push(json_toml_value(value)?);
+            }
+            toml_edit::Value::Array(array)
+        }
+        Value::Object(values) => {
+            let mut table = toml_edit::InlineTable::new();
+            for (key, value) in values {
+                table.insert(key.clone(), json_toml_value(value)?);
+            }
+            toml_edit::Value::InlineTable(table)
+        }
+        Value::Null => return Err(()),
+    })
+}
+
+fn json_toml_document(value: &Value) -> std::result::Result<toml_edit::DocumentMut, ()> {
+    let object = value.as_object().ok_or(())?;
+    let mut document = toml_edit::DocumentMut::new();
+    for (key, value) in object {
+        document.insert(key, toml_edit::Item::Value(json_toml_value(value)?));
+    }
+    Ok(document)
 }
 
 enum ParsedBody {
@@ -721,6 +973,13 @@ pub(crate) struct OperatorContext<'a> {
         Option<&'a (dyn Fn() -> tokio::task::JoinHandle<crate::circuits::CircuitValue> + Sync)>,
     pub view: Option<&'a std::sync::Arc<crate::traffic_view::TrafficView>>,
     pub policy_path: Option<&'a std::path::Path>,
+    pub instance_id: Option<&'a str>,
+    pub admin_address: Option<SocketAddr>,
+    pub operator_modes: Option<&'a crate::OperatorModes>,
+    pub agent_discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
+    pub listeners: &'a [crate::AgentListener],
+    pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
+    pub client_ip: Option<&'a str>,
     pub service_audit: Option<ServiceAudit<'a>>,
 }
 
@@ -747,6 +1006,13 @@ where
             stats,
             view,
             policy_path: None,
+            instance_id: None,
+            admin_address: None,
+            operator_modes: None,
+            agent_discovery: None,
+            listeners: &[],
+            audit: None,
+            client_ip: None,
             service_audit: None,
         },
     )
@@ -765,6 +1031,13 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         stats,
         view,
         policy_path,
+        instance_id,
+        admin_address,
+        operator_modes,
+        agent_discovery,
+        listeners,
+        audit,
+        client_ip,
         service_audit,
     } = context;
     let method = request.method();
@@ -787,6 +1060,549 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             }),
         );
         outcome.audit = Some(Audit::AuthenticationFailed);
+        return Ok(outcome);
+    }
+    if method == Method::GET && path == "/admin/runtime-identity" {
+        let Some(instance_id) = instance_id else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"schema_version":1,"state":"unknown","error":"runtime identity was not initialised"}),
+            ));
+        };
+        return Ok(response(
+            StatusCode::OK,
+            json!({"schema_version":1,"state":"active","instance_id":instance_id}),
+        ));
+    }
+    if method == Method::GET && path == "/admin/instance" {
+        let Some(instance_id) = instance_id else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"operator instance identity unavailable"}),
+            ));
+        };
+        return Ok(response(
+            StatusCode::OK,
+            json!({
+                "schema_version":1,
+                "safeyolo_instance_id":instance_id,
+                "host_user":Value::Null,
+                "host_python":Value::Null,
+                "webmitm_url":Value::Null,
+                "command_centre_events":{"enabled":audit.is_some(),"port":admin_address.map(|address| address.port())},
+                "capabilities":{
+                    "agent_inventory":agent_discovery.is_some(),
+                    "agent_lifecycle":false,
+                    "approvals":true,
+                    "audit_events":audit.is_some(),
+                    "desktop_present":false
+                }
+            }),
+        ));
+    }
+    if method == Method::GET && path == "/admin/approvals" {
+        return Ok(response(
+            StatusCode::OK,
+            json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
+        ));
+    }
+    if method == Method::GET && path == "/admin/agents" {
+        let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"agent inventory unavailable"}),
+            ));
+        };
+        let agents = discovery
+            .get_agents(writer, crate::circuit_runtime::now)
+            .map_err(|_| Error::RegistryUnavailable)?
+            .render_json(false)
+            .map_err(|_| Error::RegistryUnavailable)?;
+        let agents: Value =
+            serde_json::from_str(&agents).map_err(|_| Error::RegistryUnavailable)?;
+        let discovered = agents
+            .get("agents")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let agents = Value::Array(
+            listeners
+                .iter()
+                .map(|listener| {
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("agent_id".into(), Value::String(listener.agent_id.clone()));
+                    entry.insert(
+                        "socket_path".into(),
+                        Value::String(listener.socket_path.to_string_lossy().into_owned()),
+                    );
+                    entry.insert("status".into(), Value::String("configured".into()));
+                    if let Value::Object(discovered) = &discovered
+                        && let Some(Value::Object(info)) = discovered.get(&listener.agent_id)
+                    {
+                        if let Some(ip) = info.get("ip") {
+                            entry.insert("ip".into(), ip.clone());
+                        }
+                        if let Some(last_seen) = info.get("last_seen") {
+                            entry.insert("last_seen".into(), last_seen.clone());
+                        }
+                    }
+                    Value::Object(entry)
+                })
+                .collect(),
+        );
+        return Ok(encoded(
+            StatusCode::OK,
+            "application/json",
+            crate::python_json::encode_indented(&json!({"agents":agents})),
+            false,
+        ));
+    }
+    if method == Method::GET && path == "/modes" {
+        let Some(modes) = operator_modes else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"operator mode state unavailable"}),
+            ));
+        };
+        return Ok(response(
+            StatusCode::OK,
+            json!({"modes":mode_document(modes)}),
+        ));
+    }
+    if method == Method::GET
+        && let Some(addon) = path
+            .strip_prefix("/plugins/")
+            .and_then(|path| path.strip_suffix("/mode"))
+    {
+        let Some(modes) = operator_modes else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"operator mode state unavailable"}),
+            ));
+        };
+        return Ok(operator_mode(modes, addon).unwrap_or_else(|| {
+            response(
+                StatusCode::NOT_FOUND,
+                json!({"error":format!("addon '{addon}' not found or doesn't support mode switching")}),
+            )
+        }));
+    }
+    if (method == Method::PUT && path == "/modes")
+        || (method == Method::PUT && path.starts_with("/plugins/") && path.ends_with("/mode"))
+    {
+        let Some(modes) = operator_modes else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"operator mode state unavailable"}),
+            ));
+        };
+        let addon = if path == "/modes" {
+            None
+        } else {
+            path.strip_prefix("/plugins/")
+                .and_then(|path| path.strip_suffix("/mode"))
+        };
+        let data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let Some(mode) = parse_mode(&data.0) else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"mode must be 'warn' or 'block'"}),
+            ));
+        };
+        let mode = mode.to_owned();
+        let block = mode == "block";
+        let addons = addon.map_or_else(
+            || vec!["network-guard", "credential-guard", "pattern-scanner"],
+            |addon| vec![addon],
+        );
+        if addons.iter().any(|addon| modes.options(addon).is_none()) {
+            return Ok(response(
+                StatusCode::NOT_FOUND,
+                json!({"error":"addon not found or doesn't support mode switching"}),
+            ));
+        }
+        for addon in &addons {
+            modes.set(addon, block);
+        }
+        let results = addons
+            .iter()
+            .map(|addon| ((*addon).to_owned(), Value::String("updated".into())))
+            .collect::<serde_json::Map<_, _>>();
+        let mut outcome = response(
+            StatusCode::OK,
+            if let Some(addon) = addon {
+                let options = modes
+                    .options(addon)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, _)| (name.to_owned(), Value::Bool(block)))
+                    .collect::<serde_json::Map<_, _>>();
+                json!({"addon":addon,"mode":mode,"options":options,"status":"updated"})
+            } else {
+                json!({"status":"updated","mode":mode,"results":results})
+            },
+        );
+        // Keep the audit payload independent of the mutable response view.
+        outcome.audit = Some(if let Some(addon) = addon {
+            Audit::ModeChanged {
+                addon: addon.into(),
+                mode,
+                client_ip: client_ip.unwrap_or_default().to_owned(),
+            }
+        } else {
+            Audit::ModeChanged {
+                addon: "all".into(),
+                mode,
+                client_ip: client_ip.unwrap_or_default().to_owned(),
+            }
+        });
+        return Ok(outcome);
+    }
+    if method == Method::GET && path == "/admin/policy/baseline" {
+        return Ok(get_baseline(policy, policy_path).await);
+    }
+    if method == Method::POST && path == "/admin/policy/validate" {
+        let mut data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let Some(content) = data
+            .0
+            .as_object_mut()
+            .and_then(|object| object.remove("content"))
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'content' field"}),
+            ));
+        };
+        let Some(content) = content.as_str() else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"content must be a string"}),
+            ));
+        };
+        return Ok(match Policy::parse(content, crate::policy::Format::Yaml) {
+            Ok(_) => response(StatusCode::OK, json!({"valid":true})),
+            Err(error) => policy_error(error),
+        });
+    }
+    if method == Method::POST && path == "/admin/policy/baseline/approve" {
+        let mut data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let fields = data.0.as_object_mut().ok_or(Error::NonObjectBody)?;
+        let Some(destination) = fields
+            .get("destination")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'destination' field"}),
+            ));
+        };
+        let Some(credential_value) = fields.get("cred_id") else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'cred_id' field"}),
+            ));
+        };
+        let credentials = match credential_value {
+            Value::String(value) if !value.is_empty() => vec![value.clone()],
+            Value::Array(values)
+                if !values.is_empty()
+                    && values
+                        .iter()
+                        .all(|value| value.as_str().is_some_and(|value| !value.is_empty())) =>
+            {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            }
+            _ => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"'cred_id' must be a non-empty string or list of strings"}),
+                ));
+            }
+        };
+        let tier = fields
+            .get("tier")
+            .and_then(Value::as_str)
+            .unwrap_or("explicit");
+        if !matches!(tier, "explicit" | "inferred") {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"tier must be 'explicit' or 'inferred'"}),
+            ));
+        }
+        let path = match require_policy_path(policy_path) {
+            Ok(path) => path,
+            Err(outcome) => return Ok(*outcome),
+        };
+        let count = match crate::approvals::allow_credentials(
+            path,
+            destination,
+            &credentials,
+            |_| Ok(()),
+        ) {
+            Ok(count) => count,
+            Err(error) => return Ok(policy_error(error)),
+        };
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({"status":"added","destination":destination,"cred_id":credential_value,"tier":tier,"permission_count":count}),
+        );
+        outcome.audit = Some(mutation(
+            "admin.approval_added",
+            format!(
+                "Baseline approval added for {}",
+                crate::network_guard::sanitize(destination)
+            ),
+            json!({"client_ip":client_ip,"destination":destination,"cred_id":credential_value,"tier":tier}),
+        ));
+        return Ok(outcome);
+    }
+    if method == Method::POST && path == "/admin/policy/baseline/deny" {
+        let mut data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let fields = data.0.as_object_mut().ok_or(Error::NonObjectBody)?;
+        let Some(destination) = fields
+            .get("destination")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'destination' field"}),
+            ));
+        };
+        let Some(credential) = fields
+            .get("cred_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'cred_id' field"}),
+            ));
+        };
+        let reason = fields
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("user_denied");
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({"status":"logged","destination":destination,"cred_id":credential,"reason":reason}),
+        );
+        outcome.audit = Some(mutation(
+            "admin.denial",
+            format!(
+                "Credential denied for {}",
+                crate::network_guard::sanitize(destination)
+            ),
+            json!({"client_ip":client_ip,"destination":destination,"cred_id":credential,"reason":reason}),
+        ));
+        return Ok(outcome);
+    }
+    if method == Method::PUT && path == "/admin/policy/baseline" {
+        let mut data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let Some(policy_data) = data
+            .0
+            .as_object_mut()
+            .and_then(|object| object.remove("policy"))
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'policy' field in request body"}),
+            ));
+        };
+        let path = match require_policy_path(policy_path) {
+            Ok(path) => path,
+            Err(outcome) => return Ok(*outcome),
+        };
+        let document = match json_toml_document(&policy_data) {
+            Ok(document) => document,
+            Err(()) => return Ok(policy_error("policy contains a TOML-incompatible value")),
+        };
+        let candidate = match Policy::parse(&document.to_string(), crate::policy::Format::Toml) {
+            Ok(policy) => policy,
+            Err(error) => return Ok(policy_error(error)),
+        };
+        let permission_count = candidate.baseline_permissions_count().unwrap_or(0);
+        let saved = crate::approvals::update_policy(
+            path,
+            false,
+            |current| {
+                *current = document;
+                Ok(())
+            },
+            |_| Ok(()),
+        );
+        if let Err(error) = saved {
+            return Ok(policy_error(error));
+        }
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({"status":"updated","permission_count":permission_count,"message":"Baseline policy updated"}),
+        );
+        outcome.audit = Some(mutation(
+            "admin.baseline_update",
+            format!("Baseline policy updated: {permission_count} permissions"),
+            json!({"client_ip":client_ip,"permission_count":permission_count}),
+        ));
+        return Ok(outcome);
+    }
+    if method == Method::POST
+        && matches!(
+            path.as_str(),
+            "/admin/policy/host/allow"
+                | "/admin/policy/host/deny"
+                | "/admin/policy/host/rate"
+                | "/admin/policy/host/bypass"
+        )
+    {
+        let mut data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Json(Value::Null),
+            ParsedBody::Value(data) => data,
+        };
+        let fields = data.0.as_object_mut().ok_or(Error::NonObjectBody)?;
+        let Some(host) = fields
+            .get("host")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing 'host' field"}),
+            ));
+        };
+        let port = match fields.get("port") {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(value)) => match value
+                .as_u64()
+                .and_then(|value| u16::try_from(value).ok())
+                .filter(|value| *value > 0)
+            {
+                Some(value) => Some(value),
+                None => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"port must be an integer from 1 to 65535"}),
+                    ));
+                }
+            },
+            _ => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"port must be an integer from 1 to 65535"}),
+                ));
+            }
+        };
+        let agent = fields.get("agent").and_then(Value::as_str);
+        let scope = match crate::approvals::NetworkScope::new(host, agent, port) {
+            Ok(scope) => scope,
+            Err(error) => return Ok(policy_error(error)),
+        };
+        let policy_file = match require_policy_path(policy_path) {
+            Ok(path) => path,
+            Err(outcome) => return Ok(*outcome),
+        };
+        let (body, event, body_value) = match path.as_str() {
+            "/admin/policy/host/allow" => {
+                let rate = fields.get("rate").and_then(Value::as_u64);
+                match crate::approvals::allow_host(policy_file, &scope, rate, |_| Ok(())) {
+                    Ok(result) => (
+                        response(
+                            StatusCode::OK,
+                            json!({"status":"added","host":result.host,"rate":result.rate,"agent":result.agent,"port":result.port}),
+                        ),
+                        "admin.host_allowed",
+                        json!({"client_ip":client_ip,"host":result.host,"rate":result.rate,"agent":result.agent,"port":result.port}),
+                    ),
+                    Err(error) => return Ok(policy_error(error)),
+                }
+            }
+            "/admin/policy/host/deny" => {
+                let expires = fields.get("expires").and_then(Value::as_str);
+                match crate::approvals::deny_host(policy_file, &scope, expires, |_| Ok(())) {
+                    Ok(result) => (
+                        response(
+                            StatusCode::OK,
+                            json!({"status":"denied","host":result.host,"expires":result.expires,"agent":result.agent,"port":result.port}),
+                        ),
+                        "admin.host_denied",
+                        json!({"client_ip":client_ip,"host":result.host,"expires":result.expires,"agent":result.agent,"port":result.port}),
+                    ),
+                    Err(error) => return Ok(policy_error(error)),
+                }
+            }
+            "/admin/policy/host/rate" => {
+                let Some(rate) = fields
+                    .get("rate")
+                    .and_then(Value::as_u64)
+                    .filter(|value| *value > 0)
+                else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"'rate' must be a positive integer"}),
+                    ));
+                };
+                match crate::approvals::update_host_rate(policy_file, &scope, rate, |_| Ok(())) {
+                    Ok(old) => (
+                        response(
+                            StatusCode::OK,
+                            json!({"status":"updated","host":host,"old_rate":old,"new_rate":rate}),
+                        ),
+                        "admin.host_rate_updated",
+                        json!({"client_ip":client_ip,"host":host,"old_rate":old,"new_rate":rate}),
+                    ),
+                    Err(error) => return Ok(policy_error(error)),
+                }
+            }
+            _ => {
+                let Some(addon) = fields
+                    .get("addon")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"missing 'addon' field"}),
+                    ));
+                };
+                match crate::approvals::add_host_bypass(policy_file, &scope, addon, |_| Ok(())) {
+                    Ok(bypass) => (
+                        response(
+                            StatusCode::OK,
+                            json!({"status":"updated","host":host,"bypass":bypass}),
+                        ),
+                        "admin.host_bypass_added",
+                        json!({"client_ip":client_ip,"host":host,"addon":addon,"bypass":bypass}),
+                    ),
+                    Err(error) => return Ok(policy_error(error)),
+                }
+            }
+        };
+        let mut outcome = body;
+        outcome.audit = Some(mutation(event, "Operator host policy updated", body_value));
         return Ok(outcome);
     }
     if method == Method::POST

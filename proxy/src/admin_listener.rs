@@ -10,17 +10,22 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use serde_json::json;
 use tokio::{
+    io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
     sync::watch,
     task::{JoinHandle, JoinSet},
 };
 use zeroize::Zeroizing;
 
+use crate::websocket::{Event as WebSocketEvent, Handshake, Reader, Writer};
 use crate::{Config, Error, RuntimeState, admin_api, policy::python_whitespace};
+use tungstenite::protocol::frame::coding::Control;
 
 pub(crate) struct Prepared {
     listener: TcpListener,
@@ -155,9 +160,11 @@ async fn serve_connection(
     token: Arc<Zeroizing<String>>,
     mut stop: watch::Receiver<bool>,
 ) {
+    let event_stop = stop.clone();
     let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
         let state = state.clone();
         let token = token.clone();
+        let event_stop = event_stop.clone();
         async move {
             let runtime = state
                 .read()
@@ -191,6 +198,17 @@ async fn serve_connection(
                         .to_owned()
                 })
                 .unwrap_or_else(|| peer.ip().to_string());
+            if request.method() == hyper::Method::GET && request.uri().path() == "/admin/events" {
+                return serve_events(
+                    request,
+                    runtime,
+                    token.trim_matches(python_whitespace),
+                    event_stop,
+                    client_ip,
+                    path,
+                )
+                .await;
+            }
             let stats = || {
                 let runtime = runtime.clone();
                 tokio::task::spawn_blocking(move || crate::operator_stats::document(&runtime))
@@ -205,6 +223,13 @@ async fn serve_connection(
                     stats: Some(&stats),
                     view: Some(&runtime.traffic_view),
                     policy_path: runtime.config.policy_file.as_deref(),
+                    instance_id: Some(&runtime.instance_id),
+                    admin_address: runtime.admin_address,
+                    operator_modes: Some(&runtime.operator_modes),
+                    agent_discovery: Some(&runtime.agent_discovery),
+                    listeners: &runtime.config.listeners,
+                    audit: Some(&runtime.audit),
+                    client_ip: Some(&client_ip),
                     service_audit: Some(admin_api::ServiceAudit {
                         writer: &runtime.audit,
                         client_ip: &client_ip,
@@ -258,6 +283,9 @@ async fn serve_connection(
                             "client_ip":client_ip, "resource":reset.resource()}),
                     ]
                 }
+                admin_api::Audit::PolicyMutation(_) | admin_api::Audit::ModeChanged { .. } => {
+                    vec![]
+                }
             });
             // Diagnostic sink failures remain separate from canonical producer
             // exceptions. Attempt each diagnostic without claiming rollback.
@@ -278,7 +306,9 @@ async fn serve_connection(
     let mut builder = hyper::server::conn::http1::Builder::new();
     // The shipped BaseHTTPRequestHandler closes after its HTTP/1.0 response.
     builder.keep_alive(false);
-    let connection = builder.serve_connection(TokioIo::new(socket), service);
+    let connection = builder
+        .serve_connection(TokioIo::new(socket), service)
+        .with_upgrades();
     tokio::pin!(connection);
     tokio::select! {
         _ = &mut connection => {},
@@ -287,4 +317,214 @@ async fn serve_connection(
             let _ = connection.await;
         }
     }
+}
+
+async fn serve_events(
+    mut request: hyper::Request<hyper::body::Incoming>,
+    runtime: std::sync::Arc<crate::Runtime>,
+    token: &str,
+    stop: watch::Receiver<bool>,
+    client_ip: String,
+    target: String,
+) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
+    if !admin_api::authenticate(request.headers(), token)
+        .map_err(|_| admin_api::Error::AuthenticationEncoding)?
+    {
+        return Ok(admin_api::unauthorized()
+            .submit_audit(&runtime.audit, &client_ip, &target)?
+            .into_response());
+    }
+    let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
+    let upgrade = hyper::upgrade::on(request);
+    let body = Full::new(Bytes::new())
+        .map_err(|never: std::convert::Infallible| match never {})
+        .boxed();
+    let response = handshake
+        .server_response(body)
+        .map_err(|_| admin_api::Error::BodyFraming)?;
+    let path = runtime.audit.path().to_owned();
+    tokio::spawn(async move {
+        let Ok(upgraded) = upgrade.await else {
+            return;
+        };
+        stream_events(upgraded, path, stop).await;
+    });
+    Ok(response)
+}
+
+async fn stream_events(
+    upgraded: hyper::upgrade::Upgraded,
+    path: std::path::PathBuf,
+    mut stop: watch::Receiver<bool>,
+) {
+    let (read, write) = tokio::io::split(TokioIo::new(upgraded));
+    let mut reader = Reader::new(read, true, None);
+    let mut writer = Writer::new(write, false, None);
+    let mut offset = std::fs::metadata(&path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let mut pending = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.changed() => {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(1),
+                    writer.control(Control::Close, &[0x03, 0xe9]),
+                ).await;
+                let _ = tokio::time::timeout(Duration::from_secs(1), writer.shutdown()).await;
+                return;
+            }
+            event = reader.read() => {
+                match event {
+                    Ok(WebSocketEvent::Ping(payload)) => {
+                        if !matches!(
+                            tokio::time::timeout(
+                                Duration::from_secs(1),
+                                writer.control(Control::Pong, &payload),
+                            )
+                            .await,
+                            Ok(Ok(()))
+                        ) {
+                            return;
+                        }
+                    }
+                    Ok(WebSocketEvent::Close(payload)) => {
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(1),
+                            writer.control(Control::Close, &payload),
+                        ).await;
+                        let _ = tokio::time::timeout(Duration::from_secs(1), writer.shutdown()).await;
+                        return;
+                    }
+                    Ok(WebSocketEvent::Pong(_)) | Ok(WebSocketEvent::Message(_)) => {}
+                    Err(_) => return,
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                let lines = read_event_lines(&path, &mut offset, &mut pending).await;
+                for line in lines {
+                    let Ok(line) = String::from_utf8(line) else {
+                        continue;
+                    };
+                    if !matches!(
+                        tokio::time::timeout(
+                            Duration::from_secs(1),
+                            writer.message(crate::websocket::Message::text_for_send(line)),
+                        )
+                        .await,
+                        Ok(Ok(()))
+                    ) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn read_event_lines(path: &Path, offset: &mut u64, pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let Ok(metadata) = tokio::fs::metadata(path).await else {
+        return Vec::new();
+    };
+    if metadata.len() < *offset {
+        *offset = 0;
+        pending.clear();
+    }
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return Vec::new();
+    };
+    if file.seek(std::io::SeekFrom::Start(*offset)).await.is_err() {
+        return Vec::new();
+    }
+    let mut chunk = vec![0u8; 16 * 1024];
+    let Ok(read) = file.read(&mut chunk).await else {
+        return Vec::new();
+    };
+    if read == 0 {
+        return Vec::new();
+    }
+    *offset += read as u64;
+    pending.extend_from_slice(&chunk[..read]);
+    // A malformed producer line cannot grow the stream owner without limit.
+    if pending.len() > 1024 * 1024 {
+        if let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+            pending.drain(..=newline);
+        } else {
+            pending.clear();
+        }
+    }
+    let mut lines = Vec::new();
+    while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
+        let mut line = pending.drain(..=newline).collect::<Vec<_>>();
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line)
+            && is_operator_event(&event)
+            && let Ok(encoded) = serde_json::to_vec(&event)
+        {
+            lines.push(encoded);
+        }
+    }
+    lines
+}
+
+fn is_operator_event(event: &serde_json::Value) -> bool {
+    let approval = event.get("approval").and_then(serde_json::Value::as_object);
+    if approval
+        .and_then(|approval| approval.get("required"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    let event_name = event
+        .get("event")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if event_name.starts_with("agent.")
+        || event_name == "ops.circuit_breaker.open"
+        || matches!(
+            event_name,
+            "admin.approval_added"
+                | "admin.denial"
+                | "admin.host_allowed"
+                | "admin.host_denied"
+                | "admin.host_rate_updated"
+                | "admin.host_bypass_added"
+                | "admin.mode_change"
+                | "admin.baseline_update"
+                | "admin.task_policy_update"
+                | "admin.agent_service_authorized"
+                | "admin.agent_service_revoked"
+                | "admin.gateway_grant"
+                | "admin.gateway_grant_revoked"
+                | "admin.contract_binding_approved"
+                | "admin.desktop_presented"
+                | "plumb.approved"
+                | "plumb.denied"
+        )
+        || matches!(
+            event_name,
+            "ops.command_centre_tailnet_exited"
+                | "ops.command_centre_tailnet_failed"
+                | "ops.command_centre_tailnet_started"
+                | "ops.command_centre_tailnet_stopped"
+                | "ops.proxy_start"
+                | "ops.proxy_stop"
+                | "ops.proxy_start_failed"
+        )
+    {
+        return true;
+    }
+    event
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| matches!(kind, "security" | "gateway"))
+        && event
+            .get("severity")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|severity| matches!(severity, "high" | "critical"))
 }

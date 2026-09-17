@@ -57,6 +57,41 @@ impl Audit {
                 event.details = serde_json::Value::Object(details).into();
                 vec![event]
             }
+            Self::PolicyMutation(mutation) => {
+                let mut event = event(
+                    mutation.event,
+                    Kind::Admin,
+                    Severity::Medium,
+                    sanitize(&mutation.summary),
+                    "admin-api",
+                );
+                event.details = mutation.details.clone().into();
+                vec![event]
+            }
+            Self::ModeChanged {
+                addon,
+                mode,
+                client_ip,
+            } => {
+                let mut event = event(
+                    "admin.mode_change",
+                    Kind::Admin,
+                    Severity::Medium,
+                    format!(
+                        "Operator mode for {} changed to {}",
+                        sanitize(addon),
+                        sanitize(mode)
+                    ),
+                    "admin-api",
+                );
+                event.details = serde_json::json!({
+                    "client_ip": client_ip,
+                    "target_addon": addon,
+                    "new_mode": mode,
+                })
+                .into();
+                vec![event]
+            }
             Self::AuthenticationFailed => {
                 let mut event = event(
                     "admin.auth_failure",

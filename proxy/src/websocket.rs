@@ -306,6 +306,19 @@ impl Handshake {
             subprotocol: selected.map(str::to_owned),
         })
     }
+
+    /// Build the server side of a checked client upgrade. No extension is
+    /// advertised here; the operator stream uses the same inspected framing
+    /// path without compression negotiation.
+    pub fn server_response<B>(&self, body: B) -> Result<hyper::Response<B>, Error> {
+        hyper::Response::builder()
+            .status(hyper::StatusCode::SWITCHING_PROTOCOLS)
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-accept", self.accept.clone())
+            .body(body)
+            .map_err(|_| "WebSocket response construction failed".into())
+    }
 }
 
 /// Contents are deliberately absent from Debug and serialization.
@@ -499,6 +512,21 @@ impl Drop for MessageContent {
 }
 
 impl Message {
+    /// Construct one bounded text message for a server-owned stream.
+    /// MessageContent zeroizes the private payload when the frame is sent or
+    /// the connection is dropped.
+    pub fn text_for_send(text: impl Into<String>) -> Self {
+        let text = text.into().into_bytes();
+        let len = text.len() as u64;
+        Self {
+            kind: MessageType::Text,
+            body: Arc::new(MessageContent {
+                bytes: StoredBytes::Memory(text),
+            }),
+            fragments: StoredBytes::Memory(len.to_be_bytes().to_vec()),
+        }
+    }
+
     pub fn len(&self) -> u64 {
         self.body.len()
     }

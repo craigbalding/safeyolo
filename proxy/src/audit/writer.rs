@@ -151,6 +151,12 @@ pub struct Writer {
     worker: Mutex<Worker>,
 }
 impl Writer {
+    /// The durable path is an operator configuration identity, not event
+    /// content. It is borrowed so callers cannot retain a second owner.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Read retained events for an already validated request ID and trusted
     /// agent. This performs blocking file I/O and a best-effort freshness wait;
     /// async callers must use their blocking executor. The returned document

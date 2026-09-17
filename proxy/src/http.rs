@@ -195,16 +195,15 @@ fn full(body: impl Into<Bytes>) -> Body {
 }
 
 fn inspection_options(runtime: &Runtime) -> Option<crate::inspection::Options> {
-    runtime
-        .config
-        .inspection
-        .as_ref()
-        .map(|inspection| crate::inspection::Options {
-            block_request: inspection.block_request,
-            block_response: inspection.block_response,
-            block_websocket_request: Some(inspection.block_websocket_request),
-            block_websocket_response: Some(inspection.block_websocket_response),
-        })
+    runtime.config.inspection.as_ref().map(|_| {
+        let flags = runtime.operator_modes.flags();
+        crate::inspection::Options {
+            block_request: flags[0],
+            block_response: flags[1],
+            block_websocket_request: Some(flags[2]),
+            block_websocket_response: Some(flags[3]),
+        }
+    })
 }
 
 fn record_pattern_decision(
@@ -1087,7 +1086,7 @@ async fn decide(
             },
             Options {
                 enabled: runtime.config.network_guard_enabled,
-                block: runtime.config.network_guard_block,
+                block: runtime.operator_modes.network_block(),
                 homoglyph: runtime.config.network_guard_homoglyph,
             },
             crate::policy::current_time_ms(),
@@ -2301,7 +2300,7 @@ where
             false,
             ordered_headers.iter(),
             crate::credential_guard::Options {
-                block: runtime.config.credential_guard_block(),
+                block: runtime.operator_modes.credential_block(),
             },
             crate::policy::current_time_ms(),
         ) {
@@ -2674,7 +2673,7 @@ where
             false,
             std::iter::once((field_name, field_value)),
             crate::credential_guard::Options {
-                block: runtime.config.credential_guard_block(),
+                block: runtime.operator_modes.credential_block(),
             },
             crate::policy::current_time_ms(),
         ) {

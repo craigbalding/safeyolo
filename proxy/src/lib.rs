@@ -94,6 +94,92 @@ struct CredentialActivation {
     closing: Arc<AtomicBool>,
     active: Arc<Mutex<Vec<credentials::CredentialMetadata>>>,
 }
+
+/// Process-owned operator mode switches.  The native admin facade mutates this
+/// shared snapshot so a mode change reaches existing agent connections and
+/// survives ordinary Runtime publications/reloads.
+#[derive(Clone)]
+pub(crate) struct OperatorModes {
+    network_block: Arc<AtomicBool>,
+    credential_block: Arc<AtomicBool>,
+    pattern_request: Arc<AtomicBool>,
+    pattern_response: Arc<AtomicBool>,
+    pattern_websocket_request: Arc<AtomicBool>,
+    pattern_websocket_response: Arc<AtomicBool>,
+}
+
+impl OperatorModes {
+    fn from_config(config: &Config) -> Self {
+        let inspection = config.inspection.as_ref();
+        Self {
+            network_block: Arc::new(AtomicBool::new(config.network_guard_block)),
+            credential_block: Arc::new(AtomicBool::new(config.credential_guard_block())),
+            pattern_request: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_request),
+            )),
+            pattern_response: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_response),
+            )),
+            pattern_websocket_request: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_websocket_request),
+            )),
+            pattern_websocket_response: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_websocket_response),
+            )),
+        }
+    }
+
+    pub(crate) fn set(&self, addon: &str, block: bool) -> Option<()> {
+        match addon {
+            "network-guard" => self.network_block.store(block, Ordering::Release),
+            "credential-guard" => self.credential_block.store(block, Ordering::Release),
+            "pattern-scanner" => {
+                self.pattern_request.store(block, Ordering::Release);
+                self.pattern_response.store(block, Ordering::Release);
+                self.pattern_websocket_request
+                    .store(block, Ordering::Release);
+                self.pattern_websocket_response
+                    .store(block, Ordering::Release);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    pub(crate) fn network_block(&self) -> bool {
+        self.network_block.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn credential_block(&self) -> bool {
+        self.credential_block.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn options(&self, addon: &str) -> Option<Vec<(&'static str, bool)>> {
+        Some(match addon {
+            "network-guard" => vec![("network_guard_block", self.network_block())],
+            "credential-guard" => vec![("credguard_block", self.credential_block())],
+            "pattern-scanner" => {
+                let flags = self.flags();
+                vec![
+                    ("pattern_block_request", flags[0]),
+                    ("pattern_block_response", flags[1]),
+                    ("pattern_block_websocket_request", flags[2]),
+                    ("pattern_block_websocket_response", flags[3]),
+                ]
+            }
+            _ => return None,
+        })
+    }
+
+    fn flags(&self) -> [bool; 4] {
+        [
+            self.pattern_request.load(Ordering::Acquire),
+            self.pattern_response.load(Ordering::Acquire),
+            self.pattern_websocket_request.load(Ordering::Acquire),
+            self.pattern_websocket_response.load(Ordering::Acquire),
+        ]
+    }
+}
 impl CredentialActivation {
     fn activate(
         &self,
@@ -216,6 +302,7 @@ pub(crate) struct Runtime {
     /// Its vault clone is the same state used for credential injection.
     oauth: Option<oauth::OAuthRefresh>,
     credential_activation: CredentialActivation,
+    operator_modes: Arc<OperatorModes>,
     /// Durable identity of the loaded vault. The key fingerprint is only used
     /// to decide whether a reload may retain the existing Vault/coordinator;
     /// it is never included in Runtime diagnostics.
@@ -344,6 +431,9 @@ impl Runtime {
             let credential_activation = previous
                 .map(|runtime| runtime.credential_activation.clone())
                 .unwrap_or_default();
+            let operator_modes = previous
+                .map(|runtime| runtime.operator_modes.clone())
+                .unwrap_or_else(|| Arc::new(OperatorModes::from_config(&config)));
             if let Some(vault) = vault.as_ref() {
                 let metadata = vault.metadata()?;
                 credential_activation
@@ -511,6 +601,7 @@ impl Runtime {
                 vault,
                 oauth,
                 credential_activation,
+                operator_modes,
                 vault_identity,
                 gateway_grants,
                 credential_guard,

@@ -303,6 +303,154 @@ pub fn deny_host(
     })
 }
 
+/// Add a credential identifier to one durable host entry while preserving its
+/// existing egress, rate and bypass fields. Credential identifiers are policy
+/// references; this operation never receives or stores secret material.
+pub fn allow_credential(
+    path: &Path,
+    destination: &str,
+    credential: &str,
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<usize> {
+    allow_credentials(path, destination, &[credential.to_owned()], activate)
+}
+
+/// Add several credential identifiers to one durable host entry while
+/// preserving existing egress, rate and bypass fields. The caller owns the
+/// activation boundary and this function retains no secret material.
+pub fn allow_credentials(
+    path: &Path,
+    destination: &str,
+    credentials: &[String],
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<usize> {
+    let scope = NetworkScope::new(destination, None, None)?;
+    if credentials.is_empty() || credentials.iter().any(String::is_empty) {
+        return Err(invalid("credential identifier must be non-empty"));
+    }
+    update_policy(
+        path,
+        false,
+        |document| {
+            let hosts = hosts_table(document, &scope)?;
+            let item = hosts
+                .entry(&scope.destination())
+                .or_insert(Item::Value(Value::InlineTable(InlineTable::new())));
+            let table = item
+                .as_table_like_mut()
+                .ok_or_else(|| invalid("host entry must be a table"))?;
+            let allow = match table.get_mut("allow") {
+                Some(item) => item
+                    .as_value_mut()
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| invalid("host allow must be an array"))?,
+                None => {
+                    table.insert("allow", Item::Value(Value::Array(toml_edit::Array::new())));
+                    table
+                        .get_mut("allow")
+                        .and_then(Item::as_value_mut)
+                        .and_then(Value::as_array_mut)
+                        .ok_or_else(|| invalid("host allow must be an array"))?
+                }
+            };
+            for credential in credentials {
+                if !allow.iter().any(|value| value.as_str() == Some(credential)) {
+                    allow.push(credential);
+                }
+            }
+            Ok(allow.len())
+        },
+        activate,
+    )
+}
+
+/// Update only a host's rate field, retaining all other operator policy data.
+pub fn update_host_rate(
+    path: &Path,
+    scope: &NetworkScope,
+    rate: u64,
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<Option<u64>> {
+    validate_scope(scope)?;
+    if rate == 0 {
+        return Err(invalid("rate must be a positive integer"));
+    }
+    update_policy(
+        path,
+        false,
+        |document| {
+            validate_rate(document, Some(rate))?;
+            let hosts = hosts_table(document, scope)?;
+            let item = hosts
+                .entry(&scope.destination())
+                .or_insert(Item::Value(Value::InlineTable(InlineTable::new())));
+            let table = item
+                .as_table_like_mut()
+                .ok_or_else(|| invalid("host entry must be a table"))?;
+            let old = table
+                .get("rate")
+                .and_then(Item::as_integer)
+                .and_then(|value| u64::try_from(value).ok());
+            table.insert(
+                "rate",
+                Item::Value(Value::from(
+                    i64::try_from(rate).map_err(|_| invalid("rate exceeds TOML range"))?,
+                )),
+            );
+            Ok(old)
+        },
+        activate,
+    )
+}
+
+/// Add an addon bypass to one host while retaining its other fields.
+pub fn add_host_bypass(
+    path: &Path,
+    scope: &NetworkScope,
+    addon: &str,
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<Vec<String>> {
+    validate_scope(scope)?;
+    if addon.is_empty() {
+        return Err(invalid("addon must be non-empty"));
+    }
+    update_policy(
+        path,
+        false,
+        |document| {
+            let hosts = hosts_table(document, scope)?;
+            let item = hosts
+                .entry(&scope.destination())
+                .or_insert(Item::Value(Value::InlineTable(InlineTable::new())));
+            let table = item
+                .as_table_like_mut()
+                .ok_or_else(|| invalid("host entry must be a table"))?;
+            let bypass = match table.get_mut("bypass") {
+                Some(item) => item
+                    .as_value_mut()
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| invalid("host bypass must be an array"))?,
+                None => {
+                    table.insert("bypass", Item::Value(Value::Array(toml_edit::Array::new())));
+                    table
+                        .get_mut("bypass")
+                        .and_then(Item::as_value_mut)
+                        .and_then(Value::as_array_mut)
+                        .ok_or_else(|| invalid("host bypass must be an array"))?
+                }
+            };
+            if !bypass.iter().any(|value| value.as_str() == Some(addon)) {
+                bypass.push(addon);
+            }
+            Ok(bypass
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect())
+        },
+        activate,
+    )
+}
+
 /// Removes expired entries durably at an explicit load/reload boundary. The
 /// native expiry fix covers agent hosts as well as top-level hosts.
 pub fn prune_expired(
