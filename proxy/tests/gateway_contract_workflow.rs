@@ -73,6 +73,22 @@ capabilities:
         response_validators: declared
 "#;
 
+const OTHER_SERVICE: &str = r#"
+schema_version: 1
+name: other
+default_host: 127.0.0.1
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+  allow_http: true
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /v1/other
+"#;
+
 fn config(root: &Path) -> Config {
     Config {
         listeners: vec![
@@ -145,6 +161,27 @@ enabled = true
 use_default_credential_rules = false
 "#
     )
+}
+
+fn legacy_policy(port: u16) -> String {
+    let mut source = policy(port);
+    source.push_str(
+        r#"
+[[agents.alice.contract_bindings]]
+service = "contract"
+capability = "writer"
+template = "contract.write.v1"
+bound_values = { project = "alpha", ticket = "T-1" }
+grantable_operations = ["write"]
+
+[[agents.alice.grants]]
+service = "contract"
+method = "POST"
+path = "/v1/write"
+scope = "remembered"
+"#,
+    );
+    source
 }
 
 async fn origin(
@@ -257,8 +294,18 @@ fn body(response: &[u8]) -> &[u8] {
 fn agent_api(path: &str, body: &[u8]) -> Vec<u8> {
     format!("POST http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
 }
+fn gateway_request_at(
+    host: &str,
+    port: u16,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    format!("{method} http://{host}:{port}{path} HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
+}
 fn gateway_request(port: u16, token: &str, method: &str, path: &str, body: &[u8]) -> Vec<u8> {
-    format!("{method} http://127.0.0.1:{port}{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
+    gateway_request_at("127.0.0.1", port, token, method, path, body)
 }
 fn admin_request(path: &str, body: &[u8]) -> Vec<u8> {
     format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
@@ -282,12 +329,25 @@ async fn gateway_call(
     raw(socket, &request).await
 }
 
-async fn current_gateway_token(socket: &Path) -> String {
+async fn gateway_call_at(
+    socket: &Path,
+    host: &str,
+    port: u16,
+    token: &str,
+    method: &str,
+    path: &str,
+    payload: &[u8],
+) -> Vec<u8> {
+    let request = gateway_request_at(host, port, token, method, path, payload);
+    raw(socket, &request).await
+}
+
+async fn current_service_token(socket: &Path, service: &str) -> String {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let response = raw(socket, &agent_api("/gateway/services", b"")).await;
             if let Ok(view) = serde_json::from_slice::<Value>(body(&response))
-                && let Some(token) = view["authorized"]["contract"]["token"].as_str()
+                && let Some(token) = view["authorized"][service]["token"].as_str()
             {
                 return token.to_owned();
             }
@@ -296,6 +356,10 @@ async fn current_gateway_token(socket: &Path) -> String {
     })
     .await
     .unwrap()
+}
+
+async fn current_gateway_token(socket: &Path) -> String {
+    current_service_token(socket, "contract").await
 }
 
 #[tokio::test]
@@ -351,6 +415,70 @@ async fn unchanged_policy_reload_does_not_race_service_token_publication() {
 }
 
 #[tokio::test]
+async fn legacy_normalization_keeps_watcher_watermark_and_origin_token_valid() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for dir in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(dir)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "contract-secret",
+            "bearer",
+            Secret::new("exact-contract-origin-secret"),
+        ))
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::fs::write(root_path.join("policy.toml"), legacy_policy(port)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(
+        listener,
+        seen.clone(),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    ));
+
+    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let socket = root_path.join("alice.sock");
+    let token = current_gateway_token(&socket).await;
+    // Store normalization has already filled IDs/creation/expiry in place.
+    // The accepted policy watermark must describe those resulting bytes.
+    assert!(!proxy.reload_policy_if_changed().await.unwrap());
+    assert_eq!(current_gateway_token(&socket).await, token);
+    let delivered = gateway_call(
+        &socket,
+        port,
+        &token,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&delivered, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        String::from_utf8_lossy(&seen.lock().unwrap()[0]).contains("exact-contract-origin-secret")
+    );
+    assert_eq!(current_gateway_token(&socket).await, token);
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+#[tokio::test]
 async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
@@ -371,24 +499,63 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    drop(listener);
     let mut source = policy(port);
     source.push_str("\n[gateway]\ngrant_ttl_seconds = 1\n");
     std::fs::write(root_path.join("policy.toml"), source).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(
+        listener,
+        seen.clone(),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    ));
 
     let mut proxy = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&std::fs::read(root_path.join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
-    let grant = admin(
+    let binding = admin(
         admin_port,
         &admin_request(
-            "/admin/gateway/grant",
-            br#"{"agent":"alice","service":"contract","method":"GET","path":"/v1/read","lifetime":"once"}"#,
+            "/admin/gateway/contract-binding",
+            br#"{"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["write"]}"#,
         ),
     )
     .await;
-    status(&grant, 200);
+    status(&binding, 200);
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let token = current_gateway_token(&root_path.join("alice.sock")).await;
+    let session = admin(
+        admin_port,
+        &admin_request(
+            "/admin/gateway/grant",
+            br#"{"agent":"alice","service":"contract","method":"POST","path":"/v1/write","lifetime":"session"}"#,
+        ),
+    )
+    .await;
+    status(&session, 200);
+    let allowed = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &token,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&allowed, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        String::from_utf8_lossy(&seen.lock().unwrap()[0]).contains("exact-contract-origin-secret")
+    );
     tokio::time::sleep(Duration::from_millis(1100)).await;
     let mut document = std::fs::read_to_string(root_path.join("policy.toml"))
         .unwrap()
@@ -404,10 +571,20 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
             .as_array()
             .is_some_and(Vec::is_empty)
     );
+    let blocked = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &current_gateway_token(&root_path.join("alice.sock")).await,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&blocked, 428);
+    assert_eq!(seen.lock().unwrap().len(), 1);
 
-    // A new process owner reads the same durable state and does not replay the
-    // expired grant. Then exercise the retained legacy record through the
-    // operator consumer, including normalization and final deletion.
+    // A new process owner does not replay the session grant. The same live
+    // origin remains untouched after restart.
     proxy.shutdown().await;
     let mut restarted = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
@@ -420,14 +597,30 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
             .as_array()
             .is_some_and(Vec::is_empty)
     );
+    let restarted_blocked = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &current_gateway_token(&root_path.join("alice.sock")).await,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&restarted_blocked, 428);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // Add a legacy remembered record through the authored policy, then let
+    // the existing policy reload normalize and publish it. It authorizes one
+    // real origin request before the operator consumer removes the last grant.
     let mut document = std::fs::read_to_string(root_path.join("policy.toml"))
         .unwrap()
         .parse::<toml_edit::DocumentMut>()
         .unwrap();
     let mut legacy = toml_edit::InlineTable::new();
     legacy.insert("service", toml_edit::Value::from("contract"));
-    legacy.insert("method", toml_edit::Value::from("GET"));
-    legacy.insert("path", toml_edit::Value::from("/v1/read"));
+    legacy.insert("method", toml_edit::Value::from("POST"));
+    legacy.insert("path", toml_edit::Value::from("/v1/write"));
+    legacy.insert("scope", toml_edit::Value::from("remembered"));
     let mut records = toml_edit::Array::new();
     records.push(toml_edit::Value::InlineTable(legacy));
     document["agents"]["alice"]["grants"] =
@@ -438,6 +631,23 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     status(&legacy_grants, 200);
     let legacy_grants: Value = serde_json::from_slice(body(&legacy_grants)).unwrap();
     let legacy_id = legacy_grants["grants"][0]["grant_id"].as_str().unwrap();
+    let legacy_allowed = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &current_gateway_token(&root_path.join("alice.sock")).await,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&legacy_allowed, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
     let removed = admin(
         admin_port,
         &admin_delete(&format!("/admin/gateway/grants/{legacy_id}")),
@@ -451,7 +661,19 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
             .as_array()
             .is_some_and(Vec::is_empty)
     );
+    let after_removal = gateway_call(
+        &root_path.join("alice.sock"),
+        port,
+        &current_gateway_token(&root_path.join("alice.sock")).await,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&after_removal, 428);
+    assert_eq!(seen.lock().unwrap().len(), 2);
     restarted.shutdown().await;
+    origin_task.abort();
 }
 
 #[tokio::test]
@@ -464,6 +686,7 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
+    std::fs::write(root_path.join("services/other.yaml"), OTHER_SERVICE).unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
     let vault_path = root_path.join("data/vault.yaml.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
@@ -474,10 +697,24 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
             Secret::new("exact-contract-origin-secret"),
         ))
         .unwrap();
+    vault
+        .store(Credential::new(
+            "other-secret",
+            "bearer",
+            Secret::new("exact-other-origin-secret"),
+        ))
+        .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    std::fs::write(root_path.join("policy.toml"), policy(port)).unwrap();
+    let other_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let other_port = other_listener.local_addr().unwrap().port();
+    let mut source = policy(port);
+    source.push_str(&format!(
+        "\n[hosts.\"127.0.0.2\"]\nservice = \"other\"\n[hosts.\"127.0.0.2:{other_port}\"]\negress = \"allow\"\n[agents.alice.services.other]\ncapability = \"reader\"\ntoken = \"other-secret\"\n"
+    ));
+    std::fs::write(root_path.join("policy.toml"), source).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
+    let other_seen = Arc::new(Mutex::new(Vec::new()));
     let fail_first = Arc::new(AtomicBool::new(true));
     let hold_first = Arc::new(AtomicBool::new(false));
     let first_accepted = Arc::new(Notify::new());
@@ -489,6 +726,14 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
         hold_first.clone(),
         first_accepted.clone(),
         release_first.clone(),
+    ));
+    let other_origin_task = tokio::spawn(origin(
+        other_listener,
+        other_seen.clone(),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
     ));
     let mut proxy = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
@@ -547,6 +792,52 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     // Policy publication mints the process-owned gateway token. Discover the
     // current value through the same Agent API surface used by the client.
     let mut gateway_token = current_gateway_token(&root_path.join("alice.sock")).await;
+    let other_token = current_service_token(&root_path.join("alice.sock"), "other").await;
+    let other_allowed = gateway_call_at(
+        &root_path.join("alice.sock"),
+        "127.0.0.2",
+        other_port,
+        &other_token,
+        "GET",
+        "/v1/other",
+        b"",
+    )
+    .await;
+    status(&other_allowed, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while other_seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let other_count = other_seen.lock().unwrap().len();
+    // A token issued for contract cannot cross into another live service
+    // origin, and the other service token cannot select an undeclared
+    // capability route. Both deny before a second origin observes bytes.
+    let wrong_service = gateway_call_at(
+        &root_path.join("alice.sock"),
+        "127.0.0.2",
+        other_port,
+        &gateway_token,
+        "GET",
+        "/v1/other",
+        b"",
+    )
+    .await;
+    status(&wrong_service, 403);
+    let wrong_capability = gateway_call_at(
+        &root_path.join("alice.sock"),
+        "127.0.0.2",
+        other_port,
+        &other_token,
+        "GET",
+        "/v1/undeclared",
+        b"",
+    )
+    .await;
+    status(&wrong_capability, 403);
+    assert_eq!(other_seen.lock().unwrap().len(), other_count);
 
     // Give the watcher one real publication boundary; all controls below use
     // requests against the same process-owned snapshot. The first origin
@@ -955,4 +1246,5 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     stop_tx.send(()).unwrap();
     watcher.await.unwrap();
     origin_task.abort();
+    other_origin_task.abort();
 }

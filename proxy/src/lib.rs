@@ -196,7 +196,7 @@ impl Runtime {
         };
         let result = (|| {
             let registry = load_service_catalog(&config, &audit, service_files)?;
-            let policy = config
+            let mut policy = config
                 .policy_file
                 .as_ref()
                 .map(|path| {
@@ -226,6 +226,17 @@ impl Runtime {
             } else {
                 None
             };
+            // Store::open/reload may normalize legacy grant metadata in place.
+            // Re-observe after that durable normalization so the accepted
+            // Runtime watermark describes the bytes whose token was exposed;
+            // otherwise the policy watcher performs a synthetic second
+            // publication immediately after startup/reload.
+            if let Some(policy) = policy.as_mut()
+                && gateway_grants.is_some()
+            {
+                policy
+                    .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
+            }
             // CredentialGuard is a native generation owned by the same Runtime
             // publication as the accepted Policy. Reuse the key on ordinary
             // reloads; an empty environment key deliberately retries loading
@@ -1079,7 +1090,7 @@ impl Proxy {
         result
     }
 
-    fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
+    fn publish_policy(&self, previous: &Runtime, mut policy: policy::Policy) -> Result<(), Error> {
         let previous_guard = previous
             .credential_guard
             .as_ref()
@@ -1092,6 +1103,14 @@ impl Proxy {
         } else {
             None
         };
+        if gateway_grants.is_some() {
+            policy.observe_baseline_files(Some(
+                previous
+                    .policy
+                    .as_ref()
+                    .ok_or("native policy is unavailable")?,
+            ))?;
+        }
         let runtime = Arc::new(Runtime {
             policy: Some(policy),
             credential_guard: Some(credential_guard),
