@@ -1514,6 +1514,13 @@ impl Proxy {
             }
         }
         service_mutations.drain().await;
+        let coord = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .coord
+            .clone();
+        coord.shutdown().await;
         let recorder = self
             .runtime
             .read()

@@ -9,6 +9,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex as StdMutex},
 
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -48,10 +49,54 @@ enum CoordError {
 /// Process-owned coordination client.  The client object is retained when a
 /// Runtime is reloaded, so all native Agent API requests use the same NATS
 /// connection and durable SQLite/NATS namespace.
+struct CoordCleanup {
+    pending: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+}
+
+impl CoordCleanup {
+    fn new() -> Self {
+        Self {
+            pending: StdMutex::new(Vec::new()),
+        }
+    }
+
+    fn enqueue(
+        &self,
+        handle: &tokio::runtime::Handle,
+        stream: jetstream::stream::Stream,
+        name: String,
+    ) {
+        let task = handle.spawn(async move {
+            let _ = stream.delete_consumer(&name).await;
+        });
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.push(task);
+        } else {
+            task.abort();
+        }
+    }
+
+    async fn drain(&self) {
+        loop {
+            let pending = match self.pending.lock() {
+                Ok(mut pending) => std::mem::take(&mut *pending),
+                Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+            };
+            if pending.is_empty() {
+                return;
+            }
+            for task in pending {
+                let _ = task.await;
+            }
+        }
+    }
+}
+
 pub struct CoordClient {
     data_dir: PathBuf,
     policy_file: Option<PathBuf>,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
+    cleanup: Arc<CoordCleanup>,
 }
 
 impl CoordClient {
@@ -68,7 +113,12 @@ impl CoordClient {
             data_dir,
             policy_file,
             nats: tokio::sync::Mutex::new(None),
+            cleanup: Arc::new(CoordCleanup::new()),
         }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.cleanup.drain().await;
     }
 
     async fn client(&self) -> Result<async_nats::Client, CoordError> {
@@ -117,8 +167,8 @@ impl CoordClient {
         "nats://127.0.0.1:4222".to_owned()
     }
 
-    async fn principal_id(&self, listener_id: &str) -> Result<String, CoordError> {
-        let listener_id = listener_id.to_owned();
+    async fn principal_id(&self, listener_name: &str) -> Result<String, CoordError> {
+        let listener_name = listener_name.to_owned();
         let policy_file = self.policy_file.clone();
         tokio::task::spawn_blocking(move || {
             let Some(path) = policy_file else {
@@ -129,20 +179,17 @@ impl CoordClient {
             let document = source
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|_| CoordError::Unavailable)?;
-            let registered = document
+            let agents = document
                 .get("agents")
                 .and_then(toml_edit::Item::as_table_like)
-                .is_some_and(|agents| {
-                    agents.iter().any(|(_, item)| {
-                        item.as_table_like()
-                            .and_then(|agent| agent.get("agent_id"))
-                            .and_then(toml_edit::Item::as_str)
-                            == Some(listener_id.as_str())
-                    })
-                });
-            registered
-                .then_some(listener_id)
-                .ok_or(CoordError::Unavailable)
+                .ok_or(CoordError::Unavailable)?;
+            let agent = agents
+                .get(listener_name.as_str())
+                .and_then(toml_edit::Item::as_table_like)
+                .and_then(|agent| agent.get("agent_id"))
+                .and_then(toml_edit::Item::as_str)
+                .ok_or(CoordError::Unavailable)?;
+            Ok(agent.to_owned())
         })
         .await
         .map_err(|_| CoordError::Unavailable)?
@@ -370,11 +417,29 @@ impl CoordClient {
             .map_err(|_| CoordError::Unavailable)?;
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs_f64(timeout_seconds.max(0.0));
+        let mut recovery_attempts = 0;
+        let mut next_recovery = tokio::time::Instant::now();
         loop {
             let page = self.attention_feed(principal, since, limit).await?;
             if !page.edges.is_empty() || page.next_cursor != since {
                 let _ = subscription.unsubscribe().await;
                 return Ok(page);
+            }
+            // A publisher can have a confirmed JetStream publish while its
+            // SQLite projection is still missing, so no attention hint is
+            // guaranteed.  Re-scan the retained stream a bounded number of
+            // times after subscribing to cover that crash window without
+            // turning a wait into an unbounded recovery loop.
+            let now = tokio::time::Instant::now();
+            if recovery_attempts < 3 && now >= next_recovery {
+                self.recover_attention(principal).await?;
+                recovery_attempts += 1;
+                next_recovery = now + Duration::from_millis(250);
+                let recovered = self.attention_feed(principal, since, limit).await?;
+                if !recovered.edges.is_empty() || recovered.next_cursor != since {
+                    let _ = subscription.unsubscribe().await;
+                    return Ok(recovered);
+                }
             }
             let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
             else {
@@ -402,7 +467,7 @@ impl CoordClient {
         }
         let connection = self.client().await?;
         let jetstream = jetstream::new(connection);
-        for (room_id, membership_generation) in rooms {
+        for room_id in rooms {
             let mut stream = jetstream
                 .get_stream(room_stream(&room_id))
                 .await
@@ -434,41 +499,26 @@ impl CoordClient {
                     .get("msg_id")
                     .and_then(Value::as_str)
                     .ok_or(CoordError::Data)?;
-                if let Some(manifest) = parse_attention_manifest(
+                let recipients = match parse_attention_manifest(
                     raw.headers
                         .get_last("SafeYolo-Coord-Attention")
                         .map(|value| value.as_str()),
                     msg_id,
                 )? {
-                    let recipients = manifest
-                        .recipients
-                        .into_iter()
-                        .filter(|recipient| {
-                            recipient.agent_id == principal
-                                && recipient.membership_granted_at == membership_generation
-                        })
-                        .collect::<Vec<_>>();
-                    if !recipients.is_empty() {
-                        let db = self.data_dir.clone();
-                        let room_for_materialize = room_id.clone();
-                        let envelope_for_materialize = envelope.clone();
-                        tokio::task::spawn_blocking(move || {
-                            materialize_attention(
-                                &db,
-                                &room_for_materialize,
-                                &envelope_for_materialize,
-                                &recipients,
-                                sequence,
-                            )
-                        })
-                        .await
-                        .map_err(|_| CoordError::Unavailable)??;
-                    }
-                }
+                    Some(manifest) => manifest.recipients,
+                    None => Vec::new(),
+                };
                 let db = self.data_dir.clone();
-                let room_for_frontier = room_id.clone();
+                let room_for_materialize = room_id.clone();
+                let envelope_for_materialize = envelope.clone();
                 tokio::task::spawn_blocking(move || {
-                    advance_projection(&db, &room_for_frontier, sequence)
+                    materialize_attention(
+                        &db,
+                        &room_for_materialize,
+                        &envelope_for_materialize,
+                        &recipients,
+                        sequence,
+                    )
                 })
                 .await
                 .map_err(|_| CoordError::Unavailable)??;
@@ -643,7 +693,7 @@ fn parse_attention_manifest(
             .get("attention_id")
             .and_then(Value::as_str)
             .filter(|id| {
-                id.len() == 38
+                id.len() == 37
                     && id.starts_with("attn-")
                     && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
             })
@@ -721,7 +771,13 @@ fn message_wakes_waiter(
                 && recipient_generation(access, principal)
                     == Some(recipient.membership_granted_at)
         })),
-        "room" | "legacy_room" => Ok(!exclude_self || !sender_is_self),
+        "room" => Ok((!exclude_self || !sender_is_self)
+            && manifest.recipients.iter().any(|recipient| {
+                recipient.agent_id == principal
+                    && recipient_generation(access, principal)
+                        == Some(recipient.membership_granted_at)
+            })),
+        "legacy_room" => Ok(!exclude_self || !sender_is_self),
         _ => Err(CoordError::Data),
     }
 }
@@ -1120,6 +1176,7 @@ fn materialize_attention(
         .get("sent_at")
         .and_then(Value::as_i64)
         .ok_or(CoordError::Data)?;
+    let sequence_i64 = i64::try_from(sequence).map_err(|_| CoordError::Data)?;
     conn.execute("BEGIN IMMEDIATE", []).map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
         for recipient in recipients {
@@ -1145,7 +1202,7 @@ fn materialize_attention(
             if let Some((existing_attention_id, existing_room_id, existing_sequence, existing_generation)) = existing {
                 if existing_attention_id != recipient.attention_id
                     || existing_room_id != room_id_i
-                    || existing_sequence != i64::try_from(sequence).map_err(|_| CoordError::Data)?
+                    || existing_sequence != sequence_i64
                     || existing_generation != recipient.membership_granted_at
                 {
                     return Err(CoordError::Data);
@@ -1174,7 +1231,7 @@ fn materialize_attention(
                 if existing_recipient != recipient.agent_id
                     || existing_room != room_id_i
                     || existing_object != msg_id
-                    || existing_sequence != i64::try_from(sequence).map_err(|_| CoordError::Data)?
+                    || existing_sequence != sequence_i64
                     || existing_generation != recipient.membership_granted_at
                 {
                     return Err(CoordError::Data);
@@ -1212,7 +1269,7 @@ fn materialize_attention(
                     recipient.attention_id,
                     room_id_i,
                     msg_id,
-                    i64::try_from(sequence).map_err(|_| CoordError::Data)?,
+                    sequence_i64,
                     recipient.membership_granted_at,
                     sent_at,
                 ],
@@ -1235,6 +1292,18 @@ fn materialize_attention(
             )
             .map_err(|_| CoordError::Data)?;
         }
+        // Materialization and the room-wide frontier are one projection
+        // transaction.  A recovery by Alice therefore cannot advance past a
+        // retained Bob edge before Bob's edge has also been materialized.
+        conn.execute(
+            "INSERT INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(room_id) DO UPDATE SET
+               last_sequence = MAX(last_sequence, excluded.last_sequence),
+               updated_at = excluded.updated_at",
+            params![room_id, sequence_i64, now_ms()],
+        )
+        .map_err(|_| CoordError::Data)?;
         Ok::<_, CoordError>(())
     })();
     match result {
@@ -1252,11 +1321,11 @@ fn materialize_attention(
 fn receive_room_generations(
     db: &Path,
     principal: &str,
-) -> Result<Vec<(String, i64)>, CoordError> {
+) -> Result<Vec<String>, CoordError> {
     let conn = open_db(db, false)?;
     let mut statement = conn
         .prepare(
-            "SELECT room_id, granted_at FROM memberships AS m
+            "SELECT room_id FROM memberships AS m
              WHERE m.principal_kind = 'agent' AND m.principal_id = ?1
                AND m.revoked_at IS NULL
                AND instr(',' || m.permissions || ',', ',receive,') > 0
@@ -1272,7 +1341,7 @@ fn receive_room_generations(
         )
         .map_err(|_| CoordError::Data)?;
     statement
-        .query_map(params![principal], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(params![principal], |row| row.get(0))
         .map_err(|_| CoordError::Data)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CoordError::Data)
@@ -1291,36 +1360,6 @@ fn projection_frontier(db: &Path, room_id: &str) -> Result<u64, CoordError> {
         .map_err(|_| CoordError::Data)?
         .unwrap_or(0)
         .max(0) as u64)
-}
-
-fn advance_projection(db: &Path, room_id: &str, sequence: u64) -> Result<(), CoordError> {
-    let conn = open_db(db, true)?;
-    let sequence = i64::try_from(sequence).map_err(|_| CoordError::Data)?;
-    conn.execute("BEGIN IMMEDIATE", [])
-        .map_err(|_| CoordError::Unavailable)?;
-    let result = (|| {
-        conn.execute(
-            "INSERT INTO coord_message_attention_projection
-             (room_id, last_sequence, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(room_id) DO UPDATE SET
-               last_sequence = MAX(last_sequence, excluded.last_sequence),
-               updated_at = excluded.updated_at",
-            params![room_id, sequence, now_ms()],
-        )
-        .map_err(|_| CoordError::Data)?;
-        Ok::<_, CoordError>(())
-    })();
-    match result {
-        Ok(()) => {
-            conn.execute("COMMIT", [])
-                .map_err(|_| CoordError::Unavailable)?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = conn.execute("ROLLBACK", []);
-            Err(error)
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -1972,10 +2011,11 @@ async fn send(
     enum Notification {
         None,
         Room,
+        LegacyRoom,
         Agents(Vec<String>),
     }
     let notification = match object.get("notify") {
-        None => Notification::Room,
+        None => Notification::LegacyRoom,
         Some(Value::String(value)) if value == "none" => Notification::None,
         Some(Value::String(value)) if value == "room" => Notification::Room,
         Some(Value::Array(values)) => {
@@ -2027,7 +2067,7 @@ async fn send(
         .as_millis() as i64;
     let recipient_agents = match notification {
         Notification::None => Vec::new(),
-        Notification::Room => access
+        Notification::Room | Notification::LegacyRoom => access
             .members
             .iter()
             .filter(|member| {
@@ -2084,8 +2124,9 @@ async fn send(
         .collect::<Vec<_>>();
     let mode = match object.get("notify") {
         Some(Value::String(value)) if value == "none" => "none",
+        Some(Value::String(value)) if value == "room" => "room",
         Some(Value::Array(_)) => "agents",
-        _ => "room",
+        _ => "legacy_room",
     };
     let envelope = json!({
         "msg_id":msg_id,
@@ -2123,8 +2164,7 @@ async fn send(
             &projection_envelope,
             &projection_recipients,
             sequence,
-        )?;
-        advance_projection(&db, &room_id, sequence)
+        )
     })
     .await
     .ok()
@@ -2161,6 +2201,7 @@ async fn send(
 struct ConsumerCleanup {
     stream: Option<jetstream::stream::Stream>,
     name: String,
+    owner: Arc<CoordCleanup>,
 }
 
 impl ConsumerCleanup {
@@ -2196,12 +2237,10 @@ impl Drop for ConsumerCleanup {
             return;
         };
         // Cancellation can drop this guard while a fetch or acknowledgement
-        // is pending.  Best-effort deletion prevents abandoned ephemeral
-        // consumers; an ordinary completion uses finish() and surfaces any
-        // non-NotFound deletion error to the caller.
-        handle.spawn(async move {
-            let _ = stream.delete_consumer(&name).await;
-        });
+        // is pending.  Retain the deletion join handle in the process owner;
+        // Proxy::shutdown drains these tasks after listeners stop, so cleanup
+        // cannot become an unobserved fire-and-forget operation.
+        self.owner.enqueue(&handle, stream, name);
     }
 }
 
@@ -2304,6 +2343,7 @@ async fn read_messages_with_timeout(
     let mut cleanup = ConsumerCleanup {
         stream: Some(stream),
         name: cleanup_name,
+        owner: client.cleanup.clone(),
     };
     let result = async {
         let deadline = tokio::time::Instant::now() + fetch_timeout;
@@ -2421,5 +2461,79 @@ mod tests {
         assert_eq!(route_parts(request), Some(("shared".to_owned(), "messages")));
         let invalid = Request { path_and_query: "/api/coord/rooms/shared/messages/extra", ..request };
         assert_eq!(route_parts(invalid), None);
+    }
+
+    #[test]
+    fn attention_manifest_uses_simple_uuid_attention_ids() {
+        let header = json!({
+            "version": 1,
+            "msg_id": "msg-1",
+            "mode": "agents",
+            "recipients": [{
+                "attention_id": "attn-0123456789abcdef0123456789abcdef",
+                "agent_id": "ag-alice",
+                "membership_granted_at": 7,
+            }],
+        })
+        .to_string();
+        assert!(parse_attention_manifest(Some(&header), "msg-1").is_ok());
+
+        let invalid = header.replace(
+            "0123456789abcdef0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0",
+        );
+        assert!(matches!(
+            parse_attention_manifest(Some(&invalid), "msg-1"),
+            Err(CoordError::Data)
+        ));
+    }
+
+    #[test]
+    fn explicit_room_manifest_matches_recipient_generation() {
+        let value = json!({"msg_id":"msg-1", "sender_agent_id":"ag-bob"});
+        let header = json!({
+            "version": 1,
+            "msg_id": "msg-1",
+            "mode": "room",
+            "recipients": [{
+                "attention_id": "attn-0123456789abcdef0123456789abcdef",
+                "agent_id": "ag-alice",
+                "membership_granted_at": 7,
+            }],
+        })
+        .to_string();
+        let access = RoomAccess {
+            room_id: "rm-shared".to_owned(),
+            room_name: "shared".to_owned(),
+            permissions: vec!["receive".to_owned()],
+            members: vec![Membership {
+                principal_kind: "agent".to_owned(),
+                principal_id: "ag-alice".to_owned(),
+                granted_at: 7,
+                permissions: vec!["receive".to_owned()],
+            }],
+            instance_id: "instance".to_owned(),
+            brief: Value::Null,
+        };
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("SafeYolo-Coord-Attention", header);
+        assert!(message_wakes_waiter(
+            Some(&headers),
+            &value,
+            "ag-alice",
+            &access,
+            false,
+        )
+        .expect("valid manifest"));
+        let mut stale = access;
+        stale.members[0].granted_at = 8;
+        assert!(!message_wakes_waiter(
+            Some(&headers),
+            &value,
+            "ag-alice",
+            &stale,
+            false,
+        )
+        .expect("valid manifest"));
     }
 }
