@@ -1,8 +1,11 @@
+use ring::digest::{SHA256, digest};
 use safeyolo_proxy::{approvals::ErrorKind, contracts::ContractBinding, grants::*};
 use serde_json::{Value, json};
 use std::{
     fs,
-    path::PathBuf,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    process::Command,
     sync::{Arc, Barrier},
 };
 use time::{Duration, OffsetDateTime};
@@ -1261,5 +1264,539 @@ locked_policy_mutate(Path(sys.argv[1]),mutate)
             .unwrap()
             .len(),
         1
+    );
+}
+
+const COMPARATOR_COMMIT: &str = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a";
+
+fn state_hash(path: &Path) -> String {
+    digest(&SHA256, &fs::read(path).unwrap())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn state_mode(path: &Path) -> String {
+    format!(
+        "{:04o}",
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    )
+}
+
+fn git_output_for_state(repository: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repository)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn comparator_grants_stage(
+    policy: &Path,
+    operation: &str,
+    expected_primary_binding: Option<&str>,
+    expected_legacy_grant: Option<&str>,
+    expected_legacy_binding: Option<&str>,
+) -> Value {
+    let source = PathBuf::from(
+        std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+            .expect("SAFEYOLO_STATE_PYTHON_SOURCE must name the comparator checkout"),
+    );
+    let executable = PathBuf::from(
+        std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+            .expect("SAFEYOLO_POLICY_PYTHON must name the comparator interpreter"),
+    );
+    assert_eq!(
+        git_output_for_state(&source, &["rev-parse", "HEAD"]),
+        COMPARATOR_COMMIT
+    );
+    assert!(
+        git_output_for_state(&source, &["status", "--porcelain"]).is_empty(),
+        "selected Python comparator must be clean"
+    );
+    assert!(
+        executable.is_file(),
+        "selected Python comparator is missing"
+    );
+    let primary = expected_primary_binding.unwrap_or("");
+    let legacy_grant = expected_legacy_grant.unwrap_or("");
+    let legacy_binding = expected_legacy_binding.unwrap_or("");
+    let script = r#"
+import hashlib
+import importlib.metadata
+import json
+import pathlib
+import stat
+import sys
+
+from safeyolo.mitm_addons.service_gateway import ServiceGateway
+from safeyolo.policy.toml_roundtrip import (
+    load_agents,
+    load_roundtrip,
+    locked_policy_mutate,
+    upsert_agent,
+)
+
+root = pathlib.Path(sys.argv[1])
+operation = sys.argv[2]
+expected_executable = pathlib.Path(sys.argv[3])
+source = pathlib.Path(sys.argv[4])
+expected_primary = sys.argv[5]
+expected_legacy_grant = sys.argv[6]
+expected_legacy_binding = sys.argv[7]
+assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
+policy = root / 'policy.toml'
+
+def snapshot():
+    document = load_roundtrip(policy)
+    agents = load_agents(document)
+    alice = agents.get('alice', {})
+    grants = []
+    for value in alice.get('grants', []):
+        grants.append({
+            'grant_id': value.get('grant_id'),
+            'service': value.get('service'),
+            'method': value.get('method'),
+            'path': value.get('path'),
+            'scope': value.get('scope'),
+        })
+    bindings = []
+    for value in alice.get('contract_bindings', []):
+        bound = value.get('bound_values', {})
+        bindings.append({
+            'binding_id': value.get('binding_id'),
+            'service': value.get('service'),
+            'capability': value.get('capability'),
+            'template': value.get('template'),
+            'grantable_operations': value.get('grantable_operations', []),
+            'bound_value_keys': sorted(bound),
+            'limit': bound.get('limit'),
+        })
+    return {
+        'policy': {
+            'path': str(policy),
+            'sha256': hashlib.sha256(policy.read_bytes()).hexdigest(),
+            'mode': format(stat.S_IMODE(policy.stat().st_mode), '04o'),
+        },
+        'grants': grants,
+        'bindings': bindings,
+    }
+
+gateway = ServiceGateway()
+gateway._get_policy_path = lambda: policy
+ids = {}
+if operation == 'write-and-consume-python':
+    policy.write_text('[agents]\nalice = {}\n')
+    python_consumed = gateway.add_grant(
+        'alice', 'mail', 'POST', '/v1/python', 'once'
+    )
+    native_grant = gateway.add_grant(
+        'alice', 'mail', 'POST', '/v1/native', 'once'
+    )
+    primary = gateway.add_contract_binding(
+        'alice',
+        'mail',
+        'send',
+        'mail.v1',
+        {'tenant': 'tenant-alpha', 'limit': 9223372036854775807},
+        ['send'],
+    )
+    candidate = gateway._check_grant('alice', 'mail', 'POST', '/v1/python')
+    assert candidate is not None
+    gateway._consume_grant(candidate)
+    def add_legacy(document):
+        agents = load_agents(document)
+        alice = agents['alice']
+        alice['grants'].append({
+            'service': 'mail',
+            'method': 'POST',
+            'path': '/v1/legacy',
+            'scope': 'once',
+        })
+        alice['contract_bindings'].append({
+            'service': 'mail',
+            'capability': 'legacy',
+            'bound_values': {'tenant': 'tenant-legacy', 'limit': 9223372036854775807},
+            'grantable_operations': ['read'],
+        })
+        upsert_agent(document, 'alice', alice)
+    locked_policy_mutate(policy, add_legacy)
+    ids = {
+        'python_consumed_grant_id': python_consumed.grant_id,
+        'native_grant_id': native_grant.grant_id,
+        'primary_binding_id': primary.binding_id,
+    }
+elif operation == 'reload-and-write-roundtrip':
+    gateway._load_grants_from_policy()
+    gateway._load_contract_bindings_from_policy()
+    primary = gateway.get_contract_binding('alice', 'mail', 'send')
+    assert primary is not None
+    assert primary.binding_id == expected_primary
+    assert primary.bound_values['limit'] == 9223372036854775807
+    assert any(
+        grant['grant_id'] == expected_legacy_grant
+        for grant in gateway.list_grants()
+    )
+    legacy = gateway.get_contract_binding('alice', 'mail', 'legacy')
+    assert legacy is not None
+    assert legacy.binding_id == expected_legacy_binding
+    assert gateway.revoke_contract_binding(expected_legacy_binding)
+    roundtrip = gateway.add_grant(
+        'alice', 'mail', 'POST', '/v1/roundtrip', 'once'
+    )
+    ids = {
+        'primary_binding_id': primary.binding_id,
+        'roundtrip_grant_id': roundtrip.grant_id,
+        'legacy_grant_id_seen': expected_legacy_grant,
+        'legacy_binding_id_seen': expected_legacy_binding,
+    }
+else:
+    raise AssertionError(operation)
+
+print(json.dumps({
+    'backend': 'python-comparator',
+    'operation': operation,
+    'runtime': {
+        'source': str(source),
+        'commit': '7e934a5470f1aa9b74052fea08c6bae9b5f32e8a',
+        'launcher': str(expected_executable),
+        'program': sys.executable,
+        'python_version': '.'.join(map(str, sys.version_info[:3])),
+        'safeyolo': importlib.metadata.version('safeyolo'),
+        'mitmproxy': importlib.metadata.version('mitmproxy'),
+        'tomlkit': importlib.metadata.version('tomlkit'),
+        'safeyolo_file': str(pathlib.Path(__import__('safeyolo').__file__).resolve()),
+        'service_gateway_file': str(pathlib.Path(__import__('safeyolo.mitm_addons.service_gateway', fromlist=['__file__']).__file__).resolve()),
+    },
+    'ids': ids,
+    'state': snapshot(),
+    'effective': {
+        'legacy_defaults_observed': operation == 'write-and-consume-python',
+        'supported_limit': 9223372036854775807,
+        'source_consumer_action': (
+            'python_grant_consumed'
+            if operation == 'write-and-consume-python'
+            else 'native_state_reloaded_and_roundtrip_grant_written'
+        ),
+    },
+}))
+"#;
+    let output = Command::new(&executable)
+        .arg("-c")
+        .arg(script)
+        .arg(policy.parent().unwrap())
+        .arg(operation)
+        .arg(&executable)
+        .arg(&source)
+        .arg(primary)
+        .arg(legacy_grant)
+        .arg(legacy_binding)
+        .env(
+            "PYTHONPATH",
+            format!("{}:{}", source.join("cli/src").display(), source.display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Python grants stage {operation} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "Python grants stage {operation} returned invalid JSON: {error}; stdout={}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
+}
+
+fn native_grants_snapshot(store: &Store, policy: &Path, now: OffsetDateTime) -> Value {
+    json!({
+        "policy": {
+            "path": policy,
+            "sha256": state_hash(policy),
+            "mode": state_mode(policy),
+        },
+        "grants": store.list_grants(now).unwrap(),
+        "primary_binding": store
+            .binding_for_agent("alice", "mail", "send")
+            .unwrap()
+            .map(|binding| serde_json::to_value(binding).unwrap()),
+        "legacy_binding": store
+            .binding_for_agent("alice", "mail", "legacy")
+            .unwrap()
+            .map(|binding| serde_json::to_value(binding).unwrap()),
+    })
+}
+
+fn native_grant_id_for_path(store: &Store, path: &str, now: OffsetDateTime) -> String {
+    store
+        .list_grants(now)
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.grant.path == path)
+        .map(|grant| grant.grant.grant_id)
+        .unwrap()
+}
+
+#[test]
+#[ignore = "selected Python→Rust→Python→Rust grants/bindings state transition"]
+fn selected_python_native_python_native_grants_bindings_transition() {
+    let root = tempfile::tempdir().unwrap();
+    let policy = root.path().join("policy.toml");
+    let initial = comparator_grants_stage(&policy, "write-and-consume-python", None, None, None);
+
+    let native_now = OffsetDateTime::now_utc();
+    let store = Store::open(&policy, native_now).unwrap();
+    let initial_native = native_grants_snapshot(&store, &policy, native_now);
+    let python_native_grant_id = initial["ids"]["native_grant_id"].as_str().unwrap();
+    let native_grant_id = native_grant_id_for_path(&store, "/v1/native", native_now);
+    assert_eq!(python_native_grant_id, native_grant_id);
+    let legacy_grant_id = native_grant_id_for_path(&store, "/v1/legacy", native_now);
+    let primary = store
+        .binding_for_agent("alice", "mail", "send")
+        .unwrap()
+        .unwrap();
+    assert_eq!(primary.binding.bound_values["limit"], json!(i64::MAX));
+    let primary_binding_id = primary.binding.binding_id.clone();
+    assert_eq!(
+        primary_binding_id,
+        initial["ids"]["primary_binding_id"].as_str().unwrap()
+    );
+    let legacy_binding_id = store
+        .binding_for_agent("alice", "mail", "legacy")
+        .unwrap()
+        .unwrap()
+        .binding
+        .binding_id
+        .clone();
+    assert!(!legacy_binding_id.is_empty());
+
+    let lease = store
+        .check_grant(
+            RequestScope {
+                agent: "alice",
+                service: "mail",
+                method: "POST",
+                path: "/v1/native",
+            },
+            native_now,
+            validate,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(lease.grant().grant_id, native_grant_id);
+    assert_eq!(
+        store
+            .finish_response(lease, Some(204), native_now, validate)
+            .unwrap(),
+        ResponseOutcome::Consumed
+    );
+    assert!(
+        store
+            .check_grant(
+                RequestScope {
+                    agent: "alice",
+                    service: "mail",
+                    method: "POST",
+                    path: "/v1/native",
+                },
+                native_now,
+                validate,
+            )
+            .unwrap()
+            .is_none()
+    );
+    let before_failed_write = fs::read(&policy).unwrap();
+    let mut activation_calls = 0;
+    let failed = store
+        .add_grant(
+            GrantRequest {
+                agent: "alice".into(),
+                service: "mail".into(),
+                method: "POST".into(),
+                path: "/v1/failed".into(),
+                scope: GrantScope::Once,
+            },
+            native_now,
+            |_| {
+                activation_calls += 1;
+                if activation_calls == 1 {
+                    Err("synthetic activation rejection".into())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+    assert_eq!(failed.kind, ErrorKind::Activation);
+    assert_eq!(activation_calls, 2);
+    assert_eq!(fs::read(&policy).unwrap(), before_failed_write);
+    assert!(
+        !store
+            .list_grants(native_now)
+            .unwrap()
+            .iter()
+            .any(|grant| grant.grant.path == "/v1/failed")
+    );
+    let native_failure = json!({
+        "backend": "rust-native",
+        "operation": "failed-add-rollback",
+        "policy": {
+            "path": &policy,
+            "sha256": state_hash(&policy),
+            "mode": state_mode(&policy),
+        },
+        "effective": {
+            "activation": "rejected",
+            "policy_unchanged": true,
+            "failed_grant_published": false,
+        },
+    });
+
+    let after_native = native_grants_snapshot(&store, &policy, native_now);
+    let python_reload = comparator_grants_stage(
+        &policy,
+        "reload-and-write-roundtrip",
+        Some(&primary_binding_id),
+        Some(&legacy_grant_id),
+        Some(&legacy_binding_id),
+    );
+    assert_eq!(
+        python_reload["ids"]["primary_binding_id"],
+        primary_binding_id
+    );
+    assert_eq!(
+        python_reload["ids"]["legacy_grant_id_seen"],
+        legacy_grant_id
+    );
+    assert_eq!(
+        python_reload["ids"]["legacy_binding_id_seen"],
+        legacy_binding_id
+    );
+    let roundtrip_grant_id = python_reload["ids"]["roundtrip_grant_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let final_now = OffsetDateTime::now_utc();
+    let final_store = Store::open(&policy, final_now).unwrap();
+    let final_primary = final_store
+        .binding_for_agent("alice", "mail", "send")
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_primary.binding.binding_id, primary_binding_id);
+    assert_eq!(final_primary.binding.bound_values["limit"], json!(i64::MAX));
+    let final_lease = final_store
+        .check_grant(
+            RequestScope {
+                agent: "alice",
+                service: "mail",
+                method: "POST",
+                path: "/v1/roundtrip",
+            },
+            final_now,
+            validate,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(final_lease.grant().grant_id, roundtrip_grant_id);
+    assert_eq!(
+        final_store
+            .finish_response(final_lease, Some(200), final_now, validate)
+            .unwrap(),
+        ResponseOutcome::Consumed
+    );
+    assert!(
+        final_store
+            .revoke_grant("alice", &legacy_grant_id, final_now, validate)
+            .unwrap()
+    );
+    assert!(
+        final_store
+            .revoke_binding("alice", &primary_binding_id, final_now, validate)
+            .unwrap()
+    );
+    let final_native = native_grants_snapshot(&final_store, &policy, final_now);
+    assert!(final_store.list_grants(final_now).unwrap().is_empty());
+    assert!(
+        final_store
+            .binding_for_agent("alice", "mail", "send")
+            .unwrap()
+            .is_none()
+    );
+
+    let native_source = git_output_for_state(
+        Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
+        &["rev-parse", "HEAD"],
+    );
+    let manifest = json!({
+        "schema": 1,
+        "family": "service-grants-and-contract-bindings",
+        "comparator": initial["runtime"],
+        "native": {
+            "source": native_source,
+            "package": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "test": "selected_python_native_python_native_grants_bindings_transition",
+        },
+        "commands": {
+            "python": format!(
+                "{} -c <embedded-grants-fixture> ROOT OP EXPECTED_PRIMARY EXPECTED_LEGACY_GRANT EXPECTED_LEGACY_BINDING",
+                std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+                    .map(|value| PathBuf::from(value).display().to_string())
+                    .unwrap_or_default()
+            ),
+            "native": "cargo test --test grants selected_python_native_python_native_grants_bindings_transition -- --ignored --exact --nocapture",
+        },
+        "files": {
+            "policy": {
+                "path": policy,
+                "sha256": state_hash(&policy),
+                "mode": state_mode(&policy),
+            }
+        },
+        "stable_ids": {
+            "python_consumed_grant_id": initial["ids"]["python_consumed_grant_id"],
+            "native_grant_id": native_grant_id,
+            "legacy_grant_id": legacy_grant_id,
+            "primary_binding_id": primary_binding_id,
+            "legacy_binding_id": legacy_binding_id,
+            "roundtrip_grant_id": roundtrip_grant_id,
+        },
+        "supported_large_value": i64::MAX,
+        "actions": {
+            "python_consumed": initial["ids"]["python_consumed_grant_id"],
+            "native_consumed": native_grant_id,
+            "legacy_binding_revoked": legacy_binding_id,
+            "roundtrip_consumed": roundtrip_grant_id,
+            "primary_binding_revoked": primary_binding_id,
+            "legacy_grant_revoked": legacy_grant_id,
+        },
+        "stages": [initial, initial_native, native_failure, after_native, python_reload, final_native],
+        "secret_free": true,
+    });
+    let evidence_dir = PathBuf::from(
+        std::env::var_os("SAFEYOLO_STATE_EVIDENCE_DIR")
+            .expect("SAFEYOLO_STATE_EVIDENCE_DIR must retain evidence"),
+    );
+    fs::create_dir_all(&evidence_dir).unwrap();
+    let evidence_path = evidence_dir.join("grants-python-rust-python-rust.json");
+    fs::write(
+        &evidence_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "grants/bindings transition manifest: {}",
+        serde_json::to_string_pretty(&manifest).unwrap()
     );
 }
