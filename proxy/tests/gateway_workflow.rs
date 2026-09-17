@@ -12,7 +12,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixStream},
-    sync::{Notify, oneshot},
+    sync::{Notify, mpsc, oneshot},
 };
 
 const PASS: &str = "synthetic-vault-passphrase";
@@ -367,6 +367,20 @@ async fn wait_for_alice_token_change(socket: &Path, previous: &str) -> Value {
     })
     .await
     .unwrap()
+}
+
+async fn wait_for_gateway_outcome(path: &Path, outcome: &str) -> Value {
+    loop {
+        if let Ok(content) = std::fs::read_to_string(path)
+            && let Some(event) = content.lines().find_map(|line| {
+                let value = serde_json::from_str::<Value>(line).ok()?;
+                (value["event"] == "proxy.gateway" && value["outcome"] == outcome).then_some(value)
+            })
+        {
+            return event;
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 async fn send_agent_request(
@@ -910,9 +924,11 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port));
     let token_seen = Arc::new(Mutex::new(Vec::new()));
     let token_ready = Arc::new(Notify::new());
+    let token_release = Arc::new(Notify::new());
     let token_task = tokio::spawn({
         let token_seen = token_seen.clone();
         let token_ready = token_ready.clone();
+        let token_release = token_release.clone();
         async move {
             loop {
                 let Ok((mut stream, _)) = token_listener.accept().await else {
@@ -920,6 +936,7 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
                 };
                 let token_seen = token_seen.clone();
                 let token_ready = token_ready.clone();
+                let token_release = token_release.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut buffer = [0_u8; 4096];
@@ -953,9 +970,11 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
                     }
                     token_seen.lock().unwrap().push(request);
                     token_ready.notify_one();
-                    // Hold the response long enough for a concurrent caller to
-                    // become a follower of the same native flight.
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    // Hold the response until the test has observed a follower
+                    // on the reloaded Runtime. This is a release latch rather
+                    // than a scheduler sleep, so one POST and shared ownership
+                    // are deterministic.
+                    token_release.notified().await;
                     let body =
                         br#"{"access_token":"synthetic-refreshed-access","expires_in":3600}"#;
                     let response = format!(
@@ -1004,10 +1023,17 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     status(&authorized, "200");
 
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let (reload_tx, mut reload_rx) =
+        mpsc::unbounded_channel::<oneshot::Sender<Result<(), String>>>();
+    let reload_config = config(root_path);
     let watcher = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = &mut stop_rx => { proxy.shutdown().await; break; }
+                Some(done) = reload_rx.recv() => {
+                    let result = proxy.reload(reload_config.clone()).await.map_err(|error| error.to_string());
+                    let _ = done.send(result);
+                }
                 _ = proxy.wait_for_service_catalog_check() => { let _ = proxy.reload_services_if_changed().await; }
                 _ = proxy.wait_for_policy_check() => { let _ = proxy.reload_policy_if_changed().await; }
             }
@@ -1056,14 +1082,35 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
         eprintln!("token rows: {:?}", token_seen.lock().unwrap());
         panic!("token endpoint was not reached");
     }
+    let (reload_done, reload_result) = oneshot::channel::<Result<(), String>>();
+    reload_tx.send(reload_done).unwrap();
+    reload_result.await.unwrap().unwrap();
+    let reloaded_view = wait_for_alice(&socket).await;
+    let reloaded_token = reloaded_view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(reloaded_token, gateway_token);
+    let gateway_token = reloaded_token;
     let second = tokio::spawn({
         let socket = socket.clone();
         let gateway_token = gateway_token.clone();
         async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
+    let follower_observed = tokio::time::timeout(
+        Duration::from_secs(3),
+        wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
+    )
+    .await;
+    token_release.notify_one();
     let (first, second) = tokio::join!(first, second);
     let first = first.unwrap();
     let second = second.unwrap();
+    assert!(
+        follower_observed.is_ok(),
+        "follower did not join shared flight; events: {}",
+        std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+    );
     status(&first, "200");
     status(&second, "200");
     assert_eq!(body(&first), b"ok");

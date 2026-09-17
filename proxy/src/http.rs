@@ -5,6 +5,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use crate::connection_tasks::Executor;
@@ -378,6 +379,27 @@ struct Outbound {
     http2: bool,
 }
 
+#[derive(Debug)]
+struct RefreshPhaseTimeout;
+impl std::fmt::Display for RefreshPhaseTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("refresh transport phase timed out")
+    }
+}
+impl std::error::Error for RefreshPhaseTimeout {}
+
+async fn refresh_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, operation)
+            .await
+            .map_err(|_| Box::new(RefreshPhaseTimeout) as Error)?,
+        None => operation.await,
+    }
+}
+
 struct Connected {
     stream: BoxStream,
     peer: Option<std::net::Ipv4Addr>,
@@ -439,6 +461,7 @@ async fn open_egress_for_flow(
     tunnel: bool,
     ignored: Option<crate::ignored_host_logger::SelectedDestination<'_>>,
     live: Option<&crate::traffic_view::Exchange>,
+    phase_timeout: Option<Duration>,
 ) -> Result<Connected, Error> {
     let destination = allowed.destination;
     if probe::is_host(&destination.host) {
@@ -498,7 +521,12 @@ async fn open_egress_for_flow(
         {
             // Resolve this immediate route once before selecting a socket that
             // could reach the operator listener. Parent-origin DNS remains remote.
-            let addresses = tokio::net::lookup_host((host, port)).await?;
+            let addresses = refresh_phase(phase_timeout, async {
+                tokio::net::lookup_host((host, port))
+                    .await
+                    .map_err(Into::into)
+            })
+            .await?;
             let mut socket = None;
             let mut last_error = None;
             let mut protected = false;
@@ -516,7 +544,11 @@ async fn open_egress_for_flow(
                     record_egress()?;
                     recorded = true;
                 }
-                match TcpStream::connect(address).await {
+                match refresh_phase(phase_timeout, async {
+                    TcpStream::connect(address).await.map_err(Into::into)
+                })
+                .await
+                {
                     Ok(connected) => {
                         socket = Some(connected);
                         break;
@@ -531,7 +563,7 @@ async fn open_egress_for_flow(
                         return Err(AdminPortAccess.into());
                     }
                     if let Some(error) = last_error {
-                        return Err(error.into());
+                        return Err(error);
                     }
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
@@ -542,7 +574,10 @@ async fn open_egress_for_flow(
             }
         } else {
             record_egress()?;
-            TcpStream::connect((host, port)).await?
+            refresh_phase(phase_timeout, async {
+                TcpStream::connect((host, port)).await.map_err(Into::into)
+            })
+            .await?
         };
         Ok(socket)
     }
@@ -587,13 +622,25 @@ async fn open_egress_for_flow(
             .tls
             .clone()
             .ok_or("HTTPS parent TLS was not configured")?;
-        Box::new(TlsConnector::from(tls).connect(name, socket).await?)
+        Box::new(
+            refresh_phase(phase_timeout, async {
+                TlsConnector::from(tls)
+                    .connect(name, socket)
+                    .await
+                    .map_err(Into::into)
+            })
+            .await?,
+        )
     } else {
         socket
     };
     if tunnel && runtime.parent.is_some() {
-        let (mut sender, connection) =
-            hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
+        let (mut sender, connection) = refresh_phase(phase_timeout, async {
+            hyper::client::conn::http1::handshake(TokioIo::new(stream))
+                .await
+                .map_err(Into::into)
+        })
+        .await?;
         let task = HttpTask::unobserved(allowed.tasks.spawn(async move {
             let _ = connection.with_upgrades().await;
         }));
@@ -608,11 +655,17 @@ async fn open_egress_for_flow(
             .header(header::HOST, &target)
             .header(header::VIA, format!("1.1 {}", runtime.via_token))
             .body(full(Bytes::new()))?;
-        let response = sender.send_request(request).await?;
+        let response = refresh_phase(phase_timeout, async {
+            sender.send_request(request).await.map_err(Into::into)
+        })
+        .await?;
         if !response.status().is_success() {
             return Err("parent proxy refused CONNECT".into());
         }
-        let upgraded = hyper::upgrade::on(response).await?;
+        let upgraded = refresh_phase(phase_timeout, async {
+            hyper::upgrade::on(response).await.map_err(Into::into)
+        })
+        .await?;
         drop(task);
         stream = Box::new(TokioIo::new(upgraded));
     }
@@ -629,6 +682,7 @@ async fn open_outbound(
     offer_http2: bool,
     tunnel: Option<&Tunnel>,
     live: Option<&crate::traffic_view::Exchange>,
+    phase_timeout: Option<Duration>,
 ) -> Result<Outbound, Error> {
     let destination = allowed.destination;
     let existing = if let Some(tunnel) = tunnel {
@@ -645,6 +699,7 @@ async fn open_outbound(
                 tunnel.is_some() || destination.scheme == "https",
                 None,
                 live,
+                phase_timeout,
             )
             .await?
         }
@@ -664,9 +719,13 @@ async fn open_outbound(
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
         let name = ServerName::try_from(destination.host.clone())?;
-        let tls = TlsConnector::from(Arc::new(config))
-            .connect(name, stream)
-            .await?;
+        let tls = refresh_phase(phase_timeout, async {
+            TlsConnector::from(Arc::new(config))
+                .connect(name, stream)
+                .await
+                .map_err(Into::into)
+        })
+        .await?;
         http2 = tls.get_ref().1.alpn_protocol() == Some(b"h2");
         stream = Box::new(tls);
         if let Some(live) = live {
@@ -1383,6 +1442,7 @@ async fn execute_refresh(
         .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
     let destination = Destination::from_request(&probe, None)
         .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let phase_timeout = refresh.io_timeout();
     let outbound = open_outbound(
         runtime,
         &AllowedRequest {
@@ -1394,10 +1454,13 @@ async fn execute_refresh(
         false,
         None,
         None,
+        Some(phase_timeout),
     )
     .await
-    .map_err(|_| {
-        if destination.scheme == "https" {
+    .map_err(|error| {
+        if is_refresh_phase_timeout(&error) {
+            crate::oauth::TransportFailure::Timeout
+        } else if destination.scheme == "https" {
             crate::oauth::TransportFailure::Tls
         } else {
             crate::oauth::TransportFailure::Connect
@@ -1422,30 +1485,54 @@ async fn execute_refresh(
         .header(header::VIA, format!("1.1 {}", runtime.via_token))
         .body(full(body))
         .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
-    let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
-        .handshake(TokioIo::new(outbound.stream))
-        .await
-        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let (mut sender, connection) = refresh_phase(Some(phase_timeout), async {
+        hyper::client::conn::http1::Builder::new()
+            .handshake(TokioIo::new(outbound.stream))
+            .await
+            .map_err(Into::into)
+    })
+    .await
+    .map_err(|error| {
+        if is_refresh_phase_timeout(&error) {
+            crate::oauth::TransportFailure::Timeout
+        } else {
+            crate::oauth::TransportFailure::Protocol
+        }
+    })?;
     tasks.spawn(async move {
         let _ = connection.await;
     });
-    let exchange = async {
-        let response = sender
-            .send_request(request)
-            .await
-            .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
-        let status = response.status().as_u16();
-        let bytes = Limited::new(response.into_body(), 1024 * 1024)
+    let response = refresh_phase(Some(phase_timeout), async {
+        sender.send_request(request).await.map_err(Into::into)
+    })
+    .await
+    .map_err(|error| {
+        if is_refresh_phase_timeout(&error) {
+            crate::oauth::TransportFailure::Timeout
+        } else {
+            crate::oauth::TransportFailure::Protocol
+        }
+    })?;
+    let status = response.status().as_u16();
+    let bytes = refresh_phase(Some(phase_timeout), async {
+        Limited::new(response.into_body(), 1024 * 1024)
             .collect()
             .await
-            .map_err(|_| crate::oauth::TransportFailure::Body)?
-            .to_bytes();
-        Ok(crate::oauth::RefreshResponse::new(status, bytes.to_vec()))
-    };
-    match tokio::time::timeout(refresh.io_timeout(), exchange).await {
-        Ok(result) => result,
-        Err(_) => Err(crate::oauth::TransportFailure::Timeout),
-    }
+    })
+    .await
+    .map_err(|error| {
+        if is_refresh_phase_timeout(&error) {
+            crate::oauth::TransportFailure::Timeout
+        } else {
+            crate::oauth::TransportFailure::Body
+        }
+    })?
+    .to_bytes();
+    Ok(crate::oauth::RefreshResponse::new(status, bytes.to_vec()))
+}
+
+fn is_refresh_phase_timeout(error: &Error) -> bool {
+    error.downcast_ref::<RefreshPhaseTimeout>().is_some()
 }
 
 async fn resolve_refresh(
@@ -1456,24 +1543,46 @@ async fn resolve_refresh(
     pending: Box<crate::credential_injection::PendingInjection>,
 ) -> Result<crate::credential_injection::Start, Error> {
     let Some(oauth) = runtime.oauth.as_ref() else {
-        return Err("native OAuth refresh is unavailable".into());
+        return pending
+            .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(
+                crate::oauth::RefreshError::State,
+            ))
+            .map_err(Into::into);
     };
     let name = pending.credential_name().to_owned();
-    let started = oauth
-        .begin(&name, time::OffsetDateTime::now_utc())
-        .map_err(|_| "native OAuth refresh state is unavailable")?;
+    let started = match oauth.begin(&name, time::OffsetDateTime::now_utc()) {
+        Ok(started) => started,
+        Err(error) => {
+            return pending
+                .resume_for_gateway(crate::oauth::RefreshOutcome::Rejected(error))
+                .map_err(Into::into);
+        }
+    };
     let outcome = match started {
         crate::oauth::RefreshStart::NotNeeded(reason) => {
-            return pending.not_needed(reason).map_err(|error| error.into());
+            return pending.not_needed_for_gateway(reason).map_err(Into::into);
         }
         crate::oauth::RefreshStart::Leader(attempt) => {
             let response =
                 execute_refresh(runtime, identity, request_id, tasks, attempt.request()).await;
             attempt.complete(response, time::OffsetDateTime::now_utc())
         }
-        crate::oauth::RefreshStart::Follower(mut waiter) => waiter.wait().await,
+        crate::oauth::RefreshStart::Follower(mut waiter) => {
+            // This is a safe lifecycle observation: the request identity and
+            // outcome contain no endpoint, form, response, or credential data.
+            // It also makes the shared-flight boundary visible to the native
+            // live workflow before its held leader is released.
+            runtime.record(json!({
+                "event": "proxy.gateway",
+                "agent": identity.agent_id,
+                "connection_id": identity.connection_id,
+                "request_id": request_id,
+                "outcome": "refresh_follower",
+            }))?;
+            waiter.wait().await
+        }
     };
-    pending.resume(outcome).map_err(|error| error.into())
+    pending.resume_for_gateway(outcome).map_err(Into::into)
 }
 
 fn gateway_response(status: u16, code: &str, request_id: &str) -> Result<Response<Body>, Error> {
@@ -1714,6 +1823,7 @@ where
             true,
             ignored,
             live.as_deref(),
+            None,
         )
         .await?;
         let Connected {
@@ -2301,6 +2411,7 @@ where
         request.version() == hyper::Version::HTTP_2,
         tunnel,
         live.as_deref(),
+        None,
     )
     .await?;
     *request.uri_mut() = if outbound.http2

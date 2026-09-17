@@ -405,6 +405,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
                 true,
                 Some(SelectedDestination { host: HOST, port }),
                 None,
+                None,
             ),
         )
         .await

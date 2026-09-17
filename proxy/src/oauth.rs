@@ -20,7 +20,8 @@ use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use crate::credentials::{
-    Credential, CredentialMetadata, CredentialSnapshot, Secret, Vault, VaultError, wipe_json,
+    Credential, CredentialMetadata, CredentialSnapshot, ErrorKind as VaultErrorKind, Secret, Vault,
+    VaultError, wipe_json,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,60 @@ pub enum RefreshError {
     RefreshTokenType,
     ExpiryType,
     ExpiryRange,
+}
+/// Safe category for refresh failure evidence. It deliberately contains no
+/// provider response, endpoint, credential name or vault error text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailureCategory {
+    Transport,
+    InvalidResponse,
+    Expiry,
+    Save,
+    Activation,
+    State,
+    Superseded,
+    Cancelled,
+}
+impl FailureCategory {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Transport => "transport",
+            Self::InvalidResponse => "invalid_response",
+            Self::Expiry => "expiry",
+            Self::Save => "save",
+            Self::Activation => "activation",
+            Self::State => "state",
+            Self::Superseded => "superseded",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+impl RefreshError {
+    pub fn category(self) -> FailureCategory {
+        match self {
+            Self::Vault(error) => match error.kind {
+                VaultErrorKind::Activation | VaultErrorKind::Rollback => {
+                    FailureCategory::Activation
+                }
+                VaultErrorKind::State => FailureCategory::State,
+                VaultErrorKind::Io
+                | VaultErrorKind::Authentication
+                | VaultErrorKind::Format
+                | VaultErrorKind::KeyChanged => FailureCategory::Save,
+                VaultErrorKind::InvalidExpiry => FailureCategory::Expiry,
+            },
+            Self::State => FailureCategory::State,
+            Self::Transport(_) => FailureCategory::Transport,
+            Self::HttpStatus(_)
+            | Self::JsonEncoding
+            | Self::Json
+            | Self::ResponseShape
+            | Self::MissingAccessToken
+            | Self::AccessTokenType
+            | Self::RefreshTokenType => FailureCategory::InvalidResponse,
+            Self::ExpiryType | Self::ExpiryRange => FailureCategory::Expiry,
+        }
+    }
 }
 impl fmt::Display for RefreshError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

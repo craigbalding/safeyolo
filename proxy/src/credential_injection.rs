@@ -12,7 +12,7 @@
 use crate::{
     credentials::{CredentialSnapshot, Secret, Vault, VaultError},
     network_guard::{AuditDecision, Response, Severity, sanitize},
-    oauth::{NotNeeded, RefreshError, RefreshOutcome},
+    oauth::{FailureCategory, NotNeeded, RefreshError, RefreshOutcome},
     services::CredentialSelection,
 };
 use hyper::header::{HeaderMap, HeaderName, HeaderValue};
@@ -252,13 +252,43 @@ impl PendingInjection {
                     None => Ok(Start::Blocked(deny(self.context, Missing::AfterRefresh, 1))),
                 }
             }
-            RefreshOutcome::Retained(_) => {
+            RefreshOutcome::Retained(reason) => {
                 self.check_current()?;
-                finish(self.context, self.snapshot, 0)
+                Err(error(ErrorKind::Refresh(reason), 0))
             }
             RefreshOutcome::Rejected(reason) => Err(error(ErrorKind::Refresh(reason), 0)),
             RefreshOutcome::Superseded => Err(error(ErrorKind::Superseded, 0)),
             RefreshOutcome::Cancelled => Err(error(ErrorKind::Cancelled, 0)),
+        }
+    }
+
+    /// Resolve a refresh outcome for the live gateway owner. Every failed
+    /// refresh becomes a local, categorical 503 with safe audit/trace evidence;
+    /// the retained credential is never turned into an ordinary allow.
+    pub fn resume_for_gateway(self, outcome: RefreshOutcome) -> Result<Start> {
+        match outcome {
+            RefreshOutcome::Refreshed => {
+                let current = match self.vault.snapshot(self.credential_name()) {
+                    Ok(current) => current,
+                    Err(_error) => {
+                        return Ok(self.refresh_failed(FailureCategory::Save));
+                    }
+                };
+                match current {
+                    Some(snapshot) => finish(self.context, snapshot, 1),
+                    None => Ok(Start::Blocked(deny(self.context, Missing::AfterRefresh, 1))),
+                }
+            }
+            RefreshOutcome::Retained(reason) => {
+                let category = match self.check_current() {
+                    Ok(()) => reason.category(),
+                    Err(error) => failure_category(&error),
+                };
+                Ok(self.refresh_failed(category))
+            }
+            RefreshOutcome::Rejected(reason) => Ok(self.refresh_failed(reason.category())),
+            RefreshOutcome::Superseded => Ok(self.refresh_failed(FailureCategory::Superseded)),
+            RefreshOutcome::Cancelled => Ok(self.refresh_failed(FailureCategory::Cancelled)),
         }
     }
     /// A missing refresh field in the unchanged snapshot is ordinary source
@@ -287,6 +317,68 @@ impl PendingInjection {
         }
         finish(self.context, self.snapshot, 0)
     }
+
+    pub fn not_needed_for_gateway(self, reason: NotNeeded) -> Result<Start> {
+        if let Err(error) = self.check_current() {
+            return Ok(self.refresh_failed(failure_category(&error)));
+        }
+        let credential = self.snapshot.credential();
+        let matches = match reason {
+            NotNeeded::MissingRefreshToken => credential
+                .refresh_token
+                .as_ref()
+                .is_none_or(|value| value.expose_secret().is_empty()),
+            NotNeeded::MissingTokenUrl => {
+                credential
+                    .refresh_token
+                    .as_ref()
+                    .is_some_and(|value| !value.expose_secret().is_empty())
+                    && credential.token_url.as_deref().is_none_or(str::is_empty)
+            }
+            _ => false,
+        };
+        if !matches {
+            return Ok(self.refresh_failed(FailureCategory::Superseded));
+        }
+        finish(self.context, self.snapshot, 0)
+    }
+
+    fn refresh_failed(self, category: FailureCategory) -> Start {
+        let code = category.code();
+        let mut evidence = empty_evidence(0);
+        evidence.metadata = json!({
+            "blocked_by": "service-gateway",
+            "refresh_failure": code,
+        });
+        evidence.audit.push(audit(
+            &self.context,
+            "gateway.refresh_failed",
+            AuditDecision::Deny,
+            Severity::High,
+            format!("Gateway OAuth refresh failed ({code})"),
+            json!({"reason_code": format!("REFRESH_{}", code.to_ascii_uppercase())}),
+        ));
+        evidence.trace = Some(TraceIntent {
+            outcome: "refresh_failed",
+            details: json!({"reason_code": format!("REFRESH_{}", code.to_ascii_uppercase())}),
+        });
+        let response = Response {
+            status: 503,
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("X-Blocked-By".into(), "service-gateway".into()),
+            ],
+            body: json!({
+                "error": "Credential refresh failed",
+                "type": "credential_refresh_failed",
+                "reason_codes": [format!("REFRESH_{}", code.to_ascii_uppercase())],
+                "action": "retry",
+                "reflection": "The credential refresh failed before injection.",
+                "addon": "service-gateway",
+            }),
+        };
+        Start::Blocked(Blocked { response, evidence })
+    }
     fn check_current(&self) -> Result<()> {
         if !self
             .vault
@@ -296,6 +388,19 @@ impl PendingInjection {
             return Err(error(ErrorKind::Superseded, 0));
         }
         Ok(())
+    }
+}
+
+fn failure_category(error: &Error) -> FailureCategory {
+    match error.kind {
+        ErrorKind::Refresh(reason) => reason.category(),
+        ErrorKind::Superseded => FailureCategory::Superseded,
+        ErrorKind::Cancelled => FailureCategory::Cancelled,
+        ErrorKind::Vault(_) => FailureCategory::Save,
+        ErrorKind::Expiry(_) => FailureCategory::Expiry,
+        ErrorKind::InvalidHeaderName | ErrorKind::InvalidHeaderValue | ErrorKind::MissingHeader => {
+            FailureCategory::State
+        }
     }
 }
 

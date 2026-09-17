@@ -1,7 +1,7 @@
 use hyper::header::{HeaderMap, HeaderValue};
 use safeyolo_proxy::{
     credential_injection::*,
-    credentials::{Credential, Secret, Vault},
+    credentials::{Credential, ErrorKind as VaultErrorKind, Secret, Vault, VaultError},
     oauth::{
         NotNeeded, OAuthRefresh, RefreshError, RefreshOutcome, RefreshResponse, RefreshStart,
         TransportFailure,
@@ -311,11 +311,31 @@ fn rejected_cancelled_superseded_and_changed_retained_results_never_inject_old_s
     let retained = RefreshOutcome::Retained(RefreshError::Transport(TransportFailure::Timeout));
     vault.store(oauth()).unwrap();
     let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
-    let mut headers = headers();
-    ready(prepared.resume(retained).unwrap())
-        .apply(&mut headers)
-        .unwrap();
-    assert_eq!(headers["x-credential"], "Bearer synthetic-value");
+    let Err(error) = prepared.resume(retained) else {
+        panic!("a failed refresh cannot fall back to ordinary injection")
+    };
+    assert_eq!(
+        error.kind,
+        ErrorKind::Refresh(RefreshError::Transport(TransportFailure::Timeout))
+    );
+    vault.store(oauth()).unwrap();
+    let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
+    let Start::Blocked(blocked) = prepared.resume_for_gateway(retained).unwrap() else {
+        panic!("gateway refresh failure must be an explicit blocked result")
+    };
+    assert_eq!(blocked.response.status, 503);
+    assert_eq!(blocked.evidence.stats, StatsDelta::default());
+    assert_eq!(
+        blocked.response.body["reason_codes"],
+        json!(["REFRESH_TRANSPORT"])
+    );
+    assert!(
+        !blocked
+            .response
+            .body
+            .to_string()
+            .contains("synthetic-value")
+    );
     for mutation in ["store", "remove", "aba"] {
         vault.store(oauth()).unwrap();
         let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
@@ -356,6 +376,58 @@ fn rejected_cancelled_superseded_and_changed_retained_results_never_inject_old_s
         panic!("changed refresh observation")
     };
     assert_eq!(error.kind, ErrorKind::Superseded);
+}
+
+#[test]
+fn gateway_refresh_failures_are_categorical_secret_free_and_counted_as_blocked() {
+    let (_directory, vault) = vault();
+    let mut selected = selection(Some("bearer"));
+    selected.refresh_on_401 = true;
+    let failures = [
+        (
+            RefreshOutcome::Rejected(RefreshError::MissingAccessToken),
+            "REFRESH_INVALID_RESPONSE",
+        ),
+        (
+            RefreshOutcome::Rejected(RefreshError::ExpiryType),
+            "REFRESH_EXPIRY",
+        ),
+        (
+            RefreshOutcome::Rejected(RefreshError::Vault(VaultError {
+                kind: VaultErrorKind::Io,
+                io_kind: None,
+            })),
+            "REFRESH_SAVE",
+        ),
+        (
+            RefreshOutcome::Rejected(RefreshError::Vault(VaultError {
+                kind: VaultErrorKind::Activation,
+                io_kind: None,
+            })),
+            "REFRESH_ACTIVATION",
+        ),
+        (RefreshOutcome::Superseded, "REFRESH_SUPERSEDED"),
+        (RefreshOutcome::Cancelled, "REFRESH_CANCELLED"),
+    ];
+    for (outcome, reason) in failures {
+        vault.store(oauth()).unwrap();
+        let prepared = pending(start(selected.clone(), Some(&vault), "https").unwrap());
+        let Start::Blocked(blocked) = prepared.resume_for_gateway(outcome).unwrap() else {
+            panic!("refresh failure must block before injection")
+        };
+        assert_eq!(blocked.response.status, 503);
+        assert_eq!(blocked.evidence.stats, StatsDelta::default());
+        assert_eq!(blocked.response.body["reason_codes"], json!([reason]));
+        assert_eq!(blocked.evidence.audit.len(), 1);
+        assert_eq!(blocked.evidence.audit[0].event, "gateway.refresh_failed");
+        let serialized = format!(
+            "{}{}{}",
+            blocked.response.body,
+            blocked.evidence.metadata,
+            blocked.evidence.trace.as_ref().unwrap().details
+        );
+        assert!(!serialized.contains("synthetic-value"));
+    }
 }
 #[test]
 fn malformed_header_material_is_rejected_before_gateway_token_removal() {

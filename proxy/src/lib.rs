@@ -71,6 +71,7 @@ use std::{
 
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
+use ring::digest::{SHA256, digest};
 use serde_json::{Value, json};
 use tokio::{
     net::{UnixListener, UnixStream},
@@ -122,6 +123,10 @@ pub(crate) struct Runtime {
     /// One process-owned refresh coordinator shares flights across requests.
     /// Its vault clone is the same state used for credential injection.
     oauth: Option<oauth::OAuthRefresh>,
+    /// Durable identity of the loaded vault. The key fingerprint is only used
+    /// to decide whether a reload may retain the existing Vault/coordinator;
+    /// it is never included in Runtime diagnostics.
+    vault_identity: Option<VaultIdentity>,
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
@@ -211,8 +216,35 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
-            let vault = load_gateway_vault(&config)?;
-            let oauth = vault.clone().map(oauth::OAuthRefresh::new);
+            // A reload with the same vault path and key material must retain
+            // the old state object: its OAuth flight table is part of the
+            // process-owned attempt domain. A changed key/path starts a fresh
+            // domain; an invalid replacement is therefore unavailable rather
+            // than silently sharing the old coordinator.
+            let vault_material = gateway_vault_material(&config);
+            let retained = previous.and_then(|runtime| {
+                vault_material
+                    .as_ref()
+                    .filter(|material| runtime.vault_identity.as_ref() == Some(&material.identity))
+                    .map(|_| runtime)
+            });
+            let loaded = if retained.is_some() {
+                None
+            } else {
+                load_gateway_vault(vault_material.as_ref())?
+            };
+            let (vault, oauth, vault_identity) = if let Some(runtime) = retained {
+                (
+                    runtime.vault.clone(),
+                    runtime.oauth.clone(),
+                    runtime.vault_identity.clone(),
+                )
+            } else if let Some(loaded) = loaded {
+                let oauth = Some(oauth::OAuthRefresh::new(loaded.vault.clone()));
+                (Some(loaded.vault), oauth, Some(loaded.identity))
+            } else {
+                (None, None, None)
+            };
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -372,6 +404,7 @@ impl Runtime {
                 policy,
                 vault,
                 oauth,
+                vault_identity,
                 gateway_grants,
                 credential_guard,
                 credential_key_empty,
@@ -489,26 +522,62 @@ impl Runtime {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct VaultIdentity {
+    vault_path: PathBuf,
+    key_path: PathBuf,
+    key_fingerprint: [u8; 32],
+}
+
+struct VaultMaterial {
+    identity: VaultIdentity,
+    passphrase: credentials::Secret,
+}
+
+fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
+    let data_dir = config.data_dir();
+    let vault_path = data_dir.join("vault.yaml.enc");
+    let key_path = data_dir.join("vault.key");
+    let passphrase = std::fs::read_to_string(&key_path).ok()?.trim().to_owned();
+    if passphrase.is_empty() {
+        return None;
+    }
+    let fingerprint = digest(&SHA256, passphrase.as_bytes());
+    let mut key_fingerprint = [0; 32];
+    key_fingerprint.copy_from_slice(fingerprint.as_ref());
+    Some(VaultMaterial {
+        identity: VaultIdentity {
+            vault_path,
+            key_path,
+            key_fingerprint,
+        },
+        passphrase: credentials::Secret::new(passphrase),
+    })
+}
+
+struct LoadedGatewayVault {
+    vault: credentials::Vault,
+    identity: VaultIdentity,
+}
+
 /// Load the existing Python-compatible vault material when both files are
 /// present. The passphrase is process-local configuration and is never copied
 /// into Runtime diagnostics. A missing or unusable vault leaves the gateway
 /// unavailable so a selected request fails closed at the injection boundary.
-fn load_gateway_vault(config: &Config) -> Result<Option<credentials::Vault>, Error> {
-    let data_dir = config.data_dir();
-    let vault_path = data_dir.join("vault.yaml.enc");
-    let key_path = data_dir.join("vault.key");
-    if !vault_path.exists() || !key_path.exists() {
+fn load_gateway_vault(
+    material: Option<&VaultMaterial>,
+) -> Result<Option<LoadedGatewayVault>, Error> {
+    let Some(material) = material else {
         return Ok(None);
-    }
-    let passphrase = match std::fs::read_to_string(&key_path) {
-        Ok(value) => value.trim().to_owned(),
-        Err(_) => return Ok(None),
     };
-    if passphrase.is_empty() {
+    if !material.identity.vault_path.exists() {
         return Ok(None);
     }
-    match credentials::Vault::unlock(vault_path, &credentials::Secret::new(passphrase)) {
-        Ok(vault) => Ok(Some(vault)),
+    match credentials::Vault::unlock(&material.identity.vault_path, &material.passphrase) {
+        Ok(vault) => Ok(Some(LoadedGatewayVault {
+            vault,
+            identity: material.identity.clone(),
+        })),
         Err(error) => {
             let _ = writeln!(
                 std::io::stderr().lock(),
