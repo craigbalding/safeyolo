@@ -514,72 +514,66 @@ async fn open_egress_for_flow(
         ignored_host::ConnectionAudit::new(runtime.audit.clone(), allowed.identity, selected)
     });
     let connecting: Result<TcpStream, Error> = async {
-        let socket = if runtime.admin_shield.protects_port(port)
+        // Resolve and connect are deliberately separate refresh phases. Using
+        // TcpStream::connect((host, port)) here would let the runtime's DNS
+        // work consume the TCP phase budget and make timeout evidence lie
+        // about which operation stalled.
+        let addresses = refresh_phase(phase_timeout, async {
+            tokio::net::lookup_host((host, port))
+                .await
+                .map_err(Into::into)
+        })
+        .await?;
+        let protect_addresses = runtime.admin_shield.protects_port(port)
             || runtime
                 .admin_address
-                .is_some_and(|bound| bound.port() == port)
-        {
-            // Resolve this immediate route once before selecting a socket that
-            // could reach the operator listener. Parent-origin DNS remains remote.
-            let addresses = refresh_phase(phase_timeout, async {
-                tokio::net::lookup_host((host, port))
-                    .await
-                    .map_err(Into::into)
-            })
-            .await?;
-            let mut socket = None;
-            let mut last_error = None;
-            let mut protected = false;
-            let mut recorded = false;
-            for address in addresses {
-                if runtime.admin_shield.blocks_address(address)
+                .is_some_and(|bound| bound.port() == port);
+        let mut socket = None;
+        let mut last_error = None;
+        let mut protected = false;
+        let mut recorded = false;
+        for address in addresses {
+            if protect_addresses
+                && (runtime.admin_shield.blocks_address(address)
                     || runtime
                         .admin_address
-                        .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound))
-                {
-                    protected = true;
-                    continue;
-                }
-                if !recorded {
-                    record_egress()?;
-                    recorded = true;
-                }
-                match refresh_phase(phase_timeout, async {
-                    TcpStream::connect(address).await.map_err(Into::into)
-                })
-                .await
-                {
-                    Ok(connected) => {
-                        socket = Some(connected);
-                        break;
-                    }
-                    Err(error) => last_error = Some(error),
-                }
+                        .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound)))
+            {
+                protected = true;
+                continue;
             }
-            match socket {
-                Some(socket) => socket,
-                None => {
-                    if protected {
-                        return Err(AdminPortAccess.into());
-                    }
-                    if let Some(error) = last_error {
-                        return Err(error);
-                    }
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "egress route resolved no socket addresses",
-                    )
-                    .into());
-                }
+            if !recorded {
+                record_egress()?;
+                recorded = true;
             }
-        } else {
-            record_egress()?;
-            refresh_phase(phase_timeout, async {
-                TcpStream::connect((host, port)).await.map_err(Into::into)
+            match refresh_phase(phase_timeout, async {
+                TcpStream::connect(address).await.map_err(Into::into)
             })
-            .await?
-        };
-        Ok(socket)
+            .await
+            {
+                Ok(connected) => {
+                    socket = Some(connected);
+                    break;
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match socket {
+            Some(socket) => Ok(socket),
+            None => {
+                if protected {
+                    return Err(AdminPortAccess.into());
+                }
+                if let Some(error) = last_error {
+                    return Err(error);
+                }
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "egress route resolved no socket addresses",
+                )
+                .into())
+            }
+        }
     }
     .await;
     let socket = match connecting {
@@ -2035,6 +2029,8 @@ where
     // and the published snapshot, then applies a vault credential before body
     // observation or outbound dial.
     let mut grant_lease = None;
+    let mut gateway_injected = false;
+    let mut gateway_evidence = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
         let gateway_headers: Vec<_> = ordered_headers
@@ -2226,7 +2222,8 @@ where
                         } else {
                             ordered_headers.remove(&name);
                         }
-                        publish_gateway_evidence(&runtime, identity, request_id, &evidence)?;
+                        gateway_injected = true;
+                        gateway_evidence = Some(evidence);
                     }
                     crate::credential_injection::Start::Blocked(blocked) => {
                         publish_gateway_evidence(
@@ -2269,6 +2266,99 @@ where
                 }
             }
         }
+    }
+    // Gateway credentials are materialized only after the first request-hook
+    // guard has run. Re-run the same process-owned guard over the final ordered
+    // header view before dialing so a refreshed access token cannot bypass a
+    // credential:use deny rule. This second observation is still header-only;
+    // it does not inspect body bytes or create another guard owner.
+    if gateway_injected && let Some(policy) = runtime.policy.as_ref() {
+        let guard = runtime
+            .credential_guard
+            .as_ref()
+            .ok_or("native credential guard is unavailable")?;
+        let guard_trace = trace.as_ref().and_then(|trace| {
+            trace.hook(
+                "credential-guard",
+                if request.method() == Method::CONNECT {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
+        let outcome = match guard.enforce_ordered(
+            crate::credential_guard::Pdp::Ready(policy),
+            crate::network_guard::Identity::Resolved(&identity.agent_id),
+            &destination.policy_host,
+            destination.port,
+            request.method().as_str(),
+            &destination.path,
+            &destination.scheme,
+            Some(request_id),
+            &identity.connection_id,
+            false,
+            ordered_headers.iter(),
+            crate::credential_guard::Options {
+                block: runtime.config.credential_guard_block(),
+            },
+            crate::policy::current_time_ms(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(hook) = &guard_trace {
+                    hook.error("CredentialGuardError");
+                }
+                return Err(error.into());
+            }
+        };
+        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
+        for intent in &outcome.audit {
+            runtime
+                .audit
+                .emit(intent.event(identity.audit_attribution()))?;
+        }
+        runtime.record(json!({
+            "event": "proxy.credential_guard",
+            "agent": identity.agent_id,
+            "connection_id": identity.connection_id,
+            "request_id": request_id,
+            "host": destination.policy_host,
+            "port": destination.port,
+            "outcome": outcome.kind,
+            "trace": outcome.trace,
+            "audit": outcome.audit,
+            "metadata": outcome.metadata,
+            "evaluations": outcome.evaluations,
+            "body_scope": "headers_only",
+            "query_scope": "policy_context_only",
+        }))?;
+        if let Some(enforcement) = outcome.response {
+            let body = enforcement.body_bytes();
+            let mut blocked = Response::builder()
+                .status(StatusCode::from_u16(enforcement.status)?)
+                .body(full(body))?;
+            for (name, value) in enforcement.headers {
+                blocked
+                    .headers_mut()
+                    .append(header::HeaderName::try_from(name)?, value.parse()?);
+            }
+            strip_hop_headers(blocked.headers_mut());
+            traffic::local_reply(
+                traffic.as_ref(),
+                &mut request,
+                &mut blocked,
+                outcome.metadata.get("blocked_by").cloned(),
+                outcome.metadata.get("block_reason").cloned(),
+                destination,
+                true,
+                trace.as_ref(),
+            )?;
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+    }
+    if let Some(evidence) = gateway_evidence {
+        publish_gateway_evidence(&runtime, identity, request_id, &evidence)?;
     }
     let admission = if circuit_hook_failed {
         // A prior request hook exception stops later source children. Reserved
