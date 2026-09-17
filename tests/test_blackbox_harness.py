@@ -29,15 +29,202 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
 
     assert "pkill" not in runner
+    assert "killall" not in runner
     assert 'SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"' in runner
     assert (
-        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py"'
+        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"'
         in runner
     )
-    assert 'printf \'%s\\n\' "$SINKHOLE_PID" > "$SINKHOLE_PID_FILE"' in runner
+    assert 'SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"' in runner
+    assert 'printf \'%s\\n%s\\n\' "$SINKHOLE_PID" "$SINKHOLE_START_ID" > "$SINKHOLE_PID_FILE"' in runner
     assert 'kill "$HOST_LISTENER_PID"' in runner
     assert "printf -v quoted_arg '%q' \"$forwarded_arg\"" in runner
     assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
+
+
+def _runner_cleanup_helpers():
+    runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
+    start = runner.index("canonical_path() {")
+    end = runner.index("\ncleanup() {", start)
+    return runner[start:end]
+
+
+def _run_cleanup_probe(tmp_path, mode):
+    target = tmp_path / "owned-process.py"
+    target.write_text(
+        "import signal\n"
+        "import sys\n"
+        "import time\n"
+        "if '--ignore-term' in sys.argv:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "time.sleep(60)\n"
+    )
+    probe = tmp_path / f"cleanup-{mode}.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        + _runner_cleanup_helpers()
+        + """
+expected="$1"
+mode="$2"
+pid_file="$3"
+argv_file="$4"
+target_pid=""
+
+cleanup_probe() {
+    if [ -n "$target_pid" ]; then
+        kill "$target_pid" 2>/dev/null || true
+        wait "$target_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup_probe EXIT
+
+record_process() {
+    local pid="$1"
+    local output="$2"
+    local start
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        start="$(process_start_identity "$pid" 2>/dev/null || true)"
+        if [ -n "$start" ] && capture_process_argv "$pid" "$output" && [ -s "$output" ]; then
+            printf '%s\n' "$start"
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+case "$mode" in
+    owned)
+        python3 "$expected" &
+        target_pid=$!
+        start="$(record_process "$target_pid" "$argv_file")"
+        printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
+        stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
+        if kill -0 "$target_pid" 2>/dev/null; then
+            echo 'result=owned_survived'
+            exit 1
+        fi
+        echo 'result=owned_stopped'
+        ;;
+    ignore)
+        python3 "$expected" --ignore-term &
+        target_pid=$!
+        start="$(record_process "$target_pid" "$argv_file")"
+        printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
+        stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
+        if kill -0 "$target_pid" 2>/dev/null; then
+            echo 'result=ignore_survived'
+            exit 1
+        fi
+        echo 'result=ignore_stopped'
+        ;;
+    unrelated)
+        python3 -c 'import time; time.sleep(60)' "$expected" &
+        target_pid=$!
+        start="$(record_process "$target_pid" "$argv_file")"
+        printf '%s\n%s\n' "$target_pid" "$start" > "$pid_file"
+        stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
+        if ! kill -0 "$target_pid" 2>/dev/null; then
+            echo 'result=unrelated_killed'
+            exit 1
+        fi
+        echo 'result=unrelated_survived'
+        ;;
+    stale)
+        python3 "$expected" &
+        stale_pid=$!
+        stale_start="$(record_process "$stale_pid" "$argv_file")"
+        kill "$stale_pid"
+        wait "$stale_pid" 2>/dev/null || true
+        printf '%s\n%s\n' "$stale_pid" "$stale_start" > "$pid_file"
+        stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
+        echo 'result=stale_safe'
+        ;;
+    reused)
+        python3 "$expected" &
+        stale_pid=$!
+        stale_start="$(record_process "$stale_pid" "$argv_file")"
+        kill "$stale_pid"
+        wait "$stale_pid" 2>/dev/null || true
+        python3 -c 'import time; time.sleep(60)' "$expected" &
+        target_pid=$!
+        printf '%s\n%s\n' "$target_pid" "$stale_start" > "$pid_file"
+        stop_owned_pid_file "$pid_file" "$expected" "$argv_file"
+        if ! kill -0 "$target_pid" 2>/dev/null; then
+            echo 'result=reused_killed'
+            exit 1
+        fi
+        echo 'result=reused_survived'
+        ;;
+    *)
+        echo "unknown mode: $mode" >&2
+        exit 2
+        ;;
+esac
+"""
+    )
+    probe.chmod(0o755)
+    result = subprocess.run(
+        [str(probe), str(target), mode, str(tmp_path / "owned.pid"), str(tmp_path / "owned.argv")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    return result.stdout
+
+
+@pytest.mark.parametrize("mode", ["owned", "unrelated", "stale", "reused", "ignore"])
+def test_runner_cleanup_process_identity_behaves_as_owned_only(tmp_path, mode):
+    output = _run_cleanup_probe(tmp_path, mode)
+
+    assert f"result={mode}_" in output
+    if mode == "ignore":
+        assert "Escalating owned process" in output
+    else:
+        assert "Escalating owned process" not in output
+
+
+def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path):
+    """Forwarded VM arguments survive shell embedding byte-for-byte."""
+    runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
+    start = runner.index('PYTEST_FORWARD_SHELL=""')
+    end = runner.index("\n\n# The focused", start)
+    quoting = runner[start:end]
+    output = tmp_path / "forwarded.json"
+    sentinel = tmp_path / "injected"
+    probe = tmp_path / "forwarding.sh"
+    probe.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "output=\"$1\"\n"
+        "shift\n"
+        "PYTEST_FORWARD_ARGS=(\"$@\")\n"
+        + quoting
+        + "\n"
+        "printf -v code '%q' 'import json,sys; print(json.dumps(sys.argv[1:]))'\n"
+        "bash -lc \"python3 -c $code${PYTEST_FORWARD_SHELL}\" > \"$output\"\n"
+    )
+    probe.chmod(0o755)
+    arguments = [
+        "--marker",
+        "value with spaces",
+        f"$(touch {sentinel})",
+        f"semi;touch {sentinel}",
+        "*",
+        "quote\"single'",
+        "line1\nline2",
+    ]
+    result = subprocess.run(
+        [str(probe), str(output), *arguments],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text()) == arguments
+    assert not sentinel.exists()
 
 
 def test_python_proxy_cross_checkout_keeps_suite_fixture_and_selected_packages(tmp_path):

@@ -402,41 +402,137 @@ STARTED_PROXY=false
 STARTED_VM=false
 SINKHOLE_PID=""
 SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"
+SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"
 HOST_LISTENER_PID=""
+
+canonical_path() {
+    local candidate="$1"
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -- "$candidate" 2>/dev/null
+    else
+        python3 - "$candidate" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=True))
+PY
+    fi
+}
+
+process_start_identity() {
+    local pid="$1"
+    if [ -r "/proc/$pid/stat" ]; then
+        python3 - "$pid" <<'PY'
+from pathlib import Path
+import sys
+
+try:
+    stat = Path(f"/proc/{sys.argv[1]}/stat").read_text()
+    fields = stat.rsplit(") ", 1)[1].split()
+    print(fields[19])
+except (IndexError, OSError, ValueError):
+    raise SystemExit(1)
+PY
+    else
+        ps -p "$pid" -o lstart= 2>/dev/null | sed 's/[[:space:]]*$//'
+    fi
+}
+
+capture_process_argv() {
+    local pid="$1"
+    local output="$2"
+    if [ -r "/proc/$pid/cmdline" ]; then
+        cat "/proc/$pid/cmdline" > "$output"
+    else
+        # `ps` is the only portable process-argument source on macOS.  The
+        # saved line is compared byte-for-byte below; it is never searched as
+        # a substring.
+        ps -p "$pid" -o command= > "$output"
+    fi
+}
+
+process_script_matches() {
+    local pid="$1"
+    local executable="$2"
+    local expected actual token
+    expected="$(canonical_path "$executable")" || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        local -a argv=()
+        while IFS= read -r -d '' token; do
+            argv+=("$token")
+        done < "/proc/$pid/cmdline"
+        [ "${#argv[@]}" -ge 2 ] || return 1
+        actual="$(canonical_path "${argv[1]}")" || return 1
+    else
+        local command_line interpreter script
+        command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        read -r interpreter script _ <<< "$command_line"
+        [ -n "${interpreter:-}" ] && [ -n "${script:-}" ] || return 1
+        actual="$(canonical_path "$script")" || return 1
+    fi
+    [ "$actual" = "$expected" ]
+}
+
+process_argv_matches() {
+    local pid="$1"
+    local saved_argv="$2"
+    local current_file status
+    [ -s "$saved_argv" ] || return 1
+    if [ -r "/proc/$pid/cmdline" ]; then
+        # procfs can report a changing pseudo-file size to `cmp`; snapshot it
+        # first so the byte-for-byte argv comparison is deterministic.
+        current_file="$(mktemp "${TMPDIR:-/tmp}/safeyolo-argv.XXXXXX")" || return 1
+        if ! cat "/proc/$pid/cmdline" > "$current_file"; then
+            rm -f "$current_file"
+            return 1
+        fi
+        if cmp -s "$current_file" "$saved_argv"; then
+            status=0
+        else
+            status=$?
+        fi
+        rm -f "$current_file"
+        return "$status"
+    else
+        local current_argv
+        current_argv="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+        cmp -s <(printf '%s\n' "$current_argv") "$saved_argv"
+    fi
+}
 
 stop_owned_pid_file() {
     local pid_file="$1"
     local executable="$2"
-    local pid command_line
+    local argv_file="${3:-}"
+    local pid recorded_start current_start
 
     if [ ! -f "$pid_file" ]; then
         return 0
     fi
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-        # A PID file alone is not sufficient because the kernel may have
-        # reused the number.  Check the exact command path before stopping it.
-        if [ -r "/proc/$pid/cmdline" ]; then
-            command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-        else
-            # macOS has no procfs; `ps` still lets us verify ownership.
-            command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    pid="$(sed -n '1p' "$pid_file" 2>/dev/null || true)"
+    recorded_start="$(sed -n '2p' "$pid_file" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && [ -n "$recorded_start" ] && \
+       kill -0 "$pid" 2>/dev/null; then
+        current_start="$(process_start_identity "$pid" 2>/dev/null || true)"
+        if [ -n "$current_start" ] && [ "$recorded_start" = "$current_start" ] && \
+           process_script_matches "$pid" "$executable" && \
+           process_argv_matches "$pid" "$argv_file"; then
+            echo "Stopping owned process $pid ($executable)..."
+            kill "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                kill -0 "$pid" 2>/dev/null || break
+                sleep 0.1
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "Escalating owned process $pid ($executable) to KILL"
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
         fi
-        case "$command_line" in
-            *"$executable"*)
-                echo "Stopping owned process $pid ($executable)..."
-                kill "$pid" 2>/dev/null || true
-                for _ in 1 2 3 4 5 6 7 8 9 10; do
-                    kill -0 "$pid" 2>/dev/null || break
-                    sleep 0.1
-                done
-                if kill -0 "$pid" 2>/dev/null; then
-                    kill -KILL "$pid" 2>/dev/null || true
-                fi
-                ;;
-        esac
     fi
     rm -f "$pid_file"
+    if [ -n "$argv_file" ]; then
+        rm -f "$argv_file"
+    fi
 }
 
 cleanup() {
@@ -455,6 +551,7 @@ cleanup() {
         kill "$SINKHOLE_PID" 2>/dev/null || true
         wait "$SINKHOLE_PID" 2>/dev/null || true
         rm -f "$SINKHOLE_PID_FILE"
+        rm -f "$SINKHOLE_ARGV_FILE"
     fi
 
     if [ -n "$HOST_LISTENER_PID" ]; then
@@ -482,7 +579,7 @@ rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
 # Recover only a sinkhole process owned by a previous run.  The PID file and
 # command-path check prevent an unrelated process or another test instance
 # from being stopped.
-stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py"
+stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"
 safeyolo stop 2>/dev/null || true
 
 # --- Phase 1: Start infrastructure (idempotent) ---
@@ -509,7 +606,6 @@ else
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
-    printf '%s\n' "$SINKHOLE_PID" > "$SINKHOLE_PID_FILE"
 
     for i in $(seq 1 30); do
         if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
@@ -522,6 +618,17 @@ else
         echo "ERROR: Sinkhole failed to start"
         exit 2
     fi
+    if ! process_script_matches "$SINKHOLE_PID" "$SCRIPT_DIR/sinkhole/server.py" || \
+       ! capture_process_argv "$SINKHOLE_PID" "$SINKHOLE_ARGV_FILE"; then
+        echo "ERROR: Sinkhole process identity could not be recorded"
+        exit 2
+    fi
+    SINKHOLE_START_ID="$(process_start_identity "$SINKHOLE_PID" 2>/dev/null || true)"
+    if [ -z "$SINKHOLE_START_ID" ]; then
+        echo "ERROR: Sinkhole process start identity could not be recorded"
+        exit 2
+    fi
+    printf '%s\n%s\n' "$SINKHOLE_PID" "$SINKHOLE_START_ID" > "$SINKHOLE_PID_FILE"
 fi
 
 # Proxy (test instance on separate ports)
