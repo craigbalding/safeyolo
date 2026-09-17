@@ -10,9 +10,11 @@ Python whitespace set.
 
 `names.txt` contains 143,041 canonical scalar names from
 `unicodedata.name()` plus the 473 verified scalar aliases from the pinned
-Unicode `NameAliases-15.0.0.txt` file. CPython's finite algorithmic Hangul and
-CJK names are included by `unicodedata.name()`; named sequences are deliberately
-absent because Python's regular-expression parser rejects them.
+Unicode `NameAliases-15.0.0.txt` file. Ordinary names and aliases are matched
+case-insensitively, while CPython's finite algorithmic Hangul and CJK names
+require their uppercase spelling. Named sequences are deliberately absent
+because Python's regular-expression parser rejects them; such source-invalid
+rules are skipped individually by the scanner loader.
 
 ## Regenerate
 

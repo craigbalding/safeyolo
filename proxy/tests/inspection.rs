@@ -1,6 +1,6 @@
 use safeyolo_proxy::inspection::{
-    Direction, ErrorKind, MAX_URL_SCAN_BYTES, MessageType, Options, Outcome, Scanner, UrlInput,
-    compatibility_gaps,
+    Direction, ErrorKind, MAX_URL_SCAN_BYTES, MessageType, Options, Outcome, Scanner, SkipReason,
+    UrlInput, compatibility_gaps,
 };
 use serde_json::{Value, json};
 
@@ -454,7 +454,8 @@ fn reload_is_atomic_ordered_and_surfaces_engine_incompatibility_without_skipping
             .unwrap()
             .is_none()
     );
-    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",r"\N{KEYCAP DIGIT ONE}","body","block")]});
+    let unsupported = format!("{}a{}", "(?:".repeat(64), ")".repeat(64));
+    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",&unsupported,"body","block")]});
     let failure = scanner.maybe_reload(Some(&invalid)).unwrap_err();
     assert_eq!(failure.kind, ErrorKind::RegexCompatibility);
     assert_eq!(failure.rule_index, Some(1));
@@ -961,8 +962,8 @@ print(json.dumps(out))
             .is_some();
         assert_eq!(json!(matched), *actual, "pattern {pattern:?} text {text:?}");
     }
-    // Do not normalize these into agreement: they are retained-workflow gaps,
-    // not permission to narrow policy. The module remains inactive.
+    // Named sequences remain source-invalid. They are skipped as individual
+    // rules so a valid sibling in the same policy can still activate.
     let unresolved = [(r"\N{KEYCAP DIGIT ONE}", "1️⃣")];
     for (pattern, text) in unresolved {
         assert_eq!(
@@ -973,13 +974,12 @@ print(json.dumps(out))
             false
         );
         let scanner = Scanner::default();
-        assert_eq!(
-            scanner
-                .load_policy_config(&json!({"scan_patterns":[rule("gap",pattern,"body","log")]}))
-                .unwrap_err()
-                .kind,
-            ErrorKind::RegexCompatibility
-        );
+        let report = scanner
+            .load_policy_config(&json!({
+                "scan_patterns": [rule("gap", pattern, "body", "log")]
+            }))
+            .unwrap();
+        assert_eq!(report.skipped[0].reason, SkipReason::InvalidPattern);
     }
     let scanner = make_scanner(json!([rule("casefold", r"(?i)^i$", "body", "log")]));
     assert_eq!(
@@ -1448,15 +1448,43 @@ fn python_unicode_categories_pin_python_312_scalar_membership() {
 fn d33_named_unicode_and_nesting_rows_keep_python_boundaries() {
     for (name, pattern, text) in [
         (
-            "ordinary-name",
+            "ordinary-upper",
             r"^prefix-\N{LATIN CAPITAL LETTER A}-suffix$",
             "prefix-A-suffix",
         ),
-        ("lowercase-name", r"^\N{latin capital letter a}$", "A"),
-        ("alias-name", r"^\N{BYTE ORDER MARK}$", "\u{feff}"),
-        ("hangul-name", r"^\N{HANGUL SYLLABLE GA}$", "가"),
-        ("cjk-name", r"^\N{CJK UNIFIED IDEOGRAPH-4E00}$", "一"),
-        ("class-name", r"^[\N{LATIN CAPITAL LETTER A}]$", "A"),
+        (
+            "ordinary-lower",
+            r"^prefix-\N{latin capital letter a}-suffix$",
+            "prefix-A-suffix",
+        ),
+        (
+            "ordinary-mixed",
+            r"^prefix-\N{LaTiN CaPiTaL LeTtEr A}-suffix$",
+            "prefix-A-suffix",
+        ),
+        (
+            "ordinary-class-upper",
+            r"^[\N{LATIN CAPITAL LETTER A}]$",
+            "A",
+        ),
+        (
+            "ordinary-class-lower",
+            r"^[\N{latin capital letter a}]$",
+            "A",
+        ),
+        ("alias-upper", r"^\N{BYTE ORDER MARK}$", "\u{feff}"),
+        ("alias-lower", r"^\N{byte order mark}$", "\u{feff}"),
+        ("alias-mixed", r"^\N{ByTe OrDeR MaRk}$", "\u{feff}"),
+        ("alias-class-upper", r"^[\N{BYTE ORDER MARK}]$", "\u{feff}"),
+        ("alias-class-lower", r"^[\N{byte order mark}]$", "\u{feff}"),
+        ("hangul-upper", r"^\N{HANGUL SYLLABLE GA}$", "가"),
+        ("hangul-class-upper", r"^[\N{HANGUL SYLLABLE GA}]$", "가"),
+        ("cjk-upper", r"^\N{CJK UNIFIED IDEOGRAPH-4E00}$", "一"),
+        (
+            "cjk-class-upper",
+            r"^[\N{CJK UNIFIED IDEOGRAPH-4E00}]$",
+            "一",
+        ),
     ] {
         let scanner = make_scanner(json!([rule(name, pattern, "body", "log")]));
         let result = scanner
@@ -1466,20 +1494,53 @@ fn d33_named_unicode_and_nesting_rows_keep_python_boundaries() {
         assert_eq!(result.finding.unwrap().rule_name, name);
     }
 
-    for pattern in [
+    let invalid_names = [
+        r"^\N{hangul syllable ga}$",
+        r"^\N{Hangul Syllable Ga}$",
+        r"^\N{cjk unified ideograph-4e00}$",
+        r"^\N{Cjk Unified Ideograph-4E00}$",
+        r"^[\N{hangul syllable ga}]$",
+        r"^[\N{cjk unified ideograph-4e00}]$",
         r"^\N{KEYCAP DIGIT ONE}$", // Python named sequence: three scalars.
         r"^\N{UNKNOWN SAFEYOLO NAME}$",
-    ] {
-        assert_eq!(
-            Scanner::default()
-                .load_policy_config(&json!({
-                    "scan_patterns": [rule("unicode-name-gap", pattern, "body", "log")]
-                }))
-                .unwrap_err()
-                .kind,
-            ErrorKind::RegexCompatibility,
-            "{pattern:?}"
-        );
+        r"^\N{LATIN CAPITAL LETTER A$",
+    ];
+    let mut configured: Vec<Value> = invalid_names
+        .iter()
+        .enumerate()
+        .map(|(index, pattern)| rule(&format!("invalid-name-{index}"), pattern, "body", "log"))
+        .collect();
+    configured.push(rule("valid-sibling", r"^SECRET$", "body", "block"));
+    let scanner = Scanner::default();
+    let report = scanner
+        .maybe_reload(Some(&json!({
+            "policy_hash": "unicode-name-r5",
+            "scan_patterns": configured
+        })))
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.rules_total, 1);
+    assert_eq!(report.skipped.len(), invalid_names.len());
+    assert!(
+        report
+            .skipped
+            .iter()
+            .all(|entry| entry.reason == SkipReason::InvalidPattern)
+    );
+    let result = scanner
+        .scan_websocket_text(Direction::Request, MessageType::Text, "SECRET", block())
+        .unwrap();
+    assert_eq!(result.outcome, Outcome::MatchBlocked);
+    assert_eq!(result.finding.unwrap().rule_name, "valid-sibling");
+    for pattern in invalid_names {
+        let scanner = Scanner::default();
+        let report = scanner
+            .load_policy_config(&json!({
+                "scan_patterns": [rule("invalid-name", pattern, "body", "log")]
+            }))
+            .unwrap();
+        assert_eq!(report.rules_total, 0, "{pattern:?}");
+        assert_eq!(report.skipped[0].reason, SkipReason::InvalidPattern);
     }
 
     let nested = format!("{}a{}", "(?:".repeat(8), ")".repeat(8));
@@ -1510,6 +1571,76 @@ fn d33_named_unicode_and_nesting_rows_keep_python_boundaries() {
             .kind,
         ErrorKind::RegexCompatibility
     );
+}
+
+#[test]
+#[ignore = "Actual Python Unicode-name case and invalid-rule differential; set SAFEYOLO_POLICY_PYTHON"]
+fn python_unicode_name_case_and_invalid_rule_differential() {
+    let cases = [
+        (r"^\N{LATIN CAPITAL LETTER A}$", "A", true),
+        (r"^\N{latin capital letter a}$", "A", true),
+        (r"^\N{LaTiN CaPiTaL LeTtEr A}$", "A", true),
+        (r"^\N{BYTE ORDER MARK}$", "\u{feff}", true),
+        (r"^\N{byte order mark}$", "\u{feff}", true),
+        (r"^\N{ByTe OrDeR MaRk}$", "\u{feff}", true),
+        (r"^\N{HANGUL SYLLABLE GA}$", "가", true),
+        (r"^\N{hangul syllable ga}$", "가", false),
+        (r"^\N{Hangul Syllable Ga}$", "가", false),
+        (r"^\N{CJK UNIFIED IDEOGRAPH-4E00}$", "一", true),
+        (r"^\N{cjk unified ideograph-4e00}$", "一", false),
+        (r"^\N{Cjk Unified Ideograph-4E00}$", "一", false),
+    ];
+    for (pattern, text, expected) in cases {
+        let actual = python(
+            r#"import json,sys
+from safeyolo.detection.patterns import compile_pattern
+c=json.load(sys.stdin)
+expression=compile_pattern(c['pattern'])
+print(json.dumps(None if expression is None else bool(expression.search(c['text']))))"#,
+            &json!({"pattern": pattern, "text": text}),
+        );
+        assert_eq!(
+            actual,
+            if expected { json!(true) } else { Value::Null },
+            "Python case {pattern:?}"
+        );
+        let scanner = Scanner::default();
+        let config = json!({"scan_patterns":[rule("name",pattern,"body","log")]});
+        let report = scanner.load_policy_config(&config);
+        if expected {
+            assert_eq!(
+                report.unwrap().rules_total,
+                1,
+                "native accepted {pattern:?}"
+            );
+        } else {
+            assert_eq!(
+                report.unwrap().skipped[0].reason,
+                SkipReason::InvalidPattern
+            );
+        }
+    }
+    for pattern in [
+        r"^\N{KEYCAP DIGIT ONE}$",
+        r"^\N{UNKNOWN SAFEYOLO NAME}$",
+        r"^\N{LATIN CAPITAL LETTER A$",
+    ] {
+        let actual = python(
+            r#"import json,re,sys; c=json.load(sys.stdin);
+try: value=bool(re.search(c['pattern'], c['text']))
+except re.error: value=None
+print(json.dumps(value))"#,
+            &json!({"pattern": pattern, "text": "SECRET"}),
+        );
+        assert_eq!(actual, Value::Null, "Python invalid {pattern:?}");
+        let scanner = Scanner::default();
+        let report = scanner
+            .load_policy_config(&json!({
+                "scan_patterns": [rule("invalid", pattern, "body", "log")]
+            }))
+            .unwrap();
+        assert_eq!(report.skipped[0].reason, SkipReason::InvalidPattern);
+    }
 }
 
 fn source_prefilter_case(pattern: &str) -> bool {

@@ -8,8 +8,11 @@
 //! Proved remaining examples include uncovered Unicode properties/casefold
 //! behavior and parse nesting. Generated Python 3.12 / Unicode 15 ranges pin
 //! `\w` and `\d` category membership, while the finite name table covers
-//! canonical scalar names and verified aliases. Named sequences remain rejected
-//! as they are by Python's regular-expression parser. The pinned engine patch
+//! canonical scalar names and verified aliases. Ordinary names and aliases use
+//! Python's case-insensitive lookup; algorithmic Hangul/CJK names retain their
+//! required uppercase spelling. Named sequences remain rejected as they are by
+//! Python's regular-expression parser, and source-invalid name rules are
+//! skipped individually. The pinned engine patch
 //! removes the scanner's private stack cutoff: VM buffers grow fallibly and are
 //! released after each scan. The complete-message regression matches at 1,000,100
 //! bytes, 4 MiB and 8 MiB. Remaining gaps still block production acceptance.
@@ -428,6 +431,12 @@ fn python_unicode_name(name: &str) -> Option<char> {
         return None;
     }
     let normalized = name.to_ascii_uppercase();
+    // CPython accepts case-insensitive ordinary names and aliases, but its
+    // algorithmic Hangul/CJK lookup requires the generated uppercase spelling.
+    // Keep that distinction instead of widening the source grammar.
+    if is_algorithmic_unicode_name(&normalized) && name != normalized {
+        return None;
+    }
     static DATA: LazyLock<Vec<PythonUnicodeName>> = LazyLock::new(|| {
         include_str!("../data/inspection/names.txt")
             .lines()
@@ -449,20 +458,24 @@ fn python_unicode_name(name: &str) -> Option<char> {
         .and_then(|index| char::from_u32(DATA[index].value))
 }
 
+fn is_algorithmic_unicode_name(name: &str) -> bool {
+    name.starts_with("HANGUL SYLLABLE ") || name.starts_with("CJK UNIFIED IDEOGRAPH-")
+}
+
 fn unicode_name_escape(
     chars: &[char],
     index: usize,
 ) -> std::result::Result<(char, usize), PatternIssue> {
     if chars.get(index + 2) != Some(&'{') {
-        return Err(PatternIssue::Compatibility);
+        return Err(PatternIssue::Invalid);
     }
     let end = chars
         .get(index + 3..)
         .and_then(|remaining| remaining.iter().position(|ch| *ch == '}'))
         .map(|offset| index + 3 + offset)
-        .ok_or(PatternIssue::Compatibility)?;
+        .ok_or(PatternIssue::Invalid)?;
     let name: String = chars[index + 3..end].iter().collect();
-    let value = python_unicode_name(&name).ok_or(PatternIssue::Compatibility)?;
+    let value = python_unicode_name(&name).ok_or(PatternIssue::Invalid)?;
     Ok((value, end + 1))
 }
 
