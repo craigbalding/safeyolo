@@ -9,9 +9,12 @@ use tokio::{
     time::timeout,
 };
 
-use super::{PolicyRequest, decide};
+use super::{PolicyRequest, decide, publish_credential_trace};
 use crate::{
     Config, ConnectionIdentity, Proxy, Runtime,
+    credential_guard::{CredentialGuard, Options as CredentialOptions, Pdp as CredentialPdp},
+    network_guard::Identity,
+    policy::{Format, Policy},
     trace::{Settings, TraceStore},
 };
 
@@ -30,7 +33,7 @@ fn config(directory: &Path, effect: &str) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice", "source_id":"192.0.2.10", "socket_path":directory.join("alice.sock")},
             {"agent_id":"bob", "source_id":"192.0.2.11", "socket_path":directory.join("bob.sock")}],
-        "policy_file":directory.join("policy.json"), "readiness_file":directory.join("ready"),
+        "policy_file":directory.join("policy.json"), "data_dir":directory.join("data"), "readiness_file":directory.join("ready"),
         "event_log":directory.join("events.jsonl"), "audit_log_path":directory.join("audit.jsonl"),
         "agent_map_file":directory.join("missing-agent-map.json"),
         "flow_store_enabled":false, "flow_store_db_path":directory.join("unused.sqlite3"),
@@ -152,6 +155,7 @@ fn ordinary_step(report: &Value, outcome: &str) {
     if outcome != "blocked" {
         expected.extend([
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
         ]);
     }
@@ -166,17 +170,246 @@ fn ordinary_step(report: &Value, outcome: &str) {
     assert_eq!(step["outcome"], outcome);
     assert_eq!(step["host"], HOST);
     assert!(step["duration_us"].as_u64().is_some());
-    assert_eq!(
-        report["not_loaded"],
+    let expected_not_loaded = if outcome == "blocked" {
         json!([
             {"addon":"service-gateway", "state":"not_loaded"},
             {"addon":"credential-guard", "state":"not_loaded"},
             {"addon":"pattern-scanner", "state":"not_loaded"}
         ])
-    );
+    } else {
+        json!([
+            {"addon":"service-gateway", "state":"not_loaded"},
+            {"addon":"pattern-scanner", "state":"not_loaded"}
+        ])
+    };
+    assert_eq!(report["not_loaded"], expected_not_loaded);
     for absent in ["trace-secret-query", "forged", "owned-body", TOKEN] {
         assert!(!report.to_string().contains(absent));
     }
+}
+
+fn trace_guard_policy(effect: &str, enabled: bool) -> Policy {
+    Policy::parse(
+        &json!({
+            "permissions":[
+                {"action":"credential:use","resource":"127.0.0.1/*","effect":effect},
+                {"action":"network:request","resource":"*","effect":"allow"}
+            ],
+            "credential_rules":[{
+                "name":"trace-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":enabled,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+        Format::Json,
+    )
+    .unwrap()
+}
+
+fn trace_guard() -> CredentialGuard {
+    let guard = CredentialGuard::new(b"trace-hmac-key");
+    guard
+        .load_sensor_config(&json!({
+            "addons":{"credential_guard":{"use_default_credential_rules":false}},
+            "credential_rules":[{
+                "name":"trace-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }]
+        }))
+        .unwrap();
+    guard
+}
+
+fn append_guard_trace(
+    store: &Arc<TraceStore>,
+    guard: &CredentialGuard,
+    policy: &Policy,
+    request_id: &str,
+    identity: Identity<'_>,
+    prior_response: bool,
+    block: bool,
+) -> Value {
+    let agent_id = match identity {
+        Identity::Resolved(agent) => agent.to_owned(),
+        _ => "unknown".to_owned(),
+    };
+    let identity_for_trace = ConnectionIdentity {
+        agent_id,
+        connection_id: format!("trace-connection-{request_id}"),
+        source_id: None,
+    };
+    let request = Arc::new(crate::request_trace::RequestTrace::new(
+        store.clone(),
+        &identity_for_trace,
+        request_id,
+        "GET",
+        "127.0.0.1",
+        443,
+    ));
+    request.enable(true);
+    let hook = request.hook("credential-guard", "request");
+    let fields = [(
+        b"Authorization".as_slice(),
+        b"Bearer key-synthetic".as_slice(),
+    )];
+    let outcome = guard
+        .enforce_ordered(
+            CredentialPdp::Ready(policy),
+            identity,
+            "127.0.0.1",
+            443,
+            "GET",
+            "/trace",
+            "https",
+            Some(request_id),
+            &identity_for_trace.connection_id,
+            prior_response,
+            fields,
+            CredentialOptions { block },
+            1000.,
+        )
+        .unwrap();
+    publish_credential_trace(hook.as_ref(), &outcome.trace);
+    store
+        .get(request_id, Some(&identity_for_trace.agent_id), 1000.)
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn credential_trace_replays_each_intent_on_one_timer_and_keeps_bypasses_untimed() {
+    let store = Arc::new(TraceStore::new(Settings::default()));
+    let guard = trace_guard();
+
+    let allowed = append_guard_trace(
+        &store,
+        &guard,
+        &trace_guard_policy("allow", true),
+        "trace-allowed",
+        Identity::Resolved("alice"),
+        false,
+        true,
+    );
+    assert_eq!(allowed["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(allowed["steps"][0]["state"], "evaluated");
+    assert_eq!(allowed["steps"][0]["outcome"], "detected");
+    assert_eq!(allowed["steps"][0]["details"]["detection_count"], 1);
+    assert!(allowed["steps"][0]["duration_us"].as_u64().is_some());
+
+    let warned = append_guard_trace(
+        &store,
+        &guard,
+        &trace_guard_policy("deny", true),
+        "trace-warned",
+        Identity::Resolved("alice"),
+        false,
+        false,
+    );
+    assert_eq!(
+        warned["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|step| step["outcome"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("detected"), json!("warned")]
+    );
+    assert_eq!(warned["steps"][0]["details"]["detection_count"], 1);
+    assert!(warned["steps"][0]["duration_us"].as_u64().is_some());
+    assert!(warned["steps"][1]["duration_us"].as_u64().is_some());
+
+    let bypassed = append_guard_trace(
+        &store,
+        &guard,
+        &trace_guard_policy("deny", false),
+        "trace-bypassed",
+        Identity::Resolved("alice"),
+        false,
+        true,
+    );
+    assert_eq!(bypassed["steps"][0]["state"], "bypassed");
+    assert_eq!(bypassed["steps"][0]["reason"], "policy_disabled");
+    assert!(bypassed["steps"][0].get("duration_us").is_none());
+
+    let prior = append_guard_trace(
+        &store,
+        &guard,
+        &trace_guard_policy("deny", true),
+        "trace-prior",
+        Identity::Resolved("alice"),
+        true,
+        true,
+    );
+    assert_eq!(prior["steps"][0]["state"], "bypassed");
+    assert_eq!(prior["steps"][0]["reason"], "prior_response");
+    assert!(prior["steps"][0].get("duration_us").is_none());
+
+    let conflict = append_guard_trace(
+        &store,
+        &guard,
+        &trace_guard_policy("allow", true),
+        "trace-conflict",
+        Identity::Conflict,
+        false,
+        true,
+    );
+    assert_eq!(conflict["steps"][0]["state"], "evaluated");
+    assert_eq!(conflict["steps"][0]["outcome"], "blocked");
+    assert_eq!(conflict["steps"][0]["details"]["status"], 403);
+    assert!(conflict["steps"][0]["duration_us"].as_u64().is_some());
+}
+
+#[test]
+fn credential_trace_store_failure_does_not_change_guard_outcome() {
+    let store = Arc::new(TraceStore::new(Settings {
+        ttl_s: json!("owned-invalid-ttl").into(),
+        ..Settings::default()
+    }));
+    let guard = trace_guard();
+    let policy = trace_guard_policy("allow", true);
+    let identity = ConnectionIdentity {
+        agent_id: "alice".into(),
+        connection_id: "trace-observation-failure".into(),
+        source_id: None,
+    };
+    let request = Arc::new(crate::request_trace::RequestTrace::new(
+        store,
+        &identity,
+        "trace-observation-failure",
+        "GET",
+        "127.0.0.1",
+        443,
+    ));
+    request.enable(true);
+    let hook = request.hook("credential-guard", "request");
+    let outcome = guard
+        .enforce_ordered(
+            CredentialPdp::Ready(&policy),
+            Identity::Resolved("alice"),
+            "127.0.0.1",
+            443,
+            "GET",
+            "/trace",
+            "https",
+            Some("trace-observation-failure"),
+            &identity.connection_id,
+            false,
+            [(
+                b"Authorization".as_slice(),
+                b"Bearer key-synthetic".as_slice(),
+            )],
+            CredentialOptions { block: true },
+            1000.,
+        )
+        .unwrap();
+    publish_credential_trace(hook.as_ref(), &outcome.trace);
+    assert_eq!(outcome.kind, crate::credential_guard::OutcomeKind::Allowed);
+    assert_eq!(guard.stats().unwrap().violations_total, 0);
 }
 
 #[test]
@@ -338,16 +571,17 @@ async fn owned_workflow(directory: &Path) {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!(["test-context", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "response_recorded"]),
         ]
     );
     assert_eq!(
-        applied["steps"][2]["details"],
+        applied["steps"][3]["details"],
         json!({"context_source":"header"})
     );
-    assert_eq!(applied["steps"][4]["details"], json!({"status_code":200}));
+    assert_eq!(applied["steps"][5]["details"], json!({"status_code":200}));
     let denied = fetch(directory, port, true).await;
     assert!(denied.starts_with(b"HTTP/1.1 428"));
     let denied = trace(directory, "alice", &request_id(&denied)).await.1;
@@ -356,12 +590,13 @@ async fn owned_workflow(directory: &Path) {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "bypassed", "addon_disabled"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!(["test-context", "request", "evaluated", "blocked"]),
             json!(["circuit-breaker", "response", "bypassed", "addon_disabled"]),
             json!(["test-context", "response", "evaluated", "not_applicable"]),
         ]
     );
-    assert_eq!(denied["steps"][2]["details"], json!({"status":428}));
+    assert_eq!(denied["steps"][3]["details"], json!({"status":428}));
 
     let local = exchange(directory, "alice", &format!(
         "GET http://_safeyolo.proxy.internal/health HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {TOKEN}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n"

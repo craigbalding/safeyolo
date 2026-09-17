@@ -215,7 +215,7 @@ fn record_builder_matches_fourteen_actual_source_projections() {
 fn config(directory: &Path) -> Config {
     let policy = directory.join("policy.json");
     std::fs::write(&policy,json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}],"addons":{"test_context":{"target_hosts":["127.0.0.2"]},"flow_store":{"max_request_body_bytes":5,"max_response_body_bytes":6,"compress_bodies":false}}}).to_string()).unwrap();
-    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
+    serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
 }
 async fn send(
     path: &Path,

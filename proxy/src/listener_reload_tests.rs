@@ -8,7 +8,7 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),
                       "source_id":"192.0.2.1"}],
-        "policy_file":policy,"flow_store_enabled":false,
+        "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,
         "audit_log_path":directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl"),
         "readiness_file":directory.join("ready.json"),

@@ -116,13 +116,14 @@ async fn chunked_small_body_applies_once_only_after_terminal() {
         [
             ("network-guard", "request"),
             ("circuit-breaker", "request"),
+            ("credential-guard", "request"),
             ("test-context", "request"),
             ("probe-sink", "request"),
             ("circuit-breaker", "response"),
             ("test-context", "response"),
         ]
     );
-    assert_eq!(steps[3]["outcome"], "probe_terminated");
+    assert_eq!(steps[4]["outcome"], "probe_terminated");
     let audit = fixture.stop().await;
     let contexts: Vec<_> = audit
         .iter()

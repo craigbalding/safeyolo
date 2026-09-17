@@ -26,7 +26,7 @@ fn make_runtime(directory: &std::path::Path, settings: Value, enabled: bool) -> 
     .unwrap();
     let config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"event_log":directory.join("diagnostics.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"event_log":directory.join("diagnostics.jsonl"),
         "audit_log_path":directory.join("audit.jsonl"),"readiness_file":directory.join("ready"),
         "agent_map_file":directory.join("absent-map.json"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),

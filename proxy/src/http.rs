@@ -1272,14 +1272,11 @@ fn circuit_admission(
 /// local status); keep those fields intact instead of replacing the sequence
 /// with one synthetic outcome for the whole request.
 fn publish_credential_trace(
-    trace: Option<&Arc<RequestTrace>>,
+    hook: Option<&crate::request_trace::TraceHook>,
     intents: &[crate::credential_guard::TraceIntent],
 ) {
     for intent in intents {
-        let Some(trace) = trace else {
-            continue;
-        };
-        let Some(hook) = trace.hook("credential-guard", intent.hook) else {
+        let Some(hook) = hook else {
             continue;
         };
         match intent.state {
@@ -1639,6 +1636,16 @@ async fn forward(
             .credential_guard
             .as_ref()
             .ok_or("native credential guard is unavailable")?;
+        let guard_trace = trace.as_ref().and_then(|trace| {
+            trace.hook(
+                "credential-guard",
+                if request.method() == Method::CONNECT {
+                    "http_connect"
+                } else {
+                    "request"
+                },
+            )
+        });
         let outcome = match guard.enforce_ordered(
             crate::credential_guard::Pdp::Ready(policy),
             crate::network_guard::Identity::Resolved(&identity.agent_id),
@@ -1658,16 +1665,7 @@ async fn forward(
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                if let Some(hook) = trace.as_ref().and_then(|trace| {
-                    trace.hook(
-                        "credential-guard",
-                        if request.method() == Method::CONNECT {
-                            "http_connect"
-                        } else {
-                            "request"
-                        },
-                    )
-                }) {
+                if let Some(hook) = &guard_trace {
                     hook.error("CredentialGuardError");
                 }
                 // A decoder, matcher, or policy observation error is a
@@ -1676,7 +1674,7 @@ async fn forward(
                 return Err(error.into());
             }
         };
-        publish_credential_trace(trace.as_ref(), &outcome.trace);
+        publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
         for intent in &outcome.audit {

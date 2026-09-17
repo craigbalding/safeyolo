@@ -26,7 +26,7 @@ fn config(directory: &Path) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
-        "policy_file":policy,"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "event_log":directory.join("diagnostic.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":true,"circuit_state_file":"",
@@ -170,6 +170,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!([
                 "circuit-breaker",
@@ -207,6 +208,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
     assert_eq!(
         names,
         [
+            "ops.policy_reload",
             "traffic.request",
             "ops.circuit_breaker.open",
             "traffic.response",
@@ -215,19 +217,19 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             "traffic.response"
         ]
     );
-    check_open(&rows[1]);
-    assert_eq!(rows[1]["agent"], "alice");
-    assert_eq!(rows[1]["request_id"], rows[0]["request_id"]);
-    assert_eq!(rows[1]["request_id"], rows[2]["request_id"]);
-    assert!(rows[1]["request_id"].as_str().unwrap().starts_with("req-"));
-    let security = &rows[3];
+    check_open(&rows[2]);
+    assert_eq!(rows[2]["agent"], "alice");
+    assert_eq!(rows[2]["request_id"], rows[1]["request_id"]);
+    assert_eq!(rows[2]["request_id"], rows[3]["request_id"]);
+    assert!(rows[2]["request_id"].as_str().unwrap().starts_with("req-"));
+    let security = &rows[4];
     assert_eq!(security["kind"], "security");
     assert_eq!(security["severity"], "high");
     assert_eq!(security["decision"], "deny");
     assert_eq!(security["agent"], "bob");
     assert_eq!(security["host"], HOST);
-    assert_eq!(security["request_id"], rows[4]["request_id"]);
-    assert_ne!(security["request_id"], rows[1]["request_id"]);
+    assert_eq!(security["request_id"], rows[5]["request_id"]);
+    assert_ne!(security["request_id"], rows[2]["request_id"]);
     assert_eq!(security["details"]["circuit_state"], "open");
     assert_eq!(security["details"]["failure_count"], 1);
     assert_eq!(security["details"]["method"], "POST");
@@ -305,6 +307,7 @@ async fn early_response_open_omits_unreached_source_correlation() {
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!([
                 "circuit-breaker",
                 "response",
@@ -316,12 +319,13 @@ async fn early_response_open_omits_unreached_source_correlation() {
     );
     assert_eq!(logger_stats(&runtime)["responses_total"], 1);
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 2);
-    check_open(&rows[0]);
-    assert!(rows[0].get("agent").is_none());
-    assert!(rows[0].get("request_id").is_none());
-    assert_eq!(rows[1]["event"], "traffic.response");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["event"], "ops.policy_reload");
+    check_open(&rows[1]);
+    assert!(rows[1].get("agent").is_none());
     assert!(rows[1].get("request_id").is_none());
+    assert_eq!(rows[2]["event"], "traffic.response");
+    assert!(rows[2].get("request_id").is_none());
 }
 
 #[tokio::test]
@@ -373,6 +377,7 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
         vec![
             json!(["network-guard", "request", "evaluated", "allowed"]),
             json!(["circuit-breaker", "request", "evaluated", "allowed"]),
+            json!(["credential-guard", "request", "evaluated", "no_detection"]),
             json!(["test-context", "request", "evaluated", "not_target_host"]),
             json!(["circuit-breaker", "response", "error", "AuditError"]),
         ]
@@ -383,6 +388,7 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
     );
     proxy.shutdown().await;
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["event"], "traffic.request");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["event"], "ops.policy_reload");
+    assert_eq!(rows[1]["event"], "traffic.request");
 }

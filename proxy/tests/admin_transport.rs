@@ -137,7 +137,7 @@ fn config(directory: &Path, token: &str) -> Config {
             {"agent_id":"alice","socket_path":directory.join("alice.sock")},
             {"agent_id":"bob","socket_path":directory.join("bob.sock")}
         ],
-        "policy_file":directory.join("policy.toml"),
+        "policy_file":directory.join("policy.toml"),"data_dir":directory.join("data"),
         "agent_api_enabled":false,
         "admin_port":0,
         "admin_api_token_file":directory.join("operator-token"),

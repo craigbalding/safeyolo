@@ -28,7 +28,7 @@ fn config(directory: &Path, port: u16, matched: bool, allowed: bool) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","source_id":SOURCE,
             "socket_path":directory.join("alice.sock")}],
-        "policy_file":directory.join("policy.json"),
+        "policy_file":directory.join("policy.json"),"data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl"),

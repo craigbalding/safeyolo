@@ -18,7 +18,7 @@ fn config(directory: &Path) -> Config {
         r#"{"permissions":[{"action":"network:request","resource":"*","effect":"deny"}],"addons":{"test_context":{"target_hosts":["new.invalid"]}}}"#).unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":directory.join("policy.json"),"readiness_file":directory.join("ready"),
+        "policy_file":directory.join("policy.json"),"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "admin_port":0,"admin_api_token_file":directory.join("token"),
         "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
@@ -233,7 +233,10 @@ async fn authenticated_stats_share_counters_and_reached_read_effects_across_relo
     assert_eq!(second["metrics"], first["metrics"]);
     assert!(std::sync::Arc::ptr_eq(&runtime.metrics, &current.metrics));
     assert!(current.audit.wait_for_drain(WAIT).unwrap());
-    assert_eq!(records(directory.path()), initial);
+    let after_reload = records(directory.path());
+    assert_eq!(after_reload.len(), initial.len() + 1);
+    assert_eq!(&after_reload[..initial.len()], initial.as_slice());
+    assert_eq!(after_reload.last().unwrap()["event"], "ops.policy_reload");
     proxy.shutdown().await;
     assert!(!directory.path().join("alice.sock").exists());
     assert!(!directory.path().join("ready").exists());
@@ -264,9 +267,10 @@ async fn circuit_audit_failure_preserves_partial_state_and_later_stats() {
     seed(&runtime);
     assert!(runtime.audit.wait_for_drain(WAIT).unwrap());
     let startup = records(directory.path());
-    assert_eq!(startup.len(), 1);
-    assert_eq!(startup[0]["event"], "ops.startup");
-    assert_eq!(startup[0]["addon"], "memory-monitor");
+    assert_eq!(startup.len(), 2);
+    assert_eq!(startup[0]["event"], "ops.policy_reload");
+    assert_eq!(startup[1]["event"], "ops.startup");
+    assert_eq!(startup[1]["addon"], "memory-monitor");
     runtime.audit.poison_for_test();
     let (status, report) = stats(&runtime, true).await;
     assert_eq!(status, 200);

@@ -25,7 +25,7 @@ fn runtime(directory: &Path) -> Runtime {
     std::fs::write(&scanner, r#"{"scan_patterns":[{"name":"owned-marker","pattern":"PROJ-12345","scope":"body","action":"block"}]}"#).unwrap();
     let config: Config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"event_log":directory.join("diagnostics.jsonl"),
+        "policy_file":policy,"data_dir":directory.join("data"),"event_log":directory.join("diagnostics.jsonl"),
         "audit_log_path":directory.join("audit.jsonl"),"readiness_file":directory.join("ready"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_state_file":"","agent_map_file":"",

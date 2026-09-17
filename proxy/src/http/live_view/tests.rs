@@ -37,7 +37,7 @@ impl Fixture {
         )
         .unwrap();
         let config = serde_json::from_value(json!({
-            "listeners":[], "policy_file":policy,
+            "listeners":[], "policy_file":policy, "data_dir":directory.path().join("data"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
             "event_log":directory.path().join("events.jsonl"),

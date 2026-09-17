@@ -28,7 +28,7 @@ fn config(directory: &Path) -> Config {
     .unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":""

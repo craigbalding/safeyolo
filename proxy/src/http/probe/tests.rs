@@ -50,7 +50,7 @@ impl Fixture {
         let configuration: Config = serde_json::from_value(json!({
             "listeners":[{"agent_id":"alice","source_id":"192.0.2.10","socket_path":directory.path().join("alice.sock")},
                 {"agent_id":"bob","source_id":"192.0.2.11","socket_path":directory.path().join("bob.sock")}],
-            "policy_file":directory.path().join("policy.json"), "readiness_file":directory.path().join("ready"),
+            "policy_file":directory.path().join("policy.json"), "data_dir":directory.path().join("data"), "readiness_file":directory.path().join("ready"),
             "event_log":directory.path().join("events.jsonl"), "audit_log_path":directory.path().join("audit.jsonl"),
             "flow_store_enabled":true, "flow_store_db_path":directory.path().join("flows.sqlite3"),
             "circuit_breaker_enabled":true, "circuit_state_file":"", "sse_stream_json":stream_json,
@@ -196,6 +196,7 @@ async fn buffered_probe_runs_real_hooks_and_matches_source_sink() {
             [
                 ("network-guard", "request"),
                 ("circuit-breaker", "request"),
+                ("credential-guard", "request"),
                 ("test-context", "request"),
                 ("probe-sink", "request"),
                 ("circuit-breaker", "response"),
@@ -203,10 +204,10 @@ async fn buffered_probe_runs_real_hooks_and_matches_source_sink() {
             ]
         );
         assert_eq!(steps[1]["outcome"], "excluded_domain");
-        assert_eq!(steps[4]["outcome"], "excluded_domain");
-        assert_eq!(steps[5]["outcome"], "response_recorded");
+        assert_eq!(steps[5]["outcome"], "excluded_domain");
+        assert_eq!(steps[6]["outcome"], "response_recorded");
         assert_eq!(trace["agent_id"], "alice");
-        let mut sink = steps[3].clone();
+        let mut sink = steps[4].clone();
         assert!(sink["duration_us"].is_number());
         assert!(sink["connection_id"].as_str().unwrap().starts_with("conn-"));
         sink["duration_us"] = json!("<measured>");
@@ -216,7 +217,6 @@ async fn buffered_probe_runs_real_hooks_and_matches_source_sink() {
             trace["not_loaded"],
             json!([
                 {"addon":"service-gateway","state":"not_loaded"},
-                {"addon":"credential-guard","state":"not_loaded"},
                 {"addon":"pattern-scanner","state":"not_loaded"}
             ])
         );
@@ -455,15 +455,15 @@ async fn disabled_installed_guards_report_bypass_and_empty_opt_in_keeps_trace_ab
     for (index, addon) in [
         (0, "network-guard"),
         (1, "circuit-breaker"),
-        (4, "circuit-breaker"),
+        (5, "circuit-breaker"),
     ] {
         let step = &trace["steps"][index];
         assert_eq!(step["addon"], addon);
         assert_eq!(step["state"], "bypassed");
         assert_eq!(step["reason"], "addon_disabled");
     }
-    assert_eq!(trace["steps"][3]["outcome"], "probe_terminated");
-    assert_eq!(trace["not_loaded"].as_array().unwrap().len(), 3);
+    assert_eq!(trace["steps"][4]["outcome"], "probe_terminated");
+    assert_eq!(trace["not_loaded"].as_array().unwrap().len(), 2);
     let untraced = request(HOST, "GET", "/untraced", "", "")
         .replace("X-SafeYolo-Trace: 1", "X-SafeYolo-Trace:");
     let reply = fixture.exchange(&untraced).await;

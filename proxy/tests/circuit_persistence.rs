@@ -25,6 +25,7 @@ fn config(directory: &Path, state_file: Option<PathBuf>) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
         "policy_file":policy,
+        "data_dir":directory.join("data"),
         "agent_api_enabled":false,
         "circuit_state_file":state_file,
         "readiness_file":directory.join("ready.json"),

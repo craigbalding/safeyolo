@@ -190,14 +190,15 @@ impl Config {
     /// credential-specific environment setting takes precedence over the
     /// serialized producer value when present.
     pub(crate) fn credential_guard_block(&self) -> bool {
-        if std::env::var_os("SAFEYOLO_BLOCK")
-            .is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("true"))
-        {
-            return true;
-        }
-        std::env::var_os("CREDGUARD_BLOCK")
-            .map(|value| value.to_string_lossy().eq_ignore_ascii_case("true"))
-            .unwrap_or(self.credential_guard_block)
+        let safe =
+            std::env::var_os("SAFEYOLO_BLOCK").and_then(|value| value.to_str().map(str::to_owned));
+        let credential =
+            std::env::var_os("CREDGUARD_BLOCK").map(|value| value.to_string_lossy().into_owned());
+        resolve_credential_guard_block(
+            self.credential_guard_block,
+            safe.as_deref(),
+            credential.as_deref(),
+        )
     }
 
     pub fn read(path: &std::path::Path) -> Result<Self, Error> {
@@ -282,5 +283,62 @@ impl Config {
             port,
             tls: scheme == "https",
         }))
+    }
+}
+
+fn resolve_credential_guard_block(
+    default: bool,
+    safe_global: Option<&str>,
+    credential: Option<&str>,
+) -> bool {
+    if safe_global == Some("true") {
+        return true;
+    }
+    credential
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn credential_guard_block_defaults_alias_serializes_and_resolves_values() {
+        let base = json!({
+            "listeners": [],
+            "temporary_policy_socket": "policy.sock",
+            "readiness_file": "ready",
+            "event_log": "events"
+        });
+        let default: Config = serde_json::from_value(base.clone()).unwrap();
+        assert!(default.credential_guard_block);
+        let mut alias = base;
+        alias["credguard_block"] = json!(false);
+        let aliased: Config = serde_json::from_value(alias).unwrap();
+        assert!(!aliased.credential_guard_block);
+        let serialized = serde_json::to_value(&aliased).unwrap();
+        assert_eq!(serialized["credential_guard_block"], false);
+        assert!(serialized.get("credguard_block").is_none());
+
+        assert!(resolve_credential_guard_block(true, None, None));
+        assert!(!resolve_credential_guard_block(true, None, Some("false")));
+        assert!(resolve_credential_guard_block(false, None, Some("TrUe")));
+        assert!(!resolve_credential_guard_block(
+            false,
+            Some("TRUE"),
+            Some("false")
+        ));
+        assert!(resolve_credential_guard_block(
+            false,
+            Some("true"),
+            Some("false")
+        ));
+        assert!(!resolve_credential_guard_block(
+            true,
+            Some("1"),
+            Some("false")
+        ));
     }
 }

@@ -56,7 +56,7 @@ fn config(directory: &Path, sink: &Path) -> Config {
     std::fs::write(&policy, "{}").unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
-        "policy_file":policy,"flow_store_enabled":false,"audit_log_path":sink,
+        "policy_file":policy,"data_dir":directory.join("data"),"flow_store_enabled":false,"audit_log_path":sink,
         "event_log":directory.join("diagnostics.jsonl"),"readiness_file":directory.join("ready"),
     }))
     .unwrap()

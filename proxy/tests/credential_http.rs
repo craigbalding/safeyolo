@@ -160,6 +160,14 @@ async fn send(
     sender.send_request(request).await.unwrap()
 }
 
+async fn raw_exchange(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    response
+}
+
 #[tokio::test]
 async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() {
     let directory = tempfile::tempdir().unwrap();
@@ -286,6 +294,69 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
         })
     );
 
+    // Feed a raw mixed-case duplicate H1 request with a chunked streaming
+    // upload through the actual UDS parser. The receiver is a controlled
+    // listener, but a denied credential must stop before accept, header
+    // delivery, or body delivery.
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"deny"}
+            ],
+            "credential_rules": [{
+                "name":"synthetic",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let forbidden_receiver = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let forbidden_port = forbidden_receiver.local_addr().unwrap().port();
+    let forbidden_body = b"forbidden-upload-canary";
+    let mut forbidden_request = format!(
+        "POST http://127.0.0.1:{forbidden_port}/forbidden HTTP/1.1\r\nHost: 127.0.0.1:{forbidden_port}\r\nAuthorization: Bearer key-forbidden\r\naUtHoRiZaTiOn: Bearer duplicate\r\nConnection: close, X-Remove\r\nX-Remove: header-canary\r\nX-SafeYolo-Trace: 1\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    .into_bytes();
+    forbidden_request.extend_from_slice(format!("{:x}\r\n", forbidden_body.len()).as_bytes());
+    forbidden_request.extend_from_slice(forbidden_body);
+    forbidden_request.extend_from_slice(b"\r\n0\r\n\r\n");
+    let forbidden = raw_exchange(&socket, &forbidden_request).await;
+    assert!(forbidden.starts_with(b"HTTP/1.1 403"));
+    assert!(
+        !forbidden
+            .windows(forbidden_body.len())
+            .any(|window| window == forbidden_body)
+    );
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            forbidden_receiver.accept()
+        )
+        .await
+        .is_err(),
+        "credential denial reached the controlled receiver"
+    );
+    let forbidden_request_id = String::from_utf8_lossy(&forbidden)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("x-safeyolo-request-id")
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap();
+    let denied_stats = stats(&directory).await;
+    assert_eq!(denied_stats["credential-guard"]["violations_total"], 2);
+
     std::fs::write(
         &policy_path,
         json!({
@@ -317,13 +388,13 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
     assert_eq!(blocked_after_reload.status(), 428);
     let _ = blocked_after_reload.collect().await.unwrap();
     let reloaded_stats = stats(&directory).await;
-    assert_eq!(reloaded_stats["credential-guard"]["violations_total"], 2);
+    assert_eq!(reloaded_stats["credential-guard"]["violations_total"], 3);
     assert_eq!(reloaded_stats["credential-guard"]["rules_count"], 1);
 
     drop(sender);
     let _ = connection_task.await;
     let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
-    assert_eq!(events.matches("proxy.credential_guard").count(), 5);
+    assert_eq!(events.matches("proxy.credential_guard").count(), 6);
     assert!(!events.contains("key-allowed"));
     assert!(!events.contains("header-canary"));
     let guard_events = events
@@ -335,17 +406,27 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
         .iter()
         .map(|event| event["evaluations"][0]["finding"]["fingerprint"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(fingerprints.len(), 5);
+    assert_eq!(fingerprints.len(), 6);
     assert_eq!(fingerprints[0], fingerprints[1]);
     assert_eq!(fingerprints[1], fingerprints[2]);
     assert_eq!(fingerprints[2], fingerprints[3]);
-    assert_eq!(fingerprints[3], fingerprints[4]);
+    assert_ne!(fingerprints[3], fingerprints[4]);
+    assert_ne!(fingerprints[4], fingerprints[5]);
+    assert_eq!(fingerprints[0], fingerprints[5]);
     assert_eq!(
         guard_events[0]["evaluations"][0]["finding"]["header"],
         "authorization"
     );
+    let forbidden_event = guard_events
+        .iter()
+        .find(|event| event["request_id"] == forbidden_request_id)
+        .unwrap();
     assert_eq!(
-        guard_events[4]["evaluations"][0]["finding"]["rule"],
+        forbidden_event["evaluations"][0]["finding"]["header"],
+        "Authorization"
+    );
+    assert_eq!(
+        guard_events[5]["evaluations"][0]["finding"]["rule"],
         "synthetic-reloaded"
     );
     assert_eq!(guard_events[0]["trace"][0]["state"], "evaluated");
@@ -442,5 +523,266 @@ async fn native_guard_warn_mode_delivers_and_reports_trace_audit_and_stats() {
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert!(audit.contains("\"decision\": \"warn\""));
     assert!(!audit.contains("key-warn"));
+    origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_hmac_exception_survives_reload_and_rejects_other_credential() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-hmac-key").unwrap();
+    let policy = |credential: Value| {
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                credential
+            ],
+            "credential_rules": [{
+                "name":"hmac-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+    };
+    std::fs::write(
+        &policy_path,
+        policy(json!({"action":"credential:use", "resource":"*", "effect":"allow"})).to_string(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
+    let mut proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let stream = UnixStream::connect(&socket).await.unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+
+    let first = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/hmac")
+            .parse()
+            .unwrap(),
+        "Bearer key-exception",
+    )
+    .await;
+    assert_eq!(first.status(), 200);
+    let _ = first.collect().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    let first_event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["event"] == "proxy.credential_guard")
+        .unwrap();
+    let fingerprint = first_event["evaluations"][0]["finding"]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(fingerprint.len(), 16);
+    let hmac_exception = format!("hmac:{fingerprint}");
+
+    std::fs::write(
+        &policy_path,
+        policy(json!({
+            "action":"credential:use",
+            "resource":"127.0.0.1/*",
+            "effect":"allow",
+            "condition":{"credential":[hmac_exception]}
+        }))
+        .to_string(),
+    )
+    .unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let exact = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/hmac-exact")
+            .parse()
+            .unwrap(),
+        "Bearer key-exception",
+    )
+    .await;
+    assert_eq!(exact.status(), 200);
+    let _ = exact.collect().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
+    let other = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/hmac-other")
+            .parse()
+            .unwrap(),
+        "Bearer key-other",
+    )
+    .await;
+    assert_eq!(other.status(), 428);
+    let _ = other.collect().await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let reloaded = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let guard_events = reloaded
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "proxy.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_events.len(), 3);
+    assert_eq!(
+        guard_events[0]["evaluations"][0]["finding"]["fingerprint"],
+        guard_events[1]["evaluations"][0]["finding"]["fingerprint"]
+    );
+    assert_eq!(guard_events[2]["outcome"], "blocked");
+    assert_eq!(
+        stats(&directory).await["credential-guard"]["violations_total"],
+        1
+    );
+
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_policy_disabled_domain_and_client_bypasses_forward() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-bypass-key").unwrap();
+    let base = || {
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"deny"}
+            ],
+            "credential_rules": [{
+                "name":"bypass-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }]
+        })
+    };
+    let mut initial = base();
+    initial["addons"] = json!({
+        "credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}
+    });
+    std::fs::write(&policy_path, initial.to_string()).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
+    let mut proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let stream = UnixStream::connect(&socket).await.unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+
+    let mut domain_bypass = base();
+    domain_bypass["addons"] = initial["addons"].clone();
+    domain_bypass["domains"] = json!({"127.0.0.1":{"bypass":["credential_guard"]}});
+    std::fs::write(&policy_path, domain_bypass.to_string()).unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let domain = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/domain-bypass")
+            .parse()
+            .unwrap(),
+        "Bearer key-domain",
+    )
+    .await;
+    assert_eq!(domain.status(), 200);
+    let _ = domain.collect().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
+    let mut client_bypass = base();
+    client_bypass["addons"] = initial["addons"].clone();
+    client_bypass["clients"] = json!({"alice":{"bypass":["credential_guard"]}});
+    std::fs::write(&policy_path, client_bypass.to_string()).unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let client = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/client-bypass")
+            .parse()
+            .unwrap(),
+        "Bearer key-client",
+    )
+    .await;
+    assert_eq!(client.status(), 200);
+    let _ = client.collect().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
+    let mut disabled = base();
+    disabled["addons"] = json!({
+        "credential_guard":{"enabled":false,"settings":{"use_default_credential_rules":false}}
+    });
+    std::fs::write(&policy_path, disabled.to_string()).unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let disabled = send(
+        &mut sender,
+        format!("http://127.0.0.1:{origin_port}/disabled")
+            .parse()
+            .unwrap(),
+        "Bearer key-disabled",
+    )
+    .await;
+    assert_eq!(disabled.status(), 200);
+    let _ = disabled.collect().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    let report = stats(&directory).await;
+    assert_eq!(report["credential-guard"]["violations_total"], 0);
+
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let guard_events = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "proxy.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_events.len(), 3);
+    assert!(guard_events.iter().all(|event| {
+        event["outcome"] == "bypassed" && event["audit"].as_array().unwrap().is_empty()
+    }));
+    assert_eq!(guard_events[0]["trace"][0]["reason"], "policy_disabled");
+    assert_eq!(guard_events[1]["trace"][0]["reason"], "policy_disabled");
+    assert_eq!(guard_events[2]["trace"][0]["reason"], "policy_disabled");
     origin_task.abort();
 }

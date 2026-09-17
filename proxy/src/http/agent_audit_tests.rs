@@ -18,7 +18,7 @@ fn config(directory: &Path) -> Config {
     std::fs::write(&policy, "{}").unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.10"}],
-        "policy_file":policy,"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "event_log":directory.join("diagnostics.jsonl"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
@@ -90,11 +90,12 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
     records(&directory.join("audit.jsonl"))
         .into_iter()
         .filter(|row| {
-            !(row["addon"] == "memory-monitor"
-                && matches!(
-                    row["event"].as_str(),
-                    Some("ops.startup" | "ops.memory.conn_closed")
-                ))
+            row["event"] != "ops.policy_reload"
+                && !(row["addon"] == "memory-monitor"
+                    && matches!(
+                        row["event"].as_str(),
+                        Some("ops.startup" | "ops.memory.conn_closed")
+                    ))
         })
         .collect()
 }

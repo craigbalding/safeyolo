@@ -23,6 +23,7 @@ fn runtime(directory: &std::path::Path) -> Runtime {
     let config: Config = serde_json::from_value(json!({
         "listeners": [{"agent_id": "alice", "socket_path": directory.join("alice.sock")}],
         "policy_file": policy,
+        "data_dir": directory.join("data"),
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
         "audit_log_path": directory.join("audit.jsonl"),

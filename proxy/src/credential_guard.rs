@@ -583,7 +583,6 @@ impl CredentialGuard {
             ));
             return Ok(output);
         }
-        self.stats.lock().map_err(|_| Error::State)?.checks += 1;
         let snapshot = self.snapshot()?;
         let detections = self.detect(&snapshot, request.headers)?;
         if detections.is_empty() {
@@ -632,7 +631,6 @@ impl CredentialGuard {
             let (audit_decision, severity, summary, approval) = if decision.effect
                 == PdpEffect::Allow
             {
-                self.stats.lock().map_err(|_| Error::State)?.allowed += 1;
                 (
                     AuditDecision::Allow,
                     Severity::Low,
@@ -666,9 +664,6 @@ impl CredentialGuard {
                 let approval=matches!(decision.effect,PdpEffect::Deny|PdpEffect::RequireApproval).then(||ApprovalIntent {required:true,approval_type:"credential",key:fingerprint.clone(),target:host.clone(),scope_hint:json!({"rule":detection.finding.rule,"expected_hosts":expected_hosts})});
                 let mode = if options.block {
                     output.kind = OutcomeKind::Blocked;
-                    if decision.effect != PdpEffect::BudgetExceeded {
-                        stats.blocked += 1;
-                    }
                     output.metadata["blocked_by"] = json!("credential-guard");
                     "blocked"
                 } else {

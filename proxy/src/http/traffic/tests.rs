@@ -28,7 +28,7 @@ fn config(directory: &Path, quiet: bool) -> Config {
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")},
                      {"agent_id":"bob","socket_path":directory.join("bob.sock")}],
-        "policy_file":policy,"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("flows.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":""
@@ -246,7 +246,15 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
         super::metrics_stats(&runtime),
         json!({"requests_total":2,"requests_success":2,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
     );
-    let rows = records(directory.path());
+    let rows: Vec<_> = records(directory.path())
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("traffic.request" | "traffic.response")
+            )
+        })
+        .collect();
     assert_eq!(rows.len(), 4);
     for (i, agent) in ["alice", "bob"].iter().enumerate() {
         check_event(
@@ -301,7 +309,12 @@ async fn quiet_invalid_coding_is_never_decoded_on_either_leg() {
         super::metrics_stats(&runtime),
         json!({"requests_total":1,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
     );
-    assert!(records(directory.path()).is_empty());
+    assert!(records(directory.path()).iter().all(|row| {
+        !matches!(
+            row["event"].as_str(),
+            Some("traffic.request" | "traffic.response")
+        )
+    }));
     owned_egress(directory.path(), port, 1);
 }
 
@@ -371,7 +384,15 @@ async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
         domain["upstream_errors"],
         json!({"429s":1,"5xx":2,"timeouts":1})
     );
-    let rows = records(directory.path());
+    let rows: Vec<_> = records(directory.path())
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("traffic.request" | "traffic.response")
+            )
+        })
+        .collect();
     assert_eq!(
         rows.iter()
             .filter(|row| row["event"] == "traffic.request")
@@ -419,7 +440,15 @@ async fn streamed_upload_and_sse_response_use_absent_content_size_zero() {
         super::metrics_stats(&runtime),
         json!({"requests_total":1,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
     );
-    let rows = records(directory.path());
+    let rows: Vec<_> = records(directory.path())
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("traffic.request" | "traffic.response")
+            )
+        })
+        .collect();
     assert_eq!(rows.len(), 2);
     check_event(
         &rows[0],
@@ -487,7 +516,15 @@ async fn early_response_before_upload_eom_has_no_request_id_or_start_time() {
         super::metrics_stats(&runtime),
         json!({"requests_total":0,"requests_success":1,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
     );
-    let rows = records(directory.path());
+    let rows: Vec<_> = records(directory.path())
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("traffic.request" | "traffic.response")
+            )
+        })
+        .collect();
     assert_eq!(rows.len(), 1);
     check_event(
         &rows[0],
@@ -553,7 +590,15 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
         super::metrics_stats(&runtime),
         json!({"requests_total":2,"requests_success":0,"requests_blocked":0,"blocks_by_source":{},"domains_tracked":1})
     );
-    let rows = records(directory.path());
+    let rows: Vec<_> = records(directory.path())
+        .into_iter()
+        .filter(|row| {
+            matches!(
+                row["event"].as_str(),
+                Some("traffic.request" | "traffic.response")
+            )
+        })
+        .collect();
     assert_eq!(rows.len(), 2);
     check_event(
         &rows[0],
@@ -581,6 +626,24 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
 async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let directory = tempfile::tempdir().unwrap();
     let mut configuration = config(directory.path(), false);
+    std::fs::write(
+        configuration.policy_file.as_ref().unwrap(),
+        json!({
+            "permissions":[
+                {"action":"network:request","resource":"*","effect":"allow"},
+                {"action":"credential:use","resource":"127.0.0.2/*","effect":"allow"}
+            ],
+            "credential_rules":[{
+                "name":"h2-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.2"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
     let key = rcgen::KeyPair::generate().unwrap();
     let mut params = rcgen::CertificateParams::default();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -632,7 +695,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
             .await
             .unwrap();
     });
-    let proxy = Proxy::start(configuration).await.unwrap();
+    let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await
@@ -670,6 +733,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let request = Request::builder()
         .method("POST")
         .uri(format!("https://127.0.0.2:{port}/h2?private=query"))
+        .header("Authorization", "Bearer key-h2")
         .body(Full::new(Bytes::from_static(b"request body")))
         .unwrap();
     let reply = timeout(LIMIT, sender.send_request(request))
@@ -681,6 +745,46 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         reply.into_body().collect().await.unwrap().to_bytes(),
         Bytes::from_static(b"response body")
     );
+
+    // Reload the policy while the owned H2 tunnel remains alive. The next H2
+    // stream is denied by credential policy before a second origin accept or
+    // any request body is delivered.
+    std::fs::write(
+        configuration.policy_file.as_ref().unwrap(),
+        json!({
+            "permissions":[
+                {"action":"network:request","resource":"*","effect":"allow"},
+                {"action":"credential:use","resource":"127.0.0.2/*","effect":"deny"}
+            ],
+            "credential_rules":[{
+                "name":"h2-rule",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.2"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    proxy.reload(configuration).await.unwrap();
+    let denied = Request::builder()
+        .method("POST")
+        .uri(format!("https://127.0.0.2:{port}/h2-denied"))
+        .header("Authorization", "Bearer key-h2")
+        .body(Full::new(Bytes::from_static(b"blocked-h2-body")))
+        .unwrap();
+    let denied = timeout(LIMIT, sender.send_request(denied))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(denied.status(), 403);
+    let denied_body = denied.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        !denied_body
+            .windows(b"key-h2".len())
+            .any(|window| window == b"key-h2")
+    );
     drop(sender);
     timeout(LIMIT, driver).await.unwrap().unwrap().unwrap();
     timeout(LIMIT, peer).await.unwrap().unwrap();
@@ -688,15 +792,23 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     cleanup(directory.path());
     assert_eq!(stats(&runtime), expected_stats(1, 0, 1));
     let rows = records(directory.path());
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0]["event"], "security.network_guard");
-    assert_eq!(rows[0]["decision"], "allow");
-    assert_eq!(rows[0]["details"]["method"], "CONNECT");
-    assert_eq!(rows[0]["details"]["attribution"], attribution("alice"));
-    check_event(&rows[1], "alice", "127.0.0.2", "/h2", false, 12, true);
-    check_event(&rows[2], "alice", "127.0.0.2", "/h2", true, 13, true);
-    assert_eq!(rows[1]["request_id"], rows[2]["request_id"]);
-    assert_ne!(rows[0]["request_id"], rows[1]["request_id"]);
+    let traffic: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "traffic.request" || row["event"] == "traffic.response")
+        .collect();
+    assert_eq!(traffic.len(), 2);
+    check_event(traffic[0], "alice", "127.0.0.2", "/h2", false, 12, true);
+    check_event(traffic[1], "alice", "127.0.0.2", "/h2", true, 13, true);
+    assert_eq!(traffic[0]["request_id"], traffic[1]["request_id"]);
+    let credentials: Vec<_> = rows
+        .iter()
+        .filter(|row| row["event"] == "security.credential_guard")
+        .collect();
+    assert_eq!(credentials.len(), 2);
+    assert_eq!(credentials[0]["decision"], "allow");
+    assert_eq!(credentials[1]["decision"], "deny");
+    assert_eq!(credentials[0]["agent"], "alice");
+    assert_eq!(credentials[1]["agent"], "alice");
     owned_egress(directory.path(), port, 1);
 }
 

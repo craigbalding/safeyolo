@@ -23,7 +23,7 @@ fn config(directory: &Path) -> Config {
     .unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.10"}],
-        "policy_file":policy,"readiness_file":directory.join("ready"),
+        "policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),
         "event_log":directory.join("events"),"audit_log_path":directory.join("audit.jsonl"),
         "flow_store_enabled":false,"test_context_block":true,
         "circuit_breaker_enabled":false,"via_token":"owned-loop-marker",
@@ -385,7 +385,7 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         assert_eq!(recorder["recorded"], if invalid { 0 } else { 1 });
         proxy.shutdown().await;
         let rows = events(directory.path());
-        assert_eq!(rows.len(), if invalid { 2 } else { 5 });
+        assert_eq!(rows.len(), if invalid { 3 } else { 6 });
         let transitions: Vec<_> = rows
             .iter()
             .filter(|row| row["event"] == "ops.circuit_breaker.reopen")
@@ -450,7 +450,8 @@ async fn local_response_circuit_exception_skips_later_recorder_and_logger() {
     );
     proxy.shutdown().await;
     let rows = events(directory.path());
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0]["event"], "security.network_guard");
-    assert_eq!(rows[1]["event"], "traffic.request");
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["event"], "ops.policy_reload");
+    assert_eq!(rows[1]["event"], "security.network_guard");
+    assert_eq!(rows[2]["event"], "traffic.request");
 }

@@ -30,6 +30,7 @@ fn config(directory: &Path) -> Config {
             {"agent_id":"bob","source_id":"192.0.2.11","socket_path":directory.join("bob.sock")}
         ],
         "policy_file":directory.join("policy.json"),
+        "data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "event_log":directory.join("events.jsonl"),
         "audit_log_path":directory.join("audit.jsonl"),
