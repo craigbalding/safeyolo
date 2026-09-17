@@ -215,19 +215,22 @@ impl AgentDiscovery {
         // report read has a separate contract and still propagates its error
         // through `get_agents`/`get_stats`; only this request-boundary path
         // degrades to lookup_error.
-        let (reload_failed, mapped_agent) = match self.reload(writer) {
-            Ok(()) => match sources.client_ip.filter(|ip| !ip.is_empty()) {
-                Some(ip) => match self.map_agent(ip) {
+        let (reload_failed, mapped_agent) = match sources.client_ip.filter(|ip| !ip.is_empty()) {
+            Some(ip) => match self.reload(writer) {
+                Ok(()) => match self.map_agent(ip) {
                     Ok(mapped) => (false, mapped),
                     // The source catches lookup failures at the request
                     // boundary. Keep reports on their direct error path.
                     Err(_) => (true, None),
                 },
-                None => (false, None),
+                // A reload may have published state before an audit submission
+                // error. The request still follows the source lookup-error path.
+                Err(_) => (true, None),
             },
-            // A reload may have published state before an audit submission
-            // error. The request still follows the source lookup-error path.
-            Err(_) => (true, None),
+            // A listener identity does not need host-map discovery. In
+            // particular, UDS-only traffic must not trigger map I/O or its
+            // discovery audit side effects.
+            None => (false, None),
         };
         let uds_agent = canonical_identity(sources.uds_agent);
         let metadata_agent = canonical_identity(sources.metadata_agent);
@@ -297,10 +300,10 @@ impl AgentDiscovery {
                 self.observe_trusted(identity.agent.as_deref().unwrap(), clock)?;
             }
             IdentityStatus::Conflict => {
-                emit_identity_event(writer, sources.request_id, &identity, true);
+                emit_identity_event(writer, sources.request_id, &identity, true)?;
             }
             IdentityStatus::Unavailable => {
-                emit_identity_event(writer, sources.request_id, &identity, false);
+                emit_identity_event(writer, sources.request_id, &identity, false)?;
             }
         }
         Ok(identity)
@@ -365,7 +368,7 @@ fn emit_identity_event(
     request_id: Option<&str>,
     identity: &ReconciledIdentity,
     conflict: bool,
-) {
+) -> Result<()> {
     let (event_name, severity, summary) = if conflict {
         (
             "security.agent_identity_conflict",
@@ -415,12 +418,10 @@ fn emit_identity_event(
         C::Object(provenance),
     ));
     event.details = C::Object(details);
-    if let Err(error) = writer.emit(event) {
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "Agent identity event submission failed: {error}"
-        );
-    }
+    writer
+        .emit(event)
+        .map(|_| ())
+        .map_err(|error| Error(ErrorKind::Audit(error.kind())))
 }
 
 fn attribution(status: audit::AttributionStatus, provenance: C) -> audit::Attribution {

@@ -725,10 +725,23 @@ fn identity_reconciliation_contains_reload_audit_errors_at_request_boundary() {
             &poisoned,
             || 501.0,
         )
-        .unwrap();
-    assert_eq!(without_uds.status, IdentityStatus::Unavailable);
-    assert_eq!(without_uds.reason, Some("lookup_error"));
-    assert!(!owner.lock().unwrap().last_seen.contains_key("carol"));
+        .unwrap_err();
+    // Reload published carol and attempted its discovery event first. The
+    // request then attempted its unavailable event; the poisoned writer makes
+    // that submission error visible at the request boundary. No new owner is
+    // admitted or last-seen value is written.
+    assert_eq!(
+        without_uds.kind(),
+        ErrorKind::Audit(audit::ErrorKind::Poisoned)
+    );
+    let state = owner.lock().unwrap();
+    assert_eq!(
+        state.map.0.as_object().unwrap().keys().next().unwrap(),
+        "carol"
+    );
+    assert_eq!(state.last_seen.get("alice"), Some(&500.0));
+    assert!(!state.last_seen.contains_key("carol"));
+    drop(state);
 
     // Reports retain their own direct reload/error contract. The failed
     // audit submissions left the map published, so a healthy report writer
@@ -740,6 +753,49 @@ fn identity_reconciliation_contains_reload_audit_errors_at_request_boundary() {
             .unwrap()
             .contains_key("carol")
     );
+}
+
+#[test]
+fn uds_only_reconciliation_skips_map_reload_and_discovery_audit() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+
+    // A failed configure leaves the path installed but no published map. A
+    // later valid replacement would publish a discovery event if reconcile
+    // touched the map, which makes the no-I/O boundary observable.
+    put(&path, b"[]", 1.0);
+    assert_eq!(
+        owner
+            .configure(path.to_str().unwrap(), &owned.writer)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Attribute
+    );
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 2.0);
+    let poisoned = Writer::new(owned.path("poisoned-uds-only.jsonl"), Settings::default());
+    poisoned.poison_for_test();
+
+    let identity = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                request_id: Some("req-uds-only"),
+                ..Default::default()
+            },
+            &poisoned,
+            || 550.0,
+        )
+        .unwrap();
+    assert_eq!(identity.status, IdentityStatus::Resolved);
+    assert_eq!(identity.agent.as_deref(), Some("alice"));
+    assert!(identity.mapped_agent.is_none());
+    let state = owner.lock().unwrap();
+    assert_eq!(state.mtime, 0.0);
+    assert!(state.reverse.is_empty());
+    assert_eq!(state.last_seen.get("alice"), Some(&550.0));
+    drop(state);
+    assert!(owned.records().is_empty());
 }
 
 #[test]
