@@ -27,6 +27,7 @@ use super::{AuditIntent, AuditKind, Outcome, Request, RequestBody, agent, respon
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
 const MAX_COORD_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DECLARATION_REQUEST_BYTES: usize = 32 * 1024;
 const MAX_PAGE: usize = 200;
 const ROOM_MAX_BYTES: usize = 4 * 1024 * 1024;
 const NATS_USER: &str = "safeyolo";
@@ -38,6 +39,7 @@ const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
 enum CoordError {
     NotFound,
     Forbidden,
+    Invalid,
     Unavailable,
     Data,
     PublishUnknown,
@@ -115,34 +117,35 @@ impl CoordClient {
         "nats://127.0.0.1:4222".to_owned()
     }
 
-    async fn principal_id(&self, name: &str) -> String {
-        let name = name.to_owned();
-        let fallback = name.clone();
+    async fn principal_id(&self, listener_id: &str) -> Result<String, CoordError> {
+        let listener_id = listener_id.to_owned();
         let policy_file = self.policy_file.clone();
         tokio::task::spawn_blocking(move || {
-            if name.starts_with("ag-") {
-                return name;
-            }
             let Some(path) = policy_file else {
-                return name;
+                return Err(CoordError::Unavailable);
             };
-            let Ok(source) = std::fs::read_to_string(path) else {
-                return name;
-            };
-            let Ok(document) = source.parse::<toml_edit::DocumentMut>() else {
-                return name;
-            };
-            document
+            let source = std::fs::read_to_string(path)
+                .map_err(|_| CoordError::Unavailable)?;
+            let document = source
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|_| CoordError::Unavailable)?;
+            let registered = document
                 .get("agents")
                 .and_then(toml_edit::Item::as_table_like)
-                .and_then(|agents| agents.get(&name))
-                .and_then(toml_edit::Item::as_table_like)
-                .and_then(|agent| agent.get("agent_id"))
-                .and_then(toml_edit::Item::as_str)
-                .map_or(name.clone(), str::to_owned)
+                .is_some_and(|agents| {
+                    agents.iter().any(|(_, item)| {
+                        item.as_table_like()
+                            .and_then(|agent| agent.get("agent_id"))
+                            .and_then(toml_edit::Item::as_str)
+                            == Some(listener_id.as_str())
+                    })
+                });
+            registered
+                .then_some(listener_id)
+                .ok_or(CoordError::Unavailable)
         })
         .await
-        .unwrap_or(fallback)
+        .map_err(|_| CoordError::Unavailable)?
     }
 
     async fn access(&self, room: &str, principal: &str) -> Result<RoomAccess, CoordError> {
@@ -319,6 +322,22 @@ impl CoordClient {
             .map_err(|_| CoordError::Unavailable)?
     }
 
+    async fn verify_attention_access(
+        &self,
+        principal: &str,
+        edge: &AttentionEdge,
+    ) -> Result<(), CoordError> {
+        let db = self.data_dir.join("v0.db");
+        let principal = principal.to_owned();
+        let attention_id = edge.attention_id.clone();
+        let expected = edge.clone();
+        tokio::task::spawn_blocking(move || {
+            verify_attention_edge(&db, &principal, &attention_id, &expected)
+        })
+        .await
+        .map_err(|_| CoordError::Unavailable)?
+    }
+
     async fn wait_attention(
         &self,
         principal: &str,
@@ -326,6 +345,15 @@ impl CoordClient {
         limit: usize,
         timeout_seconds: f64,
     ) -> Result<FeedPage, CoordError> {
+        let page = self.attention_feed(principal, since, limit).await?;
+        if !page.edges.is_empty() || page.next_cursor != since {
+            return Ok(page);
+        }
+        // A definite JetStream acknowledgement can precede a process crash
+        // before the SQLite attention projection.  Recover accepted manifests
+        // from retained messages before entering the bounded wait, so a
+        // pending response remains truthful and eventually resolvable.
+        self.recover_attention(principal).await?;
         let page = self.attention_feed(principal, since, limit).await?;
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
@@ -361,6 +389,94 @@ impl CoordClient {
         }
     }
 
+    async fn recover_attention(&self, principal: &str) -> Result<(), CoordError> {
+        let db = self.data_dir.join("v0.db");
+        let principal_owned = principal.to_owned();
+        let rooms = tokio::task::spawn_blocking(move || {
+            receive_room_generations(&db, &principal_owned)
+        })
+        .await
+        .map_err(|_| CoordError::Unavailable)??;
+        if rooms.is_empty() {
+            return Ok(());
+        }
+        let connection = self.client().await?;
+        let jetstream = jetstream::new(connection);
+        for (room_id, membership_generation) in rooms {
+            let mut stream = jetstream
+                .get_stream(room_stream(&room_id))
+                .await
+                .map_err(|_| CoordError::Unavailable)?;
+            let state = stream
+                .info()
+                .await
+                .map(|info| (info.state.first_sequence, info.state.last_sequence))
+                .map_err(|_| CoordError::Unavailable)?;
+            let db = self.data_dir.clone();
+            let room_for_frontier = room_id.clone();
+            let frontier = tokio::task::spawn_blocking(move || {
+                projection_frontier(&db, &room_for_frontier)
+            })
+            .await
+            .map_err(|_| CoordError::Unavailable)??;
+            let start = state.0.max(frontier.saturating_add(1));
+            if start > state.1 {
+                continue;
+            }
+            for sequence in start..=state.1 {
+                let raw = stream
+                    .get_raw_message(sequence)
+                    .await
+                    .map_err(|_| CoordError::Unavailable)?;
+                let envelope: Value =
+                    serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
+                let msg_id = envelope
+                    .get("msg_id")
+                    .and_then(Value::as_str)
+                    .ok_or(CoordError::Data)?;
+                if let Some(manifest) = parse_attention_manifest(
+                    raw.headers
+                        .get_last("SafeYolo-Coord-Attention")
+                        .map(|value| value.as_str()),
+                    msg_id,
+                )? {
+                    let recipients = manifest
+                        .recipients
+                        .into_iter()
+                        .filter(|recipient| {
+                            recipient.agent_id == principal
+                                && recipient.membership_granted_at == membership_generation
+                        })
+                        .collect::<Vec<_>>();
+                    if !recipients.is_empty() {
+                        let db = self.data_dir.clone();
+                        let room_for_materialize = room_id.clone();
+                        let envelope_for_materialize = envelope.clone();
+                        tokio::task::spawn_blocking(move || {
+                            materialize_attention(
+                                &db,
+                                &room_for_materialize,
+                                &envelope_for_materialize,
+                                &recipients,
+                                sequence,
+                            )
+                        })
+                        .await
+                        .map_err(|_| CoordError::Unavailable)??;
+                    }
+                }
+                let db = self.data_dir.clone();
+                let room_for_frontier = room_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    advance_projection(&db, &room_for_frontier, sequence)
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+            }
+        }
+        Ok(())
+    }
+
     async fn attention_object(
         &self,
         principal: &str,
@@ -382,7 +498,11 @@ impl CoordClient {
             })
             .await
             .map_err(|_| CoordError::Unavailable)??;
+            self.verify_attention_access(principal, &edge).await?;
             return Ok(json!({"edge": edge.public_json(), "object": object}));
+        }
+        if edge.kind != "message" {
+            return Err(CoordError::Data);
         }
         let connection = self.client().await?;
         let stream = jetstream::new(connection);
@@ -394,22 +514,34 @@ impl CoordClient {
             .get_raw_message(edge.revision_or_sequence)
             .await
             .map_err(|_| CoordError::Unavailable)?;
-        let mut envelope: Value = serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
+        let mut envelope: Value =
+            serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
         let object = envelope.as_object_mut().ok_or(CoordError::Data)?;
         if object.get("msg_id").and_then(Value::as_str) != Some(edge.object_id.as_str()) {
             return Err(CoordError::Data);
         }
+        let manifest = parse_attention_manifest(
+            raw.headers
+                .get_last("SafeYolo-Coord-Attention")
+                .map(|value| value.as_str()),
+            edge.object_id.as_str(),
+        )?
+        .ok_or(CoordError::Data)?;
+        let recipient = manifest
+            .recipients
+            .iter()
+            .find(|recipient| recipient.attention_id == edge.attention_id)
+            .ok_or(CoordError::Data)?;
+        if recipient.agent_id != principal
+            || recipient.membership_granted_at != edge.membership_granted_at
+            || matches!(manifest.mode.as_str(), "none")
+        {
+            return Err(CoordError::Data);
+        }
         object.insert("sequence".to_owned(), Value::from(edge.revision_or_sequence));
-        let db = self.data_dir.join("v0.db");
-        let principal_owned = principal.to_owned();
-        let attention_owned = attention_id.to_owned();
-        let edge_check = edge.clone();
-        tokio::task::spawn_blocking(move || {
-            verify_attention_edge(&db, &principal_owned, &attention_owned, &edge_check)
-        })
-        .await
-        .map_err(|_| CoordError::Unavailable)??;
-        Ok(json!({"edge": edge.public_json(), "object": object}))
+        let object_value = Value::Object(object.clone());
+        self.verify_attention_access(principal, &edge).await?;
+        Ok(json!({"edge": edge.public_json(), "object": object_value}))
     }
 }
 
@@ -459,6 +591,139 @@ struct FeedEdge {
 struct FeedPage {
     edges: Vec<FeedEdge>,
     next_cursor: u64,
+}
+
+struct AttentionManifest {
+    mode: String,
+    recipients: Vec<Recipient>,
+}
+
+fn parse_attention_manifest(
+    header: Option<&str>,
+    expected_msg_id: &str,
+) -> Result<Option<AttentionManifest>, CoordError> {
+    let Some(header) = header else {
+        return Ok(None);
+    };
+    let value: Value = serde_json::from_str(header).map_err(|_| CoordError::Data)?;
+    let object = value.as_object().ok_or(CoordError::Data)?;
+    if object.len() != 4
+        || !object.contains_key("version")
+        || !object.contains_key("msg_id")
+        || !object.contains_key("mode")
+        || !object.contains_key("recipients")
+        || object.get("version").and_then(Value::as_u64) != Some(1)
+        || object.get("msg_id").and_then(Value::as_str) != Some(expected_msg_id)
+    {
+        return Err(CoordError::Data);
+    }
+    let mode = object
+        .get("mode")
+        .and_then(Value::as_str)
+        .filter(|mode| matches!(*mode, "none" | "room" | "agents" | "legacy_room"))
+        .ok_or(CoordError::Data)?
+        .to_owned();
+    let raw_recipients = object
+        .get("recipients")
+        .and_then(Value::as_array)
+        .ok_or(CoordError::Data)?;
+    let mut recipients = Vec::with_capacity(raw_recipients.len());
+    let mut attention_ids = HashSet::new();
+    let mut generations = HashSet::new();
+    for raw in raw_recipients {
+        let raw = raw.as_object().ok_or(CoordError::Data)?;
+        if raw.len() != 3
+            || !raw.contains_key("attention_id")
+            || !raw.contains_key("agent_id")
+            || !raw.contains_key("membership_granted_at")
+        {
+            return Err(CoordError::Data);
+        }
+        let attention_id = raw
+            .get("attention_id")
+            .and_then(Value::as_str)
+            .filter(|id| {
+                id.len() == 38
+                    && id.starts_with("attn-")
+                    && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .ok_or(CoordError::Data)?
+            .to_owned();
+        let agent_id = raw
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|id| id.starts_with("ag-") && id.len() > 3 && id.len() <= 128)
+            .ok_or(CoordError::Data)?
+            .to_owned();
+        let granted_at = raw
+            .get("membership_granted_at")
+            .and_then(Value::as_i64)
+            .filter(|value| *value >= 0)
+            .ok_or(CoordError::Data)?;
+        if !attention_ids.insert(attention_id.clone())
+            || !generations.insert((agent_id.clone(), granted_at))
+        {
+            return Err(CoordError::Data);
+        }
+        recipients.push(Recipient {
+            attention_id,
+            agent_id,
+            membership_granted_at: granted_at,
+        });
+    }
+    if (mode == "none" && !recipients.is_empty())
+        || (mode == "agents" && recipients.is_empty())
+    {
+        return Err(CoordError::Data);
+    }
+    Ok(Some(AttentionManifest { mode, recipients }))
+}
+
+fn recipient_generation(access: &RoomAccess, agent_id: &str) -> Option<i64> {
+    access
+        .members
+        .iter()
+        .find(|member| {
+            member.principal_kind == "agent"
+                && member.principal_id == agent_id
+                && member.permissions.iter().any(|permission| permission == "receive")
+        })
+        .map(|member| member.granted_at)
+}
+
+fn message_wakes_waiter(
+    headers: Option<&async_nats::HeaderMap>,
+    value: &Value,
+    principal: &str,
+    access: &RoomAccess,
+    exclude_self: bool,
+) -> Result<bool, CoordError> {
+    let sender_is_self = value
+        .get("sender_agent_id")
+        .and_then(Value::as_str)
+        == Some(principal);
+    let Some(msg_id) = value.get("msg_id").and_then(Value::as_str) else {
+        return Err(CoordError::Data);
+    };
+    let manifest = parse_attention_manifest(
+        headers
+            .and_then(|headers| headers.get_last("SafeYolo-Coord-Attention"))
+            .map(|value| value.as_str()),
+        msg_id,
+    )?;
+    let Some(manifest) = manifest else {
+        return Ok(!exclude_self || !sender_is_self);
+    };
+    match manifest.mode.as_str() {
+        "none" => Ok(false),
+        "agents" => Ok(manifest.recipients.iter().any(|recipient| {
+            recipient.agent_id == principal
+                && recipient_generation(access, principal)
+                    == Some(recipient.membership_granted_at)
+        })),
+        "room" | "legacy_room" => Ok(!exclude_self || !sender_is_self),
+        _ => Err(CoordError::Data),
+    }
 }
 
 impl AttentionEdge {
@@ -780,21 +1045,22 @@ fn write_declarations(
         || !(1..=MAX_DECLARATION_TTL_SECONDS).contains(&ttl_seconds)
         || capabilities.iter().any(|capability| !valid_capability(capability))
     {
-        return Err(CoordError::Data);
+        return Err(CoordError::Invalid);
     }
     let conn = open_db(db, true)?;
-    let room_id = room_id_for(&conn, room_name)?;
-    let permissions = current_agent_permissions(&conn, &room_id, principal)?;
-    if !permissions.iter().any(|permission| permission == "receive") {
-        return Err(CoordError::Forbidden);
-    }
     let mut labels = capabilities.to_vec();
     labels.sort();
     labels.dedup();
     let asserted_at = now_ms();
     let valid_until = asserted_at + ttl_seconds * 1000;
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|_| CoordError::Unavailable)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
+        let room_id = room_id_for(&conn, room_name)?;
+        let permissions = current_agent_permissions(&conn, &room_id, principal)?;
+        if !permissions.iter().any(|permission| permission == "receive") {
+            return Err(CoordError::Forbidden);
+        }
         conn.execute(
             "DELETE FROM coord_capability_declarations
              WHERE room_id = ?1 AND agent_id = ?2",
@@ -857,6 +1123,64 @@ fn materialize_attention(
     conn.execute("BEGIN IMMEDIATE", []).map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
         for recipient in recipients {
+            let existing = conn
+                .query_row(
+                    "SELECT attention_id, room_id, revision_or_sequence,
+                            membership_granted_at
+                     FROM coord_attention_edges
+                     WHERE recipient_agent_id = ?1 AND kind = 'message'
+                       AND object_id = ?2 AND membership_granted_at = ?3",
+                    params![recipient.agent_id, msg_id, recipient.membership_granted_at],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| CoordError::Data)?;
+            if let Some((existing_attention_id, existing_room_id, existing_sequence, existing_generation)) = existing {
+                if existing_attention_id != recipient.attention_id
+                    || existing_room_id != room_id_i
+                    || existing_sequence != i64::try_from(sequence).map_err(|_| CoordError::Data)?
+                    || existing_generation != recipient.membership_granted_at
+                {
+                    return Err(CoordError::Data);
+                }
+                continue;
+            }
+            let attention_conflict = conn
+                .query_row(
+                    "SELECT recipient_agent_id, room_id, object_id,
+                            revision_or_sequence, membership_granted_at
+                     FROM coord_attention_edges WHERE attention_id = ?1",
+                    params![recipient.attention_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, i64>(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| CoordError::Data)?;
+            if let Some((existing_recipient, existing_room, existing_object, existing_sequence, existing_generation)) = attention_conflict {
+                if existing_recipient != recipient.agent_id
+                    || existing_room != room_id_i
+                    || existing_object != msg_id
+                    || existing_sequence != i64::try_from(sequence).map_err(|_| CoordError::Data)?
+                    || existing_generation != recipient.membership_granted_at
+                {
+                    return Err(CoordError::Data);
+                }
+                continue;
+            }
             conn.execute(
                 "INSERT OR IGNORE INTO coord_attention_feeds
                  (recipient_agent_id, last_sequence) VALUES (?1, 0)",
@@ -916,6 +1240,80 @@ fn materialize_attention(
     match result {
         Ok(()) => {
             conn.execute("COMMIT", []).map_err(|_| CoordError::Unavailable)?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(error)
+        }
+    }
+}
+
+fn receive_room_generations(
+    db: &Path,
+    principal: &str,
+) -> Result<Vec<(String, i64)>, CoordError> {
+    let conn = open_db(db, false)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT room_id, granted_at FROM memberships AS m
+             WHERE m.principal_kind = 'agent' AND m.principal_id = ?1
+               AND m.revoked_at IS NULL
+               AND instr(',' || m.permissions || ',', ',receive,') > 0
+               AND NOT EXISTS (
+                 SELECT 1 FROM memberships AS newer
+                  WHERE newer.room_id = m.room_id
+                    AND newer.principal_kind = 'agent'
+                    AND newer.principal_id = m.principal_id
+                    AND newer.revoked_at IS NULL
+                    AND newer.granted_at > m.granted_at
+               )
+             ORDER BY room_id",
+        )
+        .map_err(|_| CoordError::Data)?;
+    statement
+        .query_map(params![principal], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|_| CoordError::Data)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CoordError::Data)
+}
+
+fn projection_frontier(db: &Path, room_id: &str) -> Result<u64, CoordError> {
+    let conn = open_db(db, false)?;
+    Ok(conn
+        .query_row(
+            "SELECT last_sequence FROM coord_message_attention_projection
+             WHERE room_id = ?1",
+            params![room_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|_| CoordError::Data)?
+        .unwrap_or(0)
+        .max(0) as u64)
+}
+
+fn advance_projection(db: &Path, room_id: &str, sequence: u64) -> Result<(), CoordError> {
+    let conn = open_db(db, true)?;
+    let sequence = i64::try_from(sequence).map_err(|_| CoordError::Data)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
+    let result = (|| {
+        conn.execute(
+            "INSERT INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(room_id) DO UPDATE SET
+               last_sequence = MAX(last_sequence, excluded.last_sequence),
+               updated_at = excluded.updated_at",
+            params![room_id, sequence, now_ms()],
+        )
+        .map_err(|_| CoordError::Data)?;
+        Ok::<_, CoordError>(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
             Ok(())
         }
         Err(error) => {
@@ -1095,7 +1493,7 @@ where
     B: hyper::body::Body<Data = Bytes> + Unpin,
 {
     let payload = if route_parts(request).is_some_and(|(_, op)| op == "send") {
-        match read_capped_content(body).await? {
+        match read_capped_content(body, MAX_COORD_REQUEST_BYTES).await? {
             CappedContent::TooLarge => {
                 return Ok(response(
                     413,
@@ -1114,13 +1512,13 @@ where
             }
         }
     } else if route_parts(request).is_some_and(|(_, op)| op == "declarations") {
-        match read_capped_content(body).await? {
+        match read_capped_content(body, MAX_DECLARATION_REQUEST_BYTES).await? {
             CappedContent::TooLarge => {
                 return Ok(response(
                     413,
                     json!({
                         "error":"request body too large",
-                        "max_bytes":MAX_COORD_REQUEST_BYTES,
+                        "max_bytes":MAX_DECLARATION_REQUEST_BYTES,
                     }),
                 ));
             }
@@ -1148,13 +1546,16 @@ enum CappedContent {
     Decoded(Result<zeroize::Zeroizing<Vec<u8>>, crate::http_content::ContentError>),
 }
 
-async fn read_capped_content<B>(mut body: RequestBody<'_, B>) -> Result<CappedContent, B::Error>
+async fn read_capped_content<B>(
+    mut body: RequestBody<'_, B>,
+    max_bytes: usize,
+) -> Result<CappedContent, B::Error>
 where
     B: hyper::body::Body<Data = Bytes> + Unpin,
 {
     let mut too_large = body
         .content_length
-        .is_some_and(|length| length > MAX_COORD_REQUEST_BYTES as u64);
+        .is_some_and(|length| length > max_bytes as u64);
     let mut raw = zeroize::Zeroizing::new(Vec::new());
     while let Some(frame) = body.body.frame().await {
         let frame = frame?;
@@ -1164,7 +1565,7 @@ where
         if too_large {
             continue;
         }
-        if raw.len().saturating_add(data.len()) > MAX_COORD_REQUEST_BYTES {
+        if raw.len().saturating_add(data.len()) > max_bytes {
             too_large = true;
             continue;
         }
@@ -1173,10 +1574,16 @@ where
     if too_large {
         return Ok(CappedContent::TooLarge);
     }
-    Ok(CappedContent::Decoded(crate::http_content::decode(
+    let decoded = crate::http_content::decode_prefix_with_size(
         &raw,
         body.content_encoding,
-    )))
+        max_bytes.saturating_add(1),
+    );
+    match decoded {
+        Ok(decoded) if decoded.total_bytes > max_bytes => Ok(CappedContent::TooLarge),
+        Ok(decoded) => Ok(CappedContent::Decoded(Ok(decoded.content))),
+        Err(error) => Ok(CappedContent::Decoded(Err(error))),
+    }
 }
 
 async fn respond_payload(
@@ -1190,7 +1597,10 @@ async fn respond_payload(
     let Some(agent_name) = agent(request.identity) else {
         return response(403, json!({"error":"Could not identify agent"}));
     };
-    let principal = context.client.principal_id(agent_name).await;
+    let principal = match context.client.principal_id(agent_name).await {
+        Ok(principal) => principal,
+        Err(_) => return response(403, json!({"error":"Could not identify registered agent"})),
+    };
     if attention_wait_route(request) {
         if request.method != "GET" {
             return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
@@ -1415,6 +1825,7 @@ fn error_response(error: CoordError) -> Outcome<'static> {
     match error {
         CoordError::NotFound => response(404, json!({"error":"room not found or not accessible"})),
         CoordError::Forbidden => response(403, json!({"error":"coordination permission denied"})),
+        CoordError::Invalid => response(400, json!({"error":"invalid coordination request"})),
         CoordError::Unavailable => response(503, json!({"error":"coordination substrate unavailable"})),
         CoordError::Data => response(500, json!({"error":"coordination state unavailable"})),
         CoordError::PublishUnknown => response(
@@ -1712,7 +2123,8 @@ async fn send(
             &projection_envelope,
             &projection_recipients,
             sequence,
-        )
+        )?;
+        advance_projection(&db, &room_id, sequence)
     })
     .await
     .ok()
@@ -1753,12 +2165,22 @@ struct ConsumerCleanup {
 
 impl ConsumerCleanup {
     async fn finish(&mut self) -> Result<(), CoordError> {
-        let Some(stream) = self.stream.take() else {
+        let Some(stream) = self.stream.as_ref() else {
             return Ok(());
         };
-        match stream.delete_consumer(&self.name).await {
-            Ok(_) => Ok(()),
-            Err(error) if consumer_delete_not_found(&error) => Ok(()),
+        // Keep the stream in the guard while the delete RPC is pending.  If
+        // cancellation interrupts this await, Drop can still hand the same
+        // cleanup operation to the runtime instead of losing the handle.
+        let result = stream.delete_consumer(&self.name).await;
+        match result {
+            Ok(_) => {
+                self.stream = None;
+                Ok(())
+            }
+            Err(error) if consumer_delete_not_found(&error) => {
+                self.stream = None;
+                Ok(())
+            }
             Err(_) => Err(CoordError::Unavailable),
         }
     }
@@ -1808,6 +2230,7 @@ async fn read_messages(
         limit,
         Duration::from_millis(500),
         false,
+        false,
     )
     .await
 }
@@ -1837,6 +2260,7 @@ async fn wait_room(
         limit,
         Duration::from_secs_f64(timeout_seconds.clamp(0.1, 300.0)),
         exclude_self,
+        true,
     )
     .await
 }
@@ -1850,6 +2274,7 @@ async fn read_messages_with_timeout(
     limit: usize,
     fetch_timeout: Duration,
     exclude_self: bool,
+    wake_mode: bool,
 ) -> Outcome<'static> {
     let connection = match client.client().await {
         Ok(connection) => connection,
@@ -1881,39 +2306,67 @@ async fn read_messages_with_timeout(
         name: cleanup_name,
     };
     let result = async {
-        let mut messages = consumer
-            .fetch()
-            .max_messages(limit.saturating_add(1))
-            .max_bytes(ROOM_MAX_BYTES)
-            .expires(fetch_timeout)
-            .messages()
-            .await
-            .map_err(|_| CoordError::Unavailable)?;
+        let deadline = tokio::time::Instant::now() + fetch_timeout;
         let mut page = Vec::new();
-        while let Some(message) = messages.next().await {
-            let message = message.map_err(|_| CoordError::Unavailable)?;
-            // JetStream delivers the authoritative stream sequence in the
-            // message metadata.  Nats-Sequence is an implementation detail
-            // of some server paths and is absent from valid pull messages.
-            let sequence = message
-                .info()
-                .map_err(|_| CoordError::Data)?
-                .stream_sequence;
-            let mut value: Value = serde_json::from_slice(&message.payload)
-                .map_err(|_| CoordError::Data)?;
-            let object = value.as_object_mut().ok_or(CoordError::Data)?;
-            let is_self = object
-                .get("sender_agent_id")
-                .and_then(Value::as_str)
-                == Some(principal);
-            if !(exclude_self && is_self) {
-                object.insert("sequence".to_owned(), Value::from(sequence));
-                page.push(value);
-            }
-            message.ack().await.map_err(|_| CoordError::Unavailable)?;
-            if page.len() >= limit.saturating_add(1) {
+        loop {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .unwrap_or_default();
+            if remaining.is_zero() {
                 break;
             }
+            let mut messages = consumer
+                .fetch()
+                .max_messages(limit.saturating_add(1))
+                .max_bytes(ROOM_MAX_BYTES)
+                .expires(remaining)
+                .messages()
+                .await
+                .map_err(|_| CoordError::Unavailable)?;
+            // Evaluate the attention manifest against a grant snapshot taken
+            // after this provider fetch, before any message is exposed.
+            let evaluation_access = if wake_mode {
+                Some(client.access(room_name, principal).await?)
+            } else {
+                None
+            };
+            while let Some(message) = messages.next().await {
+                let message = message.map_err(|_| CoordError::Unavailable)?;
+                // JetStream delivers the authoritative stream sequence in the
+                // message metadata. Nats-Sequence is absent from valid pull
+                // messages on some server paths.
+                let sequence = message
+                    .info()
+                    .map_err(|_| CoordError::Data)?
+                    .stream_sequence;
+                let mut value: Value = serde_json::from_slice(&message.payload)
+                    .map_err(|_| CoordError::Data)?;
+                let qualifies = if wake_mode {
+                    message_wakes_waiter(
+                        message.headers.as_ref(),
+                        &value,
+                        principal,
+                        evaluation_access.as_ref().unwrap_or(&access),
+                        exclude_self,
+                    )?
+                } else {
+                    true
+                };
+                if qualifies {
+                    let object = value.as_object_mut().ok_or(CoordError::Data)?;
+                    object.insert("sequence".to_owned(), Value::from(sequence));
+                    page.push(value);
+                }
+                message.ack().await.map_err(|_| CoordError::Unavailable)?;
+                if page.len() >= limit.saturating_add(1) {
+                    break;
+                }
+            }
+            if !wake_mode || page.len() >= limit.saturating_add(1) {
+                break;
+            }
+            // A self-only or non-targeted batch must not terminate a wait.
+            // The same consumer advances beyond every acknowledged message.
         }
         // A revoke can land during the NATS fetch/ack window.  Never return
         // messages after that grant has ceased to authorize receipt.
