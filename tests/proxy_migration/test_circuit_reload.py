@@ -100,18 +100,38 @@ def git_head(path):
     return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
 
 
+def assert_comparator_source_is_clean(path):
+    status = subprocess.check_output(
+        ["git", "-C", str(path), "status", "--porcelain=v1", "--untracked-files=all"], text=True
+    )
+    assert not status, f"selected comparator source tree is dirty:\n{status}"
+    ignored_source = subprocess.check_output(
+        ["git", "-C", str(path), "ls-files", "--others", "--ignored", "--exclude-standard", "--", "cli/src"],
+        text=True,
+    )
+    unexpected = [
+        entry
+        for entry in ignored_source.splitlines()
+        if "__pycache__/" not in entry and not entry.endswith(".pyc")
+    ]
+    assert not unexpected, f"selected comparator has ignored source files: {unexpected}"
+
+
 def file_sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def process_command(backend, directory):
+def process_command(backend, directory, *, python_executable=None):
     config = directory / "proxy.json"
     if backend == "python":
-        return [sys.executable, str(Path(__file__).with_name("old_proxy.py")), "--config", str(config)]
+        executable = str(python_executable or sys.executable)
+        return [executable, str(Path(__file__).with_name("old_proxy.py")), "--config", str(config)]
     return [str(Path(os.environ["SAFEYOLO_RUST_PROXY"]).resolve()), "--config", str(config)]
 
 
-def preserve_circuit_state(state_file, snapshot_file, *, backend, directory, proxy, operation, effective):
+def preserve_circuit_state(
+    state_file, snapshot_file, *, backend, directory, proxy, operation, effective, python_executable=None
+):
     shutil.copyfile(state_file, snapshot_file)
     raw = json.loads(snapshot_file.read_text())
     assert list(raw) == ["states", "saved_at"]
@@ -122,7 +142,7 @@ def preserve_circuit_state(state_file, snapshot_file, *, backend, directory, pro
         "file": snapshot_file.name,
         "sha256": file_sha256(snapshot_file),
         "raw": raw,
-        "command": process_command(backend, directory),
+        "command": process_command(backend, directory, python_executable=python_executable),
         "exit_code": proxy.process.returncode,
         "effective": effective,
     }
@@ -362,14 +382,18 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
     candidate = Path(__file__).resolve().parents[2]
     expected_comparator = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
     assert git_head(comparator) == expected_comparator
+    assert_comparator_source_is_clean(comparator)
     assert binary.is_file()
     comparator_python = Path(
         os.environ.get("SAFEYOLO_POLICY_PYTHON", str(comparator / ".venv/bin/python"))
     ).expanduser()
     assert comparator_python.is_file()
+    expected_comparator_python = comparator / ".venv/bin/python"
+    assert comparator_python.samefile(expected_comparator_python)
     identity_script = (
         "import importlib.metadata,json,mitmproxy,safeyolo,sys; "
-        "print(json.dumps({'python':sys.version.split()[0],"
+        "print(json.dumps({'program':sys.executable,"
+        "'python_version':sys.version.split()[0],"
         "'safeyolo':importlib.metadata.version('safeyolo'),"
         "'mitmproxy':importlib.metadata.version('mitmproxy'),"
         "'safeyolo_file':safeyolo.__file__,"
@@ -383,8 +407,10 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             text=True,
         )
     )
+    assert Path(identity["program"]).resolve() == comparator_python.resolve()
     assert Path(identity["safeyolo_file"]).resolve().is_relative_to(comparator / "cli/src")
-    assert identity["python"] == "3.12.14"
+    assert Path(identity["mitmproxy_file"]).resolve().is_relative_to(comparator / ".venv")
+    assert identity["python_version"] == "3.12.14"
     assert identity["safeyolo"] == "0.1.0"
     assert identity["mitmproxy"] == "12.2.3"
 
@@ -394,7 +420,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
         "comparator": {
             "path": str(comparator),
             "commit": git_head(comparator),
-            "python": str(comparator_python),
+            "executable": str(comparator_python),
             **identity,
         },
         "candidate": {"path": str(candidate), "commit": git_head(candidate)},
@@ -410,6 +436,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             agent_api=True,
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
+            python_executable=comparator_python,
         ) as proxy:
             hit(proxy, origin, "alice", "/failure", 500)
             assert wait_failure_count(proxy, 1)["domains"][HOST]["state"] == "open"
@@ -426,6 +453,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             proxy=proxy,
             operation="write-open-and-block-before-rollback",
             effective={"open_block_status": 503, "origin_contacts": origin.accepts},
+            python_executable=comparator_python,
         )
         assert first["raw"]["states"][HOST]["state"] == "open"
         manifest["stages"].append(first)
@@ -472,6 +500,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             agent_api=True,
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
+            python_executable=comparator_python,
         ) as proxy:
             assert circuits(proxy)["domains"][HOST]["state"] == "closed"
             hit(proxy, origin, "bob", "/failure", 500)
@@ -486,6 +515,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             proxy=proxy,
             operation="read-closed-and-write-open",
             effective={"loaded": "closed", "wrote": "open", "origin_contacts": origin.accepts},
+            python_executable=comparator_python,
         )
         assert third["raw"]["states"][HOST]["state"] == "open"
         manifest["stages"].append(third)

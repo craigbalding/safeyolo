@@ -134,7 +134,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
-                 circuit_breaker_enabled=None, circuit_state_file=None):
+                 circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -195,7 +195,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             config["fixture_agent_api"] = agent_api
-            command = python_proxy_command()
+            command = [str(python_executable or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
