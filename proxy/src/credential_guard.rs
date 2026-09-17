@@ -2,9 +2,8 @@
 //!
 //! The caller supplies already reconciled identity and mitmproxy-equivalent ordered,
 //! combined header strings, after service injection. No secret header or match is
-//! retained in outcomes, errors, traces or audit intents. Raw-header decoding and
-//! The HTTP caller must adapt parser-owned bytes through `credential_text` and
-//! contain an unsupported encoding before releasing application bytes.
+//! retained in outcomes, errors, traces or audit intents. Raw-header decoding
+//! and source-byte representation are owned by `credential_text`.
 //!
 //! The historical PDP evaluates credential policy then NETWORK for every allowed
 //! credential, with no agent context. That additional charge is intentional source
@@ -47,7 +46,7 @@ impl fmt::Display for Error {
         f.write_str(match self {
             Self::InvalidConfig => "invalid credential detection configuration",
             Self::InvalidEvent => "invalid credential policy event",
-            Self::InvalidHeaderEncoding => "security header text encoding is unsupported",
+            Self::InvalidHeaderEncoding => "security header name encoding is unsupported",
             Self::RegexCompatibility => "credential pattern requires Python regex compatibility",
             Self::RegexRuntime => "credential pattern evaluation failed",
             Self::EntropyRuntime => "credential entropy evaluation failed",
@@ -382,8 +381,8 @@ impl CredentialGuard {
     /// Adapt parser-owned ordered/combined bytes and enforce one request in a
     /// single guard call.  This is the forwarding integration seam: it never
     /// consults the post-parser `HeaderMap`, so duplicate order and original
-    /// spelling remain the source view.  A conversion error is distinct from
-    /// no detection and must be contained by the caller before egress.
+    /// spelling remain the source view. A name conversion error is distinct
+    /// from no detection and must be contained by the caller before egress.
     #[allow(clippy::too_many_arguments)]
     pub fn enforce_ordered<'a, 'b>(
         &self,
@@ -402,7 +401,7 @@ impl CredentialGuard {
         now_ms: f64,
     ) -> Result<Outcome> {
         // Applicability decisions do not consume header text. Keep source
-        // bypasses and identity containment independent of the strict text
+        // bypasses and identity containment independent of the source-text
         // adapter: an invalid value on a disabled/prior/conflict request must
         // not turn an already-established outcome into a decoder failure.
         let applicable = !prior_response
@@ -459,7 +458,7 @@ impl CredentialGuard {
         )
     }
     fn fingerprint(&self, value: &str) -> String {
-        hmac::sign(&self.key, value.as_bytes()).as_ref()[..8]
+        hmac::sign(&self.key, &crate::credential_text::source_bytes(value)).as_ref()[..8]
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect()
@@ -983,6 +982,7 @@ fn compile(source: &Value) -> Result<(Snapshot, LoadReport)> {
                     report.invalid_patterns += 1;
                     continue;
                 }
+                let pattern = crate::credential_text::source_pattern(&pattern);
                 match compile_python_pattern(&pattern, false) {
                     Ok(pattern) => compiled.push(pattern),
                     Err(PatternIssue::Invalid) => report.invalid_patterns += 1,

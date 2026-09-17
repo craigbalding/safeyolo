@@ -1,10 +1,14 @@
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty};
-use hyper::{Request, Uri};
-use hyper_util::rt::TokioIo;
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::{Request, Uri, body::Incoming, service::service_fn};
+use hyper_util::{rt::TokioExecutor, rt::TokioIo};
 use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::{
+    convert::Infallible,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -166,6 +170,300 @@ async fn raw_exchange(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
     response
+}
+
+async fn raw_round_trip(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).await.unwrap();
+            if size == 0 {
+                break;
+            }
+            response.extend_from_slice(&buffer[..size]);
+            if response
+                .windows(b"origin-ok".len())
+                .any(|window| window == b"origin-ok")
+                || response.starts_with(b"HTTP/1.1 403")
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    response
+}
+
+fn invalid_h1_request(port: u16, path: &str, byte: u8) -> Vec<u8> {
+    let mut request = format!(
+        "GET http://127.0.0.1:{port}/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer key-"
+    )
+    .into_bytes();
+    request.push(byte);
+    request.extend_from_slice(b"\r\nConnection: keep-alive\r\n\r\n");
+    request
+}
+
+#[tokio::test]
+async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let pattern = r"key-\uDCFF";
+    let write_policy = || {
+        std::fs::write(
+            &policy_path,
+            json!({
+                "permissions": [
+                    {"action":"network:request", "resource":"*", "effect":"allow"},
+                    {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"deny"}
+                ],
+                "credential_rules": [{
+                    "name":"invalid-byte",
+                    "patterns":[pattern],
+                    "allowed_hosts":["127.0.0.1"],
+                    "header_names":["authorization"]
+                }],
+                "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+    };
+    write_policy();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
+    let mut proxy = Proxy::start(config(&directory, &policy_path, &socket, false))
+        .await
+        .unwrap();
+    let matching = invalid_h1_request(origin_port, "invalid-match", 0xff);
+    let warned = raw_round_trip(&socket, &matching).await;
+    assert!(warned.starts_with(b"HTTP/1.1 200"), "{warned:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    assert!(
+        seen.lock().unwrap()[0]
+            .windows(b"key-\xff".len())
+            .any(|window| window == b"key-\xff")
+    );
+
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let blocked = raw_round_trip(&socket, &matching).await;
+    assert!(blocked.starts_with(b"HTTP/1.1 403"), "{blocked:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    let nonmatching = invalid_h1_request(origin_port, "invalid-nonmatch", 0xfe);
+    let allowed = raw_round_trip(&socket, &nonmatching).await;
+    assert!(allowed.starts_with(b"HTTP/1.1 200"), "{allowed:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    {
+        let requests = seen.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1]
+                .windows(b"key-\xfe".len())
+                .any(|window| window == b"key-\xfe")
+        );
+    }
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    std::fs::create_dir_all(directory.path().join("data")).unwrap();
+    std::fs::write(directory.path().join("data/hmac_secret"), b"invalid-h2-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.2/*", "effect":"deny"}
+            ],
+            "credential_rules": [{
+                "name":"invalid-byte-h2",
+                "patterns":[r"key-\uDCFF"],
+                "allowed_hosts":["127.0.0.2"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut proxy_config = config(&directory, &policy_path, &socket, false);
+    let proxy_ca = {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        let ca = params.self_signed(&key).unwrap();
+        std::fs::write(
+            directory.path().join("mitmproxy-ca.pem"),
+            format!("{}{}", key.serialize_pem(), ca.pem()),
+        )
+        .unwrap();
+        proxy_config.tls_ca_file = Some(directory.path().join("mitmproxy-ca.pem"));
+        ca.der().clone()
+    };
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+    std::fs::write(directory.path().join("upstream.pem"), cert.pem()).unwrap();
+    proxy_config.upstream_ca_file = Some(directory.path().join("upstream.pem"));
+    let listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let authority = format!("127.0.0.2:{}", listener.local_addr().unwrap().port());
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let origin_seen = seen.clone();
+    let origin_task = tokio::spawn(async move {
+        let tls = Arc::new(tls);
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let tls = tls.clone();
+            let origin_seen = origin_seen.clone();
+            tokio::spawn(async move {
+                let socket = tokio_rustls::TlsAcceptor::from(tls)
+                    .accept(socket)
+                    .await
+                    .unwrap();
+                assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+                let service = service_fn(move |request: Request<Incoming>| {
+                    if let Some(value) = request.headers().get("authorization") {
+                        origin_seen.lock().unwrap().push(value.as_bytes().to_vec());
+                    }
+                    async move {
+                        Ok::<_, Infallible>(
+                            hyper::Response::builder()
+                                .status(200)
+                                .body(Full::new(Bytes::from_static(b"h2-origin-ok")))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(socket), service)
+                    .await;
+            });
+        }
+    });
+    let mut proxy = Proxy::start(proxy_config.clone()).await.unwrap();
+    let mut upstream = UnixStream::connect(&socket).await.unwrap();
+    upstream
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut connect_reply = Vec::new();
+    while !connect_reply.ends_with(b"\r\n\r\n") {
+        connect_reply.push(upstream.read_u8().await.unwrap());
+    }
+    assert!(
+        connect_reply.starts_with(b"HTTP/1.1 200"),
+        "{connect_reply:?}"
+    );
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(proxy_ca).unwrap();
+    let mut client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec()];
+    let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+        .connect(
+            rustls::pki_types::ServerName::try_from("127.0.0.2".to_owned()).unwrap(),
+            upstream,
+        )
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls_stream))
+            .await
+            .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let nonmatching = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/nonmatching"))
+                .header("authorization", "Bearer key-h2")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(nonmatching.status(), 200);
+    let _ = nonmatching.collect().await.unwrap();
+    let invalid = hyper::header::HeaderValue::from_bytes(b"Bearer key-\xff").unwrap();
+    let warned = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/matching"))
+                .header("authorization", invalid.clone())
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(warned.status(), 200);
+    let _ = warned.collect().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while seen.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.lock().unwrap()[1], b"Bearer key-\xff");
+
+    proxy_config.credential_guard_block = true;
+    proxy.reload(proxy_config.clone()).await.unwrap();
+    let blocked = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/blocked"))
+                .header("authorization", invalid)
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 403);
+    let _ = blocked.collect().await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    origin_task.abort();
 }
 
 #[tokio::test]

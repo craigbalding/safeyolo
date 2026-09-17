@@ -1,5 +1,5 @@
 use safeyolo_proxy::{
-    credential_guard::{CredentialGuard, Error, Options, OutcomeKind, Pdp},
+    credential_guard::{CredentialGuard, Options, OutcomeKind, Pdp},
     network_guard::Identity,
     policy::{Format, Policy},
 };
@@ -89,9 +89,11 @@ fn ordered_grouped_fields_reach_one_guard_call_without_header_map_reconstruction
 }
 
 #[test]
-fn invalid_admitted_bytes_are_an_error_and_cannot_become_no_detection() {
+fn invalid_admitted_bytes_match_source_surrogate_pattern_without_loss() {
     let guard = CredentialGuard::new(b"synthetic-key");
-    guard.load_sensor_config(&sensor()).unwrap();
+    let mut source = sensor();
+    source["credential_rules"][0]["patterns"] = json!([r"key-\uDCFF"]);
+    guard.load_sensor_config(&source).unwrap();
     let policy = policy();
     let result = guard.enforce_ordered(
         Pdp::Ready(&policy),
@@ -104,20 +106,23 @@ fn invalid_admitted_bytes_are_an_error_and_cannot_become_no_detection() {
         Some("req-invalid-text"),
         "conn-invalid-text",
         false,
-        [(b"Authorization".as_slice(), b"Bearer key-a\xff".as_slice())],
+        [(b"Authorization".as_slice(), b"Bearer key-\xff".as_slice())],
         Options { block: true },
         1000.,
     );
-    assert_eq!(result, Err(Error::InvalidHeaderEncoding));
-    assert!(!result.unwrap_err().to_string().contains("key-a"));
+    let outcome = result.unwrap();
+    assert_eq!(outcome.kind, OutcomeKind::Allowed);
+    assert_eq!(outcome.evaluations.len(), 1);
+    assert_eq!(outcome.evaluations[0].finding.rule, "synthetic");
+    assert_eq!(outcome.evaluations[0].finding.header, "Authorization");
 }
 
 #[test]
-fn bypass_and_identity_containment_precede_strict_text_conversion() {
+fn bypass_and_identity_containment_precede_source_text_conversion() {
     let guard = CredentialGuard::new(b"synthetic-key");
     guard.load_sensor_config(&sensor()).unwrap();
     let policy = policy();
-    let fields = [(b"Authorization".as_slice(), b"Bearer key-a\xff".as_slice())];
+    let fields = [(b"Authorization".as_slice(), b"Bearer key-\xff".as_slice())];
     let bypassed = guard
         .enforce_ordered(
             Pdp::Ready(&policy),
