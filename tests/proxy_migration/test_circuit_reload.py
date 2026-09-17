@@ -10,13 +10,18 @@ import hashlib
 import http.client
 import json
 import os
+import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
+from tests.proxy_migration.harness import python_proxy_environment
 from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.test_circuit_completion import circuits, completion_peer, wait_failure_count
 from tests.proxy_migration.test_native_network_policy import ALLOW, policy_proxy, replace_policy
@@ -89,6 +94,38 @@ def assert_stopped(proxy, address, accepts):
     for path in proxy.paths.values():
         with socket.socket(socket.AF_UNIX) as closed:
             assert closed.connect_ex(path) != 0
+
+
+def git_head(path):
+    return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+
+
+def file_sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def process_command(backend, directory):
+    config = directory / "proxy.json"
+    if backend == "python":
+        return [sys.executable, str(Path(__file__).with_name("old_proxy.py")), "--config", str(config)]
+    return [str(Path(os.environ["SAFEYOLO_RUST_PROXY"]).resolve()), "--config", str(config)]
+
+
+def preserve_circuit_state(state_file, snapshot_file, *, backend, directory, proxy, operation, effective):
+    shutil.copyfile(state_file, snapshot_file)
+    raw = json.loads(snapshot_file.read_text())
+    assert list(raw) == ["states", "saved_at"]
+    assert list(raw["states"]) == [HOST]
+    return {
+        "backend": backend,
+        "operation": operation,
+        "file": snapshot_file.name,
+        "sha256": file_sha256(snapshot_file),
+        "raw": raw,
+        "command": process_command(backend, directory),
+        "exit_code": proxy.process.returncode,
+        "effective": effective,
+    }
 
 
 def test_policy_reload_preserves_live_circuit_state_and_uses_new_settings(proxy_backend, tmp_path):
@@ -315,12 +352,55 @@ def test_graceful_restart_retains_saved_failure_state_and_resets_counters(proxy_
 
 def test_selected_python_native_python_circuit_state_transition(tmp_path):
     """A real old/new process sequence keeps circuit state usable both ways."""
-    if not os.environ.get("SAFEYOLO_PYTHON_SOURCE") or not os.environ.get("SAFEYOLO_RUST_PROXY"):
+    comparator = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+    binary = os.environ.get("SAFEYOLO_RUST_PROXY")
+    if not comparator or not binary:
         pytest.skip("cross-backend rollback fixture requires selected Python source and Rust binary")
 
-    state_file = tmp_path / "cross-backend-circuit.json"
+    comparator = Path(comparator).expanduser().resolve()
+    binary = Path(binary).expanduser().resolve()
+    candidate = Path(__file__).resolve().parents[2]
+    expected_comparator = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
+    assert git_head(comparator) == expected_comparator
+    assert binary.is_file()
+    comparator_python = Path(
+        os.environ.get("SAFEYOLO_POLICY_PYTHON", str(comparator / ".venv/bin/python"))
+    ).expanduser()
+    assert comparator_python.is_file()
+    identity_script = (
+        "import importlib.metadata,json,mitmproxy,safeyolo,sys; "
+        "print(json.dumps({'python':sys.version.split()[0],"
+        "'safeyolo':importlib.metadata.version('safeyolo'),"
+        "'mitmproxy':importlib.metadata.version('mitmproxy'),"
+        "'safeyolo_file':safeyolo.__file__,"
+        "'mitmproxy_file':mitmproxy.__file__}))"
+    )
+    identity = json.loads(
+        subprocess.check_output(
+            [str(comparator_python), "-c", identity_script],
+            cwd=comparator,
+            env=python_proxy_environment(python_source=comparator),
+            text=True,
+        )
+    )
+    assert Path(identity["safeyolo_file"]).resolve().is_relative_to(comparator / "cli/src")
+    assert identity["python"] == "3.12.14"
+    assert identity["safeyolo"] == "0.1.0"
+    assert identity["mitmproxy"] == "12.2.3"
+
+    state_file = tmp_path / "shared-circuit.json"
     source = policy(threshold=1, timeout=1)
-    evidence = {"state_file": str(state_file), "stages": []}
+    manifest = {
+        "comparator": {
+            "path": str(comparator),
+            "commit": git_head(comparator),
+            "python": str(comparator_python),
+            **identity,
+        },
+        "candidate": {"path": str(candidate), "commit": git_head(candidate)},
+        "rust_binary": {"path": str(binary), "sha256": file_sha256(binary)},
+        "stages": [],
+    }
     with reload_origin() as origin:
         python_before = tmp_path / "python-before"
         with policy_proxy(
@@ -332,25 +412,29 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_state_file=state_file,
         ) as proxy:
             hit(proxy, origin, "alice", "/failure", 500)
-            before = wait_failure_count(proxy, 1)
-            assert before["domains"][HOST]["state"] == "open"
+            assert wait_failure_count(proxy, 1)["domains"][HOST]["state"] == "open"
+            contacts = origin.accepts
+            hit(proxy, origin, "bob", "/blocked-before-rollback", 503)
+            assert origin.accepts == contacts
         assert_stopped(proxy, origin.server_address, 1)
-        python_bytes = state_file.read_bytes()
-        python_state = json.loads(python_bytes)
-        assert python_state["states"][HOST]["state"] == "open"
-        evidence["stages"].append(
-            {
-                "backend": "python",
-                "operation": "write-open-circuit",
-                "sha256": hashlib.sha256(python_bytes).hexdigest(),
-                "effective": {"state": "open", "origin_contacts": origin.accepts},
-            }
+        first_file = tmp_path / "01-python-open.json"
+        first = preserve_circuit_state(
+            state_file,
+            first_file,
+            backend="python",
+            directory=python_before,
+            proxy=proxy,
+            operation="write-open-and-block-before-rollback",
+            effective={"open_block_status": 503, "origin_contacts": origin.accepts},
         )
-        deadline = python_state["states"][HOST]["opened_at"] + 1.05
+        assert first["raw"]["states"][HOST]["state"] == "open"
+        manifest["stages"].append(first)
+
+        deadline = first["raw"]["states"][HOST]["opened_at"] + 1.05
         while time.time() < deadline:
             time.sleep(min(0.01, deadline - time.time()))
 
-        native_before = tmp_path / "native"
+        native_before = tmp_path / "native-before"
         with policy_proxy(
             "rust",
             native_before,
@@ -359,29 +443,26 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
         ) as proxy:
-            loaded = circuits(proxy)
-            assert loaded["domains"][HOST]["state"] == "open"
+            assert circuits(proxy)["domains"][HOST]["state"] == "open"
             contacts = origin.accepts
-            status, _, body = send_request(
-                proxy.paths["bob"], f"http://{HOST}:{origin.server_address[1]}/recovery"
-            )
-            assert status == 200 and body == b"hello"
+            hit(proxy, origin, "alice", "/rust-recovery", 200)
             assert origin.accepts == contacts + 1
             recovered = circuits(proxy)
             assert recovered["domains"][HOST]["state"] == "closed"
             assert recovered["domains"][HOST]["failure_count"] == 0
         assert_stopped(proxy, origin.server_address, 1)
-        native_bytes = state_file.read_bytes()
-        native_state = json.loads(native_bytes)
-        assert native_state["states"][HOST]["state"] == "closed"
-        evidence["stages"].append(
-            {
-                "backend": "rust",
-                "operation": "read-open-and-write-closed-circuit",
-                "sha256": hashlib.sha256(native_bytes).hexdigest(),
-                "effective": {"loaded": "open", "after_request": "closed", "origin_contacts": origin.accepts},
-            }
+        second_file = tmp_path / "02-rust-closed.json"
+        second = preserve_circuit_state(
+            state_file,
+            second_file,
+            backend="rust",
+            directory=native_before,
+            proxy=proxy,
+            operation="read-open-and-write-closed",
+            effective={"loaded": "open", "wrote": "closed", "origin_contacts": origin.accepts},
         )
+        assert second["raw"]["states"][HOST]["state"] == "closed"
+        manifest["stages"].append(second)
 
         python_after = tmp_path / "python-after"
         with policy_proxy(
@@ -392,21 +473,63 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
         ) as proxy:
-            reloaded = circuits(proxy)
-            assert reloaded["domains"][HOST]["state"] == "closed"
+            assert circuits(proxy)["domains"][HOST]["state"] == "closed"
+            hit(proxy, origin, "bob", "/failure", 500)
+            assert wait_failure_count(proxy, 1)["domains"][HOST]["state"] == "open"
+        assert_stopped(proxy, origin.server_address, 1)
+        third_file = tmp_path / "03-python-reopened.json"
+        third = preserve_circuit_state(
+            state_file,
+            third_file,
+            backend="python",
+            directory=python_after,
+            proxy=proxy,
+            operation="read-closed-and-write-open",
+            effective={"loaded": "closed", "wrote": "open", "origin_contacts": origin.accepts},
+        )
+        assert third["raw"]["states"][HOST]["state"] == "open"
+        manifest["stages"].append(third)
+
+        native_after = tmp_path / "native-after"
+        with policy_proxy(
+            "rust",
+            native_after,
+            source,
+            agent_api=True,
+            circuit_breaker_enabled=True,
+            circuit_state_file=state_file,
+        ) as proxy:
+            assert circuits(proxy)["domains"][HOST]["state"] == "open"
             contacts = origin.accepts
-            hit(proxy, origin, "alice", "/final", 200)
+            hit(proxy, origin, "alice", "/blocked-after-return", 503)
+            assert origin.accepts == contacts
+            deadline = third["raw"]["states"][HOST]["opened_at"] + 1.05
+            while time.time() < deadline:
+                time.sleep(min(0.01, deadline - time.time()))
+            hit(proxy, origin, "alice", "/rust-final-recovery", 200)
             assert origin.accepts == contacts + 1
             assert circuits(proxy)["domains"][HOST]["state"] == "closed"
         assert_stopped(proxy, origin.server_address, 1)
-        evidence["stages"].append(
-            {
-                "backend": "python",
-                "operation": "read-native-closed-circuit-and-serve",
-                "sha256": hashlib.sha256(state_file.read_bytes()).hexdigest(),
-                "effective": {"state": "closed", "origin_contacts": origin.accepts},
-            }
+        fourth_file = tmp_path / "04-rust-final-closed.json"
+        fourth = preserve_circuit_state(
+            state_file,
+            fourth_file,
+            backend="rust",
+            directory=native_after,
+            proxy=proxy,
+            operation="read-open-block-and-write-closed",
+            effective={
+                "loaded": "open",
+                "open_block_status": 503,
+                "wrote": "closed",
+                "origin_contacts": origin.accepts,
+            },
         )
-    assert origin.accepts == len(origin.requests) == 3
-    assert evidence["stages"][0]["sha256"] != evidence["stages"][1]["sha256"]
-    (tmp_path / "cross-backend-circuit.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        assert fourth["raw"]["states"][HOST]["state"] == "closed"
+        manifest["stages"].append(fourth)
+    assert origin.accepts == len(origin.requests) == 4
+    assert all(stage["exit_code"] == 0 for stage in manifest["stages"])
+    assert manifest["stages"][0]["sha256"] != manifest["stages"][1]["sha256"]
+    for stage in manifest["stages"]:
+        stage.pop("raw")
+    (tmp_path / "cross-backend-circuit-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
