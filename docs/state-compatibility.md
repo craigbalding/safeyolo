@@ -98,8 +98,9 @@ and append legacy records without IDs or creation metadata. Native opens the
 same policy, preserves the Python IDs, normalizes the legacy defaults, consumes
 and revokes records, and rejects a failed activation while retaining exact
 policy bytes. Python reloads the native state, observes the generated legacy
-ID, revokes that binding, and writes a new grant; a fresh native store consumes
-the new grant and revokes the remaining binding. The Python and fresh-native
+ID and metadata, and writes a new grant while retaining the binding; a fresh
+native store compares that state, consumes the new grant, and revokes the
+remaining binding. The Python and fresh-native
 snapshots also compare the normalized legacy grant creation/expiry/scope and
 retained primary binding creation/template, proving the Python write does not
 regenerate or drop those defaults. The manifest retains policy

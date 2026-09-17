@@ -1355,7 +1355,7 @@ expected_legacy_binding = sys.argv[7]
 assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
 policy = root / 'policy.toml'
 
-def snapshot():
+def snapshot(loaded=False):
     document = load_roundtrip(policy)
     agents = load_agents(document)
     alice = agents.get('alice', {})
@@ -1383,7 +1383,7 @@ def snapshot():
             'bound_value_keys': sorted(bound),
             'limit': bound.get('limit'),
         })
-    return {
+    result = {
         'policy': {
             'path': str(policy),
             'sha256': hashlib.sha256(policy.read_bytes()).hexdigest(),
@@ -1392,6 +1392,27 @@ def snapshot():
         'grants': grants,
         'bindings': bindings,
     }
+    if loaded:
+        active_grants = {
+            grant['grant_id']: grant
+            for grant in gateway.list_grants()
+        }
+        for grant in grants:
+            active = active_grants.get(grant['grant_id'])
+            if active is not None:
+                for field in ('created', 'expires', 'scope'):
+                    grant[field] = active[field]
+        for binding in bindings:
+            active = gateway.get_contract_binding(
+                'alice', binding['service'], binding['capability']
+            )
+            if active is not None:
+                binding.update({
+                    'binding_id': active.binding_id,
+                    'template': active.template,
+                    'created': active.created,
+                })
+    return result
 
 gateway = ServiceGateway()
 gateway._get_policy_path = lambda: policy
@@ -1451,7 +1472,6 @@ elif operation == 'reload-and-write-roundtrip':
     legacy = gateway.get_contract_binding('alice', 'mail', 'legacy')
     assert legacy is not None
     assert legacy.binding_id == expected_legacy_binding
-    assert gateway.revoke_contract_binding(expected_legacy_binding)
     roundtrip = gateway.add_grant(
         'alice', 'mail', 'POST', '/v1/roundtrip', 'once'
     )
@@ -1480,7 +1500,7 @@ print(json.dumps({
         'service_gateway_file': str(pathlib.Path(__import__('safeyolo.mitm_addons.service_gateway', fromlist=['__file__']).__file__).resolve()),
     },
     'ids': ids,
-    'state': snapshot(),
+    'state': snapshot(loaded=operation == 'reload-and-write-roundtrip'),
     'effective': {
         'legacy_fields_missing': operation == 'write-and-consume-python',
         'legacy_defaults_observed': operation == 'reload-and-write-roundtrip',
@@ -1586,8 +1606,13 @@ fn assert_grant_metadata_preserved(expected: &Value, actual: &Value, grant_id: &
     }
 }
 
-fn assert_binding_metadata_preserved(expected: &Value, actual: &Value, binding_id: &str) {
-    let expected = native_binding(expected, "primary_binding");
+fn assert_binding_metadata_preserved(
+    expected: &Value,
+    actual: &Value,
+    native_key: &str,
+    binding_id: &str,
+) {
+    let expected = native_binding(expected, native_key);
     let actual = snapshot_binding(actual, binding_id);
     for field in ["binding_id", "created", "template"] {
         assert_eq!(
@@ -1597,9 +1622,14 @@ fn assert_binding_metadata_preserved(expected: &Value, actual: &Value, binding_i
     }
 }
 
-fn assert_native_binding_metadata_preserved(expected: &Value, actual: &Value, binding_id: &str) {
-    let expected = native_binding(expected, "primary_binding");
-    let actual = native_binding(actual, "primary_binding");
+fn assert_native_binding_metadata_preserved(
+    expected: &Value,
+    actual: &Value,
+    native_key: &str,
+    binding_id: &str,
+) {
+    let expected = native_binding(expected, native_key);
+    let actual = native_binding(actual, native_key);
     for field in ["binding_id", "created", "template"] {
         assert_eq!(
             expected[field], actual[field],
@@ -1752,7 +1782,14 @@ fn selected_python_native_python_native_grants_bindings_transition() {
     assert_binding_metadata_preserved(
         &initial_native,
         &python_reload["state"],
+        "primary_binding",
         &primary_binding_id,
+    );
+    assert_binding_metadata_preserved(
+        &initial_native,
+        &python_reload["state"],
+        "legacy_binding",
+        &legacy_binding_id,
     );
     let roundtrip_grant_id = python_reload["ids"]["roundtrip_grant_id"]
         .as_str()
@@ -1761,12 +1798,21 @@ fn selected_python_native_python_native_grants_bindings_transition() {
 
     let final_now = OffsetDateTime::now_utc();
     let final_store = Store::open(&policy, final_now).unwrap();
-    let reloaded_native = native_grants_snapshot(&final_store, &policy, final_now);
+    let mut reloaded_native = native_grants_snapshot(&final_store, &policy, final_now);
+    reloaded_native["backend"] = json!("rust-native");
+    reloaded_native["operation"] = json!("reopen-before-final-cleanup");
     assert_grant_metadata_preserved(&initial_native, &reloaded_native, &legacy_grant_id);
     assert_native_binding_metadata_preserved(
         &initial_native,
         &reloaded_native,
+        "primary_binding",
         &primary_binding_id,
+    );
+    assert_native_binding_metadata_preserved(
+        &initial_native,
+        &reloaded_native,
+        "legacy_binding",
+        &legacy_binding_id,
     );
     let final_primary = final_store
         .binding_for_agent("alice", "mail", "send")
@@ -1801,6 +1847,11 @@ fn selected_python_native_python_native_grants_bindings_transition() {
     );
     assert!(
         final_store
+            .revoke_binding("alice", &legacy_binding_id, final_now, validate)
+            .unwrap()
+    );
+    assert!(
+        final_store
             .revoke_binding("alice", &primary_binding_id, final_now, validate)
             .unwrap()
     );
@@ -1809,6 +1860,12 @@ fn selected_python_native_python_native_grants_bindings_transition() {
     assert!(
         final_store
             .binding_for_agent("alice", "mail", "send")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        final_store
+            .binding_for_agent("alice", "mail", "legacy")
             .unwrap()
             .is_none()
     );
@@ -1860,7 +1917,15 @@ fn selected_python_native_python_native_grants_bindings_transition() {
             "primary_binding_revoked": primary_binding_id,
             "legacy_grant_revoked": legacy_grant_id,
         },
-        "stages": [initial, initial_native, native_failure, after_native, python_reload, final_native],
+        "stages": [
+            initial,
+            initial_native,
+            native_failure,
+            after_native,
+            python_reload,
+            reloaded_native,
+            final_native
+        ],
         "secret_free": true,
     });
     let evidence_dir = PathBuf::from(
