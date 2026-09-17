@@ -124,7 +124,9 @@ class SinkholeHandler(BaseHTTPRequestHandler):
         """Capture request and route to handler."""
         host = self._get_host()
         body = self._read_body()
-        parsed = urlparse(self.path)
+        raw_target = self.path
+        raw_query = raw_target.split("?", 1)[1] if "?" in raw_target else None
+        parsed = urlparse(raw_target)
 
         # Capture the request
         captured = CapturedRequest(
@@ -136,6 +138,8 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             body=body,
             client_ip=self.client_address[0],
             query_params=parse_qs(parsed.query),
+            raw_target=raw_target,
+            raw_query=raw_query,
         )
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")

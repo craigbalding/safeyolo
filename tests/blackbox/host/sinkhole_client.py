@@ -20,6 +20,8 @@ class CapturedRequest:
     client_ip: str
     query_params: dict[str, list[str]]
     body_hex: str | None = None
+    raw_target: str | None = None
+    raw_query: str | None = None
 
     @property
     def body_bytes(self) -> bytes:
@@ -81,6 +83,8 @@ class SinkholeClient:
                 client_ip=r["client_ip"],
                 query_params=r.get("query_params", {}),
                 body_hex=r.get("body_hex"),
+                raw_target=r.get("raw_target"),
+                raw_query=r.get("raw_query"),
             )
             for r in data["requests"]
         ]

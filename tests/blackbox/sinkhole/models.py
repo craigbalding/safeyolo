@@ -15,6 +15,8 @@ class CapturedRequest:
     body: bytes
     client_ip: str
     query_params: dict[str, list[str]] = field(default_factory=dict)
+    raw_target: str | None = None
+    raw_query: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -31,4 +33,9 @@ class CapturedRequest:
             "body_hex": self.body.hex(),
             "client_ip": self.client_ip,
             "query_params": self.query_params,
+            # ``path`` and ``query_params`` are retained normalized views.
+            # These fields preserve the original request-target spelling and
+            # query order/encoding for signed and repeated-parameter tests.
+            "raw_target": self.raw_target if self.raw_target is not None else self.path,
+            "raw_query": self.raw_query,
         }

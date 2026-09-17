@@ -1,7 +1,9 @@
 """Regression tests for the blackbox sinkhole server."""
 
+import http.client
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -79,3 +81,70 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
 
     assert len(requests) == 1
     assert requests[0].body_bytes == payload
+
+
+def test_sinkhole_fixture_preserves_signed_target_and_query_order():
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    server = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = "/signed;v=1?z=last&scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
+    client = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        client.request("GET", target, headers={"Host": "signed.test"})
+        response = client.getresponse()
+        assert response.status == 200
+        response.read()
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    requests = server_module.get_requests(host="signed.test")
+    assert len(requests) == 1
+    wire = requests[0].to_dict()
+    assert wire["raw_target"] == target
+    assert wire["raw_query"] == target.split("?", 1)[1]
+    assert wire["path"] == "/signed"
+    assert list(wire["query_params"]) == ["z", "scope", "signature"]
+    assert wire["query_params"]["scope"] == ["read", "write/items"]
+
+
+def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    target = "/signed?scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
+    response = Mock()
+    response.json.return_value = {
+        "requests": [
+            {
+                "timestamp": 1.0,
+                "host": "signed.test",
+                "method": "GET",
+                "path": "/signed",
+                "headers": {},
+                "body": "",
+                "body_hex": "",
+                "raw_target": target,
+                "raw_query": target.split("?", 1)[1],
+                "client_ip": "127.0.0.1",
+                "query_params": {
+                    "scope": ["read", "write/items"],
+                    "signature": ["abc+/="],
+                },
+            }
+        ]
+    }
+    client = SinkholeClient("http://sinkhole.invalid:9999")
+    try:
+        with patch.object(client._client, "get", return_value=response):
+            requests = client.get_requests()
+    finally:
+        client.close()
+
+    assert requests[0].raw_target == target
+    assert requests[0].raw_query == "scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
