@@ -283,8 +283,11 @@ gateway scenarios to assert arbitrary request bytes, including invalid UTF-8,
 without changing the existing observer API. Raw request-target and exact
 query representation are exposed as `CapturedRequest.raw_target` and
 `CapturedRequest.raw_query`; ordered duplicate fields are exposed as
-`CapturedRequest.header_items`. Partial-body/connection outcomes and receiver
-readiness are separate observer increments.
+`CapturedRequest.header_items`. `CapturedRequest.body_received_bytes`,
+`body_expected_bytes`, `body_complete`, and `connection_closed` distinguish a
+complete fixed/chunked body from an accepted connection that closes during
+receipt; a connection that sends no request produces no captured request.
+Receiver readiness remains a separate observer increment.
 
 ### Installed-host stage-A smoke
 

@@ -113,12 +113,36 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             host = host.split(":")[0]
         return host
 
-    def _read_body(self) -> bytes:
+    def _read_body(self) -> tuple[bytes, int | None, bool, bool]:
         """Read request body."""
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if "chunked" in {part.strip().lower() for part in transfer_encoding.split(",")}:
+            body = bytearray()
+            while True:
+                size_line = self.rfile.readline()
+                if not size_line:
+                    return bytes(body), None, False, True
+                try:
+                    size = int(size_line.split(b";", 1)[0].strip(), 16)
+                except ValueError:
+                    return bytes(body), None, False, False
+                if size == 0:
+                    trailer_line = self.rfile.readline()
+                    while trailer_line and trailer_line not in (b"\r\n", b"\n"):
+                        trailer_line = self.rfile.readline()
+                    if not trailer_line:
+                        return bytes(body), None, False, True
+                    return bytes(body), None, True, False
+                chunk = self.rfile.read(size)
+                body.extend(chunk)
+                if len(chunk) != size:
+                    return bytes(body), None, False, True
+                if self.rfile.read(2) != b"\r\n":
+                    return bytes(body), None, False, False
+
         content_length = int(self.headers.get("Content-Length", 0))
-        if content_length:
-            return self.rfile.read(content_length)
-        return b""
+        body = self.rfile.read(content_length) if content_length else b""
+        return body, content_length, len(body) == content_length, len(body) != content_length
 
     def _raw_request_target(self) -> str:
         """Return the request-target before BaseHTTPRequestHandler normalizes it."""
@@ -133,7 +157,7 @@ class SinkholeHandler(BaseHTTPRequestHandler):
     def _capture_and_route(self, method: str):
         """Capture request and route to handler."""
         host = self._get_host()
-        body = self._read_body()
+        body, body_expected_bytes, body_complete, connection_closed = self._read_body()
         raw_target = self._raw_request_target()
         raw_query = raw_target.split("?", 1)[1] if "?" in raw_target else None
         # Keep the historical normalized views based on ``self.path``.  In
@@ -156,6 +180,11 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             raw_target=raw_target,
             raw_query=raw_query,
             header_items=header_items,
+            body_expected_bytes=body_expected_bytes,
+            body_received_bytes=len(body),
+            body_complete=body_complete,
+            connection_accepted=True,
+            connection_closed=connection_closed,
         )
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")

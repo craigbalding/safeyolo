@@ -23,6 +23,11 @@ class CapturedRequest:
     raw_target: str | None = None
     raw_query: str | None = None
     header_items: list[tuple[str, str]] | None = None
+    body_expected_bytes: int | None = None
+    body_received_bytes: int | None = None
+    body_complete: bool | None = None
+    connection_accepted: bool | None = None
+    connection_closed: bool | None = None
 
     @property
     def body_bytes(self) -> bytes:
@@ -91,6 +96,11 @@ class SinkholeClient:
                     if r.get("header_items") is not None
                     else None
                 ),
+                body_expected_bytes=r.get("body_expected_bytes"),
+                body_received_bytes=r.get("body_received_bytes"),
+                body_complete=r.get("body_complete"),
+                connection_accepted=r.get("connection_accepted"),
+                connection_closed=r.get("connection_closed"),
             )
             for r in data["requests"]
         ]

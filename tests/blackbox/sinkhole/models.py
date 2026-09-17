@@ -18,6 +18,11 @@ class CapturedRequest:
     raw_target: str | None = None
     raw_query: str | None = None
     header_items: list[tuple[str, str]] | None = None
+    body_expected_bytes: int | None = None
+    body_received_bytes: int | None = None
+    body_complete: bool | None = None
+    connection_accepted: bool | None = None
+    connection_closed: bool | None = None
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -43,4 +48,9 @@ class CapturedRequest:
             "header_items": self.header_items
             if self.header_items is not None
             else list(self.headers.items()),
+            "body_expected_bytes": self.body_expected_bytes,
+            "body_received_bytes": self.body_received_bytes,
+            "body_complete": self.body_complete,
+            "connection_accepted": self.connection_accepted,
+            "connection_closed": self.connection_closed,
         }

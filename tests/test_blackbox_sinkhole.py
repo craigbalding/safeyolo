@@ -5,6 +5,7 @@ import importlib.util
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -19,6 +20,20 @@ def _load_sinkhole_server():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _send_raw_request(port, request, *, shutdown_write=False):
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+        client.sendall(request)
+        if shutdown_write:
+            client.shutdown(socket.SHUT_WR)
+        response = b""
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        return response
 
 
 def test_sinkhole_bind_does_not_perform_reverse_dns():
@@ -84,6 +99,8 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
     assert len(requests) == 1
     assert requests[0].body_bytes == payload
     assert requests[0].header_items is None
+    assert requests[0].body_complete is None
+    assert requests[0].connection_accepted is None
 
 
 def test_sinkhole_fixture_preserves_signed_target_and_query_order():
@@ -182,6 +199,75 @@ def test_sinkhole_fixture_preserves_ordered_duplicate_headers_and_reversal():
     ]
 
 
+def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    server = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    fixed_partial = (
+        b"POST /partial-fixed HTTP/1.1\r\n"
+        b"Host: partial.test\r\n"
+        b"Content-Length: 10\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+        b"abc"
+    )
+    chunked_complete = (
+        b"POST /chunked-complete HTTP/1.1\r\n"
+        b"Host: partial.test\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+        b"3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n"
+    )
+    chunked_partial = (
+        b"POST /chunked-partial HTTP/1.1\r\n"
+        b"Host: partial.test\r\n"
+        b"Transfer-Encoding: chunked\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+        b"3\r\nabc\r\n4\r\nde"
+    )
+    try:
+        _send_raw_request(server.server_port, fixed_partial, shutdown_write=True)
+        _send_raw_request(server.server_port, chunked_complete)
+        _send_raw_request(server.server_port, chunked_partial, shutdown_write=True)
+        # An accepted socket that closes before sending a request must not
+        # become a fabricated empty request in the observer.
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=5):
+            pass
+        time.sleep(0.05)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    requests = server_module.get_requests(host="partial.test")
+    assert len(requests) == 3
+    fixed, complete, partial = requests
+    assert fixed.body == b"abc"
+    assert fixed.body_expected_bytes == 10
+    assert fixed.body_received_bytes == 3
+    assert fixed.body_complete is False
+    assert fixed.connection_accepted is True
+    assert fixed.connection_closed is True
+    assert complete.body == b"abcdefg"
+    assert complete.body_expected_bytes is None
+    assert complete.body_received_bytes == 7
+    assert complete.body_complete is True
+    assert complete.connection_accepted is True
+    assert complete.connection_closed is False
+    assert partial.body == b"abcde"
+    assert partial.body_expected_bytes is None
+    assert partial.body_received_bytes == 5
+    assert partial.body_complete is False
+    assert partial.connection_accepted is True
+    assert partial.connection_closed is True
+
+
 def test_sinkhole_fixture_preserves_double_slash_target_from_raw_request_line():
     server_module = _load_sinkhole_server()
     server_module.clear_requests()
@@ -243,6 +329,11 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
                     ["X-Signature", "first"],
                     ["X-Signature", "second"],
                 ],
+                "body_expected_bytes": 0,
+                "body_received_bytes": 0,
+                "body_complete": True,
+                "connection_accepted": True,
+                "connection_closed": False,
                 "client_ip": "127.0.0.1",
                 "query_params": {
                     "scope": ["read", "write/items"],
@@ -265,3 +356,8 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
         ("X-Signature", "first"),
         ("X-Signature", "second"),
     ]
+    assert requests[0].body_expected_bytes == 0
+    assert requests[0].body_received_bytes == 0
+    assert requests[0].body_complete is True
+    assert requests[0].connection_accepted is True
+    assert requests[0].connection_closed is False
