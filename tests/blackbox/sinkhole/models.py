@@ -23,6 +23,7 @@ class CapturedRequest:
     body_complete: bool | None = None
     connection_accepted: bool | None = None
     connection_closed: bool | None = None
+    connection_id: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -53,4 +54,30 @@ class CapturedRequest:
             "body_complete": self.body_complete,
             "connection_accepted": self.connection_accepted,
             "connection_closed": self.connection_closed,
+            "connection_id": self.connection_id,
+        }
+
+
+@dataclass
+class ConnectionObservation:
+    """Lifecycle observation for one accepted sinkhole connection."""
+
+    connection_id: str
+    client_ip: str
+    accepted_at: float
+    state: str = "accepted"
+    request_state: str = "pending"
+    request_count: int = 0
+    closed_at: float | None = None
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict."""
+        return {
+            "connection_id": self.connection_id,
+            "client_ip": self.client_ip,
+            "accepted_at": self.accepted_at,
+            "state": self.state,
+            "request_state": self.request_state,
+            "request_count": self.request_count,
+            "closed_at": self.closed_at,
         }

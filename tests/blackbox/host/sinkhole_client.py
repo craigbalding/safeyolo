@@ -28,6 +28,7 @@ class CapturedRequest:
     body_complete: bool | None = None
     connection_accepted: bool | None = None
     connection_closed: bool | None = None
+    connection_id: str | None = None
 
     @property
     def body_bytes(self) -> bytes:
@@ -40,6 +41,19 @@ class CapturedRequest:
         if self.body_hex is None:
             return self.body.encode("utf-8")
         return bytes.fromhex(self.body_hex)
+
+
+@dataclass
+class ConnectionObservation:
+    """Lifecycle observation mirrored from the sinkhole control API."""
+
+    connection_id: str
+    client_ip: str
+    accepted_at: float
+    state: str
+    request_state: str
+    request_count: int
+    closed_at: float | None = None
 
 
 class SinkholeClient:
@@ -101,6 +115,7 @@ class SinkholeClient:
                 body_complete=r.get("body_complete"),
                 connection_accepted=r.get("connection_accepted"),
                 connection_closed=r.get("connection_closed"),
+                connection_id=r.get("connection_id"),
             )
             for r in data["requests"]
         ]
@@ -113,6 +128,12 @@ class SinkholeClient:
         resp = self._client.get(f"{self.base_url}/requests/count", params=params)
         resp.raise_for_status()
         return resp.json()["count"]
+
+    def get_connections(self) -> list[ConnectionObservation]:
+        """Get accepted sinkhole connection lifecycle observations."""
+        resp = self._client.get(f"{self.base_url}/connections")
+        resp.raise_for_status()
+        return [ConnectionObservation(**connection) for connection in resp.json()["connections"]]
 
     def wait_for_ready(self, timeout: float = 30.0):
         """Wait for sinkhole to be ready."""

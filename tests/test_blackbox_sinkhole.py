@@ -2,6 +2,7 @@
 
 import http.client
 import importlib.util
+import json
 import socket
 import sys
 import threading
@@ -101,6 +102,7 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
     assert requests[0].header_items is None
     assert requests[0].body_complete is None
     assert requests[0].connection_accepted is None
+    assert requests[0].connection_id is None
 
 
 def test_sinkhole_fixture_preserves_signed_target_and_query_order():
@@ -215,6 +217,14 @@ def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
         b"\r\n"
         b"abc"
     )
+    fixed_complete = (
+        b"POST /fixed-complete HTTP/1.1\r\n"
+        b"Host: partial.test\r\n"
+        b"Content-Length: 8\r\n"
+        b"Connection: close\r\n"
+        b"\r\n"
+        b"complete"
+    )
     chunked_complete = (
         b"POST /chunked-complete HTTP/1.1\r\n"
         b"Host: partial.test\r\n"
@@ -233,6 +243,7 @@ def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
     )
     try:
         _send_raw_request(server.server_port, fixed_partial, shutdown_write=True)
+        _send_raw_request(server.server_port, fixed_complete)
         _send_raw_request(server.server_port, chunked_complete)
         _send_raw_request(server.server_port, chunked_partial, shutdown_write=True)
         # An accepted socket that closes before sending a request must not
@@ -246,14 +257,20 @@ def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
         thread.join(timeout=5)
 
     requests = server_module.get_requests(host="partial.test")
-    assert len(requests) == 3
-    fixed, complete, partial = requests
+    assert len(requests) == 4
+    fixed, fixed_complete_request, complete, partial = requests
     assert fixed.body == b"abc"
     assert fixed.body_expected_bytes == 10
     assert fixed.body_received_bytes == 3
     assert fixed.body_complete is False
     assert fixed.connection_accepted is True
     assert fixed.connection_closed is True
+    assert fixed_complete_request.body == b"complete"
+    assert fixed_complete_request.body_expected_bytes == 8
+    assert fixed_complete_request.body_received_bytes == 8
+    assert fixed_complete_request.body_complete is True
+    assert fixed_complete_request.connection_accepted is True
+    assert fixed_complete_request.connection_closed is False
     assert complete.body == b"abcdefg"
     assert complete.body_expected_bytes is None
     assert complete.body_received_bytes == 7
@@ -266,6 +283,44 @@ def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
     assert partial.body_complete is False
     assert partial.connection_accepted is True
     assert partial.connection_closed is True
+
+    connections = server_module.get_connections()
+    assert len(connections) == 5
+    assert all(connection.state == "closed" for connection in connections)
+    assert [connection.request_state for connection in connections] == [
+        "received",
+        "received",
+        "received",
+        "received",
+        "no_request",
+    ]
+    assert [connection.request_count for connection in connections] == [1, 1, 1, 1, 0]
+    assert [request.connection_id for request in requests] == [
+        connection.connection_id for connection in connections[:4]
+    ]
+
+    control = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.ControlAPIHandler
+    )
+    control_thread = threading.Thread(target=control.serve_forever, daemon=True)
+    control_thread.start()
+    try:
+        control_client = http.client.HTTPConnection(
+            "127.0.0.1", control.server_port, timeout=5
+        )
+        try:
+            control_client.request("GET", "/connections")
+            control_response = control_client.getresponse()
+            control_payload = json.loads(control_response.read())
+        finally:
+            control_client.close()
+    finally:
+        control.shutdown()
+        control.server_close()
+        control_thread.join(timeout=5)
+    assert control_response.status == 200
+    assert control_payload["count"] == 5
+    assert control_payload["connections"][-1]["request_state"] == "no_request"
 
 
 def test_sinkhole_fixture_preserves_double_slash_target_from_raw_request_line():
@@ -334,6 +389,7 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
                 "body_complete": True,
                 "connection_accepted": True,
                 "connection_closed": False,
+                "connection_id": "connection-1",
                 "client_ip": "127.0.0.1",
                 "query_params": {
                     "scope": ["read", "write/items"],
@@ -361,3 +417,48 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
     assert requests[0].body_complete is True
     assert requests[0].connection_accepted is True
     assert requests[0].connection_closed is False
+    assert requests[0].connection_id == "connection-1"
+
+
+def test_sinkhole_client_exposes_connection_observations():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    response = Mock()
+    response.json.return_value = {
+        "count": 2,
+        "connections": [
+            {
+                "connection_id": "connection-1",
+                "client_ip": "127.0.0.1",
+                "accepted_at": 1.0,
+                "state": "closed",
+                "request_state": "received",
+                "request_count": 1,
+                "closed_at": 2.0,
+            },
+            {
+                "connection_id": "connection-2",
+                "client_ip": "127.0.0.1",
+                "accepted_at": 3.0,
+                "state": "closed",
+                "request_state": "no_request",
+                "request_count": 0,
+                "closed_at": 4.0,
+            },
+        ],
+    }
+    client = SinkholeClient("http://sinkhole.invalid:9999")
+    try:
+        with patch.object(client._client, "get", return_value=response):
+            connections = client.get_connections()
+    finally:
+        client.close()
+
+    assert [connection.connection_id for connection in connections] == [
+        "connection-1",
+        "connection-2",
+    ]
+    assert connections[0].request_state == "received"
+    assert connections[0].request_count == 1
+    assert connections[1].request_state == "no_request"
+    assert connections[1].request_count == 0

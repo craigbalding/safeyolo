@@ -13,6 +13,8 @@ import logging
 import ssl
 import threading
 import time
+import uuid
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import TCPServer
@@ -20,7 +22,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from handlers import DEFAULT_HANDLER, HANDLERS, Response
-from models import CapturedRequest
+from models import CapturedRequest, ConnectionObservation
 
 log = logging.getLogger("sinkhole")
 logging.basicConfig(
@@ -66,6 +68,7 @@ class SSLSafeThreadingHTTPServer(NoReverseDNSThreadingHTTPServer):
 # Thread-safe request storage
 _lock = threading.Lock()
 _captured_requests: list[CapturedRequest] = []
+_connections: list[ConnectionObservation] = []
 
 
 def capture_request(req: CapturedRequest):
@@ -93,14 +96,67 @@ def get_requests(
     return results
 
 
+def accept_connection(client_ip: str) -> str:
+    """Record a socket accepted by the sinkhole and return its identity."""
+    observation = ConnectionObservation(
+        connection_id=uuid.uuid4().hex,
+        client_ip=client_ip,
+        accepted_at=time.time(),
+    )
+    with _lock:
+        _connections.append(observation)
+    return observation.connection_id
+
+
+def mark_connection_request(connection_id: str):
+    """Link a parsed request to its accepted connection."""
+    with _lock:
+        for observation in _connections:
+            if observation.connection_id == connection_id:
+                observation.request_state = "received"
+                observation.request_count += 1
+                return
+
+
+def close_connection(connection_id: str):
+    """Record closure and classify whether the connection carried a request."""
+    with _lock:
+        for observation in _connections:
+            if observation.connection_id == connection_id:
+                observation.state = "closed"
+                observation.closed_at = time.time()
+                if observation.request_count == 0:
+                    observation.request_state = "no_request"
+                return
+
+
+def get_connections() -> list[ConnectionObservation]:
+    """Return connection observations in accept order."""
+    with _lock:
+        return [replace(observation) for observation in _connections]
+
+
 def clear_requests():
     """Clear all captured requests."""
     with _lock:
         _captured_requests.clear()
+        _connections.clear()
 
 
 class SinkholeHandler(BaseHTTPRequestHandler):
     """HTTP handler that routes to per-host handlers and captures requests."""
+
+    def setup(self):
+        super().setup()
+        self.connection_id = accept_connection(self.client_address[0])
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            connection_id = getattr(self, "connection_id", None)
+            if connection_id is not None:
+                close_connection(connection_id)
 
     def log_message(self, format, *args):
         log.debug(f"{self.client_address[0]} - {format % args}")
@@ -185,7 +241,9 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             body_complete=body_complete,
             connection_accepted=True,
             connection_closed=connection_closed,
+            connection_id=self.connection_id,
         )
+        mark_connection_request(self.connection_id)
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")
 
@@ -254,6 +312,9 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             host = query.get("host", [None])[0]
             requests = get_requests(host=host)
             self._send_json({"count": len(requests)})
+        elif parsed.path == "/connections":
+            connections = get_connections()
+            self._send_json({"count": len(connections), "connections": [c.to_dict() for c in connections]})
         else:
             self._send_json({"error": "not found"}, 404)
 
