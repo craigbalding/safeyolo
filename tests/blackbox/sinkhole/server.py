@@ -120,11 +120,21 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             return self.rfile.read(content_length)
         return b""
 
+    def _raw_request_target(self) -> str:
+        """Return the request-target before BaseHTTPRequestHandler normalizes it."""
+        raw_requestline = getattr(self, "raw_requestline", b"")
+        if raw_requestline:
+            requestline = raw_requestline.decode("iso-8859-1").rstrip("\r\n")
+            words = requestline.split()
+            if len(words) >= 2:
+                return words[1]
+        return self.path
+
     def _capture_and_route(self, method: str):
         """Capture request and route to handler."""
         host = self._get_host()
         body = self._read_body()
-        raw_target = self.path
+        raw_target = self._raw_request_target()
         raw_query = raw_target.split("?", 1)[1] if "?" in raw_target else None
         parsed = urlparse(raw_target)
 

@@ -2,6 +2,7 @@
 
 import http.client
 import importlib.util
+import socket
 import sys
 import threading
 from pathlib import Path
@@ -111,6 +112,44 @@ def test_sinkhole_fixture_preserves_signed_target_and_query_order():
     assert wire["raw_query"] == target.split("?", 1)[1]
     assert wire["path"] == "/signed"
     assert list(wire["query_params"]) == ["z", "scope", "signature"]
+    assert wire["query_params"]["scope"] == ["read", "write/items"]
+
+
+def test_sinkhole_fixture_preserves_double_slash_target_from_raw_request_line():
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    server = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = "//signed/path?scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
+    request = (
+        f"GET {target} HTTP/1.1\r\n"
+        "Host: signed.test\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii")
+    try:
+        with socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as client:
+            client.sendall(request)
+            response = b""
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                response += chunk
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert b"HTTP/1.0 200 OK" in response
+    requests = server_module.get_requests(host="signed.test")
+    assert len(requests) == 1
+    wire = requests[0].to_dict()
+    assert wire["raw_target"] == target
+    assert wire["raw_query"] == target.split("?", 1)[1]
     assert wire["query_params"]["scope"] == ["read", "write/items"]
 
 
