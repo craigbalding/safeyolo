@@ -1,6 +1,7 @@
 """Client for sinkhole control API."""
 
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Optional
 
@@ -152,19 +153,27 @@ class SinkholeClient:
         timeout: float = 30.0,
     ):
         """Wait for the HTTP receiver and its capture path to be usable."""
-        start = time.time()
-        probe_url = f"{receiver_url.rstrip('/')}/__sinkhole_receiver_ready__"
-        while time.time() - start < timeout:
-            probe_started = time.time()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            nonce = uuid.uuid4().hex
+            probe_path = f"/__sinkhole_receiver_ready__/{nonce}"
+            probe_url = f"{receiver_url.rstrip('/')}{probe_path}"
             try:
                 response = self._client.get(probe_url, headers={"Host": probe_host})
-                if response.status_code == 200 and self.get_requests(
-                    host=probe_host, since=probe_started
-                ):
-                    return
+                if response.status_code == 200:
+                    if any(
+                        request.method == "GET"
+                        and request.path == probe_path
+                        and (
+                            request.raw_target is None
+                            or request.raw_target == probe_path
+                        )
+                        for request in self.get_requests(host=probe_host)
+                    ):
+                        return
             except httpx.RequestError:
                 pass
-            time.sleep(0.5)
+            time.sleep(min(0.5, max(0, deadline - time.monotonic())))
         raise TimeoutError(f"Sinkhole receiver not ready after {timeout}s: {receiver_url}")
 
     def close(self):

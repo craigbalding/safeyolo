@@ -7,8 +7,11 @@ import socket
 import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 from tests.blackbox.sinkhole.models import CapturedRequest
 
@@ -35,6 +38,18 @@ def _send_raw_request(port, request, *, shutdown_write=False):
                 break
             response += chunk
         return response
+
+
+class _AlwaysOKHandler(BaseHTTPRequestHandler):
+    """Receiver stand-in that returns 200 without publishing sinkhole data."""
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
 
 
 def test_sinkhole_bind_does_not_perform_reverse_dns():
@@ -77,7 +92,9 @@ def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
         )
         probe_requests = client.get_requests(host="readiness.test")
         assert len(probe_requests) == 1
-        assert probe_requests[0].path == "/__sinkhole_receiver_ready__"
+        assert probe_requests[0].method == "GET"
+        assert probe_requests[0].path.startswith("/__sinkhole_receiver_ready__/")
+        assert probe_requests[0].raw_target == probe_requests[0].path
 
         # The fixture clears its readiness probe before a negative assertion,
         # so an empty observation means no request reached the receiver.
@@ -88,6 +105,63 @@ def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
         assert client.get_request_count() == 0
     finally:
         client.close()
+        receiver.shutdown()
+        receiver.server_close()
+        receiver_thread.join(timeout=5)
+        control.shutdown()
+        control.server_close()
+        control_thread.join(timeout=5)
+
+
+def test_sinkhole_receiver_readiness_rejects_unrelated_capture():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    receiver = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    receiver_thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+    receiver_thread.start()
+    control = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.ControlAPIHandler
+    )
+    control_thread = threading.Thread(target=control.serve_forever, daemon=True)
+    control_thread.start()
+    unrelated_receiver = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), _AlwaysOKHandler
+    )
+    unrelated_thread = threading.Thread(
+        target=unrelated_receiver.serve_forever, daemon=True
+    )
+    unrelated_thread.start()
+    client = SinkholeClient(f"http://127.0.0.1:{control.server_port}")
+    try:
+        client.wait_for_ready(timeout=2)
+        _send_raw_request(
+            receiver.server_port,
+            b"GET /wrong-path HTTP/1.1\r\n"
+            b"Host: __sinkhole_receiver_ready__.test\r\n"
+            b"Connection: close\r\n"
+            b"\r\n",
+        )
+
+        with pytest.raises(TimeoutError):
+            client.wait_for_receiver_ready(
+                f"http://127.0.0.1:{unrelated_receiver.server_port}", timeout=0.2
+            )
+
+        wrong_requests = client.get_requests(
+            host="__sinkhole_receiver_ready__.test"
+        )
+        assert len(wrong_requests) == 1
+        assert wrong_requests[0].method == "GET"
+        assert wrong_requests[0].path == "/wrong-path"
+    finally:
+        client.close()
+        unrelated_receiver.shutdown()
+        unrelated_receiver.server_close()
+        unrelated_thread.join(timeout=5)
         receiver.shutdown()
         receiver.server_close()
         receiver_thread.join(timeout=5)
