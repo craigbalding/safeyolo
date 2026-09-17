@@ -328,6 +328,10 @@ pub(crate) struct Runtime {
     metrics: Arc<metrics::Metrics>,
     traces: Arc<trace::TraceStore>,
     memory_monitor: Arc<memory_monitor::MemoryMonitor>,
+    /// One process-owned bridge to the retained SQLite/NATS coordination
+    /// substrate. Runtime reloads keep this client so its transport owner
+    /// and namespace remain stable.
+    pub(crate) coord: Arc<agent_api::CoordClient>,
     via_token: String,
     events: Arc<Mutex<File>>,
     temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
@@ -539,6 +543,9 @@ impl Runtime {
             let memory_monitor = previous
                 .map(|runtime| runtime.memory_monitor.clone())
                 .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
+            let coord = previous
+                .map(|runtime| runtime.coord.clone())
+                .unwrap_or_else(|| Arc::new(agent_api::CoordClient::new(config.policy_file.clone())));
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),
                 None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -630,6 +637,7 @@ impl Runtime {
                 metrics,
                 traces,
                 memory_monitor,
+                coord,
                 via_token: config
                     .via_token
                     .clone()

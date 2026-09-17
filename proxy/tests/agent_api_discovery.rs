@@ -128,6 +128,7 @@ async fn discovery_auth_precedes_global_reporting_without_body_reads() {
                 flows: None,
                 circuits: None,
                 declarations: None,
+            coord: None,
             },
             RequestBody {
                 body: &mut body,

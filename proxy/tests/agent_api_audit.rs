@@ -110,6 +110,7 @@ async fn native_envelopes_and_committed_mutations_match_actual_source() {
                 owner: &owner,
                 now: || 1000.,
             }),
+            coord: None,
         };
         let body = RequestBody {
             body: &mut body,

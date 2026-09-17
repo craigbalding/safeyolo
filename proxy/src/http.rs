@@ -1438,6 +1438,7 @@ where
                         now: declaration_time,
                     }),
                 plumb: Some(runtime.plumb.as_ref()),
+                coord: Some(agent_api::CoordContext { client: &runtime.coord }),
             },
             agent_api::RequestBody {
                 body: request.body_mut(),

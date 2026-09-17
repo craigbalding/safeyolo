@@ -85,6 +85,7 @@ impl Fixture {
                 flows: available.then_some(&self.store),
                 circuits: None,
                 declarations: None,
+            coord: None,
             },
             RequestBody {
                 body,

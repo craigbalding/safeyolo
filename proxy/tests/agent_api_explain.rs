@@ -79,6 +79,7 @@ async fn call(
             flows: None,
             circuits: None,
             declarations: None,
+            coord: None,
         },
         RequestBody {
             body: &mut body,
