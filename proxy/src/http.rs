@@ -474,6 +474,64 @@ async fn refresh_http_body_phase<T>(
     refresh_phase(timeout, operation, RefreshPhase::HttpBody).await
 }
 
+/// Resolve and connect one egress route. The production path supplies the
+/// platform resolver and TcpStream connector; keeping both futures as inputs
+/// makes the actual call-site sequence deterministic to hold in native tests.
+async fn resolve_and_connect_egress<
+    T,
+    Resolve,
+    ResolveFuture,
+    Connect,
+    ConnectFuture,
+    Permit,
+    Attempt,
+>(
+    timeout: Option<Duration>,
+    resolve: Resolve,
+    mut connect: Connect,
+    mut permit: Permit,
+    mut attempt: Attempt,
+) -> Result<T, Error>
+where
+    Resolve: FnOnce() -> ResolveFuture,
+    ResolveFuture: Future<Output = Result<Vec<std::net::SocketAddr>, Error>>,
+    Connect: FnMut(std::net::SocketAddr) -> ConnectFuture,
+    ConnectFuture: Future<Output = Result<T, Error>>,
+    Permit: FnMut(std::net::SocketAddr) -> bool,
+    Attempt: FnMut() -> Result<(), Error>,
+{
+    let addresses = refresh_dns_phase(timeout, resolve()).await?;
+    let mut last_error = None;
+    let mut protected = false;
+    let mut connected = None;
+    for address in addresses {
+        if !permit(address) {
+            protected = true;
+            continue;
+        }
+        attempt()?;
+        match refresh_tcp_phase(timeout, connect(address)).await {
+            Ok(value) => {
+                connected = Some(value);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match connected {
+        Some(value) => Ok(value),
+        None if protected => Err(AdminPortAccess.into()),
+        None => match last_error {
+            Some(error) => Err(error),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "egress route resolved no socket addresses",
+            )
+            .into()),
+        },
+    }
+}
+
 struct Connected {
     stream: BoxStream,
     peer: Option<std::net::Ipv4Addr>,
@@ -587,68 +645,37 @@ async fn open_egress_for_flow(
     let mut connection_audit = ignored.map(|selected| {
         ignored_host::ConnectionAudit::new(runtime.audit.clone(), allowed.identity, selected)
     });
-    let connecting: Result<TcpStream, Error> = async {
-        // Resolve and connect are deliberately separate refresh phases. Using
-        // TcpStream::connect((host, port)) here would let the runtime's DNS
-        // work consume the TCP phase budget and make timeout evidence lie
-        // about which operation stalled.
-        let addresses = refresh_dns_phase(phase_timeout, async {
+    let protect_addresses = runtime.admin_shield.protects_port(port)
+        || runtime
+            .admin_address
+            .is_some_and(|bound| bound.port() == port);
+    let mut recorded = false;
+    let connecting: Result<TcpStream, Error> = resolve_and_connect_egress(
+        phase_timeout,
+        || async move {
             tokio::net::lookup_host((host, port))
                 .await
+                .map(|addresses| addresses.collect())
                 .map_err(Into::into)
-        })
-        .await?;
-        let protect_addresses = runtime.admin_shield.protects_port(port)
-            || runtime
-                .admin_address
-                .is_some_and(|bound| bound.port() == port);
-        let mut socket = None;
-        let mut last_error = None;
-        let mut protected = false;
-        let mut recorded = false;
-        for address in addresses {
-            if protect_addresses
+        },
+        |address| async move { TcpStream::connect(address).await.map_err(Into::into) },
+        |address| {
+            !(protect_addresses
                 && (runtime.admin_shield.blocks_address(address)
-                    || runtime
-                        .admin_address
-                        .is_some_and(|bound| crate::admin_shield::targets_listener(address, bound)))
-            {
-                protected = true;
-                continue;
-            }
-            if !recorded {
+                    || runtime.admin_address.is_some_and(|bound| {
+                        crate::admin_shield::targets_listener(address, bound)
+                    })))
+        },
+        || {
+            if recorded {
+                Ok(())
+            } else {
                 record_egress()?;
                 recorded = true;
+                Ok(())
             }
-            match refresh_tcp_phase(phase_timeout, async {
-                TcpStream::connect(address).await.map_err(Into::into)
-            })
-            .await
-            {
-                Ok(connected) => {
-                    socket = Some(connected);
-                    break;
-                }
-                Err(error) => last_error = Some(error),
-            }
-        }
-        match socket {
-            Some(socket) => Ok(socket),
-            None => {
-                if protected {
-                    return Err(AdminPortAccess.into());
-                }
-                if let Some(error) = last_error {
-                    return Err(error);
-                }
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "egress route resolved no socket addresses",
-                )
-                .into())
-            }
-        }
-    }
+        },
+    )
     .await;
     let socket = match connecting {
         Ok(socket) => socket,
@@ -3106,21 +3133,42 @@ mod tests {
         // callsite. They deliberately do not exercise a generic timeout loop:
         // a regression that removes a wrapper from one operation then fails
         // the corresponding boundary test.
-        let error = held_callsite_timeout(refresh_dns_phase(
+        // Hold the resolver future supplied to the real egress sequence. The
+        // connector is never entered while DNS is pending.
+        let mut dns_attempts = 0;
+        let error = held_callsite_timeout(resolve_and_connect_egress(
             Some(Duration::from_secs(10)),
-            std::future::pending::<Result<(), Error>>(),
+            std::future::pending::<Result<Vec<std::net::SocketAddr>, Error>>,
+            |_address| async { Ok::<(), Error>(()) },
+            |_address| true,
+            || {
+                dns_attempts += 1;
+                Ok(())
+            },
         ))
         .await
         .unwrap_err();
         assert_phase_timeout(error, RefreshPhase::Dns);
+        assert_eq!(dns_attempts, 0);
 
-        let error = held_callsite_timeout(refresh_tcp_phase(
+        // Resolve succeeds through the seam, then the real connector future
+        // is held at the TCP call site and cannot be mistaken for DNS.
+        let tcp_address = "127.0.0.1:9".parse().unwrap();
+        let mut tcp_attempts = 0;
+        let error = held_callsite_timeout(resolve_and_connect_egress(
             Some(Duration::from_secs(10)),
-            std::future::pending::<Result<(), Error>>(),
+            || async { Ok::<_, Error>(vec![tcp_address]) },
+            |_address| std::future::pending::<Result<(), Error>>(),
+            |_address| true,
+            || {
+                tcp_attempts += 1;
+                Ok(())
+            },
         ))
         .await
         .unwrap_err();
         assert_phase_timeout(error, RefreshPhase::Tcp);
+        assert_eq!(tcp_attempts, 1);
 
         let error = held_callsite_timeout(refresh_parent_tls_phase(
             Some(Duration::from_secs(10)),
