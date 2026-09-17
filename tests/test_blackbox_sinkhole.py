@@ -150,6 +150,7 @@ def test_sinkhole_fixture_preserves_double_slash_target_from_raw_request_line():
     wire = requests[0].to_dict()
     assert wire["raw_target"] == target
     assert wire["raw_query"] == target.split("?", 1)[1]
+    assert wire["path"] == "/signed/path"
     assert wire["query_params"]["scope"] == ["read", "write/items"]
 
 

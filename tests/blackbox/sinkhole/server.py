@@ -136,7 +136,10 @@ class SinkholeHandler(BaseHTTPRequestHandler):
         body = self._read_body()
         raw_target = self._raw_request_target()
         raw_query = raw_target.split("?", 1)[1] if "?" in raw_target else None
-        parsed = urlparse(raw_target)
+        # Keep the historical normalized views based on ``self.path``.  In
+        # particular, BaseHTTPRequestHandler reduces a leading ``//`` to one
+        # slash before exposing it here, while raw_target remains lossless.
+        parsed = urlparse(self.path)
 
         # Capture the request
         captured = CapturedRequest(
