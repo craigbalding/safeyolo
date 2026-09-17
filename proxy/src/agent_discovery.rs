@@ -48,6 +48,8 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
+const IDENTITY_MAX_CHARS: usize = 128;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityStatus {
     Resolved,
@@ -209,13 +211,26 @@ impl AgentDiscovery {
         writer: &Writer,
         clock: impl FnOnce() -> f64,
     ) -> Result<ReconciledIdentity> {
-        self.reload(writer)?;
+        // Source request hooks catch map lookup/reload exceptions locally. A
+        // report read has a separate contract and still propagates its error
+        // through `get_agents`/`get_stats`; only this request-boundary path
+        // degrades to lookup_error.
+        let (reload_failed, mapped_agent) = match self.reload(writer) {
+            Ok(()) => match sources.client_ip.filter(|ip| !ip.is_empty()) {
+                Some(ip) => match self.map_agent(ip) {
+                    Ok(mapped) => (false, mapped),
+                    // The source catches lookup failures at the request
+                    // boundary. Keep reports on their direct error path.
+                    Err(_) => (true, None),
+                },
+                None => (false, None),
+            },
+            // A reload may have published state before an audit submission
+            // error. The request still follows the source lookup-error path.
+            Err(_) => (true, None),
+        };
         let uds_agent = canonical_identity(sources.uds_agent);
         let metadata_agent = canonical_identity(sources.metadata_agent);
-        let mapped_agent = match sources.client_ip.filter(|ip| !ip.is_empty()) {
-            Some(ip) => self.map_agent(ip)?,
-            None => None,
-        };
 
         let identity = if let (Some(uds), Some(mapped)) = (&uds_agent, &mapped_agent)
             && uds != mapped
@@ -253,6 +268,16 @@ impl AgentDiscovery {
                     mapped_agent,
                     metadata_agent,
                     reason: None,
+                }
+            } else if reload_failed && agent.is_none() {
+                ReconciledIdentity {
+                    status: IdentityStatus::Unavailable,
+                    agent: None,
+                    source: None,
+                    uds_agent,
+                    mapped_agent,
+                    metadata_agent,
+                    reason: Some("lookup_error"),
                 }
             } else {
                 ReconciledIdentity {
@@ -331,6 +356,10 @@ fn canonical_identity(value: Option<&str>) -> Option<String> {
     }
 }
 
+fn projected_identity(value: &str) -> String {
+    value.chars().take(IDENTITY_MAX_CHARS).collect()
+}
+
 fn emit_identity_event(
     writer: &Writer,
     request_id: Option<&str>,
@@ -352,10 +381,10 @@ fn emit_identity_event(
     };
     let mut provenance = IndexMap::new();
     if let Some(agent) = identity.uds_agent.as_deref() {
-        provenance.insert("uds_agent".into(), text(agent));
+        provenance.insert("uds_agent".into(), text(&projected_identity(agent)));
     }
     if let Some(agent) = identity.mapped_agent.as_deref() {
-        provenance.insert("ip_map_agent".into(), text(agent));
+        provenance.insert("ip_map_agent".into(), text(&projected_identity(agent)));
     }
     if let Some(reason) = identity.reason {
         provenance.insert("reason".into(), text(reason));
@@ -365,13 +394,13 @@ fn emit_identity_event(
         details.insert("reason".into(), text(reason));
     }
     if let Some(agent) = identity.uds_agent.as_deref() {
-        details.insert("uds_agent".into(), text(agent));
+        details.insert("uds_agent".into(), text(&projected_identity(agent)));
     }
     if let Some(agent) = identity.mapped_agent.as_deref() {
-        details.insert("mapped_agent".into(), text(agent));
+        details.insert("mapped_agent".into(), text(&projected_identity(agent)));
     }
     if let Some(agent) = identity.metadata_agent.as_deref() {
-        details.insert("metadata_agent".into(), text(agent));
+        details.insert("metadata_agent".into(), text(&projected_identity(agent)));
     }
     let mut event = Event::new(event_name, Kind::Security, severity, summary);
     event.request_id = request_id.map(str::to_owned);

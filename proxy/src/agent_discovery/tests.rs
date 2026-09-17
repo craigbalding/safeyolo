@@ -590,24 +590,223 @@ fn identity_reconciliation_preserves_source_unreadable_and_malformed_map_outcome
     assert_eq!(malformed.mapped_agent.as_deref(), Some("alice"));
     assert_eq!(owner.lock().unwrap().last_seen["alice"], 401.0);
 
-    // A valid JSON value with the wrong top-level shape raises the source
-    // AttributeError instead of being converted into an identity.
+    // At a request boundary the source catches a valid JSON value with the
+    // wrong top-level shape. A trusted UDS identity remains authoritative and
+    // advances only its own last-seen value.
     put(&path, b"[]", 4.0);
+    let non_object = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-attribute-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 402.0,
+        )
+        .unwrap();
+    assert_eq!(non_object.status, IdentityStatus::Resolved);
+    assert_eq!(non_object.agent.as_deref(), Some("alice"));
+    assert!(non_object.mapped_agent.is_none());
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 402.0);
+
+    // Without the UDS evidence, the same caught source error is an unavailable
+    // lookup result rather than a successful map fallback.
+    let non_object_unavailable = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-attribute-no-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 403.0,
+        )
+        .unwrap();
+    assert_eq!(non_object_unavailable.status, IdentityStatus::Unavailable);
+    assert_eq!(non_object_unavailable.reason, Some("lookup_error"));
+    assert!(!owner.lock().unwrap().last_seen.contains_key("10.0.0.1"));
     assert_eq!(
         owner
-            .reconcile(
-                IdentitySources {
-                    uds_agent: Some("alice"),
-                    client_ip: Some("10.0.0.1"),
-                    request_id: Some("req-attribute"),
-                    ..Default::default()
-                },
-                &owned.writer,
-                || 402.0,
-            )
+            .get_agents(&owned.writer, || 403.5)
             .unwrap_err()
             .kind(),
         ErrorKind::Attribute
     );
-    assert_eq!(owner.lock().unwrap().last_seen["alice"], 401.0);
+
+    // Invalid UTF-8 follows the same request-boundary containment. The direct
+    // report API retains its source error category and does not translate it.
+    put(&path, &[b'{', 0xff, b'}'], 5.0);
+    let utf8_uds = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-utf8-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 404.0,
+        )
+        .unwrap();
+    assert_eq!(utf8_uds.status, IdentityStatus::Resolved);
+    assert_eq!(utf8_uds.agent.as_deref(), Some("alice"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 404.0);
+    let utf8_unavailable = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-utf8-no-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 405.0,
+        )
+        .unwrap();
+    assert_eq!(utf8_unavailable.status, IdentityStatus::Unavailable);
+    assert_eq!(utf8_unavailable.reason, Some("lookup_error"));
+    assert_eq!(
+        owner
+            .get_agents(&owned.writer, || 406.0)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::UnicodeDecode
+    );
+    let records = owned.records();
+    let unavailable = records
+        .iter()
+        .find(|event| event["request_id"] == "req-utf8-no-uds")
+        .unwrap();
+    assert_eq!(unavailable["event"], "security.agent_identity_unavailable");
+    assert_eq!(unavailable["details"]["reason"], "lookup_error");
+}
+
+#[test]
+fn identity_reconciliation_contains_reload_audit_errors_at_request_boundary() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    let poisoned = Writer::new(owned.path("poisoned.jsonl"), Settings::default());
+    poisoned.poison_for_test();
+    put(&path, br#"{"bob":{"ip":"10.0.0.1"}}"#, 2.0);
+    let with_uds = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-audit-uds"),
+                ..Default::default()
+            },
+            &poisoned,
+            || 500.0,
+        )
+        .unwrap();
+    assert_eq!(with_uds.status, IdentityStatus::Resolved);
+    assert_eq!(with_uds.agent.as_deref(), Some("alice"));
+    assert!(with_uds.mapped_agent.is_none());
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 500.0);
+
+    // Force a second reload so the no-UDS request sees the same audit failure;
+    // it must not use the newly published map as a successful identity.
+    put(&path, br#"{"carol":{"ip":"10.0.0.2"}}"#, 3.0);
+    let without_uds = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-audit-no-uds"),
+                ..Default::default()
+            },
+            &poisoned,
+            || 501.0,
+        )
+        .unwrap();
+    assert_eq!(without_uds.status, IdentityStatus::Unavailable);
+    assert_eq!(without_uds.reason, Some("lookup_error"));
+    assert!(!owner.lock().unwrap().last_seen.contains_key("carol"));
+
+    // Reports retain their own direct reload/error contract. The failed
+    // audit submissions left the map published, so a healthy report writer
+    // can still read the reached state.
+    let report = owner.get_agents(&owned.writer, || 502.0).unwrap();
+    assert!(
+        report.as_object().unwrap()["agents"]
+            .as_object()
+            .unwrap()
+            .contains_key("carol")
+    );
+}
+
+#[test]
+fn identity_events_bound_projected_names_but_keep_full_canonical_values() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    let uds = "u".repeat(140);
+    let mapped = "m".repeat(140);
+    let metadata = "x".repeat(140);
+    let map = format!(r#"{{"{mapped}":{{"ip":"10.0.0.1"}}}}"#);
+    put(&path, map.as_bytes(), 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    let conflict = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some(&uds),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-long-map"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 600.0,
+        )
+        .unwrap();
+    assert_eq!(conflict.status, IdentityStatus::Conflict);
+    assert_eq!(conflict.uds_agent.as_deref(), Some(uds.as_str()));
+    assert_eq!(conflict.mapped_agent.as_deref(), Some(mapped.as_str()));
+
+    let metadata_conflict = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some(&uds),
+                client_ip: Some("10.0.0.1"),
+                metadata_agent: Some(&metadata),
+                request_id: Some("req-long-metadata"),
+            },
+            &owned.writer,
+            || 601.0,
+        )
+        .unwrap();
+    assert_eq!(metadata_conflict.status, IdentityStatus::Conflict);
+    assert_eq!(
+        metadata_conflict.metadata_agent.as_deref(),
+        Some(metadata.as_str())
+    );
+
+    let records = owned.records();
+    for request_id in ["req-long-map", "req-long-metadata"] {
+        let event = records
+            .iter()
+            .find(|event| event["request_id"] == request_id)
+            .unwrap();
+        for key in ["uds_agent", "mapped_agent", "metadata_agent"] {
+            if let Some(value) = event["details"].get(key) {
+                assert_eq!(value.as_str().unwrap().chars().count(), IDENTITY_MAX_CHARS);
+            }
+        }
+        let provenance = &event["details"]["attribution"]["attribution_provenance"];
+        if let Some(value) = provenance.get("uds_agent") {
+            assert_eq!(value.as_str().unwrap().chars().count(), IDENTITY_MAX_CHARS);
+        }
+        if let Some(value) = provenance.get("ip_map_agent") {
+            assert_eq!(value.as_str().unwrap().chars().count(), IDENTITY_MAX_CHARS);
+        }
+    }
 }
