@@ -654,6 +654,227 @@ mod tests {
         }
     }
 
+    async fn drive_gateway_lease(
+        fixture: &Fixture,
+        store: crate::grants::Store,
+        lease: crate::grants::GrantLease,
+        wire: &[u8],
+    ) -> StatusCode {
+        let (client, mut peer) = tokio::io::duplex(4096);
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(client))
+            .await
+            .unwrap();
+        let mut request = Request::builder()
+            .uri("http://owned.invalid/")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let completion = Completion::register(
+            &mut request,
+            false,
+            fixture.state.clone(),
+            ConnectionIdentity {
+                agent_id: "alice".into(),
+                connection_id: "owned-connection".into(),
+                source_id: None,
+            },
+            "owned-request".into(),
+            "owned.invalid".into(),
+            None,
+            Some(lease),
+            Some(store),
+        );
+        let mut driver = Task(tokio::spawn(completion.clone().drive(connection)));
+        let response = sender.send_request(request);
+        read_head(&mut peer).await;
+        peer.write_all(wire).await.unwrap();
+        peer.shutdown().await.unwrap();
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        let status = response.status();
+        response.into_body().collect().await.unwrap();
+        let _ = tokio::time::timeout(LIMIT, &mut driver.0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completion.try_finish(), Some(false));
+        status
+    }
+
+    #[tokio::test]
+    async fn actual_h1_completion_consumes_real_once_lease_only_after_2xx_terminal() {
+        let fixture = Fixture::new(false);
+        let directory = tempfile::tempdir().unwrap();
+        let policy = directory.path().join("policy.toml");
+        std::fs::write(&policy, "[agents.alice]\n").unwrap();
+        let store = crate::grants::Store::open(&policy, time::OffsetDateTime::now_utc()).unwrap();
+        let request = crate::grants::GrantRequest {
+            agent: "alice".into(),
+            service: "mail".into(),
+            method: "GET".into(),
+            path: "/v1/send".into(),
+            scope: crate::grants::GrantScope::Once,
+        };
+        store
+            .add_grant(request, time::OffsetDateTime::now_utc(), |_| Ok(()))
+            .unwrap();
+        let lease = store
+            .check_grant(
+                crate::grants::RequestScope {
+                    agent: "alice",
+                    service: "mail",
+                    method: "GET",
+                    path: "/v1/send",
+                },
+                time::OffsetDateTime::now_utc(),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+        let status = drive_gateway_lease(
+            &fixture,
+            store.clone(),
+            lease,
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno",
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            store
+                .list_grants(time::OffsetDateTime::now_utc())
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let lease = store
+            .check_grant(
+                crate::grants::RequestScope {
+                    agent: "alice",
+                    service: "mail",
+                    method: "GET",
+                    path: "/v1/send",
+                },
+                time::OffsetDateTime::now_utc(),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+        let status = drive_gateway_lease(
+            &fixture,
+            store.clone(),
+            lease,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            store
+                .list_grants(time::OffsetDateTime::now_utc())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn actual_h1_completion_keeps_new_reservation_when_old_lease_finishes_stale() {
+        let fixture = Fixture::new(false);
+        let directory = tempfile::tempdir().unwrap();
+        let policy = directory.path().join("policy.toml");
+        std::fs::write(&policy, "[agents.alice]\n").unwrap();
+        let store = crate::grants::Store::open(&policy, time::OffsetDateTime::now_utc()).unwrap();
+        let request = || crate::grants::GrantRequest {
+            agent: "alice".into(),
+            service: "mail".into(),
+            method: "GET".into(),
+            path: "/v1/send".into(),
+            scope: crate::grants::GrantScope::Once,
+        };
+        store
+            .add_grant(request(), time::OffsetDateTime::now_utc(), |_| Ok(()))
+            .unwrap();
+        let old = store
+            .check_grant(
+                crate::grants::RequestScope {
+                    agent: "alice",
+                    service: "mail",
+                    method: "GET",
+                    path: "/v1/send",
+                },
+                time::OffsetDateTime::now_utc(),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+        let old_id = old.grant().grant_id.clone();
+        assert!(
+            store
+                .revoke_grant(
+                    "alice",
+                    &old_id,
+                    time::OffsetDateTime::now_utc(),
+                    |_| Ok(())
+                )
+                .unwrap()
+        );
+        store
+            .add_grant(request(), time::OffsetDateTime::now_utc(), |_| Ok(()))
+            .unwrap();
+        let current = store
+            .check_grant(
+                crate::grants::RequestScope {
+                    agent: "alice",
+                    service: "mail",
+                    method: "GET",
+                    path: "/v1/send",
+                },
+                time::OffsetDateTime::now_utc(),
+                |_| Ok(()),
+            )
+            .unwrap()
+            .unwrap();
+
+        let status = drive_gateway_lease(
+            &fixture,
+            store.clone(),
+            old,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            store
+                .check_grant(
+                    crate::grants::RequestScope {
+                        agent: "alice",
+                        service: "mail",
+                        method: "GET",
+                        path: "/v1/send",
+                    },
+                    time::OffsetDateTime::now_utc(),
+                    |_| Ok(()),
+                )
+                .unwrap()
+                .is_none(),
+            "the replacement reservation remains held after stale completion"
+        );
+        assert_eq!(
+            store
+                .finish_response(current, Some(200), time::OffsetDateTime::now_utc(), |_| Ok(
+                    ()
+                ))
+                .unwrap(),
+            crate::grants::ResponseOutcome::Consumed
+        );
+        assert!(
+            store
+                .list_grants(time::OffsetDateTime::now_utc())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     fn h2_frame(kind: u8, flags: u8, payload: &[u8]) -> Vec<u8> {
         let mut bytes = vec![
             (payload.len() >> 16) as u8,

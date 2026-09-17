@@ -385,16 +385,47 @@ mod tests {
             &owner,
             "/admin/gateway/contract-binding",
             Method::POST,
-            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"tenant":"tenant-alpha"},"grantable_operations":["send"]}"#,
+            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"tenant":"tenant-alpha","integer":9223372036854775807,"array":[1,2.5,true,{"nested":3}]},"grantable_operations":["send"]}"#,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(bound["binding_id"].as_str().is_some());
+        let expected_values = json!({
+            "tenant": "tenant-alpha",
+            "integer": i64::MAX,
+            "array": [1, 2.5, true, {"nested": 3}],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_values
+        );
+        // Exercise the retained operator consumer's durable save and reload
+        // path, preserving typed scalar and structured binding values exactly.
+        store
+            .reload(time::OffsetDateTime::now_utc(), |_| Ok(()))
+            .unwrap();
         assert!(
             store
                 .binding_for_agent("alice", "mail", "send")
                 .unwrap()
                 .is_some()
+        );
+        assert_eq!(
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_values
         );
 
         let (status, revoked) = call(
@@ -453,6 +484,51 @@ mod tests {
                 .binding_for_agent("alice", "mail", "send")
                 .unwrap()
                 .is_none()
+        );
+        assert!(!directory.path().join("audit.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn retained_binding_api_rejects_unsupported_large_integer_explicitly() {
+        let directory = tempfile::tempdir().unwrap();
+        let policy = directory.path().join("policy.toml");
+        std::fs::write(&policy, "[agents.alice]\n").unwrap();
+        let store = crate::grants::Store::open(&policy, time::OffsetDateTime::now_utc()).unwrap();
+        let writer = Arc::new(crate::audit::Writer::new(
+            directory.path().join("audit.jsonl"),
+            crate::audit::Settings::default(),
+        ));
+        let owner = crate::admin_api::ServiceMutationOwner::default();
+        let source = r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":18446744073709551616},"grantable_operations":["send"]}"#;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/gateway/contract-binding")
+            .header("Content-Length", source.len())
+            .body(Full::new(Bytes::copy_from_slice(source.as_bytes())))
+            .unwrap();
+        let outcome = {
+            let audit = ServiceAudit {
+                writer: &writer,
+                client_ip: "127.0.0.1",
+                target: "/admin/gateway/contract-binding",
+                mutation_owner: &owner,
+                gateway_store: Some(&store),
+            };
+            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+        };
+        // Native durable bindings retain the source integer through parsing,
+        // then reject values outside TOML's signed 64-bit range before any
+        // state or audit publication. This is the explicit D22 contract.
+        assert!(matches!(outcome, Err(Error::ServiceMutation)));
+        assert!(
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&policy).unwrap(),
+            "[agents.alice]\n"
         );
         assert!(!directory.path().join("audit.jsonl").exists());
     }

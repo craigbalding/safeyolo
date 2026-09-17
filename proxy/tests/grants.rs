@@ -24,6 +24,29 @@ fn setup(source: &str) -> (tempfile::TempDir, PathBuf, Store) {
     let store = Store::open(path.clone(), now()).unwrap();
     (directory, path, store)
 }
+
+#[test]
+fn unchanged_reload_skips_activation_and_policy_rewrite() {
+    let (_directory, path, store) = setup(SOURCE);
+    let before = fs::metadata(&path).unwrap();
+    let original = fs::read(&path).unwrap();
+    let mut activations = 0;
+
+    store
+        .reload(now(), |_| {
+            activations += 1;
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(activations, 0);
+    assert_eq!(fs::read(&path).unwrap(), original);
+    assert_eq!(
+        fs::metadata(&path).unwrap().modified().unwrap(),
+        before.modified().unwrap()
+    );
+}
+
 fn request(agent: &str, scope: GrantScope) -> GrantRequest {
     GrantRequest {
         agent: agent.into(),

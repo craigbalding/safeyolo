@@ -500,7 +500,11 @@ impl Store {
         now: OffsetDateTime,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<()> {
-        self.transaction(now, false, |_, _| Ok(()), activate)
+        // Normalization still writes legacy records when it changes the
+        // document, while an unchanged reload leaves its inode and mtime
+        // untouched. Runtime publication can therefore reconcile an external
+        // edit without racing a service-catalog token publication.
+        self.transaction(now, true, |_, _| Ok(()), activate)
     }
     pub fn add_grant(
         &self,
