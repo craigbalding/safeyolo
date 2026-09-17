@@ -9,6 +9,13 @@ use zeroize::Zeroizing;
 
 use super::{FilterError, Result};
 
+// Python's parser accepts the supported nested-group forms through depth 495
+// and raises RecursionError at depth 496. This handoff threshold only protects
+// the ordinary worker stack; it is not an operator pattern limit.
+const PYTHON_PARSE_DEPTH: usize = 496;
+const DEEP_PARSE_HANDOFF_DEPTH: usize = 64;
+const DEEP_PARSE_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 pub(super) enum ByteRegex {
     Regular(regex::bytes::Regex),
     Fancy(Regex),
@@ -46,7 +53,35 @@ pub(super) fn compile(
     if contains_high_byte(&adapted) {
         return Err(FilterError::Compatibility);
     }
-    RegexBuilder::new(&adapted)
+    compile_fancy(&adapted, insensitive, multiline, dotall)
+}
+
+fn compile_fancy(
+    adapted: &str,
+    insensitive: bool,
+    multiline: bool,
+    dotall: bool,
+) -> Result<ByteRegex> {
+    if pattern_group_depth(adapted) > DEEP_PARSE_HANDOFF_DEPTH {
+        let pattern = adapted.to_owned();
+        return std::thread::Builder::new()
+            .name("safeyolo-byte-regex-parser".into())
+            .stack_size(DEEP_PARSE_STACK_BYTES)
+            .spawn(move || compile_fancy_local(&pattern, insensitive, multiline, dotall))
+            .map_err(|_| FilterError::Compatibility)?
+            .join()
+            .unwrap_or(Err(FilterError::Compatibility));
+    }
+    compile_fancy_local(adapted, insensitive, multiline, dotall)
+}
+
+fn compile_fancy_local(
+    adapted: &str,
+    insensitive: bool,
+    multiline: bool,
+    dotall: bool,
+) -> Result<ByteRegex> {
+    RegexBuilder::new(adapted)
         .bytes_mode(BytesMode::Ascii)
         .case_insensitive(insensitive)
         .multi_line(multiline)
@@ -70,6 +105,31 @@ pub(super) fn compile(
             ) => FilterError::Invalid,
             _ => FilterError::Compatibility,
         })
+}
+
+fn pattern_group_depth(pattern: &str) -> usize {
+    let mut depth: usize = 0;
+    let mut maximum: usize = 0;
+    let mut in_class = false;
+    let mut escaped = false;
+    for byte in pattern.bytes() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' => escaped = true,
+            b'[' if !in_class => in_class = true,
+            b']' if in_class => in_class = false,
+            b'(' if !in_class => {
+                depth += 1;
+                maximum = maximum.max(depth);
+            }
+            b')' if !in_class => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    maximum
 }
 
 fn contains_high_byte(pattern: &str) -> bool {
@@ -277,6 +337,9 @@ fn adapt(pattern: &str, insensitive: bool) -> Result<Zeroizing<String>> {
                     }
                     if scoped {
                         groups.push((verbose, case_insensitive));
+                        if groups.len() >= PYTHON_PARSE_DEPTH {
+                            return Err(FilterError::Compatibility);
+                        }
                     }
                     if positive.contains('x') {
                         verbose = true;
@@ -319,6 +382,9 @@ fn adapt(pattern: &str, insensitive: bool) -> Result<Zeroizing<String>> {
                 }
             }
             groups.push((verbose, case_insensitive));
+            if groups.len() >= PYTHON_PARSE_DEPTH {
+                return Err(FilterError::Compatibility);
+            }
         } else if byte == b')' {
             (verbose, case_insensitive) = groups.pop().ok_or(FilterError::Invalid)?;
         }

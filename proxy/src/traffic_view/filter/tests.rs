@@ -129,6 +129,40 @@ fn advanced_byte_subjects_keep_backreferences_and_lookaround_byte_wide() {
 }
 
 #[test]
+fn byte_filter_nesting_keeps_python_boundary_on_regular_and_fancy_paths() {
+    let (view, exchange) = observed(false);
+    exchange.request_body(Some(b"a"));
+
+    for (name, open) in [("capturing", "("), ("noncapturing", "(?:")] {
+        let accepted = format!("~b \"{}a{}\"", open.repeat(495), ")".repeat(495));
+        assert!(matched(&view, &accepted), "{name} depth 495 should match");
+
+        let rejected = format!("~b \"{}a{}\"", open.repeat(496), ")".repeat(496));
+        assert_eq!(
+            view.set_user_filter(&rejected),
+            Err(FilterError::Compatibility),
+            "{name} depth 496 should preserve Python's parser boundary"
+        );
+    }
+
+    // A top-level lookahead selects the fancy-regex fallback. Keep the inner
+    // nesting at 494 so the lookahead itself brings the source depth to 495.
+    let inner = format!("{}a{}", "(?:".repeat(494), ")".repeat(494));
+    let lookahead = format!("~b \"(?={inner})a\"");
+    assert!(
+        matched(&view, &lookahead),
+        "deep fancy lookahead should match"
+    );
+    let too_deep_inner = format!("{}a{}", "(?:".repeat(495), ")".repeat(495));
+    let too_deep_lookahead = format!("~b \"(?={too_deep_inner})a\"");
+    assert_eq!(
+        view.set_user_filter(&too_deep_lookahead),
+        Err(FilterError::Compatibility),
+        "depth 496 lookahead should preserve Python's parser boundary"
+    );
+}
+
+#[test]
 fn shared_lexer_preserves_source_wrapper_and_numeric_escape_behavior() {
     let (view, exchange) = observed(false);
     exchange.request_body(Some(b"A B x41 101"));
