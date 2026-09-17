@@ -22,6 +22,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -35,6 +36,7 @@ SCHEMA = 1
 COMMAND_TIMEOUT = 20.0
 OUTPUT_LIMIT = 4_096
 JSON_LIMIT = 4 * 1024 * 1024
+PARTIAL_STATUS = "partial_unexecuted"
 AGENT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 
@@ -52,13 +54,12 @@ def _resolve_executable(value: str | os.PathLike[str] | None, label: str) -> Pat
         if selected is None:
             raise SmokeError(f"{label} was not found on PATH: {candidate}")
         candidate = Path(selected)
-    try:
-        resolved = candidate.resolve(strict=True)
-    except (FileNotFoundError, OSError) as exc:
-        raise SmokeError(f"{label} does not exist: {candidate}") from exc
-    if not resolved.is_file() or not os.access(resolved, os.X_OK):
-        raise SmokeError(f"{label} is not executable: {resolved}")
-    return resolved
+    # Keep the selected launcher spelling (including a venv/PATH symlink) for
+    # invocation. Resolve only when a separate identity comparison needs it.
+    selected = Path(os.path.abspath(os.fspath(candidate)))
+    if not selected.is_file() or not os.access(selected, os.X_OK):
+        raise SmokeError(f"{label} is not executable: {selected}")
+    return selected
 
 
 def _run(
@@ -140,9 +141,9 @@ def _interpreter_from_shebang(executable: Path) -> Path | None:
         return None
     if Path(fields[0]).name == "env" and len(fields) > 1:
         selected = shutil.which(fields[1])
-        return Path(selected).resolve() if selected else None
+        return Path(os.path.abspath(selected)) if selected else None
     interpreter = Path(fields[0])
-    return interpreter.resolve() if interpreter.is_file() else None
+    return Path(os.path.abspath(os.fspath(interpreter))) if interpreter.is_file() else None
 
 
 def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
@@ -169,14 +170,18 @@ def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
             timeout=5,
         )
         if package.returncode == 0 and package.stdout.strip():
-            result["package_location"] = package.stdout.strip()[-OUTPUT_LIMIT:]
+            package_location = Path(package.stdout.strip()[-OUTPUT_LIMIT:]).expanduser()
+            try:
+                package_path = package_location.resolve(strict=True)
+            except (FileNotFoundError, OSError) as exc:
+                raise SmokeError(
+                    f"selected CLI interpreter reported an unusable safeyolo package: {package_location}"
+                ) from exc
+            result["package_location"] = str(package_path)
         else:
-            result["package_location"] = None
-            result["package_error"] = "selected CLI interpreter could not import safeyolo"
+            raise SmokeError("selected CLI interpreter could not import an installed safeyolo package")
     else:
-        result["interpreter"] = None
-        result["package_location"] = None
-        result["package_error"] = "CLI launcher does not expose a Python shebang"
+        raise SmokeError("selected CLI launcher has no usable Python shebang interpreter")
     return result
 
 
@@ -239,7 +244,7 @@ def _read_json(path: Path, label: str) -> dict[str, Any]:
 def _absolute_path(value: str, cwd: Path) -> Path:
     """Resolve paths using the existing CLI working-directory contract."""
     path = Path(value).expanduser()
-    return path if path.is_absolute() else (cwd / path).resolve()
+    return (path if path.is_absolute() else cwd / path).resolve()
 
 
 def _native_config(path: Path, cwd: Path) -> dict[str, Any]:
@@ -352,12 +357,32 @@ def _process_start_token(pid: int) -> str | None:
 
 
 def _process_executable(pid: int) -> Path | None:
-    """Read the actual Linux process executable, when the host exposes it."""
-    proc = Path(f"/proc/{pid}/exe")
-    try:
-        return proc.resolve(strict=True)
-    except (FileNotFoundError, OSError):
+    """Read the actual supported-host executable, when the host exposes it."""
+    if sys.platform.startswith("linux"):
+        proc = Path(f"/proc/{pid}/exe")
+        try:
+            return proc.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            return None
+    if platform.system() != "Darwin":
         return None
+    # macOS has no /proc. `comm` is preferred, while `command` also provides
+    # an absolute argv[0] on hosts whose ps does not expose it in comm.
+    for arguments in (("-o", "comm="), ("-o", "command=")):
+        result = _run(["ps", "-p", str(pid), *arguments], timeout=5)
+        if result.returncode != 0:
+            continue
+        try:
+            fields = shlex.split(result.stdout.strip())
+        except ValueError:
+            continue
+        if not fields or not Path(fields[0]).is_absolute():
+            continue
+        try:
+            return Path(fields[0]).resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+    return None
 
 
 def _read_receipt(config_dir: Path) -> dict[str, Any] | None:
@@ -404,6 +429,8 @@ def _runtime_observation(
     native: dict[str, Any],
     candidate: Path,
     *,
+    config_path: Path,
+    working_directory: Path,
     require_running: bool,
 ) -> dict[str, Any]:
     """Inspect receipt, actual process, marker, and configured listeners."""
@@ -423,13 +450,32 @@ def _runtime_observation(
     observed_token = _process_start_token(pid)
     if observed_token is None or observed_token != recorded_token:
         raise SmokeError(f"Rust process receipt does not own pid {pid}")
+    recorded_config = receipt.get("config_file")
+    if not isinstance(recorded_config, str) or not Path(recorded_config).is_absolute():
+        raise SmokeError("Rust process receipt config_file must be absolute")
+    if Path(recorded_config).resolve() != config_path.resolve():
+        raise SmokeError("Rust process receipt config_file does not match supplied native config")
+    recorded_working_directory = receipt.get("working_directory")
+    if not isinstance(recorded_working_directory, str) or not Path(recorded_working_directory).is_absolute():
+        raise SmokeError("Rust process receipt working_directory must be absolute")
+    if Path(recorded_working_directory).resolve() != working_directory.resolve():
+        raise SmokeError("Rust process receipt working_directory does not match smoke working directory")
     readiness_value = receipt.get("readiness_file")
     if not isinstance(readiness_value, str) or not Path(readiness_value).is_absolute():
         raise SmokeError("Rust process receipt readiness_file must be absolute")
-    marker = _read_json(Path(readiness_value), "Rust readiness marker")
+    readiness_path = Path(readiness_value).resolve()
+    if readiness_path != Path(native["readiness_file"]).resolve():
+        raise SmokeError("Rust process receipt readiness_file does not match supplied native config")
+    marker = _read_json(readiness_path, "Rust readiness marker")
     _validate_marker(marker, pid, len(native["listeners"]))
     actual = _process_executable(pid)
-    if actual is not None and actual != candidate:
+    if actual is None:
+        raise SmokeError("cannot observe the running Rust executable identity on this supported host")
+    try:
+        expected = candidate.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise SmokeError(f"selected Rust executable disappeared during smoke: {candidate}") from exc
+    if actual != expected:
         raise SmokeError(f"running pid {pid} is {actual}, expected selected Rust binary {candidate}")
     listeners = []
     for entry in native["listeners"]:
@@ -619,6 +665,32 @@ def _base_report(cli: dict[str, Any], candidate: dict[str, Any], substrate: dict
     }
 
 
+def _require_substrate(substrate: dict[str, Any]) -> None:
+    """Require the selected Linux/macOS bridge before reporting a smoke pass."""
+    if substrate.get("status") != "discovered":
+        reason = substrate.get("reason") or "the required host substrate was not discovered"
+        raise SmokeError(f"required host substrate unavailable: {reason}")
+
+
+def _smoke_logs_dir(config_dir: Path) -> Path:
+    """Return a private log directory inside the marked disposable instance."""
+    selected = config_dir / "logs"
+    if selected.is_symlink():
+        raise SmokeError(f"disposable smoke logs directory must not be a symlink: {selected}")
+    logs_dir = selected.resolve()
+    try:
+        logs_dir.relative_to(config_dir)
+    except ValueError as exc:
+        raise SmokeError(f"disposable smoke logs directory escapes config dir: {logs_dir}") from exc
+    try:
+        logs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SmokeError(f"disposable smoke logs directory is not writable: {logs_dir}") from exc
+    if not logs_dir.is_dir():
+        raise SmokeError(f"disposable smoke logs path is not a directory: {logs_dir}")
+    return logs_dir
+
+
 def _write_report(output: Path, report: dict[str, Any]) -> None:
     """Write one private evidence artifact, creating only its parent directory."""
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -635,13 +707,17 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": args.mode}
     try:
-        if substrate["status"] == "unsupported":
-            raise SmokeError(substrate["reason"])
+        _require_substrate(substrate)
         native_path = _absolute_path(args.rust_config, cwd)
         native = _native_config(native_path, cwd)
         report["native"] = {key: value for key, value in native.items() if key != "raw"}
         report["runtime"] = _runtime_observation(
-            config_dir, native, candidate_path, require_running=require_running
+            config_dir,
+            native,
+            candidate_path,
+            config_path=native_path,
+            working_directory=cwd,
+            require_running=require_running,
         )
         report["guest_ingress"] = {
             "agents": _agent_map(config_dir),
@@ -680,16 +756,22 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": "smoke"}
     report["native"] = {key: value for key, value in native.items() if key != "raw"}
-    if substrate["status"] == "unsupported":
+    try:
+        _require_substrate(substrate)
+        logs_dir = _smoke_logs_dir(config_dir)
+    except SmokeError as exc:
         report["status"] = "infrastructure_failure"
-        report["error"] = substrate["reason"]
+        report["error"] = str(exc)
         return report, 2
+    report["logs_dir"] = str(logs_dir)
     data_dir = config_dir / "data"
     receipt = data_dir / "proxy-rust.json"
     if receipt.exists():
         raise SmokeError(f"refusing to reuse an existing Rust process receipt: {receipt}")
     env = os.environ.copy()
     env["SAFEYOLO_CONFIG_DIR"] = str(config_dir)
+    env["SAFEYOLO_LOGS_DIR"] = str(logs_dir)
+    env["SAFEYOLO_LOG_PATH"] = str(logs_dir / "safeyolo.jsonl")
     env["SAFEYOLO_RUST_PROXY"] = str(candidate_path)
     cli_path = _resolve_executable(args.cli or os.environ.get("SAFEYOLO_CLI") or "safeyolo", "SafeYolo CLI")
     start_command = [str(cli_path), "start", "--wait"]
@@ -726,7 +808,14 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         # Inspect the on-disk native config after that existing mutation.
         native = _native_config(supplied, cwd)
         report["native"] = {key: value for key, value in native.items() if key != "raw"}
-        runtime = _runtime_observation(config_dir, native, candidate_path, require_running=True)
+        runtime = _runtime_observation(
+            config_dir,
+            native,
+            candidate_path,
+            config_path=supplied,
+            working_directory=cwd,
+            require_running=True,
+        )
         report["runtime"] = runtime
         agents = _agent_map(config_dir)
         if not agents:
@@ -776,8 +865,15 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         report["status"] = "shutdown_failure"
         report["error"] = "Rust process or readiness marker remained after selected CLI stop"
         return report, 2
-    report["status"] = "smoke_ready_with_gaps"
-    return report, 0
+    report["status"] = PARTIAL_STATUS
+    report["acceptance_a"] = {
+        "status": "unexecuted",
+        "reason": (
+            "host UDS health completed, but guest isolation and authenticated "
+            "runtime identity are unavailable"
+        ),
+    }
+    return report, 2
 
 
 def main(argv: list[str] | None = None) -> int:

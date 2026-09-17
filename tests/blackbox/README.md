@@ -313,12 +313,13 @@ python3 tests/blackbox/installed_host_smoke.py \
 
 The command fails when the selected executable is missing, reports another
 program, publishes a stale or mismatched readiness marker, serves a different
-process, or cannot stop cleanly. It never retries with Python. A successful
-report has status smoke_ready_with_gaps: the UDS request is host-driven
-ingress evidence, not guest-isolation evidence. The report records the
-current native runtime-identity endpoint as unavailable, and it leaves
-allowed/denied origin requests, cross-guest socket access, and unsupported
-hardware explicitly for the retained stage-B pilot.
+process, or cannot stop cleanly. It never retries with Python. Host checks may
+complete with status partial_unexecuted and a nonzero exit: the UDS request is
+host-driven ingress evidence, not guest-isolation evidence, and therefore
+cannot signal Acceptance-A. The report records the current native
+runtime-identity endpoint as unavailable, and it leaves allowed/denied origin
+requests, cross-guest socket access, and unsupported hardware explicitly for
+the retained stage-B pilot.
 
 ## Adding Tests
 

@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +31,13 @@ def _executable(path: Path, output: str) -> Path:
     return path
 
 
+def _python_cli(path: Path, output: str, interpreter: str | None = None) -> Path:
+    selected = interpreter or sys.executable
+    path.write_text(f"#!{selected}\nprint({output!r})\n")
+    path.chmod(0o755)
+    return path
+
+
 def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
     path.write_text(
         json.dumps(
@@ -43,7 +52,9 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
 
 
 def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smoke_module) -> None:
-    cli = _executable(tmp_path / "safeyolo", "safeyolo 0.1.0")
+    real_cli = _python_cli(tmp_path / "real-safeyolo", "safeyolo 0.1.0")
+    cli = tmp_path / "safeyolo"
+    cli.symlink_to(real_cli)
     rust = _executable(tmp_path / "safeyolo-proxy", "safeyolo-proxy 0.1.0 (development)")
     config_dir = tmp_path / "config"
     (config_dir / "data").mkdir(parents=True)
@@ -70,10 +81,19 @@ def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smok
     report = json.loads(output.read_text())
     assert report["status"] == "discovered"
     assert report["cli"]["path"] == str(cli)
+    assert report["cli"]["interpreter"] == sys.executable
+    assert report["cli"]["package_location"].endswith("safeyolo/__init__.py")
     assert report["candidate"]["path"] == str(rust)
     assert report["candidate"]["sha256"]
     assert report["native"]["listeners"][0]["agent_id"] == "alice"
     assert report["runtime"]["status"] == "stopped"
+
+
+def test_cli_identity_rejects_launcher_without_usable_interpreter(tmp_path: Path, smoke_module) -> None:
+    cli = _executable(tmp_path / "safeyolo", "safeyolo 0.1.0")
+
+    with pytest.raises(smoke_module.SmokeError, match="installed safeyolo package"):
+        smoke_module._cli_identity(cli)
 
 
 def test_rust_identity_rejects_a_different_program(tmp_path: Path, smoke_module) -> None:
@@ -153,6 +173,111 @@ def test_json_inspection_has_a_size_bound(tmp_path: Path, smoke_module) -> None:
             smoke_module._read_json(path, "test JSON")
     finally:
         smoke_module.JSON_LIMIT = original_limit
+
+
+def test_receipt_is_bound_to_supplied_native_paths(tmp_path: Path, smoke_module, monkeypatch) -> None:
+    config_dir = tmp_path / "config"
+    data_dir = config_dir / "data"
+    data_dir.mkdir(parents=True)
+    native_path = config_dir / "proxy.json"
+    readiness = config_dir / "ready.json"
+    working_directory = tmp_path / "work"
+    working_directory.mkdir()
+    candidate = tmp_path / "safeyolo-proxy"
+    candidate.write_text("native")
+    marker = {"ready": True, "pid": os.getpid(), "backend": "rust-m2", "instance_id": "x", "listeners": 0}
+    readiness.write_text(json.dumps(marker))
+    native = {
+        "path": str(native_path),
+        "readiness_file": str(readiness),
+        "listeners": [],
+    }
+    token = "test-start-token"
+    (data_dir / "proxy-rust.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "start_token": token,
+                "readiness_file": str(readiness),
+                "admin_port": None,
+                "admin_token_file": None,
+                "config_file": str(native_path),
+                "working_directory": str(working_directory),
+            }
+        )
+    )
+    monkeypatch.setattr(smoke_module, "_process_start_token", lambda pid: token)
+    monkeypatch.setattr(smoke_module, "_process_executable", lambda pid: candidate.resolve())
+
+    observed = smoke_module._runtime_observation(
+        config_dir,
+        native,
+        candidate,
+        config_path=native_path,
+        working_directory=working_directory,
+        require_running=True,
+    )
+    assert observed["status"] == "ready"
+
+    base_receipt = {
+        "pid": os.getpid(),
+        "start_token": token,
+        "readiness_file": str(readiness),
+        "admin_port": None,
+        "admin_token_file": None,
+        "config_file": str(native_path),
+        "working_directory": str(working_directory),
+    }
+    for field, value, message in (
+        ("config_file", str(tmp_path / "other.json"), "config_file does not match"),
+        ("readiness_file", str(tmp_path / "other-ready.json"), "readiness_file does not match"),
+        ("working_directory", str(tmp_path / "other-work"), "working_directory does not match"),
+    ):
+        receipt = {**base_receipt, field: value}
+        (data_dir / "proxy-rust.json").write_text(json.dumps(receipt))
+        with pytest.raises(smoke_module.SmokeError, match=message):
+            smoke_module._runtime_observation(
+                config_dir,
+                native,
+                candidate,
+                config_path=native_path,
+                working_directory=working_directory,
+                require_running=True,
+            )
+
+
+def test_smoke_logs_are_created_inside_disposable_state(tmp_path: Path, smoke_module) -> None:
+    logs_dir = smoke_module._smoke_logs_dir(tmp_path)
+    assert logs_dir == tmp_path / "logs"
+    assert logs_dir.is_dir()
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    logs_dir.rmdir()
+    logs_dir.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(smoke_module.SmokeError, match="must not be a symlink"):
+        smoke_module._smoke_logs_dir(tmp_path)
+
+
+def test_missing_required_substrate_is_not_a_discovery_pass(smoke_module) -> None:
+    with pytest.raises(smoke_module.SmokeError, match="required host substrate unavailable"):
+        smoke_module._require_substrate({"status": "unavailable", "reason": "runsc missing"})
+
+
+def test_darwin_process_identity_is_observed_or_unavailable(tmp_path: Path, smoke_module, monkeypatch) -> None:
+    candidate = tmp_path / "safeyolo-proxy"
+    candidate.write_text("native")
+    monkeypatch.setattr(smoke_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(smoke_module.sys, "platform", "darwin")
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, str(candidate), "")
+
+    monkeypatch.setattr(smoke_module, "_run", fake_run)
+    assert smoke_module._process_executable(42) == candidate.resolve()
+
+    monkeypatch.setattr(smoke_module, "_run", lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "proxy", ""))
+    assert smoke_module._process_executable(42) is None
 
 
 def test_socket_accepting_requires_a_real_socket(tmp_path: Path, smoke_module) -> None:
