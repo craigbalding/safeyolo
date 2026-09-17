@@ -32,10 +32,25 @@ def git_root(path: Path) -> Path:
     raise SystemExit("target is not beneath a Git worktree; retire it manually with its experiment evidence")
 
 
+def caller_ancestors() -> set[int]:
+    """Return this helper and its invoker chain, which name --target themselves."""
+    ancestors: set[int] = set()
+    pid = os.getpid()
+    while pid and pid not in ancestors:
+        ancestors.add(pid)
+        try:
+            fields = (Path("/proc") / str(pid) / "stat").read_text().split()
+            pid = int(fields[3])
+        except (OSError, IndexError, ValueError):
+            break
+    return ancestors
+
+
 def active_owner(target: Path) -> int | None:
     wanted = str(target)
+    ignored = caller_ancestors()
     for proc in Path("/proc").iterdir():
-        if not proc.name.isdecimal() or int(proc.name) == os.getpid():
+        if not proc.name.isdecimal() or int(proc.name) in ignored:
             continue
         try:
             command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
