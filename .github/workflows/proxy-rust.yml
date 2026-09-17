@@ -8,6 +8,7 @@ on:
       - "tests/test_rust_temporary_policy.py"
       - "tools/proxy_migration/**"
       - ".github/workflows/proxy-rust.yml"
+      - "scripts/cargo_with_space.sh"
   push:
     branches: [master, main]
     paths:
@@ -15,6 +16,7 @@ on:
       - "tests/proxy_migration/**"
       - "tools/proxy_migration/**"
       - ".github/workflows/proxy-rust.yml"
+      - "scripts/cargo_with_space.sh"
 
 permissions:
   contents: read
@@ -41,14 +43,14 @@ jobs:
       - name: Check Rust formatting and lint
         working-directory: proxy
         run: |
-          cargo fmt --all -- --check
-          cargo clippy --locked --all-targets -- -D warnings
+          ../scripts/cargo_with_space.sh fmt --all -- --check
+          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
 
       - name: Test and build the Rust proxy
         working-directory: proxy
         run: |
-          cargo test --locked
-          cargo build --locked
+          ../scripts/cargo_with_space.sh test --locked
+          ../scripts/cargo_with_space.sh build --locked
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -71,4 +73,4 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_POLICY_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: cargo test --locked -- --ignored --nocapture
+        run: ../scripts/cargo_with_space.sh test --locked -- --ignored --nocapture

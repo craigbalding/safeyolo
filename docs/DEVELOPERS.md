@@ -363,6 +363,30 @@ credential inspection and injection, WebMITM, and complete agent management
 remain incomplete. Native listeners include the supplied JSON entries and
 the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
+### Cargo disk-space guard
+
+Use `scripts/cargo_with_space.sh` for Rust builds and tests. It reserves 48 GiB
+by default on the filesystem containing `CARGO_TARGET_DIR` (or `./target`) and
+checks again every 15 seconds while Cargo runs. It starts Cargo in a dedicated
+process group and interrupts only that group if the reserve is crossed. Set
+`SAFEYOLO_CARGO_RESERVE_GIB` and `SAFEYOLO_CARGO_SPACE_POLL_SECONDS` when a
+known concurrent workload needs a different operational reserve.
+
+Normal and isolated candidates use the same wrapper:
+
+```sh
+scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml test --locked
+CARGO_TARGET_DIR=/path/to/candidate/proxy/target \
+  scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml clippy --locked --all-targets -- -D warnings
+```
+
+Reuse one target directory per active candidate through correction rounds. Give
+concurrently tested candidates distinct target directories. When an isolated
+experiment or retired worktree is finished, retain its command, result, source,
+toolchain/lockfile identity, required fixtures and any needed binary hash, then
+remove its Cargo `target` output. Do not retain a compilation tree merely as
+evidence.
+
 Run the following on the host from the checkout root, with the Rust toolchain,
 tmux, and an initialized CLI configuration. Stop the current backend before
 changing selection. These commands change the currently selected CLI instance

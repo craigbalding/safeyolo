@@ -181,13 +181,16 @@ class Runner:
                 display[key] = "<unset>"
 
         full_environment = self._environment(environment)
+        guarded_command = command
+        if command and command[0] == "cargo":
+            guarded_command = [str(ROOT / "scripts" / "cargo_with_space.sh"), *command[1:]]
         print(f"\n[{name}] ")
-        print(f"$ {_command_text(command)}")
+        print(f"$ {_command_text(guarded_command)}")
         started = time.monotonic()
         timed_out = False
         try:
             result = subprocess.run(
-                command,
+                guarded_command,
                 cwd=ROOT,
                 env=full_environment,
                 capture_output=True,
@@ -202,7 +205,7 @@ class Runner:
                 stdout = stdout.decode(errors="replace")
             if isinstance(stderr, bytes):
                 stderr = stderr.decode(errors="replace")
-            result = subprocess.CompletedProcess(command, 124, stdout, stderr)
+            result = subprocess.CompletedProcess(guarded_command, 124, stdout, stderr)
         elapsed = time.monotonic() - started
         output = (result.stdout or "") + (result.stderr or "")
         if print_output:
