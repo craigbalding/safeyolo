@@ -18,7 +18,7 @@ use tempfile::TempDir;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixListener, UnixStream},
-    sync::Notify,
+    sync::{Notify, oneshot},
     task::JoinHandle,
 };
 
@@ -1134,7 +1134,12 @@ async fn read_h2_wire<S: AsyncRead + Unpin>(stream: &mut S) -> (u8, u8, u32, Vec
     (header[3], header[4], stream_id, payload)
 }
 
-async fn raw_h2_origin(listener: TcpListener, tls: rustls::ServerConfig, partial_reset: bool) {
+async fn raw_h2_origin(
+    listener: TcpListener,
+    tls: rustls::ServerConfig,
+    partial_reset: bool,
+    release: oneshot::Receiver<()>,
+) {
     let (socket, _) = listener.accept().await.unwrap();
     let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
         .accept(socket)
@@ -1176,6 +1181,7 @@ async fn raw_h2_origin(listener: TcpListener, tls: rustls::ServerConfig, partial
             .await
             .unwrap();
     }
+    let _ = release.await;
 }
 
 struct PausedBody {
@@ -1385,7 +1391,13 @@ async fn full_proxy_h2_response_outcome(partial_reset: bool) {
     )
     .unwrap();
     tls.alpn_protocols = vec![b"h2".to_vec()];
-    let origin = tokio::spawn(raw_h2_origin(listener, tls, partial_reset));
+    let (release, release_received) = oneshot::channel();
+    let origin = tokio::spawn(raw_h2_origin(
+        listener,
+        tls,
+        partial_reset,
+        release_received,
+    ));
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let socket = connect_tls_with_alpn(
         &config.listeners[0].socket_path,
@@ -1430,6 +1442,7 @@ async fn full_proxy_h2_response_outcome(partial_reset: bool) {
         assert!(terminal.is_none(), "END_STREAM must remain clean");
     }
     drop(response);
+    let _ = release.send(());
     drop(sender);
     client.abort();
     proxy.shutdown().await;
