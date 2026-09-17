@@ -16,26 +16,30 @@ use tokio::{
 };
 
 const PASS: &str = "synthetic-vault-passphrase";
-const INITIAL_POLICY: &str = r#"
+fn initial_policy(origin_port: u16) -> String {
+    format!(
+        r#"
 [hosts."127.0.0.1"]
 service = "simple"
+
+[hosts."127.0.0.1:{origin_port}"]
 egress = "allow"
 
 [hosts."*"]
-egress = "allow"
+egress = "deny"
 
 [agents.alice]
-egress = "allow"
 
 [agents.bob]
-egress = "allow"
 
 [addons.credential_guard]
 enabled = true
 
 [addons.credential_guard.settings]
 use_default_credential_rules = false
-"#;
+"#
+    )
+}
 
 const SERVICE: &str = r#"
 schema_version: 1
@@ -193,6 +197,21 @@ fn body(response: &[u8]) -> &[u8] {
         .position(|window| window == b"\r\n\r\n")
         .unwrap();
     &response[split + 4..]
+}
+
+fn response_header(response: &[u8], name: &str) -> Option<String> {
+    let split = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?;
+    std::str::from_utf8(&response[..split])
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let (header, value) = line.split_once(':')?;
+            header
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
 }
 
 async fn wait_for_audit_event(path: &Path, name: &str) -> Value {
@@ -380,7 +399,6 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     }
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
-    std::fs::write(root_path.join("policy.toml"), INITIAL_POLICY).unwrap();
     std::fs::write(root_path.join("services/simple.yaml"), SERVICE).unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
     let vault_path = root_path.join("data/vault.yaml.enc");
@@ -402,8 +420,13 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
 
     let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin_port = origin_listener.local_addr().unwrap().port();
+    let wrong_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let wrong_port = wrong_listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Vec::new()));
+    let wrong_seen = Arc::new(Mutex::new(Vec::new()));
     let origin_task = tokio::spawn(origin(origin_listener, seen.clone(), origin_port));
+    let wrong_origin_task = tokio::spawn(origin(wrong_listener, wrong_seen.clone(), origin_port));
+    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
 
     let mut proxy = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
@@ -744,21 +767,24 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
         b"",
     )
     .await;
-    status(&followed, "503");
+    status(&followed, "403");
     assert_eq!(seen.lock().unwrap().len(), 4);
 
-    // Port is part of network admission. With no listener at this controlled
-    // port, the request fails closed and the selected origin remains untouched;
-    // the gateway intentionally has no new host/port restriction of its own.
-    let wrong_port = send_agent(
+    // Port is part of the existing network policy. A live second listener on
+    // the same allowed host is denied before gateway injection, and therefore
+    // observes no request or credential. The gateway adds no port policy.
+    let wrong_port_response = send_agent(
         &root_path.join("alice.sock"),
-        1,
+        wrong_port,
         &current_token,
         "127.0.0.1",
     )
     .await;
-    status(&wrong_port, "502");
+    status(&wrong_port_response, "403");
+    let wrong_port_request_id = response_header(&wrong_port_response, "x-safeyolo-request-id")
+        .expect("network denial must be correlated");
     assert_eq!(seen.lock().unwrap().len(), 4);
+    assert!(wrong_seen.lock().unwrap().is_empty());
 
     // Trusted Bob cannot reuse Alice's published token. A destination outside
     // the service host map is rejected before the controlled origin sees it.
@@ -777,7 +803,7 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
         "127.0.0.2",
     )
     .await;
-    status(&wrong_destination, "503");
+    status(&wrong_destination, "403");
     assert_eq!(seen.lock().unwrap().len(), 4);
     let bob_view_request = b"GET http://_safeyolo.proxy.internal/gateway/services HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nConnection: close\r\n\r\n";
     let bob_view = raw_http(&root_path.join("bob.sock"), bob_view_request).await;
@@ -792,7 +818,7 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     // Let the accepted snapshot's watermark advance before replacing the
     // durable binding. The native watcher compares the source mtime.
     tokio::time::sleep(Duration::from_millis(25)).await;
-    std::fs::write(root_path.join("policy.toml"), INITIAL_POLICY).unwrap();
+    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
     tokio::time::timeout(Duration::from_secs(6), async {
         loop {
             let response = raw_http(&root_path.join("alice.sock"), bob_view_request).await;
@@ -821,6 +847,19 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     watcher.await.unwrap();
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let event_rows: Vec<Value> = events
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(event_rows.iter().any(|row| {
+        row["event"] == "proxy.network_guard"
+            && row["request_id"] == wrong_port_request_id
+            && row["port"] == wrong_port
+            && row["outcome"] == "blocked"
+    }));
+    assert!(!event_rows.iter().any(|row| {
+        row["event"] == "proxy.gateway" && row["request_id"] == wrong_port_request_id
+    }));
     assert!(audit.contains("gateway.request_access"));
     assert!(audit.contains("gateway.allow"));
     assert!(!audit.contains("exact-synthetic-origin-credential"));
@@ -839,4 +878,5 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
         assert!(!events.contains(token));
     }
     origin_task.abort();
+    wrong_origin_task.abort();
 }
