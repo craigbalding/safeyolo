@@ -52,6 +52,7 @@ def test_sinkhole_observer_preserves_exact_body_bytes():
 
     assert wire["body"] == payload.decode("utf-8", errors="replace")
     assert wire["body_hex"] == payload.hex()
+    assert wire["header_items"] == []
 
 
 def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
@@ -82,6 +83,7 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
 
     assert len(requests) == 1
     assert requests[0].body_bytes == payload
+    assert requests[0].header_items is None
 
 
 def test_sinkhole_fixture_preserves_signed_target_and_query_order():
@@ -113,6 +115,71 @@ def test_sinkhole_fixture_preserves_signed_target_and_query_order():
     assert wire["path"] == "/signed"
     assert list(wire["query_params"]) == ["z", "scope", "signature"]
     assert wire["query_params"]["scope"] == ["read", "write/items"]
+
+
+def test_sinkhole_fixture_preserves_ordered_duplicate_headers_and_reversal():
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    server = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    header_orders = [
+        [
+            ("Host", "signed.test"),
+            ("X-Duplicate", "first"),
+            ("X-Middle", "middle"),
+            ("x-duplicate", "second"),
+        ],
+        [
+            ("Host", "signed.test"),
+            ("x-duplicate", "second"),
+            ("X-Middle", "middle"),
+            ("X-Duplicate", "first"),
+        ],
+    ]
+    target = "/signed?scope=read&scope=write%2Fitems"
+    responses = []
+    try:
+        for header_lines in header_orders:
+            request = (
+                f"GET {target} HTTP/1.1\r\n"
+                + "".join(f"{name}: {value}\r\n" for name, value in header_lines)
+                + "Connection: close\r\n"
+                + "\r\n"
+            ).encode("ascii")
+            with socket.create_connection(("127.0.0.1", server.server_port), timeout=5) as client:
+                client.sendall(request)
+                response = b""
+                while True:
+                    chunk = client.recv(4096)
+                    if not chunk:
+                        break
+                    response += chunk
+                responses.append(response)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert all(b"HTTP/1.0 200 OK" in response for response in responses)
+    requests = server_module.get_requests(host="signed.test")
+    assert len(requests) == 2
+    assert requests[0].to_dict()["header_items"] == [
+        ("Host", "signed.test"),
+        ("X-Duplicate", "first"),
+        ("X-Middle", "middle"),
+        ("x-duplicate", "second"),
+        ("Connection", "close"),
+    ]
+    assert requests[1].to_dict()["header_items"] == [
+        ("Host", "signed.test"),
+        ("x-duplicate", "second"),
+        ("X-Middle", "middle"),
+        ("X-Duplicate", "first"),
+        ("Connection", "close"),
+    ]
 
 
 def test_sinkhole_fixture_preserves_double_slash_target_from_raw_request_line():
@@ -171,6 +238,11 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
                 "body_hex": "",
                 "raw_target": target,
                 "raw_query": target.split("?", 1)[1],
+                "header_items": [
+                    ["Host", "signed.test"],
+                    ["X-Signature", "first"],
+                    ["X-Signature", "second"],
+                ],
                 "client_ip": "127.0.0.1",
                 "query_params": {
                     "scope": ["read", "write/items"],
@@ -188,3 +260,8 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
 
     assert requests[0].raw_target == target
     assert requests[0].raw_query == "scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
+    assert requests[0].header_items == [
+        ("Host", "signed.test"),
+        ("X-Signature", "first"),
+        ("X-Signature", "second"),
+    ]

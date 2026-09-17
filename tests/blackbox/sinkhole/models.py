@@ -17,6 +17,7 @@ class CapturedRequest:
     query_params: dict[str, list[str]] = field(default_factory=dict)
     raw_target: str | None = None
     raw_query: str | None = None
+    header_items: list[tuple[str, str]] | None = None
 
     def to_dict(self) -> dict:
         """Convert to JSON-serializable dict."""
@@ -38,4 +39,8 @@ class CapturedRequest:
             # query order/encoding for signed and repeated-parameter tests.
             "raw_target": self.raw_target if self.raw_target is not None else self.path,
             "raw_query": self.raw_query,
+            # Keep the historical mapping while exposing duplicate field order.
+            "header_items": self.header_items
+            if self.header_items is not None
+            else list(self.headers.items()),
         }

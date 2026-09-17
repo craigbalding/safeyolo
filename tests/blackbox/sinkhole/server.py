@@ -140,6 +140,8 @@ class SinkholeHandler(BaseHTTPRequestHandler):
         # particular, BaseHTTPRequestHandler reduces a leading ``//`` to one
         # slash before exposing it here, while raw_target remains lossless.
         parsed = urlparse(self.path)
+        raw_items = getattr(self.headers, "raw_items", None)
+        header_items = list(raw_items()) if raw_items else list(self.headers.items())
 
         # Capture the request
         captured = CapturedRequest(
@@ -153,6 +155,7 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             query_params=parse_qs(parsed.query),
             raw_target=raw_target,
             raw_query=raw_query,
+            header_items=header_items,
         )
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")

@@ -22,6 +22,7 @@ class CapturedRequest:
     body_hex: str | None = None
     raw_target: str | None = None
     raw_query: str | None = None
+    header_items: list[tuple[str, str]] | None = None
 
     @property
     def body_bytes(self) -> bytes:
@@ -85,6 +86,11 @@ class SinkholeClient:
                 body_hex=r.get("body_hex"),
                 raw_target=r.get("raw_target"),
                 raw_query=r.get("raw_query"),
+                header_items=(
+                    [tuple(pair) for pair in r["header_items"]]
+                    if r.get("header_items") is not None
+                    else None
+                ),
             )
             for r in data["requests"]
         ]
