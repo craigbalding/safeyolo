@@ -86,16 +86,13 @@ fn drained(proxy: &Proxy, directory: &Path) -> Vec<Value> {
             .wait_for_drain(LIMIT)
             .unwrap()
     );
-    // Startup and connection-close memory events have separate runtime tests.
+    // Connection-close memory events have a separate runtime test. Keep the
+    // process startup policy publication here so this test consumes it at the
+    // lifecycle boundary instead of globally hiding the event.
     records(&directory.join("audit.jsonl"))
         .into_iter()
         .filter(|row| {
-            row["event"] != "ops.policy_reload"
-                && !(row["addon"] == "memory-monitor"
-                    && matches!(
-                        row["event"].as_str(),
-                        Some("ops.startup" | "ops.memory.conn_closed")
-                    ))
+            !(row["addon"] == "memory-monitor" && row["event"] == "ops.memory.conn_closed")
         })
         .collect()
 }
@@ -164,9 +161,14 @@ async fn owned_child(directory: &Path) {
     let mut configuration = config(directory);
     let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
     let writer = proxy.runtime.read().unwrap().audit.clone();
+    let startup = drained(&proxy, directory);
+    assert_eq!(names(&startup), ["ops.policy_reload", "ops.startup"]);
+    assert_eq!(startup[0]["addon"], "policy-loader");
+    assert_eq!(startup[0]["details"]["policy_type"], "baseline");
+    assert_eq!(startup[1]["addon"], "memory-monitor");
     let path = "/api/test-context/current///?agent=forged&private=not-an-audit-field";
     let declaration = br#"{"context":"run=R;agent=claimed;test=T","ttl":7}"#;
-    let mut previous = 0;
+    let mut previous = startup.len();
     for (method,token,content,status,event,expected_body) in [
         ("GET",Some("wrong"),b"".as_slice(),401,Some("security.agent_auth_failed"),Some(br#"{"error": "Invalid agent token"}"#.as_slice())),
         ("POST",Some(TOKEN),declaration.as_slice(),200,Some("security.test_context_declared"),Some(br#"{"status": "set", "agent": "alice", "expires_in": 7, "context": {"run": "R", "agent": "claimed", "test": "T"}}"#.as_slice())),
@@ -216,6 +218,10 @@ async fn owned_child(directory: &Path) {
         &writer,
         &proxy.runtime.read().unwrap().audit
     ));
+    let reload = drained(&proxy, directory);
+    assert_eq!(names(&reload[previous..]), ["ops.policy_reload"]);
+    assert_eq!(reload[previous]["addon"], "policy-loader");
+    previous = reload.len();
     let reply = send(directory, "GET", path, Some(TOKEN), b"").await;
     assert!(reply.starts_with(b"HTTP/1.1 503"));
     let value: Value = serde_json::from_slice(body(&reply)).unwrap();
