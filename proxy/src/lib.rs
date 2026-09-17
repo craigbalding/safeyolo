@@ -65,7 +65,10 @@ use std::{
     io::Write,
     os::unix::fs::{FileTypeExt, MetadataExt},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -82,6 +85,39 @@ use tokio::{
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
 pub(crate) type UpgradeTasks = Arc<connection_tasks::ConnectionTasks>;
+
+/// Owns the process boundary at which a newly persisted vault snapshot becomes
+/// active. Refresh publication is rejected after shutdown begins, while the
+/// vault rollback callback remains allowed to restore the prior active view.
+#[derive(Clone, Default)]
+struct CredentialActivation {
+    closing: Arc<AtomicBool>,
+    rejected: Arc<AtomicBool>,
+    active: Arc<Mutex<Vec<credentials::CredentialMetadata>>>,
+}
+impl CredentialActivation {
+    fn activate(
+        &self,
+        metadata: &[credentials::CredentialMetadata],
+    ) -> std::result::Result<(), ()> {
+        if self.closing.load(Ordering::Acquire) {
+            // Reject the candidate exactly once. Vault rollback invokes the
+            // same callback with the old metadata and must still succeed.
+            if !self.rejected.swap(true, Ordering::AcqRel) {
+                return Err(());
+            }
+            return Ok(());
+        }
+        let Ok(mut active) = self.active.lock() else {
+            return Err(());
+        };
+        *active = metadata.to_vec();
+        Ok(())
+    }
+    fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct ConnectionIdentity {
@@ -123,6 +159,7 @@ pub(crate) struct Runtime {
     /// One process-owned refresh coordinator shares flights across requests.
     /// Its vault clone is the same state used for credential injection.
     oauth: Option<oauth::OAuthRefresh>,
+    credential_activation: CredentialActivation,
     /// Durable identity of the loaded vault. The key fingerprint is only used
     /// to decide whether a reload may retain the existing Vault/coordinator;
     /// it is never included in Runtime diagnostics.
@@ -245,6 +282,15 @@ impl Runtime {
             } else {
                 (None, None, None)
             };
+            let credential_activation = previous
+                .map(|runtime| runtime.credential_activation.clone())
+                .unwrap_or_default();
+            if let Some(vault) = vault.as_ref() {
+                let metadata = vault.metadata()?;
+                credential_activation
+                    .activate(&metadata)
+                    .map_err(|_| "vault credential activation unavailable")?;
+            }
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -405,6 +451,7 @@ impl Runtime {
                 policy,
                 vault,
                 oauth,
+                credential_activation,
                 vault_identity,
                 gateway_grants,
                 credential_guard,
@@ -1279,6 +1326,13 @@ impl Proxy {
 
     pub async fn shutdown(mut self) {
         clear_readiness(&self.readiness_file, &self.default_via);
+        let credential_activation = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .credential_activation
+            .clone();
+        credential_activation.close();
         let service_mutations = self
             .runtime
             .read()

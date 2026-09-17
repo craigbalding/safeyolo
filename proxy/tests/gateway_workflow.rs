@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::{TcpListener, TcpStream, UnixStream},
     sync::{Notify, mpsc, oneshot},
 };
 use tokio_rustls::{TlsAcceptor, rustls};
@@ -112,6 +112,17 @@ capabilities:
         path: /v1/redirect
 "#;
 
+const NO_AUTH_SERVICE: &str = r#"
+schema_version: 1
+name: simple
+default_host: localhost
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /v1/value
+"#;
+
 fn config(root: &Path) -> Config {
     Config {
         listeners: vec![
@@ -162,6 +173,21 @@ fn config(root: &Path) -> Config {
         via_token: Some("gateway-workflow-test".into()),
         inspection: None,
     }
+}
+
+fn interception_ca(root: &Path, config: &mut Config) {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::default();
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+    let certificate = params.self_signed(&key).unwrap();
+    let path = root.join("interception-ca.pem");
+    std::fs::write(
+        &path,
+        format!("{}{}", key.serialize_pem(), certificate.pem()),
+    )
+    .unwrap();
+    config.tls_ca_file = Some(path);
 }
 
 async fn origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, redirect_port: u16) {
@@ -454,7 +480,20 @@ async fn send_agent_request(
 }
 
 async fn send_agent(socket: &Path, port: u16, token: &str, host: &str) -> Vec<u8> {
-    send_agent_request(socket, port, token, host, "GET", "/v1/value?sig=%252F", b"").await
+    send_agent_with_scheme(socket, port, token, host, "http").await
+}
+
+async fn send_agent_with_scheme(
+    socket: &Path,
+    port: u16,
+    token: &str,
+    host: &str,
+    scheme: &str,
+) -> Vec<u8> {
+    let request = format!(
+        "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    raw_http(socket, request.as_bytes()).await
 }
 
 async fn send_agent_with_unrelated_credential(
@@ -469,6 +508,28 @@ async fn send_agent_with_unrelated_credential(
     raw_http(socket, request.as_bytes()).await
 }
 
+async fn raw_http_without_timeout(socket: &Path, request: &[u8]) -> Vec<u8> {
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    response
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeldRefreshPhase {
+    BeforeRequest,
+    Send,
+    Body,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HeldParentPhase {
+    ParentTls,
+    Connect,
+    OriginTls,
+}
+
 /// Run one refresh response through the complete native UDS gateway path. The
 /// endpoint and origin are local TCP listeners, and the binding is loaded from
 /// the real policy/vault files rather than a hand-built injection result.
@@ -477,6 +538,8 @@ async fn run_live_refresh_response_case(
     response_body: &'static [u8],
     expected_reason: &'static str,
     save_failure: bool,
+    activation_failure: bool,
+    held_phase: Option<HeldRefreshPhase>,
 ) {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
@@ -496,17 +559,26 @@ async fn run_live_refresh_response_case(
 
     let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin_port = origin_listener.local_addr().unwrap().port();
-    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port));
     let token_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let token_port = token_listener.local_addr().unwrap().port();
     let token_seen = Arc::new(Mutex::new(Vec::new()));
+    let token_ready = Arc::new(Notify::new());
+    let token_release = Arc::new(Notify::new());
     let token_task = tokio::spawn({
         let token_seen = token_seen.clone();
+        let token_ready = token_ready.clone();
+        let token_release = token_release.clone();
         async move {
             let Ok((mut stream, _)) = token_listener.accept().await else {
                 return;
             };
+            if held_phase == Some(HeldRefreshPhase::BeforeRequest) {
+                token_ready.notify_one();
+                token_release.notified().await;
+                return;
+            }
             let mut request = Vec::new();
             let mut buffer = [0_u8; 4096];
             loop {
@@ -535,12 +607,21 @@ async fn run_live_refresh_response_case(
                 }
             }
             token_seen.lock().unwrap().push(request);
+            if activation_failure || held_phase == Some(HeldRefreshPhase::Send) {
+                token_ready.notify_one();
+                token_release.notified().await;
+            }
             let response = format!(
                 "HTTP/1.1 {} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 response_status,
                 response_body.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
+            if held_phase == Some(HeldRefreshPhase::Body) {
+                token_ready.notify_one();
+                token_release.notified().await;
+                return;
+            }
             let _ = stream.write_all(response_body).await;
         }
     });
@@ -576,6 +657,75 @@ async fn run_live_refresh_response_case(
         std::fs::remove_file(&vault_path).unwrap();
         std::fs::create_dir(&vault_path).unwrap();
     }
+    if activation_failure {
+        let request = tokio::spawn({
+            let socket = socket.clone();
+            let gateway_token = gateway_token.clone();
+            async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+        });
+        tokio::time::timeout(Duration::from_secs(3), token_ready.notified())
+            .await
+            .expect("refresh request did not reach provider");
+        let shutdown = tokio::spawn(proxy.shutdown());
+        token_release.notify_one();
+        let response = tokio::time::timeout(Duration::from_secs(3), request)
+            .await
+            .expect("activation failure request hung")
+            .unwrap();
+        status(&response, "503");
+        assert!(String::from_utf8_lossy(&response).contains(expected_reason));
+        assert!(origin_seen.lock().unwrap().is_empty());
+        assert_eq!(token_seen.lock().unwrap().len(), 1);
+        tokio::time::timeout(Duration::from_secs(3), shutdown)
+            .await
+            .expect("proxy shutdown hung during activation failure")
+            .unwrap();
+        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.refresh_failed").await;
+        let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+        let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
+        assert!(audit.contains(expected_reason));
+        assert!(!events.contains("synthetic-activation-failed"));
+        assert!(!audit.contains("synthetic-activation-failed"));
+        assert_eq!(
+            Vault::unlock(&vault_path, &Secret::new(PASS))
+                .unwrap()
+                .get("simple-secret")
+                .unwrap()
+                .unwrap()
+                .value
+                .expose_secret(),
+            "synthetic-expired-access"
+        );
+        return;
+    }
+    if held_phase.is_some() {
+        let request = tokio::spawn({
+            let socket = socket.clone();
+            let gateway_token = gateway_token.clone();
+            async move {
+                let request = format!(
+                    "GET http://127.0.0.1:{origin_port}/v1/value?sig=%252F HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer {gateway_token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                raw_http_without_timeout(&socket, request.as_bytes()).await
+            }
+        });
+        token_ready.notified().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+        tokio::task::yield_now().await;
+        let response = request.await.unwrap();
+        status(&response, "503");
+        assert!(String::from_utf8_lossy(&response).contains(expected_reason));
+        assert!(origin_seen.lock().unwrap().is_empty());
+        assert_eq!(
+            token_seen.lock().unwrap().len(),
+            usize::from(held_phase != Some(HeldRefreshPhase::BeforeRequest))
+        );
+        token_release.notify_one();
+        proxy.shutdown().await;
+        origin_task.abort();
+        token_task.abort();
+        return;
+    }
     let response = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
     status(&response, "503");
     assert!(String::from_utf8_lossy(&response).contains(expected_reason));
@@ -593,6 +743,192 @@ async fn run_live_refresh_response_case(
     proxy.shutdown().await;
     origin_task.abort();
     token_task.abort();
+}
+
+/// Hold each configured parent transport boundary on the real refresh path.
+/// The paused test clock keeps the production ten-second phase budget while
+/// making parent TLS, CONNECT, and origin TLS timeout cases deterministic.
+async fn run_live_parent_timeout_case(phase: HeldParentPhase) {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(
+        root_path.join("services/simple.yaml"),
+        SERVICE.replace(
+            "allow_http: true",
+            "allow_http: true\n  refresh_on_401: true",
+        ),
+    )
+    .unwrap();
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let origin_release = Arc::new(Notify::new());
+    let origin_ready = Arc::new(Notify::new());
+    let origin_task = if phase == HeldParentPhase::OriginTls {
+        let origin_release = origin_release.clone();
+        let origin_ready = origin_ready.clone();
+        Some(tokio::spawn(async move {
+            let Ok((mut stream, _)) = origin_listener.accept().await else {
+                return;
+            };
+            origin_ready.notify_waiters();
+            origin_release.notified().await;
+            let _ = stream.shutdown().await;
+        }))
+    } else {
+        drop(origin_listener);
+        None
+    };
+
+    let parent_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let parent_port = parent_listener.local_addr().unwrap().port();
+    let parent_ready = Arc::new(Notify::new());
+    let parent_release = Arc::new(Notify::new());
+    let (parent_task, token_url, mut runtime_config) = if phase == HeldParentPhase::ParentTls {
+        let parent_ready = parent_ready.clone();
+        let parent_release = parent_release.clone();
+        let task = tokio::spawn(async move {
+            let Ok((_socket, _)) = parent_listener.accept().await else {
+                return;
+            };
+            parent_ready.notify_one();
+            parent_release.notified().await;
+        });
+        (
+            task,
+            "http://provider.invalid/oauth/token".to_owned(),
+            config(root_path),
+        )
+    } else {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let ca_path = root_path.join("parent-ca.pem");
+        std::fs::write(&ca_path, cert.pem()).unwrap();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let parent_ready_for_task = parent_ready.clone();
+        let parent_release_for_task = parent_release.clone();
+        let origin_ready_for_task = origin_ready.clone();
+        let task = tokio::spawn(async move {
+            let Ok((socket, _)) = parent_listener.accept().await else {
+                return;
+            };
+            let Ok(mut stream) = TlsAcceptor::from(Arc::new(tls)).accept(socket).await else {
+                return;
+            };
+            let Some(request) = read_refresh_request(&mut stream).await else {
+                return;
+            };
+            assert!(request.starts_with(b"CONNECT provider.invalid:"));
+            if phase == HeldParentPhase::Connect {
+                parent_ready_for_task.notify_one();
+                parent_release_for_task.notified().await;
+                return;
+            }
+            if stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let Ok(mut origin) = TcpStream::connect(("127.0.0.1", origin_port)).await else {
+                return;
+            };
+            origin_ready_for_task.notified().await;
+            parent_ready_for_task.notify_one();
+            let _ = tokio::io::copy_bidirectional(&mut stream, &mut origin).await;
+        });
+        let mut runtime_config = config(root_path);
+        runtime_config.parent_proxy = Some(format!("https://localhost:{parent_port}"));
+        runtime_config.upstream_ca_file = Some(ca_path);
+        (
+            task,
+            format!("https://provider.invalid:{parent_port}/oauth/token"),
+            runtime_config,
+        )
+    };
+    if phase == HeldParentPhase::ParentTls {
+        runtime_config.parent_proxy = Some(format!("https://127.0.0.1:{parent_port}"));
+    }
+    runtime_config.parent_proxy = runtime_config
+        .parent_proxy
+        .or_else(|| Some(format!("https://127.0.0.1:{parent_port}")));
+    std::fs::write(
+        root_path.join("services/simple.yaml"),
+        SERVICE.replace(
+            "allow_http: true",
+            "allow_http: true\n  refresh_on_401: true",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root_path.join("policy.toml"),
+        bound_gateway_policy(origin_port),
+    )
+    .unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault_path = root_path.join("data/vault.yaml.enc");
+    let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    let mut oauth = Credential::new(
+        "simple-secret",
+        "oauth2",
+        Secret::new("synthetic-expired-access"),
+    );
+    oauth.refresh_token = Some(Secret::new("synthetic-refresh"));
+    oauth.token_url = Some(token_url);
+    oauth.client_id = Some("synthetic-client".into());
+    oauth.client_secret = Some(Secret::new("synthetic-client-secret"));
+    oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
+    vault.store(oauth).unwrap();
+    let socket = root_path.join("alice.sock");
+    let proxy = Proxy::start(runtime_config).await.unwrap();
+    let view = wait_for_alice(&socket).await;
+    let gateway_token = view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = tokio::spawn({
+        let socket = socket.clone();
+        async move {
+            let request = format!(
+                "GET http://127.0.0.1:{origin_port}/v1/value HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer {gateway_token}\r\nConnection: close\r\n\r\n"
+            );
+            raw_http_without_timeout(&socket, request.as_bytes()).await
+        }
+    });
+    if phase == HeldParentPhase::OriginTls {
+        origin_ready.notified().await;
+    } else {
+        parent_ready.notified().await;
+    }
+    tokio::time::advance(Duration::from_secs(11)).await;
+    tokio::task::yield_now().await;
+    let response = request.await.unwrap();
+    status(&response, "503");
+    assert!(String::from_utf8_lossy(&response).contains("REFRESH_TRANSPORT"));
+    assert!(origin_seen.lock().unwrap().is_empty());
+    parent_release.notify_one();
+    origin_release.notify_one();
+    proxy.shutdown().await;
+    parent_task.abort();
+    if let Some(origin_task) = origin_task {
+        origin_task.abort();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -989,6 +1325,8 @@ async fn serve_refresh_response<S>(
     mut stream: S,
     seen: Arc<Mutex<Vec<Vec<u8>>>>,
     origin_port: Option<u16>,
+    parent_connects: Option<Arc<Mutex<Vec<Vec<u8>>>>>,
+    refresh_origin_port: Option<u16>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -998,6 +1336,35 @@ async fn serve_refresh_response<S>(
     let is_refresh = request.starts_with(b"POST ");
     if is_refresh {
         seen.lock().unwrap().push(request.clone());
+    }
+    if request.starts_with(b"CONNECT ")
+        && let Some(origin_port) = origin_port
+    {
+        if let Some(parent_connects) = parent_connects {
+            parent_connects.lock().unwrap().push(request.clone());
+        }
+        let target = request
+            .split(|byte| *byte == b'\r' || *byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        let origin_port = if target.starts_with(b"CONNECT provider.invalid:") {
+            refresh_origin_port.unwrap_or(origin_port)
+        } else {
+            origin_port
+        };
+        let Ok(mut origin) = tokio::net::TcpStream::connect(("127.0.0.1", origin_port)).await
+        else {
+            return;
+        };
+        if stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .is_err()
+        {
+            return;
+        }
+        let _ = tokio::io::copy_bidirectional(&mut stream, &mut origin).await;
+        return;
     }
     if !is_refresh && let Some(origin_port) = origin_port {
         let Ok(mut origin) = tokio::net::TcpStream::connect(("127.0.0.1", origin_port)).await
@@ -1019,6 +1386,23 @@ async fn serve_refresh_response<S>(
     } else {
         &b"ok"[..]
     };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.write_all(body).await;
+}
+
+async fn serve_origin_response<S>(mut stream: S, seen: Arc<Mutex<Vec<Vec<u8>>>>)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(request) = read_refresh_request(&mut stream).await else {
+        return;
+    };
+    seen.lock().unwrap().push(request);
+    let body = b"ok";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -1056,10 +1440,42 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
     let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin_port = origin_listener.local_addr().unwrap().port();
     let origin_seen = Arc::new(Mutex::new(Vec::new()));
-    let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port));
+    let (origin_task, origin_certificate) = if matches!(route, LiveRefreshRoute::ParentTls) {
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let certificate_pem = cert.pem();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let seen = origin_seen.clone();
+        let task = tokio::spawn(async move {
+            let Ok((socket, _)) = origin_listener.accept().await else {
+                return;
+            };
+            let Ok(stream) = TlsAcceptor::from(Arc::new(tls)).accept(socket).await else {
+                return;
+            };
+            serve_origin_response(stream, seen).await;
+        });
+        (task, Some(certificate_pem))
+    } else {
+        (
+            tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port)),
+            None,
+        )
+    };
     let token_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let token_port = token_listener.local_addr().unwrap().port();
     let token_seen = Arc::new(Mutex::new(Vec::new()));
+    let parent_connects = Arc::new(Mutex::new(Vec::new()));
     let mut runtime_config = config(root_path);
     let token_url = match route {
         LiveRefreshRoute::DirectTls => {
@@ -1079,7 +1495,7 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
                 rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
             )
             .unwrap();
-            let seen = token_seen.clone();
+            let token_seen_for_tls = token_seen.clone();
             tokio::spawn(async move {
                 let Ok((socket, _)) = token_listener.accept().await else {
                     return;
@@ -1087,7 +1503,7 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
                 let Ok(stream) = TlsAcceptor::from(Arc::new(tls)).accept(socket).await else {
                     return;
                 };
-                serve_refresh_response(stream, seen, None).await;
+                serve_refresh_response(stream, token_seen_for_tls, None, None, None).await;
             });
             format!("https://localhost:{token_port}/oauth/token")
         }
@@ -1097,16 +1513,52 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
             let seen = token_seen.clone();
             tokio::spawn(async move {
                 while let Ok((socket, _)) = token_listener.accept().await {
-                    serve_refresh_response(socket, seen.clone(), Some(origin_port)).await;
+                    serve_refresh_response(socket, seen.clone(), Some(origin_port), None, None)
+                        .await;
                 }
             });
             "http://provider.invalid/oauth/token".into()
         }
         LiveRefreshRoute::ParentTls => {
+            interception_ca(root_path, &mut runtime_config);
+            let token_origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let token_origin_port = token_origin_listener.local_addr().unwrap().port();
+            let rcgen::CertifiedKey {
+                cert: token_cert,
+                signing_key: token_signing_key,
+            } = rcgen::generate_simple_self_signed(vec!["provider.invalid".into()]).unwrap();
+            let token_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![token_cert.der().clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(token_signing_key.serialize_der())
+                    .into(),
+            )
+            .unwrap();
+            let seen = token_seen.clone();
+            tokio::spawn(async move {
+                let Ok((socket, _)) = token_origin_listener.accept().await else {
+                    return;
+                };
+                let Ok(stream) = TlsAcceptor::from(Arc::new(token_tls)).accept(socket).await else {
+                    return;
+                };
+                serve_refresh_response(stream, seen, None, None, None).await;
+            });
+            let token_origin_port_for_parent = token_origin_port;
             let rcgen::CertifiedKey { cert, signing_key } =
                 rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
             let ca_path = root_path.join("parent-refresh-ca.pem");
-            std::fs::write(&ca_path, cert.pem()).unwrap();
+            let mut trust = cert.pem();
+            trust.push_str(&token_cert.pem());
+            if let Some(origin_certificate) = origin_certificate.as_ref() {
+                trust.push_str(origin_certificate);
+            }
+            std::fs::write(&ca_path, trust).unwrap();
             runtime_config.upstream_ca_file = Some(ca_path);
             runtime_config.parent_proxy = Some(format!("https://localhost:{token_port}"));
             let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -1121,21 +1573,33 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
             )
             .unwrap();
             let seen = token_seen.clone();
+            let parent_connects_for_task = parent_connects.clone();
             tokio::spawn(async move {
                 let acceptor = TlsAcceptor::from(Arc::new(tls));
                 while let Ok((socket, _)) = token_listener.accept().await {
                     let Ok(stream) = acceptor.accept(socket).await else {
                         continue;
                     };
-                    serve_refresh_response(stream, seen.clone(), Some(origin_port)).await;
+                    serve_refresh_response(
+                        stream,
+                        seen.clone(),
+                        Some(origin_port),
+                        Some(parent_connects_for_task.clone()),
+                        Some(token_origin_port_for_parent),
+                    )
+                    .await;
                 }
             });
-            "http://provider.invalid/oauth/token".into()
+            format!("https://provider.invalid:{token_origin_port}/oauth/token")
         }
     };
     std::fs::write(
         root_path.join("policy.toml"),
-        bound_gateway_policy(origin_port),
+        if matches!(route, LiveRefreshRoute::ParentTls) {
+            bound_gateway_policy(origin_port).replace("127.0.0.1", "localhost")
+        } else {
+            bound_gateway_policy(origin_port)
+        },
     )
     .unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
@@ -1159,7 +1623,11 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
         .as_str()
         .unwrap()
         .to_owned();
-    let response = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
+    let response = if matches!(route, LiveRefreshRoute::ParentTls) {
+        send_agent_with_scheme(&socket, origin_port, &gateway_token, "localhost", "https").await
+    } else {
+        send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await
+    };
     status(&response, "200");
     tokio::time::timeout(Duration::from_secs(3), async {
         while origin_seen.lock().unwrap().is_empty() {
@@ -1175,6 +1643,21 @@ async fn run_live_refresh_route_case(route: LiveRefreshRoute) {
             .windows(b"Authorization: Bearer synthetic-route-result".len())
             .any(|window| window == b"Authorization: Bearer synthetic-route-result")
     );
+    if matches!(route, LiveRefreshRoute::ParentTls) {
+        let connects = parent_connects.lock().unwrap();
+        assert_eq!(connects.len(), 2);
+        assert!(
+            connects
+                .iter()
+                .any(|request| request.starts_with(b"CONNECT provider.invalid:"))
+        );
+        assert!(
+            connects
+                .iter()
+                .any(|request| request.starts_with(b"CONNECT localhost:"))
+        );
+        assert!(origin_seen.lock().unwrap()[0].starts_with(b"GET /v1/value"));
+    }
     proxy.shutdown().await;
     origin_task.abort();
 }
@@ -1186,6 +1669,8 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         br#"{"access_token":42}"#,
         "REFRESH_INVALID_RESPONSE",
         false,
+        false,
+        None,
     )
     .await;
     run_live_refresh_response_case(
@@ -1193,6 +1678,8 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         br#"{"access_token":"synthetic-new","expires_in":"never"}"#,
         "REFRESH_EXPIRY",
         false,
+        false,
+        None,
     )
     .await;
     run_live_refresh_response_case(
@@ -1200,6 +1687,8 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         br#"{"error":"invalid_grant","access_token":"synthetic-leaked"}"#,
         "REFRESH_INVALID_RESPONSE",
         false,
+        false,
+        None,
     )
     .await;
     run_live_refresh_response_case(
@@ -1207,8 +1696,58 @@ async fn oauth_refresh_live_invalid_expiry_and_http_failures_are_categorical() {
         br#"{"access_token":"synthetic-new","expires_in":3600}"#,
         "REFRESH_SAVE",
         true,
+        false,
+        None,
     )
     .await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_live_activation_failure_blocks_before_injection() {
+    run_live_refresh_response_case(
+        200,
+        br#"{"access_token":"synthetic-activation-failed","expires_in":3600}"#,
+        "REFRESH_ACTIVATION",
+        false,
+        true,
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
+    tokio::time::pause();
+    run_live_refresh_response_case(
+        200,
+        br#"{"access_token":"synthetic-handshake-timeout","expires_in":3600}"#,
+        "REFRESH_TRANSPORT",
+        false,
+        false,
+        Some(HeldRefreshPhase::BeforeRequest),
+    )
+    .await;
+    run_live_refresh_response_case(
+        200,
+        br#"{"access_token":"synthetic-send-timeout","expires_in":3600}"#,
+        "REFRESH_TRANSPORT",
+        false,
+        false,
+        Some(HeldRefreshPhase::Send),
+    )
+    .await;
+    run_live_refresh_response_case(
+        200,
+        br#"{"access_token":"synthetic-body-timeout","expires_in":3600}"#,
+        "REFRESH_TRANSPORT",
+        false,
+        false,
+        Some(HeldRefreshPhase::Body),
+    )
+    .await;
+    run_live_parent_timeout_case(HeldParentPhase::ParentTls).await;
+    run_live_parent_timeout_case(HeldParentPhase::Connect).await;
+    run_live_parent_timeout_case(HeldParentPhase::OriginTls).await;
 }
 
 #[tokio::test]
@@ -2272,4 +2811,100 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
     watcher.await.unwrap();
     origin_task.abort();
     token_task.abort();
+}
+
+/// A selected service without an auth stanza removes the gateway token and
+/// still forwards over an HTTPS origin. The final credential guard must skip
+/// this intentionally materialized absence.
+#[tokio::test]
+async fn gateway_no_auth_selection_removes_token_before_https_origin() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(root_path.join("services/simple.yaml"), NO_AUTH_SERVICE).unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let origin_ca = root_path.join("origin-ca.pem");
+    std::fs::write(&origin_ca, cert.pem()).unwrap();
+    let origin_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let origin_task = tokio::spawn({
+        let origin_seen = origin_seen.clone();
+        async move {
+            let Ok((socket, _)) = origin_listener.accept().await else {
+                return;
+            };
+            let Ok(stream) = TlsAcceptor::from(Arc::new(origin_tls)).accept(socket).await else {
+                return;
+            };
+            serve_origin_response(stream, origin_seen).await;
+        }
+    });
+
+    let mut runtime_config = config(root_path);
+    runtime_config.upstream_ca_file = Some(origin_ca);
+    interception_ca(root_path, &mut runtime_config);
+    std::fs::write(
+        root_path.join("policy.toml"),
+        bound_gateway_policy(origin_port).replace("127.0.0.1", "localhost"),
+    )
+    .unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault_path = root_path.join("data/vault.yaml.enc");
+    let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "simple-secret",
+            "bearer",
+            Secret::new("synthetic-origin-secret"),
+        ))
+        .unwrap();
+
+    let socket = root_path.join("alice.sock");
+    let proxy = Proxy::start(runtime_config).await.unwrap();
+    let view = wait_for_alice(&socket).await;
+    let gateway_token = view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let response =
+        send_agent_with_scheme(&socket, origin_port, &gateway_token, "localhost", "https").await;
+    status(&response, "200");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while origin_seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let request = origin_seen.lock().unwrap()[0].clone();
+    assert!(
+        !request
+            .windows(b"Authorization:".len())
+            .any(|window| window.eq_ignore_ascii_case(b"Authorization:"))
+    );
+    assert!(
+        !request
+            .windows(b"synthetic-origin-secret".len())
+            .any(|window| window == b"synthetic-origin-secret")
+    );
+    proxy.shutdown().await;
+    origin_task.abort();
 }

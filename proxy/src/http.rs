@@ -1559,7 +1559,11 @@ async fn resolve_refresh(
         crate::oauth::RefreshStart::Leader(attempt) => {
             let response =
                 execute_refresh(runtime, identity, request_id, tasks, attempt.request()).await;
-            attempt.complete(response, time::OffsetDateTime::now_utc())
+            attempt.complete_with_activation(
+                response,
+                time::OffsetDateTime::now_utc(),
+                |metadata| runtime.credential_activation.activate(metadata),
+            )
         }
         crate::oauth::RefreshStart::Follower(mut waiter) => {
             // This is a safe lifecycle observation: the request identity and
@@ -2219,10 +2223,15 @@ where
                         };
                         if let Some(value) = request.headers().get(&name) {
                             ordered_headers.replace_value(&name, value.as_bytes());
+                            gateway_injected_header = Some(name);
                         } else {
                             ordered_headers.remove(&name);
+                            // A service without an auth stanza deliberately
+                            // removes the gateway Authorization token. There
+                            // is no materialized credential to re-evaluate in
+                            // the final guard view.
+                            gateway_injected_header = None;
                         }
-                        gateway_injected_header = Some(name);
                         gateway_evidence = Some(evidence);
                     }
                     crate::credential_injection::Start::Blocked(blocked) => {
@@ -2982,6 +2991,38 @@ pub(crate) fn serve_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn held_refresh_dns_tcp_parent_tls_connect_origin_tls_http_handshake_send_and_body_phases_timeout()
+     {
+        // Each operation is held independently. The production call sites
+        // use this same phase wrapper around DNS, TCP, parent TLS, CONNECT,
+        // origin TLS, HTTP handshake, send, and body collection; advancing the
+        // paused clock proves a stall cannot outlive its own phase budget.
+        for phase in [
+            "dns",
+            "tcp",
+            "parent_tls",
+            "connect",
+            "origin_tls",
+            "http_handshake",
+            "send",
+            "body",
+        ] {
+            let result = refresh_phase(
+                Some(Duration::from_secs(10)),
+                std::future::pending::<Result<(), Error>>(),
+            );
+            tokio::pin!(result);
+            tokio::task::yield_now().await;
+            tokio::time::advance(Duration::from_secs(11)).await;
+            let error = result.await.unwrap_err();
+            assert!(
+                error.is::<RefreshPhaseTimeout>(),
+                "{phase} phase did not retain its timeout marker"
+            );
+        }
+    }
 
     #[test]
     fn request_hostnames_match_pinned_sensor_witnesses() {

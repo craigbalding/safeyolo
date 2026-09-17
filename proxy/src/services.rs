@@ -1496,10 +1496,14 @@ fn extract_token(
     let header_service = hosts
         .get(&request.host.to_lowercase())
         .and_then(|name| registry.services.get(name));
-    let auth = header_service.and_then(|service| service.auth.as_ref());
-    auth.and_then(|auth| {
-        let value = Zeroizing::new(folded_header(request.request.headers, &auth.header));
-        let value = if auth.kind == "bearer" {
+    let (header, bearer) = header_service
+        .and_then(|service| service.auth.as_ref())
+        .map_or(("Authorization", true), |auth| {
+            (auth.header.as_str(), auth.kind == "bearer")
+        });
+    header_service.and_then(|_| {
+        let value = Zeroizing::new(folded_header(request.request.headers, header));
+        let value = if bearer {
             value
                 .split_once(' ')
                 .map_or(value.as_str(), |(_, value)| value)
