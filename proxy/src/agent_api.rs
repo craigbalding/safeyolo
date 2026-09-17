@@ -149,6 +149,7 @@ pub enum AuditKind {
     PlumbMessageFlagged,
     PlumbMessageAllowed,
     PlumbConversationClosed,
+    CoordPublishOutcomeUnknown,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -260,6 +261,13 @@ impl AuditIntent {
                 Severity::Low,
                 "plumb",
                 Some(Decision::Log),
+            ),
+            AuditKind::CoordPublishOutcomeUnknown => (
+                "coord.publish_outcome_unknown",
+                Kind::Security,
+                Severity::High,
+                "agent-api",
+                Some(Decision::Deny),
             ),
         };
         let mut event = Event::new(name, kind, severity, self.summary.clone());

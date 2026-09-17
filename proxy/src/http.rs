@@ -1282,6 +1282,7 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::AuthenticationFailed
                 | crate::agent_api::AuditKind::HandlerUnavailable
+                | crate::agent_api::AuditKind::CoordPublishOutcomeUnknown
         ) {
             event["decision"] = json!("deny");
         } else if matches!(
