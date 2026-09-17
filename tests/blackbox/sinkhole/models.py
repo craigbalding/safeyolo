@@ -25,6 +25,10 @@ class CapturedRequest:
             "path": self.path,
             "headers": self.headers,
             "body": self.body.decode("utf-8", errors="replace"),
+            # Keep the historical text field for existing callers while
+            # exposing a lossless representation for binary/exact-body
+            # acceptance scenarios.
+            "body_hex": self.body.hex(),
             "client_ip": self.client_ip,
             "query_params": self.query_params,
         }

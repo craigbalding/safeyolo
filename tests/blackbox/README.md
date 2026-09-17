@@ -274,6 +274,16 @@ pytest invocations retain the temporary adapter when a test does not request
 `native_policy=True`; those runs are development comparisons and are not
 release acceptance.
 
+### Sinkhole observation fidelity
+
+The sinkhole control API keeps its historical UTF-8 replacement `body` field
+and also publishes `body_hex`. `SinkholeClient.get_requests()` exposes the
+lossless value as `CapturedRequest.body_bytes`, allowing shared migration and
+gateway scenarios to assert arbitrary request bytes, including invalid UTF-8,
+without changing the existing observer API. Target normalization, duplicate
+header ordering, partial-body/connection outcomes, and receiver readiness are
+separate observer increments.
+
 ### Installed-host stage-A smoke
 
 Use installed_host_smoke.py on a supported Linux or macOS host when a

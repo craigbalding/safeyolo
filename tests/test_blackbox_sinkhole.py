@@ -3,7 +3,9 @@
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from tests.blackbox.sinkhole.models import CapturedRequest
 
 
 def _load_sinkhole_server():
@@ -29,3 +31,51 @@ def test_sinkhole_bind_does_not_perform_reverse_dns():
         assert server.server_port == server.server_address[1]
     finally:
         server.server_close()
+
+
+def test_sinkhole_observer_preserves_exact_body_bytes():
+    payload = b"prefix\x00\xff\xfe\n\xe2\x28\xa1"
+    captured = CapturedRequest(
+        timestamp=1.0,
+        host="binary.test",
+        method="POST",
+        path="/upload",
+        headers={},
+        body=payload,
+        client_ip="127.0.0.1",
+    )
+
+    wire = captured.to_dict()
+
+    assert wire["body"] == payload.decode("utf-8", errors="replace")
+    assert wire["body_hex"] == payload.hex()
+
+
+def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    payload = b"\x00\xffnot-utf8\xe2\x28\xa1"
+    response = Mock()
+    response.json.return_value = {
+        "requests": [
+            {
+                "timestamp": 1.0,
+                "host": "binary.test",
+                "method": "POST",
+                "path": "/upload",
+                "headers": {},
+                "body": payload.decode("utf-8", errors="replace"),
+                "body_hex": payload.hex(),
+                "client_ip": "127.0.0.1",
+            }
+        ]
+    }
+    client = SinkholeClient("http://sinkhole.invalid:9999")
+    try:
+        with patch.object(client._client, "get", return_value=response):
+            requests = client.get_requests()
+    finally:
+        client.close()
+
+    assert len(requests) == 1
+    assert requests[0].body_bytes == payload

@@ -19,6 +19,19 @@ class CapturedRequest:
     body: str
     client_ip: str
     query_params: dict[str, list[str]]
+    body_hex: str | None = None
+
+    @property
+    def body_bytes(self) -> bytes:
+        """Return the exact body captured by the sinkhole.
+
+        Older sinkhole servers did not publish ``body_hex``.  Keep those
+        responses readable through the historical text field while making
+        current observer responses lossless.
+        """
+        if self.body_hex is None:
+            return self.body.encode("utf-8")
+        return bytes.fromhex(self.body_hex)
 
 
 class SinkholeClient:
@@ -67,6 +80,7 @@ class SinkholeClient:
                 body=r["body"],
                 client_ip=r["client_ip"],
                 query_params=r.get("query_params", {}),
+                body_hex=r.get("body_hex"),
             )
             for r in data["requests"]
         ]
