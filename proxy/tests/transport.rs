@@ -1176,6 +1176,16 @@ async fn raw_h2_origin(
         .await
         .unwrap();
     if partial_reset {
+        // Wait until the proxy's H2 client has delivered DATA to its body
+        // owner and released receive capacity. This keeps the frozen DATA and
+        // RST frames distinct on the wire and prevents a reset from racing
+        // ahead of the shared prefix.
+        loop {
+            let (kind, _, _, _) = read_h2_wire(&mut stream).await;
+            if kind == 8 {
+                break;
+            }
+        }
         stream
             .write_all(&h2_wire_frame(3, 0, 1, &0_u32.to_be_bytes()))
             .await
