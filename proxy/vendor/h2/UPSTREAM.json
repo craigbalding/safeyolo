@@ -1,6 +1,8 @@
 {
   "name": "h2",
   "version": "0.4.19",
+  "license": "MIT",
+  "license_sha256": "b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d",
   "source": "registry+https://github.com/rust-lang/crates.io-index",
   "archive_sha256": "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16",
   "patch_source_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",

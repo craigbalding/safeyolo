@@ -1,6 +1,8 @@
 {
   "name": "hyper",
   "version": "1.11.1",
+  "license": "MIT",
+  "license_sha256": "2d01890414494742ba4a509fcec8efa40f6d8be22cbd72be7cff08d6fda4ec89",
   "source": "registry+https://github.com/rust-lang/crates.io-index",
   "archive_sha256": "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43",
   "patch_source_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",

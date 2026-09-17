@@ -3,8 +3,10 @@
 Run the command from the repository root with Rust 1.94.0 and CPython 3.12.
 Cargo runs offline by default and requires the dependencies to be present in
 the local cache. Use `--online` only when the operator intends Cargo to fetch
-missing packages. The report is written outside the checkout unless `--report`
-specifies another path.
+missing packages. The script uses a temporary `CARGO_TARGET_DIR` outside the
+checkout and removes it after the run, so a successful run leaves no generated
+Cargo artifacts in the worktree. The report is written outside the checkout
+unless `--report` specifies another path.
 
 ```sh
 SAFEYOLO_POLICY_PYTHON="$(command -v python3)" \
@@ -17,8 +19,12 @@ test command collects zero tests, a selected test fails, or a provenance hash
 does not match the current vendored source. It prints command output and keeps
 the command, exit code, elapsed time, test counts, output hash and output tail
 in the JSON report. The report also records the Git revision, Rust and Cargo
-versions, package manifests, enabled features, lockfile hashes, and the
-cumulative source hashes from each `UPSTREAM.json`.
+versions, package manifests, actual resolved features from Cargo metadata,
+lockfile hashes, and the cumulative source hashes from each `UPSTREAM.json`.
+Standalone metadata is filtered to the host target and uses each package's
+committed lockfile. The vendored `fancy-regex` lockfile is committed beside
+its manifest so its standalone dependency versions are reproducible.
+The product and standalone package commands all pass `--locked`.
 
 The first Python oracle command intentionally unsets
 `SAFEYOLO_POLICY_PYTHON` and selects the real
@@ -64,8 +70,8 @@ with #621 and the release checkpoints.
 `proxy/vendor/fancy-regex/SAFEYOLO.md` and `UPSTREAM.json` describe the pinned
 crate commit, crates.io archive checksum, patch files, retained MIT and
 CPython licenses, and generated lowercase-data source. Hyper and h2 retain
-their MIT licenses and cumulative source hashes in their respective
-`UPSTREAM.json` files. The script checks every latest cumulative candidate
-hash, the generated lowercase JSON and its CPython license, and reports the
-recorded upstream/archive values without replacing or rewriting vendored
-source.
+their MIT licenses, license checksums and cumulative source hashes in their
+respective `UPSTREAM.json` files. The script checks every latest cumulative
+candidate hash, the generated lowercase JSON and its CPython license, and
+requires the recorded source, archive and patch checksums without replacing or
+rewriting vendored source.

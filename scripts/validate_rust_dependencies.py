@@ -28,9 +28,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = ROOT / "proxy" / "vendor"
 CRATES = {
-    "fancy-regex": {"version": "0.19.2", "standalone_locked": False},
-    "hyper": {"version": "1.11.1", "standalone_locked": True},
-    "h2": {"version": "0.4.19", "standalone_locked": True},
+    "fancy-regex": {"version": "0.19.2"},
+    "hyper": {"version": "1.11.1"},
+    "h2": {"version": "0.4.19"},
+}
+LICENSE_SHA256 = {
+    "fancy-regex": "3bc70e239e91272782006c638fc0452a714d384224f11f0923036b7be07cf9b5",
+    "hyper": "2d01890414494742ba4a509fcec8efa40f6d8be22cbd72be7cff08d6fda4ec89",
+    "h2": "b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d",
 }
 FANCY_PYTHON_TEST = "every_valid_scalar_lowercase_matches_actual_python_312"
 TEST_RESULT_RE = re.compile(
@@ -88,6 +93,16 @@ def _git_branch() -> str:
     return result.stdout.strip() if result.returncode == 0 else "(detached)"
 
 
+def _rust_host() -> str:
+    output = subprocess.run(
+        ["rustc", "-vV"], check=True, capture_output=True, text=True
+    ).stdout
+    for line in output.splitlines():
+        if line.startswith("host:"):
+            return line.partition(":")[2].strip()
+    raise ValidationError("rustc -vV did not report a host target")
+
+
 def _parse_test_counts(output: str) -> dict[str, int]:
     summaries = list(TEST_RESULT_RE.finditer(output))
     running = sum(int(match.group("count")) for match in RUNNING_RE.finditer(output))
@@ -109,10 +124,18 @@ def _command_text(command: list[str]) -> str:
 class Runner:
     """Execute commands and retain concise machine-readable evidence."""
 
-    def __init__(self, report: dict[str, Any], *, offline: bool, report_path: Path):
+    def __init__(
+        self,
+        report: dict[str, Any],
+        *,
+        offline: bool,
+        report_path: Path,
+        target_dir: Path,
+    ):
         self.report = report
         self.offline = offline
         self.report_path = report_path
+        self.target_dir = target_dir
         self.command_index = 0
 
     def _environment(self, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -122,6 +145,7 @@ class Runner:
                 "CARGO_PROFILE_DEV_DEBUG": "0",
                 "CARGO_PROFILE_TEST_DEBUG": "0",
                 "CARGO_INCREMENTAL": "0",
+                "CARGO_TARGET_DIR": str(self.target_dir),
             }
         )
         if extra:
@@ -148,6 +172,7 @@ class Runner:
             "CARGO_PROFILE_DEV_DEBUG": "0",
             "CARGO_PROFILE_TEST_DEBUG": "0",
             "CARGO_INCREMENTAL": "0",
+            "CARGO_TARGET_DIR": str(self.target_dir),
         }
         display_environment.update(environment or {})
         display = dict(display_environment)
@@ -282,8 +307,38 @@ def _provenance(report: dict[str, Any]) -> None:
                 f"{name}: UPSTREAM version {metadata.get('version')!r} "
                 f"does not match {spec['version']}"
             )
+        recorded_source = metadata.get("source") or metadata.get("repository")
+        recorded_archive = metadata.get("archive_sha256") or metadata.get(
+            "crates_io_package_sha256"
+        )
+        if not isinstance(recorded_source, str) or not recorded_source:
+            failures.append(f"{name}: UPSTREAM source is missing")
+        if not isinstance(recorded_archive, str) or not SHA256_RE.fullmatch(
+            recorded_archive
+        ):
+            failures.append(f"{name}: UPSTREAM archive checksum is missing or invalid")
+        if name != "fancy-regex":
+            patch_source = metadata.get("patch_source_sha256")
+            if not isinstance(patch_source, str) or not SHA256_RE.fullmatch(patch_source):
+                failures.append(f"{name}: UPSTREAM patch source checksum is missing or invalid")
         if not (directory / "LICENSE").is_file():
             failures.append(f"{name}: retained LICENSE is missing")
+        license_path = directory / "LICENSE"
+        license_actual = _sha256(license_path) if license_path.is_file() else "MISSING"
+        license_expected = LICENSE_SHA256[name]
+        if license_actual != license_expected:
+            failures.append(
+                f"{name}: LICENSE hash {license_actual} != expected {license_expected}"
+            )
+        recorded_license = metadata.get("license") or metadata.get("vendored_license")
+        if not isinstance(recorded_license, str) or not recorded_license:
+            failures.append(f"{name}: UPSTREAM license is missing")
+        recorded_license_hash = metadata.get("license_sha256")
+        if recorded_license_hash != license_expected:
+            failures.append(
+                f"{name}: UPSTREAM license checksum {recorded_license_hash!r} "
+                f"!= expected {license_expected}"
+            )
 
         current_expected: dict[str, str] = {}
         checkpoints = 0
@@ -376,7 +431,10 @@ def _provenance(report: dict[str, Any]) -> None:
             "recorded_archive_or_crates_io_sha256": metadata.get(
                 "archive_sha256", metadata.get("crates_io_package_sha256")
             ),
+            "recorded_patch_source_sha256": metadata.get("patch_source_sha256"),
             "recorded_upstream_commit": metadata.get("git_commit"),
+            "license_sha256": license_actual,
+            "expected_license_sha256": license_expected,
             "hash_checkpoints": checkpoints,
             "current_hashes_checked": len(current_expected),
             "current_hash_mismatches": mismatches,
@@ -432,6 +490,7 @@ def _metadata_summary(
         "lock_sha256": _sha256(lock_path) if lock_path.is_file() else None,
         "packages": packages,
         "enabled_features": features,
+        "resolved_features": features,
     }
 
 
@@ -442,6 +501,9 @@ def _read_metadata(
     *,
     locked: bool,
     no_deps: bool = False,
+    no_default_features: bool = False,
+    features: str | None = None,
+    filter_platform: str | None = None,
 ) -> dict[str, Any]:
     metadata_args = [
         "metadata",
@@ -451,6 +513,12 @@ def _read_metadata(
     ]
     if no_deps:
         metadata_args.append("--no-deps")
+    if no_default_features:
+        metadata_args.append("--no-default-features")
+    if features:
+        metadata_args.extend(["--features", features])
+    if filter_platform:
+        metadata_args.extend(["--filter-platform", filter_platform])
     result, _ = runner.cargo(
         f"{name}-metadata",
         metadata_args,
@@ -580,10 +648,13 @@ def main(argv: list[str] | None = None) -> int:
             "This command does not start a proxy or claim Linux/macOS black-box acceptance; those scopes belong to shared #621 acceptance.",
         ],
     }
+    target_context = None
     try:
+        rust_host = _rust_host()
         report["repository"] = {
             "revision": _git_value("rev-parse", "HEAD"),
             "branch": _git_branch(),
+            "rust_host": rust_host,
             "rustc": subprocess.run(
                 ["rustc", "--version"], check=True, capture_output=True, text=True
             ).stdout.strip(),
@@ -596,7 +667,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mode={report['mode']}")
         print(f"report={report_path}")
         _provenance(report)
-        runner = Runner(report, offline=offline, report_path=report_path)
+        target_context = tempfile.TemporaryDirectory(
+            prefix="safeyolo-rust-dependency-target-"
+        )
+        runner = Runner(
+            report,
+            offline=offline,
+            report_path=report_path,
+            target_dir=Path(target_context.name),
+        )
 
         product_manifest = ROOT / "proxy" / "Cargo.toml"
         product_raw = _read_metadata(
@@ -610,21 +689,56 @@ def main(argv: list[str] | None = None) -> int:
         _validate_product_resolution(report, product)
 
         standalone: dict[str, Any] = {}
-        for name, spec in CRATES.items():
+        standalone_specs = {
+            "fancy-regex": (None, False),
+            "hyper": ("client,http2", True),
+        }
+        for name, (features, no_default_features) in standalone_specs.items():
             manifest = VENDOR_ROOT / name / "Cargo.toml"
             raw = _read_metadata(
                 runner,
                 name,
                 manifest,
-                locked=bool(spec["standalone_locked"]),
-                no_deps=True,
+                locked=True,
+                features=features or "default",
+                no_default_features=no_default_features,
+                filter_platform=rust_host,
             )
-            standalone[name] = _metadata_summary(raw, {name}, manifest=manifest)
+            summary = _metadata_summary(raw, {name}, manifest=manifest)
+            summary["requested_features"] = (
+                features.split(",") if features else ["default"]
+            )
+            summary["no_default_features"] = no_default_features
+            standalone[name] = summary
+
+        h2 = VENDOR_ROOT / "h2" / "Cargo.toml"
+        h2_feature_resolutions: dict[str, Any] = {}
+        for resolution_name, features, no_default_features in (
+            ("none", None, True),
+            ("stream", "stream", False),
+            ("unstable", "unstable", False),
+            ("all", "stream,unstable", False),
+        ):
+            raw = _read_metadata(
+                runner,
+                "h2-" + resolution_name,
+                h2,
+                locked=True,
+                features=features,
+                no_default_features=no_default_features,
+                filter_platform=rust_host,
+            )
+            summary = _metadata_summary(raw, {"h2"}, manifest=h2)
+            summary["requested_features"] = (
+                features.split(",") if features else []
+            )
+            summary["no_default_features"] = no_default_features
+            h2_feature_resolutions[resolution_name] = summary
+        standalone["h2"] = {"feature_resolutions": h2_feature_resolutions}
         report["standalone_resolution"] = standalone
 
         fancy = VENDOR_ROOT / "fancy-regex" / "Cargo.toml"
         hyper = VENDOR_ROOT / "hyper" / "Cargo.toml"
-        h2 = VENDOR_ROOT / "h2" / "Cargo.toml"
         product_python = os.environ.get("SAFEYOLO_POLICY_PYTHON") or shutil.which("python3")
         if not product_python:
             raise ValidationError(
@@ -641,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
             kind="inherited-upstream-tests",
             environment=common_env,
             require_tests=True,
-            locked=False,
+            locked=True,
         )
         runner.cargo(
             "fancy-regex-runtime-allocation",
@@ -653,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             kind="patch-regression",
             environment=common_env,
             require_tests=True,
+            locked=True,
         )
         runner.cargo(
             "fancy-regex-runtime-cancellation",
@@ -664,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
             kind="patch-regression",
             environment=common_env,
             require_tests=True,
+            locked=True,
         )
         runner.cargo(
             "fancy-regex-ascii-backrefs",
@@ -675,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             kind="patch-regression",
             environment=common_env,
             require_tests=True,
+            locked=True,
         )
         runner.cargo(
             "fancy-regex-python-backrefs-missing-oracle",
@@ -687,6 +804,7 @@ def main(argv: list[str] | None = None) -> int:
             environment={"SAFEYOLO_POLICY_PYTHON": "__UNSET__"},
             expect_failure=True,
             require_tests=True,
+            locked=True,
         )
         runner.cargo(
             "fancy-regex-python-backrefs",
@@ -698,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
             kind="patch-regression-python-oracle",
             environment=common_env,
             require_tests=True,
+            locked=True,
         )
 
         runner.cargo(
@@ -804,6 +923,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nFAIL: {error}", file=sys.stderr)
         print(f"report={report_path}", file=sys.stderr)
         return 1
+    finally:
+        if target_context is not None:
+            target_context.cleanup()
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@
   "package": "fancy-regex",
   "version": "0.19.2",
   "license": "MIT",
+  "license_sha256": "3bc70e239e91272782006c638fc0452a714d384224f11f0923036b7be07cf9b5",
   "vendored_license": "MIT AND Python-2.0",
   "repository": "https://github.com/fancy-regex/fancy-regex",
   "git_commit": "e2684857abcfd723562864077c6bc5f3f70ecedf",
@@ -43,7 +44,7 @@
     },
     ".gitignore": {
       "upstream_sha256": "d02caed6e54b39fb898bc32f9b8d72f87b5d7a7e44f8271503984617450c1dcc",
-      "vendored_sha256": "07d64eb09a56c853b7853a47276799b38d7d6d25a4314b0c1abc10432c214e17"
+      "vendored_sha256": "306fd52e74fca6746e12acc750f232de15e71da917756a1270d74c91f5eb7368"
     },
     "Cargo.toml": {
       "upstream_sha256": "38ffa9cb6393c5db0f77721781d324f773d974e8b37b686759d11a302095c1af",
