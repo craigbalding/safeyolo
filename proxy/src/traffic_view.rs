@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
 mod codec_tables;
-mod export;
+pub(crate) mod export;
 mod filter;
 mod websocket;
 

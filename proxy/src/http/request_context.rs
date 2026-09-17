@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 use crate::{
     ConnectionIdentity, Error, Runtime,
     http_content::ContentError,
+    inspection,
     request_trace::{RequestTrace, TraceHook},
     test_context::{self, ContextErrorKind, PreparedRequest, RequestOutcome, TrustedIdentity},
 };
@@ -71,6 +72,16 @@ struct Pending {
     encoding: Result<Zeroizing<Vec<u8>>, ContentError>,
 }
 
+type InspectionHeaders = Vec<(Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>)>;
+
+struct RequestInspection {
+    scanner: inspection::Scanner,
+    path: String,
+    headers: InspectionHeaders,
+    options: inspection::Options,
+    result: Option<Result<inspection::Decision, inspection::Error>>,
+}
+
 pub(super) struct RequestContext {
     pending: Option<Pending>,
     terminal: Option<bool>,
@@ -81,6 +92,7 @@ pub(super) struct RequestContext {
     port: u16,
     valid_context: bool,
     trace: Option<Arc<RequestTrace>>,
+    inspection: Option<Box<RequestInspection>>,
 }
 
 /// Call after network/circuit admission and CONNECT exclusion. Only reserved
@@ -192,6 +204,7 @@ pub(super) fn prepare<B>(
         port: destination.port,
         valid_context,
         trace,
+        inspection: None,
     }))
 }
 
@@ -216,6 +229,7 @@ impl RequestContext {
             port: 0,
             valid_context: false,
             trace,
+            inspection: None,
         })
     }
 
@@ -240,6 +254,38 @@ impl RequestContext {
 
     pub(super) fn trace(&self) -> Option<Arc<RequestTrace>> {
         self.trace.clone()
+    }
+
+    /// Attach the existing scanner to the request body owner. Header bytes are
+    /// copied from the parser-ordered owner before that owner is released;
+    /// forwarding continues to use the original request and body bytes.
+    pub(super) fn attach_inspection<'a>(
+        &mut self,
+        scanner: inspection::Scanner,
+        path: &str,
+        headers: impl Iterator<Item = (&'a [u8], &'a [u8])>,
+        options: inspection::Options,
+    ) {
+        self.inspection = Some(Box::new(RequestInspection {
+            scanner,
+            path: path.to_owned(),
+            headers: headers
+                .map(|(name, value)| {
+                    (
+                        Zeroizing::new(name.to_vec()),
+                        Zeroizing::new(value.to_vec()),
+                    )
+                })
+                .collect(),
+            options,
+            result: None,
+        }));
+    }
+
+    pub(super) fn inspection_result(
+        &self,
+    ) -> Option<Result<inspection::Decision, inspection::Error>> {
+        self.inspection.as_ref()?.result.clone()
     }
 
     /// Small buffered requests must cross the independent parser barrier before
@@ -271,6 +317,11 @@ impl RequestContext {
         if let Some(content) = prepared.unvalidated_content {
             self.apply_buffered(&content).await?;
         } else {
+            // A streamed body cannot be inspected by the bounded owner, but
+            // URL and header scopes still run before the outbound dial.  The
+            // body remains explicitly unavailable until a future streaming
+            // inspection owner is introduced.
+            self.apply_inspection(None);
             self.try_finish();
         }
         Ok((
@@ -310,6 +361,26 @@ impl RequestContext {
             self.apply(pending, Some(content));
         }
         Ok(())
+    }
+
+    fn apply_inspection(&mut self, content: Option<&[u8]>) {
+        if let Some(inspection) = self
+            .inspection
+            .as_mut()
+            .filter(|inspection| inspection.result.is_none())
+        {
+            let headers = inspection
+                .headers
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.as_slice()))
+                .collect::<Vec<_>>();
+            inspection.result = Some(inspection.scanner.scan_http_request_bytes(
+                inspection::UrlInput::Text(&inspection.path),
+                &headers,
+                content,
+                inspection.options,
+            ));
+        }
     }
 
     pub(super) fn request_hooks_completed(&self) -> bool {
@@ -372,6 +443,7 @@ impl RequestContext {
             // existing security hooks, as source container exceptions can.
             traffic.memory_request(content);
         }
+        self.apply_inspection(content);
         let started = self
             .traffic
             .as_ref()

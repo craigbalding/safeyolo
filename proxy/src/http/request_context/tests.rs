@@ -402,6 +402,84 @@ async fn small_h1_validated_buffer_applies_once_and_replays_original_body() {
 }
 
 #[tokio::test]
+async fn buffered_request_owner_runs_pattern_scanner_before_forwarding() {
+    let scanner = crate::inspection::Scanner::default();
+    scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "owned-marker",
+                "pattern": "SECRET",
+                "scope": "body",
+                "target": "request",
+                "action": "block"
+            }]
+        }))
+        .unwrap();
+    let mut peer = H1::new().await;
+    let mut request = peer.request(6, None, "identity").await;
+    let mut headers = crate::request_headers::RequestHeaders::take(&mut request).unwrap();
+    headers.apply_hygiene(request.headers_mut());
+    let mut context = RequestContext::traffic_only(&mut request, false, None).unwrap();
+    context.attach_inspection(
+        scanner,
+        "/path?raw=1",
+        headers.iter(),
+        crate::inspection::Options {
+            block_request: true,
+            ..crate::inspection::Options::default()
+        },
+    );
+    peer.socket.write_all(b"SECRET").await.unwrap();
+    let (body, context) = context.buffer(request.into_body(), Some(6)).await.unwrap();
+    assert_eq!(
+        body.collect().await.unwrap().to_bytes(),
+        b"SECRET".as_slice()
+    );
+    let decision = context.inspection_result().unwrap().unwrap();
+    assert_eq!(decision.outcome, crate::inspection::Outcome::MatchBlocked);
+    assert_eq!(decision.status, Some(403));
+}
+
+#[tokio::test]
+async fn streamed_request_owner_scans_headers_before_forwarding() {
+    let scanner = crate::inspection::Scanner::default();
+    scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "owned-header-marker",
+                "pattern": "owned.invalid",
+                "scope": "headers",
+                "target": "request",
+                "action": "block"
+            }]
+        }))
+        .unwrap();
+    let mut peer = H1::new().await;
+    let length = crate::http_content::BUFFERED_BODY_THRESHOLD + 1;
+    let mut request = peer.request(length, None, "identity").await;
+    let mut headers = crate::request_headers::RequestHeaders::take(&mut request).unwrap();
+    headers.apply_hygiene(request.headers_mut());
+    let mut context = RequestContext::traffic_only(&mut request, false, None).unwrap();
+    context.attach_inspection(
+        scanner,
+        "/path?raw=1",
+        headers.iter(),
+        crate::inspection::Options {
+            block_request: true,
+            ..crate::inspection::Options::default()
+        },
+    );
+    let (body, context) = context
+        .buffer(request.into_body(), Some(length as u64))
+        .await
+        .unwrap();
+    drop(body);
+    let decision = context.inspection_result().unwrap().unwrap();
+    assert_eq!(decision.outcome, crate::inspection::Outcome::MatchBlocked);
+    assert_eq!(decision.finding.unwrap().location, "header:Host");
+}
+
+#[tokio::test]
 async fn actual_h2_no_error_reset_cannot_publish_buffered_context() {
     for reason in [None, Some(h2::Reason::NO_ERROR), Some(h2::Reason::CANCEL)] {
         let fixture = Fixture::new(true, json!(["owned.invalid"]), false);

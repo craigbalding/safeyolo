@@ -256,6 +256,88 @@ fn http_scope_order_precedes_rule_order_but_url_forms_preserve_rule_precedence()
 }
 
 #[test]
+fn byte_http_adapter_preserves_ordered_duplicate_and_invalid_header_values() {
+    let scanner = make_scanner(json!([rule(
+        "source-byte",
+        r"key-\uDCFF",
+        "headers",
+        "block"
+    )]));
+    let result = scanner
+        .scan_http_request_bytes(
+            UrlInput::Text("/"),
+            &[
+                (b"X-Value".as_slice(), b"safe".as_slice()),
+                (b"x-value".as_slice(), b"key-\xff".as_slice()),
+            ],
+            None,
+            block(),
+        )
+        .unwrap();
+    assert_eq!(result.outcome, Outcome::MatchBlocked);
+    assert_eq!(result.finding.unwrap().location, "header:X-Value");
+}
+
+#[test]
+fn byte_http_adapter_decodes_content_encoding_and_charset_before_body_scan() {
+    use std::io::Write;
+
+    let scanner = make_scanner(json!([rule("secret", "SECRET", "body", "block")]));
+    let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gzip.write_all(b"SECRET").unwrap();
+    let gzip = gzip.finish().unwrap();
+    let result = scanner
+        .scan_http_request_bytes(
+            UrlInput::Text("/"),
+            &[
+                (b"Content-Encoding".as_slice(), b"gzip".as_slice()),
+                (
+                    b"Content-Type".as_slice(),
+                    b"text/plain; charset=utf-8".as_slice(),
+                ),
+            ],
+            Some(&gzip),
+            block(),
+        )
+        .unwrap();
+    assert_eq!(result.outcome, Outcome::MatchBlocked);
+
+    let scanner = make_scanner(json!([rule("euro", "€", "body", "log")]));
+    let result = scanner
+        .scan_http_response_bytes(
+            true,
+            &[(
+                b"Content-Type".as_slice(),
+                b"text/plain; charset=windows-1252".as_slice(),
+            )],
+            Some(b"\x80"),
+            block(),
+        )
+        .unwrap();
+    assert_eq!(result.outcome, Outcome::MatchLogged);
+    assert_eq!(result.finding.unwrap().direction, Direction::Response);
+}
+
+#[test]
+fn byte_http_adapter_reports_invalid_text_as_inspection_failure() {
+    let scanner = make_scanner(json!([rule("body", "SECRET", "body", "log")]));
+    let failure = scanner
+        .scan_http_request_bytes(
+            UrlInput::Text("/"),
+            &[(
+                b"Content-Type".as_slice(),
+                b"text/plain; charset=utf-8".as_slice(),
+            )],
+            Some(b"\xffSECRET"),
+            Options::default(),
+        )
+        .unwrap();
+    assert_eq!(failure.outcome, Outcome::InspectionError);
+    assert_eq!(failure.failure, Some("content_decode"));
+    assert_eq!(failure.error_type, Some("ContentDecode"));
+}
+
+#[test]
 fn urls_decode_once_keep_encoded_fragments_and_fail_closed_at_byte_bound() {
     let scanner = make_scanner(json!([rule("secret", "SECRET", "url", "block")]));
     for url in [

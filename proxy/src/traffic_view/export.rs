@@ -760,7 +760,7 @@ fn request_content_for_console(
 #[cfg(test)]
 mod har_tests;
 
-pub(super) fn decode_text(
+pub(crate) fn decode_text(
     body: &[u8],
     content_type: Option<&str>,
 ) -> Result<Zeroizing<String>, ExportError> {

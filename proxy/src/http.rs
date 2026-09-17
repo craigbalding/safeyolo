@@ -161,6 +161,109 @@ fn full(body: impl Into<Bytes>) -> Body {
         .boxed()
 }
 
+fn inspection_options(runtime: &Runtime) -> Option<crate::inspection::Options> {
+    runtime
+        .config
+        .inspection
+        .as_ref()
+        .map(|inspection| crate::inspection::Options {
+            block_request: inspection.block_request,
+            block_response: inspection.block_response,
+            block_websocket_request: Some(inspection.block_websocket_request),
+            block_websocket_response: Some(inspection.block_websocket_response),
+        })
+}
+
+fn record_pattern_decision(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    destination: &Destination,
+    direction: crate::inspection::Direction,
+    decision: &crate::inspection::Decision,
+) -> Result<(), Error> {
+    let denied = matches!(
+        decision.outcome,
+        crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+    );
+    let logged = matches!(decision.outcome, crate::inspection::Outcome::MatchLogged);
+    let mut audit = crate::audit::Event::new(
+        "security.pattern_scanner",
+        crate::audit::Kind::Security,
+        if denied {
+            crate::audit::Severity::High
+        } else {
+            crate::audit::Severity::Medium
+        },
+        format!(
+            "Pattern scanner {} inspection",
+            match direction {
+                crate::inspection::Direction::Request => "request",
+                crate::inspection::Direction::Response => "response",
+            }
+        ),
+    );
+    audit.addon = Some("pattern-scanner".into());
+    audit.decision = Some(if denied {
+        crate::audit::Decision::Deny
+    } else if logged {
+        crate::audit::Decision::Log
+    } else {
+        crate::audit::Decision::Allow
+    });
+    audit.host = Some(destination.policy_host.clone());
+    audit.agent = identity.request_agent().map(str::to_owned);
+    audit.request_id = Some(request_id.to_owned());
+    audit.attribution = Some(identity.audit_attribution());
+    audit.details = json!({
+        "direction": direction,
+        "outcome": decision.outcome,
+        "finding": decision.finding,
+        "failure": decision.failure,
+        "error_type": decision.error_type,
+        "metadata": decision.metadata,
+    })
+    .into();
+    runtime.audit.emit(audit)?;
+    runtime.record(json!({
+        "event": "security.pattern_scanner",
+        "kind": "security",
+        "severity": if denied { "high" } else { "medium" },
+        "addon": "pattern-scanner",
+        "decision": if denied { "deny" } else if logged { "log" } else { "allow" },
+        "direction": direction,
+        "outcome": decision.outcome,
+        "finding": decision.finding,
+        "failure": decision.failure,
+        "error_type": decision.error_type,
+        "metadata": decision.metadata,
+        "host": destination.policy_host,
+        "request_id": request_id,
+        "agent": identity.request_agent(),
+        "connection_id": identity.connection_id,
+    }))
+}
+
+/// Attach the ordinary local-response completion marker after a response body
+/// has already been consumed for post-upstream inspection.  The request-side
+/// helper cannot be used here because its parser observer belongs to the
+/// forwarded request, which has already been moved into `Completion`.
+fn pattern_local_response(
+    reply: &mut Response<Body>,
+    traffic: &Arc<traffic::Traffic>,
+    failure: Option<&'static str>,
+) {
+    let Some(size) = reply.body().size_hint().exact() else {
+        return;
+    };
+    reply.extensions_mut().insert(traffic::LocalResponse {
+        traffic: traffic.clone(),
+        size,
+        blocked_by: Some(json!("pattern-scanner").into()),
+        block_reason: failure.map(|failure| json!(failure).into()),
+    });
+}
+
 pub(crate) fn response(status: StatusCode, message: &str) -> Response<Body> {
     Response::builder()
         .status(status)
@@ -2537,6 +2640,10 @@ where
             },
         )));
     }
+    let inspection_admitted = !matches!(
+        &admission,
+        request_context::Admission::HookError | request_context::Admission::Block(_)
+    );
     let mut context = match admission {
         request_context::Admission::Inactive => {
             request_context::RequestContext::traffic_only(&mut request, false, trace.clone())?
@@ -2561,8 +2668,20 @@ where
     };
     let traffic = traffic.expect("CONNECT returned before ordinary HTTP hooks");
     traffic.request_headers(&request, destination);
-    context.attach_traffic(traffic);
+    context.attach_traffic(traffic.clone());
+    let response_traffic = traffic;
     context.attach_live(live.clone());
+    if !circuit_hook_failed
+        && inspection_admitted
+        && let Some(options) = inspection_options(&runtime)
+    {
+        context.attach_inspection(
+            runtime.scanner.clone(),
+            &destination.path,
+            ordered_headers.iter(),
+            options,
+        );
+    }
     if let Some(provenance) = context.response_provenance() {
         recording.request(
             &request,
@@ -2643,6 +2762,45 @@ where
     // request parser barrier; quiet rules decide whether decoding is needed.
     let (body, context) = context.buffer(body, content_length).await?;
     let mut request = Request::from_parts(parts, body);
+    if let Some(result) = context.inspection_result() {
+        let result = result?;
+        if !matches!(result.outcome, crate::inspection::Outcome::NoRules) {
+            record_pattern_decision(
+                &runtime,
+                identity,
+                request_id,
+                destination,
+                crate::inspection::Direction::Request,
+                &result,
+            )?;
+        }
+        if matches!(
+            result.outcome,
+            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+        ) {
+            let status = StatusCode::from_u16(result.status.unwrap_or(403))?;
+            let body = result
+                .body
+                .map(|body| body.to_string())
+                .unwrap_or_else(|| "{\"error\":\"Request blocked by pattern policy\"}".into());
+            let mut blocked = Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-blocked-by", "pattern-scanner")
+                .body(full(body))?;
+            traffic::local_reply(
+                context.traffic().as_ref(),
+                &mut request,
+                &mut blocked,
+                Some(json!("pattern-scanner")),
+                result.failure.map(|failure| json!(failure)),
+                destination,
+                true,
+                trace.as_ref(),
+            )?;
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+    }
     let outbound = open_outbound(
         &runtime,
         &AllowedRequest {
@@ -2807,9 +2965,137 @@ where
             decision.decision,
         ));
     }
+    let response_scan = match inspection_options(&runtime) {
+        Some(options)
+            if runtime
+                .scanner
+                .has_scope(crate::inspection::Direction::Response, "headers")?
+                || runtime
+                    .scanner
+                    .has_scope(crate::inspection::Direction::Response, "body")? =>
+        {
+            Some(options)
+        }
+        _ => None,
+    };
+    let response_body_scan = match response_scan {
+        Some(options)
+            if runtime
+                .scanner
+                .has_scope(crate::inspection::Direction::Response, "body")? =>
+        {
+            Some(options)
+        }
+        _ => None,
+    };
+    let response_length = upstream
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let content_type = upstream
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map_or(&b""[..], |value| value.as_bytes());
+    let response_buffered = response_body_scan.is_some()
+        && response_length
+            .is_some_and(|length| length <= crate::http_content::BUFFERED_BODY_THRESHOLD as u64)
+        && !test_context::source_streamed(&runtime, &destination.policy_host, content_type);
+    // Keep the parser's response header view through hop-header cleanup. The
+    // source response hook sees every header, while downstream transport must
+    // still receive the existing stripped projection.
+    let response_headers = upstream
+        .headers()
+        .iter()
+        .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    if !response_buffered && let Some(options) = response_scan {
+        let headers = response_headers
+            .iter()
+            .map(|(name, value)| (name.as_slice(), value.as_slice()))
+            .collect::<Vec<_>>();
+        let inspected = runtime
+            .scanner
+            .scan_http_response_bytes(true, &headers, None, options)?;
+        if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
+            record_pattern_decision(
+                &runtime,
+                identity,
+                request_id,
+                destination,
+                crate::inspection::Direction::Response,
+                &inspected,
+            )?;
+        }
+        if matches!(
+            inspected.outcome,
+            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+        ) {
+            let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
+            let body = inspected
+                .body
+                .map(|body| body.to_string())
+                .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
+            let mut blocked = Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-blocked-by", "pattern-scanner")
+                .body(full(body))?;
+            pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+    }
     let (mut parts, body) = upstream.into_parts();
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
+    if response_buffered {
+        let body = UpstreamBody {
+            body,
+            _connection: connection,
+            live: live.clone(),
+        }
+        .collect()
+        .await?
+        .to_bytes();
+        let headers = response_headers
+            .iter()
+            .map(|(name, value)| (name.as_slice(), value.as_slice()))
+            .collect::<Vec<_>>();
+        let inspected = runtime.scanner.scan_http_response_bytes(
+            true,
+            &headers,
+            Some(&body),
+            response_body_scan.expect("body scanner selected"),
+        )?;
+        if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
+            record_pattern_decision(
+                &runtime,
+                identity,
+                request_id,
+                destination,
+                crate::inspection::Direction::Response,
+                &inspected,
+            )?;
+        }
+        if matches!(
+            inspected.outcome,
+            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+        ) {
+            let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
+            let body = inspected
+                .body
+                .map(|body| body.to_string())
+                .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
+            let mut blocked = Response::builder()
+                .status(status)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-blocked-by", "pattern-scanner")
+                .body(full(body))?;
+            pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
+            return Ok((prior_block(blocked), "deny".into()));
+        }
+        return Ok((Response::from_parts(parts, full(body)), decision.decision));
+    }
     Ok((
         Response::from_parts(
             parts,

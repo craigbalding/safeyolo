@@ -26,9 +26,12 @@
 //! inspection honors the configured rule in those proved cases; the oracle
 //! records this intentional D41 correction.
 //!
-//! Callers supply mitmproxy-equivalent decoded HTTP text and ordered, combined
-//! header values. HTTP charset/content-encoding and surrogate-escaped text still
-//! require a transport adapter. A streamed body is absent, not a clean scan.
+//! Callers may supply mitmproxy-equivalent decoded HTTP text and ordered,
+//! combined header values, or use the byte-oriented HTTP adapter below. The
+//! adapter reuses the source content-encoding/charset and surrogate-byte
+//! conversion helpers; streamed bodies and unsupported text codecs remain
+//! explicitly unavailable, not clean scans. A streamed body is absent, not a
+//! clean scan.
 //! The scanner adds no HTTP body or WebSocket message size cap. URL inspection
 //! alone has the shipped 16 KiB UTF-8 byte bound. The transport owns complete
 //! message assembly/decompression, private spooling, identity and audit emission.
@@ -62,13 +65,14 @@ pub fn compatibility_gaps() -> &'static [&'static str] {
         "arbitrary_python_re_grammar_and_flags",
         "python_unicode_classes_casefold_and_unicode_version",
         "regex_compilation_expansion_and_backtracking_resources",
-        "http_charset_content_encoding_and_surrogate_text_adapter",
+        "streamed_and_unsupported_http_text",
     ]
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorKind {
     Cancelled,
+    ContentDecode,
     InvalidConfig,
     RegexCompatibility,
     RegexRuntime,
@@ -449,6 +453,18 @@ pub(crate) fn compile_python_pattern(
 ) -> std::result::Result<Regex, PatternIssue> {
     let adapted = python_pattern(pattern, insensitive)?;
     compile_engine_pattern(&adapted, insensitive)
+}
+
+/// Compile a scanner rule after adapting Python's surrogate-escaped source
+/// pattern representation.  Credential rules perform this adaptation in
+/// their ordered-header owner; scanner rules need the same boundary because
+/// HTTP header values can contain invalid source bytes as well.
+fn compile_scanner_pattern(
+    pattern: &str,
+    insensitive: bool,
+) -> std::result::Result<Regex, PatternIssue> {
+    let adapted = crate::credential_text::source_pattern(pattern);
+    compile_python_pattern(&adapted, insensitive)
 }
 fn compile_engine_pattern(
     adapted: &str,
@@ -1142,7 +1158,7 @@ fn compile_rules(sensor: &Value) -> Result<(Vec<Rule>, LoadReport)> {
             .unwrap_or("medium")
             .to_owned();
         let insensitive = !config.get("case_sensitive").map(truthy).unwrap_or(true);
-        let compiled = match compile_python_pattern(pattern, insensitive) {
+        let compiled = match compile_scanner_pattern(pattern, insensitive) {
             Ok(regex) => regex,
             Err(PatternIssue::Invalid) => {
                 skipped.push(SkippedRule {
@@ -1268,9 +1284,66 @@ fn url_text(input: UrlInput<'_>) -> std::result::Result<UrlText, UrlFailure> {
     Ok(UrlText { raw, decoded })
 }
 
+fn source_headers(headers: &[(&[u8], &[u8])]) -> Result<Vec<(String, String)>> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    for (name, value) in headers {
+        let name = std::str::from_utf8(name).map_err(|_| error(ErrorKind::ContentDecode, None))?;
+        if !name.is_ascii() {
+            return Err(error(ErrorKind::ContentDecode, None));
+        }
+        let value = crate::credential_text::source_text(value);
+        if let Some((_, existing)) = result
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
+            existing.push_str(", ");
+            existing.push_str(&value);
+        } else {
+            result.push((name.to_owned(), value));
+        }
+    }
+    Ok(result)
+}
+
+fn combined_header(headers: &[(String, String)], name: &str) -> String {
+    headers
+        .iter()
+        .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.clone()))
+        .unwrap_or_default()
+}
+
+fn content_failure(direction: Direction, reason: &'static str) -> Decision {
+    let mut decision = Decision::plain(Outcome::InspectionError);
+    decision.status = Some(if direction == Direction::Request {
+        403
+    } else {
+        502
+    });
+    decision.failure = Some(reason);
+    decision.error_type = Some("ContentDecode");
+    decision.body = Some(json!({
+        "error": if direction == Direction::Request {
+            "Request blocked because pattern inspection failed"
+        } else {
+            "Response blocked because pattern inspection failed"
+        },
+        "location": "body",
+        "action": "block",
+        "reason": reason,
+    }));
+    decision
+}
+
 impl Scanner {
     pub fn has_rules(&self) -> Result<bool> {
         Ok(!self.rules()?.is_empty())
+    }
+
+    pub fn has_scope(&self, direction: Direction, scope: &str) -> Result<bool> {
+        Ok(self
+            .rules()?
+            .iter()
+            .any(|rule| rule.applies(direction, scope)))
     }
     fn rules(&self) -> Result<Arc<Vec<Rule>>> {
         Ok(self
@@ -1315,6 +1388,94 @@ impl Scanner {
             .map_err(|_| error(ErrorKind::StateUnavailable, None))?;
         result.rules_total = rules_total;
         Ok(result)
+    }
+
+    /// Scan parser-owned HTTP bytes using the source's ordered header and
+    /// text conversion rules.  This is the caller-facing adapter for the
+    /// native HTTP path; the existing `&str` methods remain useful for direct
+    /// text callers and focused scanner tests.
+    ///
+    /// Header values use the same reversible source-byte representation as the
+    /// credential guard.  The body is decoded only after URL/header scope has
+    /// produced no match, preserving source hook order and avoiding a body
+    /// decoder error masking an earlier header match.
+    pub fn scan_http_request_bytes(
+        &self,
+        path: UrlInput<'_>,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+    ) -> Result<Decision> {
+        let headers = source_headers(headers)?;
+        let header_refs = headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let decision = self.scan_http_request(path, &header_refs, None, options)?;
+        if !matches!(decision.outcome, Outcome::NoMatch) {
+            return Ok(decision);
+        }
+        let Some(body) = body.filter(|body| !body.is_empty()) else {
+            return Ok(decision);
+        };
+        self.scan_http_body_bytes(Direction::Request, &headers, body, options)
+    }
+
+    /// Byte-oriented response counterpart to [`scan_http_request_bytes`].
+    pub fn scan_http_response_bytes(
+        &self,
+        present: bool,
+        headers: &[(&[u8], &[u8])],
+        body: Option<&[u8]>,
+        options: Options,
+    ) -> Result<Decision> {
+        let headers = source_headers(headers)?;
+        let header_refs = headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let decision = self.scan_http_response(present, &header_refs, None, options)?;
+        if !matches!(decision.outcome, Outcome::NoMatch) {
+            return Ok(decision);
+        }
+        let Some(body) = body.filter(|body| !body.is_empty()) else {
+            return Ok(decision);
+        };
+        self.scan_http_body_bytes(Direction::Response, &headers, body, options)
+    }
+
+    fn scan_http_body_bytes(
+        &self,
+        direction: Direction,
+        headers: &[(String, String)],
+        body: &[u8],
+        options: Options,
+    ) -> Result<Decision> {
+        let rules = self.rules()?;
+        if rules.is_empty() {
+            return Ok(Decision::plain(Outcome::NoRules));
+        }
+        let encoding = combined_header(headers, "content-encoding");
+        let decoded = match crate::http_content::decode(body, encoding.as_bytes()) {
+            Ok(decoded) => decoded,
+            Err(_) => return Ok(content_failure(direction, "content_decode")),
+        };
+        let content_type = combined_header(headers, "content-type");
+        let text = crate::traffic_view::export::decode_text(
+            &decoded,
+            (!content_type.is_empty()).then_some(content_type.as_str()),
+        );
+        let text = match text {
+            Ok(text) => text,
+            Err(_) => return Ok(content_failure(direction, "content_decode")),
+        };
+        if text.is_empty() {
+            return Ok(Decision::plain(Outcome::NoMatch));
+        }
+        if let Some(rule) = self.scan_scope(&rules, "body", &text, direction, None)? {
+            return self.matched(rule, direction, "body".into(), None, options, None);
+        }
+        Ok(Decision::plain(Outcome::NoMatch))
     }
     fn count(&self, scans: u64, matches: u64, blocks: u64) -> Result<()> {
         self.count_cancellable(scans, matches, blocks, None)

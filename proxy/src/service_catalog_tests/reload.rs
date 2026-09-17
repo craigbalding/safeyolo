@@ -43,6 +43,8 @@ async fn automatic_workflow() {
     write_json(&inspection, &json!({}));
     settings.inspection = Some(Inspection {
         policy_file: inspection.clone(),
+        block_request: false,
+        block_response: false,
         block_websocket_request: false,
         block_websocket_response: false,
     });

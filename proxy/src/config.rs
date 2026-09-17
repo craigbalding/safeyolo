@@ -49,6 +49,10 @@ impl AgentListener {
 pub struct Inspection {
     pub policy_file: PathBuf,
     #[serde(default)]
+    pub block_request: bool,
+    #[serde(default)]
+    pub block_response: bool,
+    #[serde(default)]
     pub block_websocket_request: bool,
     #[serde(default)]
     pub block_websocket_response: bool,
