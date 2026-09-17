@@ -119,6 +119,9 @@ pub(crate) struct Runtime {
     /// The encrypted credential snapshot is retained across policy reloads;
     /// gateway selection consumes only the authorized vault reference.
     vault: Option<credentials::Vault>,
+    /// One process-owned store for contract bindings and risky grants. Clones
+    /// share reservations; reloads reconcile its durable view before publish.
+    gateway_grants: Option<grants::Store>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -206,6 +209,23 @@ impl Runtime {
                 })
                 .transpose()?;
             let vault = load_gateway_vault(&config)?;
+            let gateway_grants = if let Some(previous_store) = previous
+                .filter(|runtime| runtime.config.policy_file == config.policy_file)
+                .and_then(|runtime| runtime.gateway_grants.as_ref())
+            {
+                let store = previous_store.clone();
+                store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
+                Some(store)
+            } else if let Some(path) = config
+                .policy_file
+                .as_ref()
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+                && config.gateway_builtin_services_dir.is_some()
+            {
+                Some(grants::Store::open(path, time::OffsetDateTime::now_utc())?)
+            } else {
+                None
+            };
             // CredentialGuard is a native generation owned by the same Runtime
             // publication as the accepted Policy. Reuse the key on ordinary
             // reloads; an empty environment key deliberately retries loading
@@ -336,6 +356,7 @@ impl Runtime {
                 scanner,
                 policy,
                 vault,
+                gateway_grants,
                 credential_guard,
                 credential_key_empty,
                 tasks,
@@ -1064,9 +1085,17 @@ impl Proxy {
             .as_ref()
             .ok_or("native credential guard is unavailable")?;
         let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
+        let gateway_grants = if let Some(store) = previous.gateway_grants.as_ref() {
+            let store = store.clone();
+            store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
+            Some(store)
+        } else {
+            None
+        };
         let runtime = Arc::new(Runtime {
             policy: Some(policy),
             credential_guard: Some(credential_guard),
+            gateway_grants,
             credential_key_empty: previous.credential_key_empty,
             ..previous.clone()
         });

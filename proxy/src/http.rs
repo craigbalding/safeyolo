@@ -846,7 +846,11 @@ fn record_agent_api(
     outcome: &crate::agent_api::Outcome<'_>,
 ) -> Result<(), Error> {
     let audit = outcome.audit.as_ref().map(|audit| {
-        let kind = if audit.kind == crate::agent_api::AuditKind::GatewayAccessRequested {
+        let kind = if matches!(
+            audit.kind,
+            crate::agent_api::AuditKind::GatewayAccessRequested
+                | crate::agent_api::AuditKind::GatewayBindingSubmitted
+        ) {
             "gateway"
         } else {
             "security"
@@ -864,7 +868,11 @@ fn record_agent_api(
                 | crate::agent_api::AuditKind::HandlerUnavailable
         ) {
             event["decision"] = json!("deny");
-        } else if audit.kind == crate::agent_api::AuditKind::GatewayAccessRequested {
+        } else if matches!(
+            audit.kind,
+            crate::agent_api::AuditKind::GatewayAccessRequested
+                | crate::agent_api::AuditKind::GatewayBindingSubmitted
+        ) {
             event["decision"] = json!("require_approval");
         }
         if let Some(approval) = &audit.approval {
@@ -1686,6 +1694,7 @@ async fn forward(
     // circuit admission. It consumes the trusted UDS identity and the
     // published snapshot, then applies a vault credential before the later
     // credential guard and before any body observation or outbound dial.
+    let mut grant_lease = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
         let gateway_headers: Vec<_> = ordered_headers
@@ -1741,6 +1750,70 @@ async fn forward(
                 return Ok((prior_block(reply), "deny".into()));
             }
             crate::services::GatewayDecision::Selected { credential } => {
+                if let Some(risky) = credential.risky_route.as_ref() {
+                    let risky_path = destination.path.split('?').next().unwrap_or("/");
+                    let mut granted = None;
+                    if let Some(store) = runtime.gateway_grants.as_ref() {
+                        granted = store
+                            .check_grant(
+                                crate::grants::RequestScope {
+                                    agent: &identity.agent_id,
+                                    service: &credential.service,
+                                    method: request.method().as_str(),
+                                    path: risky_path,
+                                },
+                                time::OffsetDateTime::now_utc(),
+                                |_| Ok(()),
+                            )
+                            .map_err(|error| -> Error { Box::new(error) })?;
+                    }
+                    if granted.is_none() {
+                        let risk = policy.evaluate_risky_route(crate::policy::RiskyRouteRequest {
+                            service: &credential.service,
+                            agent: &identity.agent_id,
+                            account: &credential.account,
+                            tactics: &risky.tactics,
+                            enables: &risky.enables,
+                            irreversible: risky.irreversible,
+                            method: request.method().as_str(),
+                            path: risky_path,
+                        });
+                        if risk.effect != crate::policy::Effect::Allow {
+                            let status = match risk.effect {
+                                crate::policy::Effect::Deny => 403,
+                                crate::policy::Effect::BudgetExceeded => 429,
+                                _ => 428,
+                            };
+                            runtime.record(json!({
+                                "event":"proxy.gateway",
+                                "agent":identity.agent_id,
+                                "connection_id":identity.connection_id,
+                                "request_id":request_id,
+                                "outcome":"risky_route_blocked",
+                                "service":credential.service,
+                                "capability":credential.capability,
+                                "method":request.method().as_str(),
+                                "path":risky_path,
+                                "effect":risk.effect,
+                            }))?;
+                            let reply =
+                                gateway_response(status, "GATEWAY_RISKY_ROUTE", request_id)?;
+                            return Ok((prior_block(reply), "deny".into()));
+                        }
+                    }
+                    grant_lease = granted;
+                    runtime.record(json!({
+                        "event":"proxy.gateway",
+                        "agent":identity.agent_id,
+                        "connection_id":identity.connection_id,
+                        "request_id":request_id,
+                        "outcome":if grant_lease.is_some() { "grant_reserved" } else { "risky_route_allowed" },
+                        "service":credential.service,
+                        "capability":credential.capability,
+                        "method":request.method().as_str(),
+                        "path":risky_path,
+                    }))?;
+                }
                 let full_url = crate::credentials::Secret::new(format!(
                     "{}://{}{}",
                     destination.scheme, destination.uri_authority, destination.path
@@ -2127,6 +2200,18 @@ async fn forward(
     };
     completion.headers_received();
     let _ = completion.try_finish();
+    if let Some(lease) = grant_lease.take()
+        && let Some(store) = runtime.gateway_grants.as_ref()
+    {
+        store
+            .finish_response(
+                lease,
+                Some(upstream.status().as_u16()),
+                time::OffsetDateTime::now_utc(),
+                |_| Ok(()),
+            )
+            .map_err(|error| -> Error { Box::new(error) })?;
+    }
     if let Some(live) = &live {
         let version = format!("{:?}", upstream.version());
         let reason = upstream

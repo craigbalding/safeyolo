@@ -113,6 +113,15 @@ async fn access<'a>(
     body: &str,
     identity: Identity<'_>,
 ) -> agent_api::Outcome<'a> {
+    gateway_call(policy, "/gateway/request-access", body, identity).await
+}
+
+async fn gateway_call<'a>(
+    policy: &'a Policy,
+    path: &str,
+    body: &str,
+    identity: Identity<'_>,
+) -> agent_api::Outcome<'a> {
     let directory = tempfile::tempdir().unwrap();
     let token_path = directory.path().join("agent_token");
     std::fs::write(&token_path, TOKEN).unwrap();
@@ -122,7 +131,7 @@ async fn access<'a>(
     agent_api::respond_with_body(
         Request {
             method: "POST",
-            path_and_query: "/gateway/request-access",
+            path_and_query: path,
             authorization: Some(authorization.as_bytes()),
             identity,
             client_ip: Some("192.0.2.10"),
@@ -165,6 +174,96 @@ capabilities:
     description: Read demo data
     routes: []
 "#;
+
+const CONTRACT_SERVICE: &str = r#"
+schema_version: 1
+name: demo
+default_host: api.demo.invalid
+capabilities:
+  read:
+    routes:
+      - methods: [GET]
+        path: /v1/items/{id}
+    contract:
+      template: demo.read.v1
+      bindings:
+        approved:
+          source: operator
+          type: enum
+          options: [alpha, beta]
+          visible_to_operator: true
+      operations:
+        - name: read_item
+          request:
+            method: GET
+            path: /v1/items/{id}
+            path_params:
+              id:
+                equals_var: approved
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_capture: declared
+        state_enforcement: declared
+        response_validators: declared
+"#;
+
+#[tokio::test]
+async fn contract_access_returns_challenge_and_submit_emits_binding_approval() {
+    let policy = access_policy(CONTRACT_SERVICE);
+    let challenge = access(
+        &policy,
+        r#"{"service":"demo","capability":"read"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(challenge.response.status, 200);
+    let challenge_body: Value = serde_json::from_slice(&challenge.response.body_bytes()).unwrap();
+    assert_eq!(challenge_body["decision"], "needs_contract_binding");
+    assert_eq!(challenge_body["template"], "demo.read.v1");
+    assert_eq!(challenge_body["bindings"]["approved"]["type"], "enum");
+    assert_eq!(
+        challenge_body["grantable_operations"][0]["name"],
+        "read_item"
+    );
+
+    let submitted = gateway_call(
+        &policy,
+        "/gateway/submit-binding",
+        r#"{"service":"demo","capability":"read","bindings":{"approved":"beta"},"purpose_code":"review"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(submitted.response.status, 202);
+    let body: Value = serde_json::from_slice(&submitted.response.body_bytes()).unwrap();
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["bindings"]["approved"], "beta");
+    let audit = submitted.audit.as_ref().expect("binding approval intent");
+    assert_eq!(audit.kind, agent_api::AuditKind::GatewayBindingSubmitted);
+    let event = audit.to_event();
+    assert_eq!(event.event, "gateway.submit_binding");
+    assert_eq!(
+        event.approval.as_ref().unwrap().approval_type,
+        crate::audit::ApprovalType::ContractBinding
+    );
+    assert_eq!(event.approval.as_ref().unwrap().key, "alice:demo:read");
+}
+
+#[tokio::test]
+async fn contract_submit_rejects_unknown_or_invalid_values_without_approval() {
+    let policy = access_policy(CONTRACT_SERVICE);
+    let invalid = gateway_call(
+        &policy,
+        "/gateway/submit-binding",
+        r#"{"service":"demo","capability":"read","bindings":{"approved":"other"}}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(invalid.response.status, 200);
+    let body: Value = serde_json::from_slice(&invalid.response.body_bytes()).unwrap();
+    assert_eq!(body["decision"], "denied_out_of_scope");
+    assert!(invalid.audit.is_none());
+}
 
 #[tokio::test]
 async fn twenty_actual_source_catalog_responses_match_without_reading_a_body() {

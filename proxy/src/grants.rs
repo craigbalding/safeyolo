@@ -445,6 +445,17 @@ impl Store {
             })
             .collect())
     }
+    pub fn list_grants(&self, now: OffsetDateTime) -> Result<Vec<ListedGrant>> {
+        Ok(self
+            .lock()?
+            .grants
+            .iter()
+            .map(|grant| ListedGrant {
+                grant: grant.clone(),
+                expired: grant.is_expired(now),
+            })
+            .collect())
+    }
     pub fn binding_for_agent(
         &self,
         agent: &str,
@@ -622,6 +633,23 @@ impl Store {
             },
             activate,
         )
+    }
+    pub fn revoke_grant_by_id(
+        &self,
+        grant_id: &str,
+        now: OffsetDateTime,
+        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    ) -> Result<bool> {
+        let agent = self
+            .lock()?
+            .grants
+            .iter()
+            .find(|grant| grant.grant_id == grant_id)
+            .map(|grant| grant.agent.clone());
+        match agent {
+            Some(agent) => self.revoke_grant(&agent, grant_id, now, activate),
+            None => Ok(false),
+        }
     }
     pub fn revoke_binding(
         &self,

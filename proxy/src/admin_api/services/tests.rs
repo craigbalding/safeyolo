@@ -74,6 +74,7 @@ impl Fixture {
                     client_ip: "127.0.0.1",
                     target: "/admin/agents/alice/services",
                     mutation_owner: &self.mutation_owner,
+                    gateway_store: None,
                 }),
             },
         )

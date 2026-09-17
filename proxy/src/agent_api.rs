@@ -140,6 +140,7 @@ pub enum AuditKind {
     TestContextDeclared,
     TestContextCleared,
     GatewayAccessRequested,
+    GatewayBindingSubmitted,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -205,6 +206,13 @@ impl AuditIntent {
             ),
             AuditKind::GatewayAccessRequested => (
                 "gateway.request_access",
+                Kind::Gateway,
+                Severity::Critical,
+                "agent-api",
+                Some(Decision::RequireApproval),
+            ),
+            AuditKind::GatewayBindingSubmitted => (
+                "gateway.submit_binding",
                 Kind::Gateway,
                 Severity::Critical,
                 "agent-api",
@@ -349,7 +357,7 @@ impl Outcome<'_> {
                 outcome.failure = Some(Failure::AuditWrite);
                 outcome
             }
-            Some(AuditKind::GatewayAccessRequested) => {
+            Some(AuditKind::GatewayAccessRequested | AuditKind::GatewayBindingSubmitted) => {
                 let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));
                 outcome.failure = Some(Failure::AuditWrite);
                 outcome

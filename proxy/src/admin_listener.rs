@@ -210,6 +210,7 @@ async fn serve_connection(
                         client_ip: &client_ip,
                         target: &path,
                         mutation_owner: &runtime.service_mutations,
+                        gateway_store: runtime.gateway_grants.as_ref(),
                     }),
                 },
             )

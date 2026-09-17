@@ -110,6 +110,14 @@ where
         };
         return Ok(gateway::request_access(request, controls.gateway, &content));
     }
+    if route(request) == "/gateway/submit-binding" {
+        let content = read_content(body).await?;
+        let content = match content {
+            Ok(content) => content,
+            Err(error) => return Ok(content_error(error)),
+        };
+        return Ok(gateway::submit_binding(request, controls.gateway, &content));
+    }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
     }

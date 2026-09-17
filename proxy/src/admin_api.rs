@@ -30,6 +30,7 @@ use crate::policy::{BudgetStatsError, Policy};
 use crate::tasks::{self, Registry};
 
 mod audit_events;
+mod gateway;
 mod services;
 mod traffic;
 
@@ -707,6 +708,7 @@ pub(crate) struct ServiceAudit<'a> {
     pub client_ip: &'a str,
     pub target: &'a str,
     pub mutation_owner: &'a ServiceMutationOwner,
+    pub gateway_store: Option<&'a crate::grants::Store>,
 }
 
 /// Borrowed owners from one accepted runtime snapshot. Disk policy updates
@@ -772,7 +774,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
     ) {
         return Ok(unsupported(method));
     }
-    let path = path(request.uri());
+    let path = path(request.uri()).to_owned();
     if method == Method::GET && path == "/health" {
         return Ok(response(StatusCode::OK, json!({"status":"ok"})));
     }
@@ -788,10 +790,17 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         return Ok(outcome);
     }
     if method == Method::POST
-        && let Some(agent) = services::agent_path(path)
+        && let Some(agent) = services::agent_path(&path)
     {
         let agent = agent.to_owned();
         return services::authorize(request, agent, policy, policy_path, service_audit).await;
+    }
+    if path == "/admin/gateway/grant"
+        || path == "/admin/gateway/grants"
+        || path == "/admin/gateway/contract-binding"
+        || path.starts_with("/admin/gateway/grants/")
+    {
+        return gateway::respond(request, &path, service_audit.as_ref()).await;
     }
     if path.starts_with("/admin/traffic/") {
         let path = path.to_owned();
