@@ -454,7 +454,7 @@ fn reload_is_atomic_ordered_and_surfaces_engine_incompatibility_without_skipping
             .unwrap()
             .is_none()
     );
-    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",r"\N{LATIN CAPITAL LETTER A}","body","block")]});
+    let invalid = json!({"policy_hash":"new","scan_patterns":[rule("replace","NEW","body","block"),rule("unsupported",r"\N{KEYCAP DIGIT ONE}","body","block")]});
     let failure = scanner.maybe_reload(Some(&invalid)).unwrap_err();
     assert_eq!(failure.kind, ErrorKind::RegexCompatibility);
     assert_eq!(failure.rule_index, Some(1));
@@ -963,14 +963,14 @@ print(json.dumps(out))
     }
     // Do not normalize these into agreement: they are retained-workflow gaps,
     // not permission to narrow policy. The module remains inactive.
-    let unresolved = [(r"\N{LATIN CAPITAL LETTER A}", "A")];
+    let unresolved = [(r"\N{KEYCAP DIGIT ONE}", "1️⃣")];
     for (pattern, text) in unresolved {
         assert_eq!(
             python(
-                "import json,re,sys; c=json.load(sys.stdin); print(json.dumps(bool(re.search(c['pattern'],c['text']))))",
+                "import json,re,sys; c=json.load(sys.stdin);\ntry: print(json.dumps(bool(re.search(c['pattern'],c['text']))))\nexcept re.error: print(json.dumps(False))",
                 &json!({"pattern":pattern,"text":text})
             ),
-            true
+            false
         );
         let scanner = Scanner::default();
         assert_eq!(
@@ -1003,7 +1003,7 @@ print(json.dumps(out))
     );
     assert!(!compatibility_gaps().is_empty());
     eprintln!(
-        "Compared {} repaired/general Python regex cases; retained named-Unicode grammar gap",
+        "Compared {} repaired/general Python regex cases; named-Unicode lowering and sequence rejection included",
         samples.len()
     );
 }
@@ -1445,22 +1445,42 @@ fn python_unicode_categories_pin_python_312_scalar_membership() {
 }
 
 #[test]
-fn d33_named_unicode_and_nesting_rows_fail_closed_with_supported_depth() {
-    let named = Scanner::default();
-    assert_eq!(
-        named
-            .load_policy_config(&json!({
-                "scan_patterns": [rule(
-                    "unicode-name",
-                    r"^\N{LATIN CAPITAL LETTER A}$",
-                    "body",
-                    "log"
-                )]
-            }))
-            .unwrap_err()
-            .kind,
-        ErrorKind::RegexCompatibility
-    );
+fn d33_named_unicode_and_nesting_rows_keep_python_boundaries() {
+    for (name, pattern, text) in [
+        (
+            "ordinary-name",
+            r"^prefix-\N{LATIN CAPITAL LETTER A}-suffix$",
+            "prefix-A-suffix",
+        ),
+        ("lowercase-name", r"^\N{latin capital letter a}$", "A"),
+        ("alias-name", r"^\N{BYTE ORDER MARK}$", "\u{feff}"),
+        ("hangul-name", r"^\N{HANGUL SYLLABLE GA}$", "가"),
+        ("cjk-name", r"^\N{CJK UNIFIED IDEOGRAPH-4E00}$", "一"),
+        ("class-name", r"^[\N{LATIN CAPITAL LETTER A}]$", "A"),
+    ] {
+        let scanner = make_scanner(json!([rule(name, pattern, "body", "log")]));
+        let result = scanner
+            .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
+            .unwrap();
+        assert_eq!(result.outcome, Outcome::MatchLogged, "{name}");
+        assert_eq!(result.finding.unwrap().rule_name, name);
+    }
+
+    for pattern in [
+        r"^\N{KEYCAP DIGIT ONE}$", // Python named sequence: three scalars.
+        r"^\N{UNKNOWN SAFEYOLO NAME}$",
+    ] {
+        assert_eq!(
+            Scanner::default()
+                .load_policy_config(&json!({
+                    "scan_patterns": [rule("unicode-name-gap", pattern, "body", "log")]
+                }))
+                .unwrap_err()
+                .kind,
+            ErrorKind::RegexCompatibility,
+            "{pattern:?}"
+        );
+    }
 
     let nested = format!("{}a{}", "(?:".repeat(8), ")".repeat(8));
     let scanner = make_scanner(json!([rule("nested", &nested, "body", "log")]));
@@ -1531,19 +1551,12 @@ print(json.dumps(out))
         &json!(cases),
     );
     let mut corrected = 0;
-    let mut grammar_gaps = 0;
     for ((pattern, insensitive), old) in patterns.iter().zip(actual.as_array().unwrap()) {
         let scanner = Scanner::default();
         let mut config = rule("matrix", pattern, "body", "log");
         config["case_sensitive"] = json!(!insensitive);
         let loaded = scanner.load_policy_config(&json!({"scan_patterns":[config]}));
         let accepted = loaded.as_ref().is_ok_and(|report| report.rules_total == 1);
-        if old["accepted"] == true && !accepted {
-            assert_eq!(pattern, r"(?ai)\N{LATIN CAPITAL LETTER A}");
-            assert_eq!(loaded.unwrap_err().kind, ErrorKind::RegexCompatibility);
-            grammar_gaps += 1;
-            continue;
-        }
         assert_eq!(
             json!(accepted),
             old["accepted"],
@@ -1582,9 +1595,9 @@ print(json.dumps(out))
             panic!("unclassified mismatch {pattern:?}");
         }
     }
-    assert_eq!((corrected, grammar_gaps), (36, 1));
+    assert_eq!(corrected, 36);
     eprintln!(
-        "Compared {} patterns x {} subjects; 36 corrected Python prefilter rows, 1 retained named-Unicode grammar gap",
+        "Compared {} patterns x {} subjects; 36 corrected Python prefilter rows, named-Unicode lowering included",
         patterns.len(),
         texts.len()
     );

@@ -5,9 +5,11 @@
 //! deliberately nonempty: fancy-regex is not an exact Python `re` replacement.
 //! Callers must resolve those gaps before production use. A compile incompatibility
 //! retains the previous snapshot; it never silently removes an accepted rule.
-//! Proved remaining examples include named Unicode escapes, uncovered Unicode
-//! properties/casefold behavior, and parse nesting. Generated Python 3.12 /
-//! Unicode 15 ranges pin `\w` and `\d` category membership. The pinned engine patch
+//! Proved remaining examples include uncovered Unicode properties/casefold
+//! behavior and parse nesting. Generated Python 3.12 / Unicode 15 ranges pin
+//! `\w` and `\d` category membership, while the finite name table covers
+//! canonical scalar names and verified aliases. Named sequences remain rejected
+//! as they are by Python's regular-expression parser. The pinned engine patch
 //! removes the scanner's private stack cutoff: VM buffers grow fallibly and are
 //! released after each scan. The complete-message regression matches at 1,000,100
 //! bytes, 4 MiB and 8 MiB. Remaining gaps still block production acceptance.
@@ -416,6 +418,54 @@ fn python_unicode_categories() -> &'static PythonUnicodeCategories {
     &DATA
 }
 
+struct PythonUnicodeName {
+    name: &'static str,
+    value: u32,
+}
+
+fn python_unicode_name(name: &str) -> Option<char> {
+    if !name.is_ascii() {
+        return None;
+    }
+    let normalized = name.to_ascii_uppercase();
+    static DATA: LazyLock<Vec<PythonUnicodeName>> = LazyLock::new(|| {
+        include_str!("../data/inspection/names.txt")
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| {
+                let (name, value) = line
+                    .split_once(';')
+                    .expect("validated Python Unicode name table row");
+                PythonUnicodeName {
+                    name,
+                    value: u32::from_str_radix(value, 16)
+                        .expect("validated Python Unicode name table value"),
+                }
+            })
+            .collect()
+    });
+    DATA.binary_search_by(|entry| entry.name.cmp(&normalized))
+        .ok()
+        .and_then(|index| char::from_u32(DATA[index].value))
+}
+
+fn unicode_name_escape(
+    chars: &[char],
+    index: usize,
+) -> std::result::Result<(char, usize), PatternIssue> {
+    if chars.get(index + 2) != Some(&'{') {
+        return Err(PatternIssue::Compatibility);
+    }
+    let end = chars
+        .get(index + 3..)
+        .and_then(|remaining| remaining.iter().position(|ch| *ch == '}'))
+        .map(|offset| index + 3 + offset)
+        .ok_or(PatternIssue::Compatibility)?;
+    let name: String = chars[index + 3..end].iter().collect();
+    let value = python_unicode_name(&name).ok_or(PatternIssue::Compatibility)?;
+    Ok((value, end + 1))
+}
+
 fn category_class(ranges: &[[u32; 2]]) -> String {
     let mut result = String::from("[");
     for [start, end] in ranges {
@@ -714,7 +764,10 @@ fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<Strin
                         continue;
                     }
                     if escape == 'N' {
-                        return Err(PatternIssue::Compatibility);
+                        let (value, end) = unicode_name_escape(&chars, index)?;
+                        class.push_str(&format!(r"\x{{{:x}}}", value as u32));
+                        index = end;
+                        continue;
                     }
                     if let Some(value) = category(escape, mode.ascii) {
                         class.push_str(&value);
@@ -789,7 +842,11 @@ fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<Strin
                 continue;
             }
             if escape == 'N' {
-                return Err(PatternIssue::Compatibility);
+                let (value, end) = unicode_name_escape(&chars, index)?;
+                result.push_str(&pattern_literal(value, mode));
+                index = end;
+                at_start = false;
+                continue;
             }
             if let Some(value) = category(escape, mode.ascii) {
                 if mode.ascii {
@@ -2227,3 +2284,22 @@ const BUILTINS: &str = r###"{
     }
   ]
 }"###;
+
+#[cfg(test)]
+mod tests {
+    use super::compile_python_pattern;
+
+    #[test]
+    fn unicode_name_lowering_preserves_match_offsets() {
+        let expression =
+            match compile_python_pattern(r"prefix-\N{LATIN CAPITAL LETTER A}-suffix", false) {
+                Ok(expression) => expression,
+                Err(_) => panic!("named Unicode pattern should compile"),
+            };
+        let matched = expression
+            .find("xxprefix-A-suffixyy")
+            .unwrap()
+            .expect("named Unicode pattern should match");
+        assert_eq!((matched.start(), matched.end()), (2, 17));
+    }
+}

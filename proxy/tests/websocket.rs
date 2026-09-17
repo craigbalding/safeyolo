@@ -262,6 +262,45 @@ async fn large_message_and_fragment_index_spill_without_truncation() {
     assert_eq!(message.with_text(str::to_owned).unwrap(), "firstlast");
 }
 
+#[tokio::test]
+async fn large_complete_text_messages_reach_scanner_after_reader_spill() {
+    use safeyolo_proxy::inspection::{
+        Direction, MessageType as ScanType, Options, Outcome, Scanner,
+    };
+
+    let scanner = Scanner::default();
+    scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "large-message",
+                "pattern": "(a|aa)*\\1$",
+                "scope": "body",
+                "action": "log"
+            }]
+        }))
+        .unwrap();
+    for length in [1_000_100, 4 * 1024 * 1024, 8 * 1024 * 1024] {
+        let payload = vec![b'a'; length];
+        let wire = frame(OpCode::Data(Data::Text), true, true, false, &payload);
+        let message = next_message(&mut Reader::new(Cursor::new(wire), true, None)).await;
+        assert!(message.spilled(), "message should spill at {length} bytes");
+        let decision = message
+            .with_text(|text| {
+                scanner.scan_websocket_text(
+                    Direction::Request,
+                    ScanType::Text,
+                    text,
+                    Options::default(),
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(decision.outcome, Outcome::MatchLogged);
+        assert!(!decision.drop_message);
+    }
+    assert_eq!(scanner.stats().unwrap().scans_total, 3);
+}
+
 fn malformed_frames() -> Vec<(Vec<u8>, u16)> {
     let malformed = [
         frame(OpCode::Data(Data::Text), true, false, false, b"unmasked"),
