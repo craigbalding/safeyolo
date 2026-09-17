@@ -11,7 +11,7 @@
 //! never lossy replacement. This is an incomplete development API slice.
 
 use std::{collections::HashMap, fs, path::Path};
-pub use coord::CoordContext;
+pub use coord::{CoordClient, CoordContext};
 
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
