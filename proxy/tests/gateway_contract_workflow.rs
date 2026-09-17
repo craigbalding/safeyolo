@@ -146,6 +146,7 @@ fn policy(port: u16) -> String {
         r#"
 [hosts."127.0.0.1"]
 service = "contract"
+credentials = ["unknown:*"]
 [hosts."127.0.0.1:{port}"]
 egress = "allow"
 [hosts."*"]
@@ -739,7 +740,7 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     let other_port = other_listener.local_addr().unwrap().port();
     let mut source = policy(port);
     source.push_str(&format!(
-        "\n[hosts.\"127.0.0.2\"]\nservice = \"other\"\n[hosts.\"127.0.0.2:{other_port}\"]\negress = \"allow\"\n[agents.alice.services.other]\ncapability = \"reader\"\ntoken = \"other-secret\"\n"
+        "\n[hosts.\"127.0.0.2\"]\nservice = \"other\"\ncredentials = [\"unknown:*\"]\n[hosts.\"127.0.0.2:{other_port}\"]\negress = \"allow\"\n[agents.alice.services.other]\ncapability = \"reader\"\ntoken = \"other-secret\"\n"
     ));
     std::fs::write(root_path.join("policy.toml"), source).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
