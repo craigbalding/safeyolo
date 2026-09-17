@@ -81,6 +81,7 @@ class SinkholeClient:
         self,
         host: Optional[str] = None,
         since: Optional[float] = None,
+        timeout: Optional[float] = None,
     ) -> list[CapturedRequest]:
         """Get captured requests with optional filtering."""
         params = {}
@@ -89,7 +90,11 @@ class SinkholeClient:
         if since:
             params["since"] = str(since)
 
-        resp = self._client.get(f"{self.base_url}/requests", params=params)
+        request_url = f"{self.base_url}/requests"
+        if timeout is None:
+            resp = self._client.get(request_url, params=params)
+        else:
+            resp = self._client.get(request_url, params=params, timeout=timeout)
         resp.raise_for_status()
 
         data = resp.json()
@@ -159,8 +164,18 @@ class SinkholeClient:
             probe_path = f"/__sinkhole_receiver_ready__/{nonce}"
             probe_url = f"{receiver_url.rstrip('/')}{probe_path}"
             try:
-                response = self._client.get(probe_url, headers={"Host": probe_host})
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                response = self._client.get(
+                    probe_url,
+                    headers={"Host": probe_host},
+                    timeout=remaining,
+                )
                 if response.status_code == 200:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
                     if any(
                         request.method == "GET"
                         and request.path == probe_path
@@ -168,7 +183,10 @@ class SinkholeClient:
                             request.raw_target is None
                             or request.raw_target == probe_path
                         )
-                        for request in self.get_requests(host=probe_host)
+                        for request in self.get_requests(
+                            host=probe_host,
+                            timeout=remaining,
+                        )
                     ):
                         return
             except httpx.RequestError:

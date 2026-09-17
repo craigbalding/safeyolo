@@ -170,6 +170,49 @@ def test_sinkhole_receiver_readiness_rejects_unrelated_capture():
         control_thread.join(timeout=5)
 
 
+def test_sinkhole_receiver_readiness_bounds_slow_receiver_probe():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    request_started = threading.Event()
+
+    class _SleepingOKHandler(BaseHTTPRequestHandler):
+        """Receiver that accepts a probe but delays its response."""
+
+        def do_GET(self):
+            request_started.set()
+            time.sleep(1.0)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format, *args):
+            pass
+
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    slow_receiver = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), _SleepingOKHandler
+    )
+    slow_thread = threading.Thread(target=slow_receiver.serve_forever, daemon=True)
+    slow_thread.start()
+    client = SinkholeClient("http://127.0.0.1:1")
+    try:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError):
+            client.wait_for_receiver_ready(
+                f"http://127.0.0.1:{slow_receiver.server_port}", timeout=0.1
+            )
+        elapsed = time.monotonic() - started
+
+        assert request_started.wait(timeout=1)
+        assert 0.05 <= elapsed < 0.5
+    finally:
+        client.close()
+        slow_receiver.shutdown()
+        slow_receiver.server_close()
+        slow_thread.join(timeout=5)
+
+
 def test_sinkhole_observer_preserves_exact_body_bytes():
     payload = b"prefix\x00\xff\xfe\n\xe2\x28\xa1"
     captured = CapturedRequest(
