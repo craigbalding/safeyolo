@@ -287,7 +287,9 @@ query representation are exposed as `CapturedRequest.raw_target` and
 `body_expected_bytes`, `body_complete`, and `connection_closed` distinguish a
 complete fixed/chunked body from an accepted connection that closes during
 receipt; a connection that sends no request produces no captured request.
-Receiver readiness remains a separate observer increment.
+The host sinkhole fixture waits for both control health and a direct receiver
+probe observed through the control API, then clears that probe before negative
+traffic assertions. Receiver readiness is a separate observer increment.
 
 ### Installed-host stage-A smoke
 

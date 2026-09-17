@@ -52,6 +52,50 @@ def test_sinkhole_bind_does_not_perform_reverse_dns():
         server.server_close()
 
 
+def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    receiver = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    receiver_thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+    receiver_thread.start()
+    control = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.ControlAPIHandler
+    )
+    control_thread = threading.Thread(target=control.serve_forever, daemon=True)
+    control_thread.start()
+    client = SinkholeClient(f"http://127.0.0.1:{control.server_port}")
+    try:
+        client.wait_for_ready(timeout=2)
+        client.wait_for_receiver_ready(
+            f"http://127.0.0.1:{receiver.server_port}",
+            probe_host="readiness.test",
+            timeout=2,
+        )
+        probe_requests = client.get_requests(host="readiness.test")
+        assert len(probe_requests) == 1
+        assert probe_requests[0].path == "/__sinkhole_receiver_ready__"
+
+        # The fixture clears its readiness probe before a negative assertion,
+        # so an empty observation means no request reached the receiver.
+        client.clear_requests()
+        with socket.create_connection(("127.0.0.1", receiver.server_port), timeout=5):
+            pass
+        time.sleep(0.05)
+        assert client.get_request_count() == 0
+    finally:
+        client.close()
+        receiver.shutdown()
+        receiver.server_close()
+        receiver_thread.join(timeout=5)
+        control.shutdown()
+        control.server_close()
+        control_thread.join(timeout=5)
+
+
 def test_sinkhole_observer_preserves_exact_body_bytes():
     payload = b"prefix\x00\xff\xfe\n\xe2\x28\xa1"
     captured = CapturedRequest(

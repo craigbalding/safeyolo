@@ -50,6 +50,7 @@ def pytest_collection_modifyitems(config, items):
 # ---------------------------------------------------------------------------
 ADMIN_URL = os.environ.get("ADMIN_URL", "http://127.0.0.1:9090")
 SINKHOLE_API = os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999")
+SINKHOLE_RECEIVER = os.environ.get("SINKHOLE_RECEIVER", "http://127.0.0.1:18080")
 
 # Session-scoped test agent: bbproxy on an IP outside the default
 # 10.200.0.0/16 range used by real agents. Keeps the blackbox-provisioned
@@ -117,6 +118,8 @@ def sinkhole():
     client = SinkholeClient(SINKHOLE_API)
     try:
         client.wait_for_ready(timeout=10)
+        client.wait_for_receiver_ready(SINKHOLE_RECEIVER, timeout=10)
+        client.clear_requests()
     except Exception:
         pytest.skip("Sinkhole not available")
     yield client

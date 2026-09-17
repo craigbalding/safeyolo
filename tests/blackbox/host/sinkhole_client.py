@@ -144,6 +144,29 @@ class SinkholeClient:
             time.sleep(0.5)
         raise TimeoutError(f"Sinkhole not ready after {timeout}s")
 
+    def wait_for_receiver_ready(
+        self,
+        receiver_url: str = "http://127.0.0.1:18080",
+        *,
+        probe_host: str = "__sinkhole_receiver_ready__.test",
+        timeout: float = 30.0,
+    ):
+        """Wait for the HTTP receiver and its capture path to be usable."""
+        start = time.time()
+        probe_url = f"{receiver_url.rstrip('/')}/__sinkhole_receiver_ready__"
+        while time.time() - start < timeout:
+            probe_started = time.time()
+            try:
+                response = self._client.get(probe_url, headers={"Host": probe_host})
+                if response.status_code == 200 and self.get_requests(
+                    host=probe_host, since=probe_started
+                ):
+                    return
+            except httpx.RequestError:
+                pass
+            time.sleep(0.5)
+        raise TimeoutError(f"Sinkhole receiver not ready after {timeout}s: {receiver_url}")
+
     def close(self):
         """Close the HTTP client."""
         self._client.close()
