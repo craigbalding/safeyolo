@@ -363,14 +363,16 @@ credential inspection and injection, WebMITM, and complete agent management
 remain incomplete. Native listeners include the supplied JSON entries and
 the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
-### Cargo disk-space guard
+### Cargo disk-space guard and target retirement
 
-Use `scripts/cargo_with_space.sh` for Rust builds and tests. It reserves 48 GiB
+Use `scripts/cargo_with_space.sh` for Rust builds and tests. It reserves 20 GiB
 by default on the filesystem containing `CARGO_TARGET_DIR` (or `./target`) and
-checks again every 15 seconds while Cargo runs. It starts Cargo in a dedicated
-process group and interrupts only that group if the reserve is crossed. Set
-`SAFEYOLO_CARGO_RESERVE_GIB` and `SAFEYOLO_CARGO_SPACE_POLL_SECONDS` when a
-known concurrent workload needs a different operational reserve.
+checks again every 15 seconds while Cargo runs. It refuses a new build below
+that reserve. If a running command crosses the reserve, it finishes that command
+then exits 75 so callers do not dispatch another batch. Set
+`SAFEYOLO_CARGO_HARD_STOP=1` only for an emergency stop of that wrapper's own
+Cargo process group. Set `SAFEYOLO_CARGO_RESERVE_GIB` and
+`SAFEYOLO_CARGO_SPACE_POLL_SECONDS` for a measured concurrent workload.
 
 Normal and isolated candidates use the same wrapper:
 
@@ -380,12 +382,24 @@ CARGO_TARGET_DIR=/path/to/candidate/proxy/target \
   scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml clippy --locked --all-targets -- -D warnings
 ```
 
-Reuse one target directory per active candidate through correction rounds. Give
-concurrently tested candidates distinct target directories. When an isolated
-experiment or retired worktree is finished, retain its command, result, source,
-toolchain/lockfile identity, required fixtures and any needed binary hash, then
-remove its Cargo `target` output. Do not retain a compilation tree merely as
-evidence.
+Reuse one target directory per active candidate through coding and Sol repair
+rounds. Give concurrent candidates distinct target directories. After Sol has
+accepted the exact candidate, retire its target with a receipt naming that exact commit:
+
+```sh
+scripts/retire_cargo_target.py \
+  --target /path/to/candidate/proxy/target \
+  --receipt /path/to/sol-integration-receipt.md \
+  --commit CANDIDATE_SHA \
+  --record /path/to/cargo-target-retirements.jsonl
+```
+
+The retirement command refuses a live target, verifies the receipt names the
+candidate commit, writes command-independent evidence (receipt/lockfile hashes,
+toolchain, target size and top-level binary hashes), then removes only the Cargo
+target. A rejected candidate keeps its target until it is repaired, superseded,
+or explicitly retired with its receipt. Source, fixtures, patches and review
+reports remain untouched.
 
 Run the following on the host from the checkout root, with the Rust toolchain,
 tmux, and an initialized CLI configuration. Stop the current backend before

@@ -3,11 +3,13 @@
 # CARGO_TARGET_DIR may point at an isolated candidate; otherwise ./target is used.
 set -euo pipefail
 
-reserve_gib=${SAFEYOLO_CARGO_RESERVE_GIB:-48}
+reserve_gib=${SAFEYOLO_CARGO_RESERVE_GIB:-20}
 poll_seconds=${SAFEYOLO_CARGO_SPACE_POLL_SECONDS:-15}
+hard_stop=${SAFEYOLO_CARGO_HARD_STOP:-0}
 
 case $reserve_gib in ''|*[!0-9]*) echo 'SAFEYOLO_CARGO_RESERVE_GIB must be a whole number of GiB' >&2; exit 64;; esac
 case $poll_seconds in ''|*[!0-9]*|0) echo 'SAFEYOLO_CARGO_SPACE_POLL_SECONDS must be a positive whole number' >&2; exit 64;; esac
+case $hard_stop in 0|1) ;; *) echo 'SAFEYOLO_CARGO_HARD_STOP must be 0 or 1' >&2; exit 64;; esac
 
 # df needs an existing path. Walking parents makes a new isolated target work
 # before Cargo has created it.
@@ -35,8 +37,9 @@ check_space() {
 
 check_space || exit 75
 
-# A dedicated session lets the guard interrupt Cargo and every compiler child
-# it owns without touching proxy, VM, container, or unrelated build jobs.
+# A dedicated session permits an explicit emergency stop without touching proxy,
+# VM, container, or unrelated build jobs. Normal reserve crossings finish the
+# current Cargo command and make the wrapper stop a subsequent batch instead.
 if ! command -v setsid >/dev/null 2>&1; then
   echo 'setsid is required to supervise Cargo disk-space reserve' >&2
   exit 69
@@ -44,6 +47,7 @@ fi
 setsid cargo "$@" &
 cargo_pid=$!
 interrupted=0
+reserve_crossed=0
 cleanup() {
   if kill -0 "$cargo_pid" 2>/dev/null; then
     kill -INT -- "-$cargo_pid" 2>/dev/null || kill -INT "$cargo_pid" 2>/dev/null || true
@@ -53,9 +57,17 @@ trap 'cleanup; exit 130' INT TERM
 
 while kill -0 "$cargo_pid" 2>/dev/null; do
   if ! check_space; then
-    echo 'Cargo interrupted before the filesystem reserve was exhausted' >&2
-    interrupted=1
-    cleanup
+    reserve_crossed=1
+    if (( hard_stop )); then
+      echo 'Cargo interrupted by explicit emergency disk-space stop' >&2
+      interrupted=1
+      cleanup
+      break
+    fi
+    echo 'Cargo reserve crossed: finish this command, retire eligible reviewed targets, and do not dispatch another build batch' >&2
+    while kill -0 "$cargo_pid" 2>/dev/null; do
+      sleep "$poll_seconds"
+    done
     break
   fi
   sleep "$poll_seconds"
@@ -65,7 +77,7 @@ set +e
 wait "$cargo_pid"
 status=$?
 set -e
-if (( interrupted )); then
+if (( interrupted || reserve_crossed )); then
   exit 75
 fi
 exit "$status"
