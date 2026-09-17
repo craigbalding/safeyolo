@@ -15,8 +15,18 @@ case $hard_stop in 0|1) ;; *) echo 'SAFEYOLO_CARGO_HARD_STOP must be 0 or 1' >&2
 # before Cargo has created it.
 target_dir=${CARGO_TARGET_DIR:-"$PWD/target"}
 probe=$target_dir
+case "$(uname -s)" in
+  Darwin)
+    df_command=(df -Pk)
+    dirname_command=(dirname)
+    ;;
+  *)
+    df_command=(df -Pk --)
+    dirname_command=(dirname --)
+    ;;
+esac
 while [[ ! -e $probe ]]; do
-  parent=$(dirname -- "$probe")
+  parent=$("${dirname_command[@]}" "$probe")
   [[ $parent != "$probe" ]] || break
   probe=$parent
 done
@@ -24,7 +34,7 @@ reserve_kib=$((reserve_gib * 1024 * 1024))
 
 check_space() {
   local available_kib
-  available_kib=$(df -Pk -- "$probe" | awk 'NR == 2 { print $4 }')
+  available_kib=$("${df_command[@]}" "$probe" | awk 'NR == 2 { print $4 }')
   if [[ -z $available_kib || ! $available_kib =~ ^[0-9]+$ ]]; then
     echo "cannot determine free space for Cargo target filesystem: $probe" >&2
     return 1
@@ -40,17 +50,26 @@ check_space || exit 75
 # A dedicated session permits an explicit emergency stop without touching proxy,
 # VM, container, or unrelated build jobs. Normal reserve crossings finish the
 # current Cargo command and make the wrapper stop a subsequent batch instead.
-if ! command -v setsid >/dev/null 2>&1; then
-  echo 'setsid is required to supervise Cargo disk-space reserve' >&2
-  exit 69
+# Hosts without setsid run Cargo in the current session and report the narrower
+# emergency-stop behavior below.
+process_group=0
+if command -v setsid >/dev/null 2>&1; then
+  process_group=1
+  setsid cargo "$@" &
+else
+  echo 'setsid unavailable: Cargo runs without a dedicated process group; SAFEYOLO_CARGO_HARD_STOP=1 signals Cargo only and may leave child processes running' >&2
+  ( trap - INT; exec cargo "$@" ) &
 fi
-setsid cargo "$@" &
 cargo_pid=$!
 interrupted=0
 reserve_crossed=0
 cleanup() {
   if kill -0 "$cargo_pid" 2>/dev/null; then
-    kill -INT -- "-$cargo_pid" 2>/dev/null || kill -INT "$cargo_pid" 2>/dev/null || true
+    if (( process_group )); then
+      kill -INT -- "-$cargo_pid" 2>/dev/null || kill -INT "$cargo_pid" 2>/dev/null || true
+    else
+      kill -INT "$cargo_pid" 2>/dev/null || true
+    fi
   fi
 }
 trap 'cleanup; exit 130' INT TERM
