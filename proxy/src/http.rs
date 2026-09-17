@@ -379,11 +379,25 @@ struct Outbound {
     http2: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshPhase {
+    Dns,
+    Tcp,
+    ParentTls,
+    Connect,
+    OriginTls,
+    HttpHandshake,
+    HttpSend,
+    HttpBody,
+}
+
 #[derive(Debug)]
-struct RefreshPhaseTimeout;
+struct RefreshPhaseTimeout {
+    phase: RefreshPhase,
+}
 impl std::fmt::Display for RefreshPhaseTimeout {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("refresh transport phase timed out")
+        write!(formatter, "refresh {:?} phase timed out", self.phase)
     }
 }
 impl std::error::Error for RefreshPhaseTimeout {}
@@ -391,13 +405,73 @@ impl std::error::Error for RefreshPhaseTimeout {}
 async fn refresh_phase<T>(
     timeout: Option<Duration>,
     operation: impl Future<Output = Result<T, Error>>,
+    phase: RefreshPhase,
 ) -> Result<T, Error> {
     match timeout {
         Some(timeout) => tokio::time::timeout(timeout, operation)
             .await
-            .map_err(|_| Box::new(RefreshPhaseTimeout) as Error)?,
+            .map_err(|_| Box::new(RefreshPhaseTimeout { phase }) as Error)?,
         None => operation.await,
     }
+}
+
+// Keep each transport boundary explicit so timeout evidence describes the
+// operation that actually stalled. These small boundaries are also the seams
+// used by the native held-phase tests; they do not introduce another deadline.
+async fn refresh_dns_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::Dns).await
+}
+
+async fn refresh_tcp_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::Tcp).await
+}
+
+async fn refresh_parent_tls_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::ParentTls).await
+}
+
+async fn refresh_connect_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::Connect).await
+}
+
+async fn refresh_origin_tls_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::OriginTls).await
+}
+
+async fn refresh_http_handshake_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::HttpHandshake).await
+}
+
+async fn refresh_http_send_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::HttpSend).await
+}
+
+async fn refresh_http_body_phase<T>(
+    timeout: Option<Duration>,
+    operation: impl Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    refresh_phase(timeout, operation, RefreshPhase::HttpBody).await
 }
 
 struct Connected {
@@ -518,7 +592,7 @@ async fn open_egress_for_flow(
         // TcpStream::connect((host, port)) here would let the runtime's DNS
         // work consume the TCP phase budget and make timeout evidence lie
         // about which operation stalled.
-        let addresses = refresh_phase(phase_timeout, async {
+        let addresses = refresh_dns_phase(phase_timeout, async {
             tokio::net::lookup_host((host, port))
                 .await
                 .map_err(Into::into)
@@ -546,7 +620,7 @@ async fn open_egress_for_flow(
                 record_egress()?;
                 recorded = true;
             }
-            match refresh_phase(phase_timeout, async {
+            match refresh_tcp_phase(phase_timeout, async {
                 TcpStream::connect(address).await.map_err(Into::into)
             })
             .await
@@ -617,7 +691,7 @@ async fn open_egress_for_flow(
             .clone()
             .ok_or("HTTPS parent TLS was not configured")?;
         Box::new(
-            refresh_phase(phase_timeout, async {
+            refresh_parent_tls_phase(phase_timeout, async {
                 TlsConnector::from(tls)
                     .connect(name, socket)
                     .await
@@ -629,7 +703,7 @@ async fn open_egress_for_flow(
         socket
     };
     if tunnel && runtime.parent.is_some() {
-        let (mut sender, connection) = refresh_phase(phase_timeout, async {
+        let (mut sender, connection) = refresh_connect_phase(phase_timeout, async {
             hyper::client::conn::http1::handshake(TokioIo::new(stream))
                 .await
                 .map_err(Into::into)
@@ -649,14 +723,14 @@ async fn open_egress_for_flow(
             .header(header::HOST, &target)
             .header(header::VIA, format!("1.1 {}", runtime.via_token))
             .body(full(Bytes::new()))?;
-        let response = refresh_phase(phase_timeout, async {
+        let response = refresh_connect_phase(phase_timeout, async {
             sender.send_request(request).await.map_err(Into::into)
         })
         .await?;
         if !response.status().is_success() {
             return Err("parent proxy refused CONNECT".into());
         }
-        let upgraded = refresh_phase(phase_timeout, async {
+        let upgraded = refresh_connect_phase(phase_timeout, async {
             hyper::upgrade::on(response).await.map_err(Into::into)
         })
         .await?;
@@ -713,7 +787,7 @@ async fn open_outbound(
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         }
         let name = ServerName::try_from(destination.host.clone())?;
-        let tls = refresh_phase(phase_timeout, async {
+        let tls = refresh_origin_tls_phase(phase_timeout, async {
             TlsConnector::from(Arc::new(config))
                 .connect(name, stream)
                 .await
@@ -1479,7 +1553,7 @@ async fn execute_refresh(
         .header(header::VIA, format!("1.1 {}", runtime.via_token))
         .body(full(body))
         .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
-    let (mut sender, connection) = refresh_phase(Some(phase_timeout), async {
+    let (mut sender, connection) = refresh_http_handshake_phase(Some(phase_timeout), async {
         hyper::client::conn::http1::Builder::new()
             .handshake(TokioIo::new(outbound.stream))
             .await
@@ -1496,7 +1570,22 @@ async fn execute_refresh(
     tasks.spawn(async move {
         let _ = connection.await;
     });
-    let response = refresh_phase(Some(phase_timeout), async {
+    // Hyper's readiness boundary is separate from writing the request and
+    // waiting for its response. Keep it under the handshake phase budget so
+    // a client-side HTTP/1 state machine stall cannot be reported as a head
+    // or body timeout.
+    refresh_http_handshake_phase(Some(phase_timeout), async {
+        sender.ready().await.map_err(Into::into)
+    })
+    .await
+    .map_err(|error| {
+        if is_refresh_phase_timeout(&error) {
+            crate::oauth::TransportFailure::Timeout
+        } else {
+            crate::oauth::TransportFailure::Protocol
+        }
+    })?;
+    let response = refresh_http_send_phase(Some(phase_timeout), async {
         sender.send_request(request).await.map_err(Into::into)
     })
     .await
@@ -1508,7 +1597,7 @@ async fn execute_refresh(
         }
     })?;
     let status = response.status().as_u16();
-    let bytes = refresh_phase(Some(phase_timeout), async {
+    let bytes = refresh_http_body_phase(Some(phase_timeout), async {
         Limited::new(response.into_body(), 1024 * 1024)
             .collect()
             .await
@@ -1559,10 +1648,10 @@ async fn resolve_refresh(
         crate::oauth::RefreshStart::Leader(attempt) => {
             let response =
                 execute_refresh(runtime, identity, request_id, tasks, attempt.request()).await;
-            attempt.complete_with_activation(
+            attempt.complete_with_transactional_activation(
                 response,
                 time::OffsetDateTime::now_utc(),
-                |metadata| runtime.credential_activation.activate(metadata),
+                |phase, metadata| runtime.credential_activation.activate(phase, metadata),
             )
         }
         crate::oauth::RefreshStart::Follower(mut waiter) => {
@@ -2992,36 +3081,103 @@ pub(crate) fn serve_request(
 mod tests {
     use super::*;
 
+    async fn held_callsite_timeout<T>(
+        operation: impl Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        let result = operation;
+        tokio::pin!(result);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+        result.await
+    }
+
+    fn assert_phase_timeout(error: Error, phase: RefreshPhase) {
+        assert_eq!(
+            error
+                .downcast_ref::<RefreshPhaseTimeout>()
+                .map(|value| value.phase),
+            Some(phase)
+        );
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn held_refresh_dns_tcp_parent_tls_connect_origin_tls_http_handshake_send_and_body_phases_timeout()
-     {
-        // Each operation is held independently. The production call sites
-        // use this same phase wrapper around DNS, TCP, parent TLS, CONNECT,
-        // origin TLS, HTTP handshake, send, and body collection; advancing the
-        // paused clock proves a stall cannot outlive its own phase budget.
-        for phase in [
-            "dns",
-            "tcp",
-            "parent_tls",
-            "connect",
-            "origin_tls",
-            "http_handshake",
-            "send",
-            "body",
-        ] {
-            let result = refresh_phase(
-                Some(Duration::from_secs(10)),
-                std::future::pending::<Result<(), Error>>(),
-            );
-            tokio::pin!(result);
-            tokio::task::yield_now().await;
-            tokio::time::advance(Duration::from_secs(11)).await;
-            let error = result.await.unwrap_err();
-            assert!(
-                error.is::<RefreshPhaseTimeout>(),
-                "{phase} phase did not retain its timeout marker"
-            );
-        }
+    async fn held_refresh_callsite_phases_timeout_independently() {
+        // These are the named production boundaries, each held at its own
+        // callsite. They deliberately do not exercise a generic timeout loop:
+        // a regression that removes a wrapper from one operation then fails
+        // the corresponding boundary test.
+        let error = held_callsite_timeout(refresh_dns_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::Dns);
+
+        let error = held_callsite_timeout(refresh_tcp_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::Tcp);
+
+        let error = held_callsite_timeout(refresh_parent_tls_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::ParentTls);
+
+        let error = held_callsite_timeout(refresh_connect_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::Connect);
+
+        let error = held_callsite_timeout(refresh_origin_tls_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::OriginTls);
+
+        // Hyper's handshake constructs a sender/connection pair without
+        // touching the wire. Holding the real sender readiness future while
+        // retaining (but not driving) its connection exercises the actual
+        // HTTP state-machine boundary, rather than a response-head wait.
+        let (client, _peer) = tokio::io::duplex(64);
+        let (mut sender, _connection) = hyper::client::conn::http1::Builder::new()
+            .handshake::<_, Full<Bytes>>(TokioIo::new(client))
+            .await
+            .unwrap();
+        let error = held_callsite_timeout(refresh_http_handshake_phase(
+            Some(Duration::from_secs(10)),
+            async { sender.ready().await.map_err(Into::into) },
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::HttpHandshake);
+
+        let error = held_callsite_timeout(refresh_http_send_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::HttpSend);
+
+        let error = held_callsite_timeout(refresh_http_body_phase(
+            Some(Duration::from_secs(10)),
+            std::future::pending::<Result<(), Error>>(),
+        ))
+        .await
+        .unwrap_err();
+        assert_phase_timeout(error, RefreshPhase::HttpBody);
     }
 
     #[test]

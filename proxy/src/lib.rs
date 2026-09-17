@@ -92,21 +92,19 @@ pub(crate) type UpgradeTasks = Arc<connection_tasks::ConnectionTasks>;
 #[derive(Clone, Default)]
 struct CredentialActivation {
     closing: Arc<AtomicBool>,
-    rejected: Arc<AtomicBool>,
     active: Arc<Mutex<Vec<credentials::CredentialMetadata>>>,
 }
 impl CredentialActivation {
     fn activate(
         &self,
+        phase: credentials::ActivationPhase,
         metadata: &[credentials::CredentialMetadata],
     ) -> std::result::Result<(), ()> {
-        if self.closing.load(Ordering::Acquire) {
-            // Reject the candidate exactly once. Vault rollback invokes the
-            // same callback with the old metadata and must still succeed.
-            if !self.rejected.swap(true, Ordering::AcqRel) {
-                return Err(());
-            }
-            return Ok(());
+        if phase == credentials::ActivationPhase::Candidate && self.closing.load(Ordering::Acquire)
+        {
+            // Every candidate is independently transactional. Rollback is
+            // allowed for each rejected candidate, including concurrent ones.
+            return Err(());
         }
         let Ok(mut active) = self.active.lock() else {
             return Err(());
@@ -288,7 +286,7 @@ impl Runtime {
             if let Some(vault) = vault.as_ref() {
                 let metadata = vault.metadata()?;
                 credential_activation
-                    .activate(&metadata)
+                    .activate(credentials::ActivationPhase::Candidate, &metadata)
                     .map_err(|_| "vault credential activation unavailable")?;
             }
             let gateway_grants = if let Some(previous_store) = previous

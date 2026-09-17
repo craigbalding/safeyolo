@@ -20,8 +20,8 @@ use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use crate::credentials::{
-    Credential, CredentialMetadata, CredentialSnapshot, ErrorKind as VaultErrorKind, Secret, Vault,
-    VaultError, wipe_json,
+    ActivationPhase, Credential, CredentialMetadata, CredentialSnapshot,
+    ErrorKind as VaultErrorKind, Secret, Vault, VaultError, wipe_json,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,10 +349,21 @@ impl RefreshAttempt {
     /// Runs the vault's atomic compare/replace and optional activation callback.
     /// The callback must not re-enter this Vault or OAuthRefresh coordinator.
     pub fn complete_with_activation(
+        self,
+        response: std::result::Result<RefreshResponse, TransportFailure>,
+        now: OffsetDateTime,
+        mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> RefreshOutcome {
+        self.complete_with_transactional_activation(response, now, |_, metadata| activate(metadata))
+    }
+    /// Runs atomic publication with a phase-aware activation callback.
+    /// Candidate activation may be rejected after shutdown, while its matching
+    /// rollback remains allowed for every concurrent candidate.
+    pub fn complete_with_transactional_activation(
         mut self,
         response: std::result::Result<RefreshResponse, TransportFailure>,
         now: OffsetDateTime,
-        activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+        activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> RefreshOutcome {
         let outcome = match response {
             Err(TransportFailure::Cancelled) => RefreshOutcome::Cancelled,
@@ -374,11 +385,11 @@ impl RefreshAttempt {
                     if let Some(expiry) = update.expiry {
                         credential.expires_at = Some(expiry);
                     }
-                    match self
-                        .owner
-                        .vault
-                        .replace_if_current(&self.snapshot, credential, activate)
-                    {
+                    match self.owner.vault.replace_if_current_transactional(
+                        &self.snapshot,
+                        credential,
+                        activate,
+                    ) {
                         Ok(true) => RefreshOutcome::Refreshed,
                         Ok(false) => RefreshOutcome::Superseded,
                         Err(error) => RefreshOutcome::Rejected(RefreshError::Vault(error)),

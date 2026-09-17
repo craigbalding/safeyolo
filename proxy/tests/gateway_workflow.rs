@@ -1716,6 +1716,259 @@ async fn oauth_refresh_live_activation_failure_blocks_before_injection() {
 }
 
 #[tokio::test]
+async fn oauth_refresh_live_distinct_candidates_rollback_after_shutdown() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    let refresh_service = |name: &str, host: &str| {
+        SERVICE
+            .replace("name: simple", &format!("name: {name}"))
+            .replace("default_host: 127.0.0.1", &format!("default_host: {host}"))
+            .replace(
+                "allow_http: true",
+                "allow_http: true\n  refresh_on_401: true",
+            )
+    };
+    std::fs::write(
+        root_path.join("services/one.yaml"),
+        refresh_service("one", "127.0.0.1"),
+    )
+    .unwrap();
+    std::fs::write(
+        root_path.join("services/two.yaml"),
+        refresh_service("two", "127.0.0.2"),
+    )
+    .unwrap();
+
+    let origin_one = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_one_port = origin_one.local_addr().unwrap().port();
+    let origin_two = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let origin_two_port = origin_two.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let origin_one_task = tokio::spawn(origin(origin_one, origin_seen.clone(), origin_one_port));
+    let origin_two_task = tokio::spawn(origin(origin_two, origin_seen.clone(), origin_two_port));
+
+    let token_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_port = token_listener.local_addr().unwrap().port();
+    let token_seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let both_ready = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let token_task = tokio::spawn({
+        let token_seen = token_seen.clone();
+        let both_ready = both_ready.clone();
+        let release = release.clone();
+        async move {
+            for _ in 0..2 {
+                let Ok((mut stream, _)) = token_listener.accept().await else {
+                    return;
+                };
+                let token_seen = token_seen.clone();
+                let both_ready = both_ready.clone();
+                let release = release.clone();
+                tokio::spawn(async move {
+                    let Some(request) = read_refresh_request(&mut stream).await else {
+                        return;
+                    };
+                    let ready = {
+                        let mut seen = token_seen.lock().unwrap();
+                        seen.push(request);
+                        seen.len() == 2
+                    };
+                    if ready {
+                        both_ready.notify_one();
+                    }
+                    release.notified().await;
+                    let response_body =
+                        b"{\"access_token\":\"synthetic-shutdown-failed\",\"expires_in\":3600}";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response_body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.write_all(response_body).await;
+                });
+            }
+        }
+    });
+
+    let policy = format!(
+        r#"
+[hosts."127.0.0.1"]
+service = "one"
+
+[hosts."127.0.0.1:{origin_one_port}"]
+egress = "allow"
+
+[hosts."127.0.0.2"]
+service = "two"
+
+[hosts."127.0.0.2:{origin_two_port}"]
+egress = "allow"
+
+[hosts."*"]
+egress = "deny"
+
+[agents.alice]
+
+[agents.bob]
+
+[agents.alice.services.one]
+capability = "reader"
+token = "one-secret"
+
+[agents.alice.services.two]
+capability = "reader"
+token = "two-secret"
+
+[addons.credential_guard]
+enabled = true
+detection_level = "none"
+
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+
+[addons.credential_guard.settings.entropy]
+min_length = 1000
+"#
+    );
+    std::fs::write(root_path.join("policy.toml"), policy).unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault_path = root_path.join("data/vault.yaml.enc");
+    let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    for (name, old, refresh) in [
+        ("one-secret", "synthetic-one-old", "synthetic-one-refresh"),
+        ("two-secret", "synthetic-two-old", "synthetic-two-refresh"),
+    ] {
+        let mut oauth = Credential::new(name, "oauth2", Secret::new(old));
+        oauth.refresh_token = Some(Secret::new(refresh));
+        oauth.token_url = Some(format!("http://127.0.0.1:{token_port}/oauth/token"));
+        oauth.client_id = Some("synthetic-client".into());
+        oauth.client_secret = Some(Secret::new("synthetic-client-secret"));
+        oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
+        vault.store(oauth).unwrap();
+    }
+
+    let socket = root_path.join("alice.sock");
+    let proxy = Proxy::start(config(root_path)).await.unwrap();
+    let view = tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let request = b"GET http://_safeyolo.proxy.internal/gateway/services HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nConnection: close\r\n\r\n";
+            let response = raw_http(&socket, request).await;
+            if response.starts_with(b"HTTP/1.1 200") {
+                let value: Value = serde_json::from_slice(body(&response)).unwrap();
+                if value["authorized"]["one"]["token"].as_str().is_some()
+                    && value["authorized"]["two"]["token"].as_str().is_some()
+                {
+                    return value;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let one_token = view["authorized"]["one"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let two_token = view["authorized"]["two"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first = tokio::spawn({
+        let socket = socket.clone();
+        async move {
+            let request = format!(
+                "GET http://127.0.0.1:{origin_one_port}/v1/value HTTP/1.1\r\nHost: 127.0.0.1:{origin_one_port}\r\nAuthorization: Bearer {one_token}\r\nConnection: close\r\n\r\n"
+            );
+            raw_http_without_timeout(&socket, request.as_bytes()).await
+        }
+    });
+    let second = tokio::spawn({
+        let socket = socket.clone();
+        async move {
+            let request = format!(
+                "GET http://127.0.0.2:{origin_two_port}/v1/value HTTP/1.1\r\nHost: 127.0.0.2:{origin_two_port}\r\nAuthorization: Bearer {two_token}\r\nConnection: close\r\n\r\n"
+            );
+            raw_http_without_timeout(&socket, request.as_bytes()).await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(3), both_ready.notified())
+        .await
+        .expect("both distinct refreshes did not reach provider");
+    let shutdown = tokio::spawn(proxy.shutdown());
+    tokio::task::yield_now().await;
+    release.notify_waiters();
+    let first_response = tokio::time::timeout(Duration::from_secs(3), first)
+        .await
+        .unwrap()
+        .unwrap();
+    let second_response = tokio::time::timeout(Duration::from_secs(3), second)
+        .await
+        .unwrap()
+        .unwrap();
+    status(&first_response, "503");
+    status(&second_response, "503");
+    assert!(String::from_utf8_lossy(&first_response).contains("REFRESH_ACTIVATION"));
+    assert!(String::from_utf8_lossy(&second_response).contains("REFRESH_ACTIVATION"));
+    assert!(origin_seen.lock().unwrap().is_empty());
+    let (request_count, saw_one, saw_two) = {
+        let requests = token_seen.lock().unwrap();
+        (
+            requests.len(),
+            requests.iter().any(|request| {
+                request
+                    .windows(b"synthetic-one-refresh".len())
+                    .any(|window| window == b"synthetic-one-refresh")
+            }),
+            requests.iter().any(|request| {
+                request
+                    .windows(b"synthetic-two-refresh".len())
+                    .any(|window| window == b"synthetic-two-refresh")
+            }),
+        )
+    };
+    assert_eq!(request_count, 2);
+    assert!(saw_one);
+    assert!(saw_two);
+    tokio::time::timeout(Duration::from_secs(3), shutdown)
+        .await
+        .expect("shutdown with two rejected candidates hung")
+        .unwrap();
+    let retained = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    assert_eq!(
+        retained
+            .get("one-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-one-old"
+    );
+    assert_eq!(
+        retained
+            .get("two-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-two-old"
+    );
+    let events = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap();
+    let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
+    assert_eq!(audit.matches("REFRESH_ACTIVATION").count(), 2);
+    assert!(!events.contains("synthetic-shutdown-failed"));
+    assert!(!audit.contains("synthetic-shutdown-failed"));
+    origin_one_task.abort();
+    origin_two_task.abort();
+    token_task.abort();
+}
+
+#[tokio::test]
 async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
     tokio::time::pause();
     run_live_refresh_response_case(

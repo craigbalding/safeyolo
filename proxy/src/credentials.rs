@@ -72,6 +72,15 @@ pub enum ErrorKind {
     State,
 }
 
+/// Identifies the side of an atomic vault publication callback. Candidate
+/// activation may be rejected independently for every in-flight operation;
+/// rollback is the matching restoration of that operation's prior snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationPhase {
+    Candidate,
+    Rollback,
+}
+
 /// Errors intentionally contain no source text, passphrase, token, or callback
 /// error strings. YAML parser diagnostics can include decrypted credential text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -354,7 +363,19 @@ impl Vault {
         &self,
         snapshot: &CredentialSnapshot,
         replacement: Credential,
-        activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+        mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> Result<bool> {
+        self.replace_if_current_transactional(snapshot, replacement, |_, metadata| {
+            activate(metadata)
+        })
+    }
+    /// Conditional replacement with a callback that can distinguish a new
+    /// candidate from the exact rollback performed after its rejection.
+    pub fn replace_if_current_transactional(
+        &self,
+        snapshot: &CredentialSnapshot,
+        replacement: Credential,
+        activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
         if replacement.name != snapshot.credential.name {
             return Err(error(ErrorKind::Format));
@@ -386,7 +407,14 @@ impl Vault {
     pub fn store_with_activation(
         &self,
         credential: Credential,
-        activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+        mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> Result<()> {
+        self.store_with_transactional_activation(credential, |_, metadata| activate(metadata))
+    }
+    pub fn store_with_transactional_activation(
+        &self,
+        credential: Credential,
+        activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<()> {
         let name = credential.name.clone();
         self.mutate(
@@ -406,7 +434,14 @@ impl Vault {
     pub fn remove_with_activation(
         &self,
         name: &str,
-        activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+        mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> Result<bool> {
+        self.remove_with_transactional_activation(name, |_, metadata| activate(metadata))
+    }
+    pub fn remove_with_transactional_activation(
+        &self,
+        name: &str,
+        activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
         self.mutate(
             None,
@@ -420,7 +455,7 @@ impl Vault {
         )
     }
     pub fn save(&self) -> Result<()> {
-        self.mutate(None, None, |_| true, |_| Ok(())).map(|_| ())
+        self.mutate(None, None, |_| true, |_, _| Ok(())).map(|_| ())
     }
     /// Callbacks receive metadata only and must not re-enter this Vault. Rejected
     /// activation restores the exact preceding encrypted bytes and old metadata.
@@ -429,7 +464,7 @@ impl Vault {
         expected: Option<&CredentialSnapshot>,
         invalidate: Option<&str>,
         mutation: impl FnOnce(&mut Vec<Credential>) -> bool,
-        mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+        mut activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
         let mut state = self.lock()?;
         if let Some(snapshot) = expected
@@ -461,7 +496,7 @@ impl Vault {
                 return Err(failure.error);
             }
         };
-        if activate(&metadata(&candidate)).is_err() {
+        if activate(ActivationPhase::Candidate, &metadata(&candidate)).is_err() {
             restore(
                 &self.path,
                 &original,
@@ -500,14 +535,21 @@ impl Vault {
         &self,
         mut activate: impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<()> {
+        self.reload_with_transactional_activation(|_, metadata| activate(metadata))
+    }
+    pub fn reload_with_transactional_activation(
+        &self,
+        mut activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
+    ) -> Result<()> {
         let mut state = self.lock()?;
         let (raw, stamp) = read_file(&self.path)?;
         if raw.get(..SALT_LENGTH) != Some(state.salt.as_slice()) {
             return Err(error(ErrorKind::KeyChanged));
         }
         let candidate = decrypt(&state.cipher, &raw)?;
-        if activate(&metadata(&candidate)).is_err() {
-            activate(&metadata(&state.credentials)).map_err(|_| error(ErrorKind::Rollback))?;
+        if activate(ActivationPhase::Candidate, &metadata(&candidate)).is_err() {
+            activate(ActivationPhase::Rollback, &metadata(&state.credentials))
+                .map_err(|_| error(ErrorKind::Rollback))?;
             return Err(error(ErrorKind::Activation));
         }
         state.revisions = revisions_for(&state, &candidate, None);
@@ -835,7 +877,7 @@ fn restore(
     original: &[u8],
     original_stamp: &Stamp,
     state: &mut State,
-    activate: &mut impl FnMut(&[CredentialMetadata]) -> std::result::Result<(), ()>,
+    activate: &mut impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
 ) -> Result<()> {
     let restored_stamp = save_atomic(path, original).map_err(|_| error(ErrorKind::Rollback))?;
     // An external edit may already have made the active snapshot stale before
@@ -844,7 +886,8 @@ fn restore(
     if original_stamp == &state.stamp {
         state.stamp = restored_stamp;
     }
-    activate(&metadata(&state.credentials)).map_err(|_| error(ErrorKind::Rollback))
+    activate(ActivationPhase::Rollback, &metadata(&state.credentials))
+        .map_err(|_| error(ErrorKind::Rollback))
 }
 
 #[cfg(test)]
