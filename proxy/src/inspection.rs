@@ -5,8 +5,9 @@
 //! deliberately nonempty: fancy-regex is not an exact Python `re` replacement.
 //! Callers must resolve those gaps before production use. A compile incompatibility
 //! retains the previous snapshot; it never silently removes an accepted rule.
-//! Proved remaining examples include named Unicode escapes, Unicode-version
-//! and character-class differences, and parse nesting. The pinned engine patch
+//! Proved remaining examples include named Unicode escapes, uncovered Unicode
+//! properties/casefold behavior, and parse nesting. Generated Python 3.12 /
+//! Unicode 15 ranges pin `\w` and `\d` category membership. The pinned engine patch
 //! removes the scanner's private stack cutoff: VM buffers grow fallibly and are
 //! released after each scan. The complete-message regression matches at 1,000,100
 //! bytes, 4 MiB and 8 MiB. Remaining gaps still block production acceptance.
@@ -42,7 +43,7 @@
 //! exceptions; only URL inspection failures have a shipped unconditional block.
 
 use fancy_regex::{Regex, RegexBuilder, RegexInput};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::{
     fmt,
@@ -394,9 +395,46 @@ fn safe_location(name: &str) -> String {
     format!("header:{}", safe_value(&json!(name), 64, "unknown"))
 }
 
-const PYTHON_WORD: &str = r"[\p{L}\p{N}_]";
 const PYTHON_SPACE: &str =
     r"[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]";
+
+#[derive(Deserialize)]
+struct PythonUnicodeCategories {
+    word: Vec<[u32; 2]>,
+    decimal: Vec<[u32; 2]>,
+}
+
+fn python_unicode_categories() -> &'static PythonUnicodeCategories {
+    static DATA: LazyLock<PythonUnicodeCategories> = LazyLock::new(|| {
+        serde_json::from_str(include_str!("../data/inspection/unicode.json"))
+            .expect("validated Python 3.12 Unicode category tables")
+    });
+    &DATA
+}
+
+fn category_class(ranges: &[[u32; 2]]) -> String {
+    let mut result = String::from("[");
+    for [start, end] in ranges {
+        result.push_str(&format!(r"\x{{{start:x}}}"));
+        if start != end {
+            result.push_str(&format!(r"-\x{{{end:x}}}"));
+        }
+    }
+    result.push(']');
+    result
+}
+
+fn python_word() -> &'static str {
+    static WORD: LazyLock<String> =
+        LazyLock::new(|| category_class(&python_unicode_categories().word));
+    &WORD
+}
+
+fn python_decimal() -> &'static str {
+    static DECIMAL: LazyLock<String> =
+        LazyLock::new(|| category_class(&python_unicode_categories().decimal));
+    &DECIMAL
+}
 pub(crate) enum PatternIssue {
     Invalid,
     Compatibility,
@@ -521,7 +559,7 @@ fn category(escape: char, ascii: bool) -> Option<String> {
             if ascii {
                 "[A-Za-z0-9_]"
             } else {
-                PYTHON_WORD
+                python_word()
             }
         }
         's' => {
@@ -535,7 +573,7 @@ fn category(escape: char, ascii: bool) -> Option<String> {
             if ascii {
                 "[0-9]"
             } else {
-                r"[\p{Nd}]"
+                python_decimal()
             }
         }
         _ => return None,
@@ -750,7 +788,7 @@ fn python_pattern(pattern: &str, insensitive: bool) -> std::result::Result<Strin
                         let word = if mode.ascii {
                             "(?-i:[A-Za-z0-9_])"
                         } else {
-                            PYTHON_WORD
+                            python_word()
                         };
                         if escape == 'b' {
                             result.push_str(&format!(

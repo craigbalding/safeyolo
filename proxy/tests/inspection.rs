@@ -1320,6 +1320,79 @@ fn configured_ascii_negative_categories_enforce_the_rule_despite_python_prefilte
     }
 }
 
+#[test]
+fn python_unicode_categories_pin_python_312_scalar_membership() {
+    // Python 3.12 ships Unicode 15.0. U+13460 is still unassigned there,
+    // while newer Rust Unicode tables classify it as a letter. U+1E4F0 is a
+    // Unicode-15 decimal digit. These witnesses keep native shorthand
+    // categories tied to the source runtime rather than the build toolchain.
+    let scanner = make_scanner(json!([
+        rule("word", r"^\w$", "body", "block"),
+        rule("decimal", r"^\d$", "body", "block"),
+    ]));
+    for (text, expected) in [
+        ("é", Outcome::MatchBlocked),
+        ("١", Outcome::MatchBlocked),
+        ("\u{1e4f0}", Outcome::MatchBlocked),
+        ("\u{13460}", Outcome::NoMatch),
+        ("²", Outcome::MatchBlocked),
+        ("\u{301}", Outcome::NoMatch),
+    ] {
+        let result = scanner
+            .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
+            .unwrap();
+        assert_eq!(result.outcome, expected, "source category witness {text:?}");
+    }
+}
+
+#[test]
+fn d33_named_unicode_and_nesting_rows_fail_closed_with_supported_depth() {
+    let named = Scanner::default();
+    assert_eq!(
+        named
+            .load_policy_config(&json!({
+                "scan_patterns": [rule(
+                    "unicode-name",
+                    r"^\N{LATIN CAPITAL LETTER A}$",
+                    "body",
+                    "log"
+                )]
+            }))
+            .unwrap_err()
+            .kind,
+        ErrorKind::RegexCompatibility
+    );
+
+    let nested = format!("{}a{}", "(?:".repeat(8), ")".repeat(8));
+    let scanner = make_scanner(json!([rule("nested", &nested, "body", "log")]));
+    assert_eq!(
+        scanner
+            .scan_websocket_text(
+                Direction::Request,
+                MessageType::Text,
+                "a",
+                Options::default()
+            )
+            .unwrap()
+            .outcome,
+        Outcome::MatchLogged
+    );
+
+    // fancy-regex reports its parser recursion boundary as compatibility;
+    // retaining that explicit failure is safer than accepting a different
+    // grammar or silently dropping the source rule.
+    let too_deep = format!("{}a{}", "(?:".repeat(64), ")".repeat(64));
+    assert_eq!(
+        Scanner::default()
+            .load_policy_config(&json!({
+                "scan_patterns": [rule("too-deep", &too_deep, "body", "log")]
+            }))
+            .unwrap_err()
+            .kind,
+        ErrorKind::RegexCompatibility
+    );
+}
+
 fn source_prefilter_case(pattern: &str) -> bool {
     ["a", "ai", "a-i"].iter().any(|flags| {
         [r"\W", r"\D", r"\S", r"[^\w]", r"[\W]", r"[\W\D]"]

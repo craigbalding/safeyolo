@@ -275,6 +275,79 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
 }
 
 #[tokio::test]
+async fn cancellation_during_scanner_prevents_message_publication() {
+    use tokio::io::AsyncWriteExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let owned = runtime(directory.path());
+    owned
+        .scanner
+        .load_policy_config(&json!({
+            "scan_patterns": [{
+                "name": "ambiguous",
+                "pattern": "^(a|aa)*\\1$",
+                "scope": "body",
+                "action": "block"
+            }]
+        }))
+        .unwrap();
+    let runtime = Arc::new(owned);
+    let memory = memory_runtime::WebSocket::new(&runtime, ID, HOST);
+    let payload = format!("{}b", "a".repeat(16 * 1024));
+    let wire = frame(OpCode::Data(Data::Text), true, true, payload.as_bytes());
+    let (mut source, stream) = tokio::io::duplex(wire.len() + 1);
+    source.write_all(&wire).await.unwrap();
+    drop(source);
+
+    let (sender, mut messages) = mpsc::channel(2);
+    let (closing_send, closing) = watch::channel(None);
+    let lifetime = Arc::new(InspectionLifetime {
+        cancelled: AtomicBool::new(false),
+        publication: Mutex::new(()),
+    });
+    let owner = ConnectionTasks::new(watch::channel(false).1);
+    let worker = tokio::spawn(read_messages(
+        Reader::new(stream, true, None),
+        true,
+        sender,
+        closing.clone(),
+        Arc::new(session(&runtime)),
+        lifetime.clone(),
+        memory.monitor(),
+        owner.clone(),
+    ));
+    let until = tokio::time::Instant::now() + Duration::from_secs(2);
+    while runtime.scanner.stats().unwrap().scans_total == 0 && tokio::time::Instant::now() < until {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(runtime.scanner.stats().unwrap().scans_total, 1);
+    lifetime.cancelled.store(true, Ordering::Release);
+    closing_send
+        .send(Some(Closing::failure(1000, Some(true), "test_cancel")))
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap(),
+        Finished::Stopped
+    ));
+    owner.run(async { Ok(()) }).await;
+    assert!(messages.recv().await.is_none());
+    let diagnostics =
+        std::fs::read_to_string(directory.path().join("diagnostics.jsonl")).unwrap_or_default();
+    assert!(
+        !diagnostics
+            .lines()
+            .any(|line| line.contains("proxy.websocket.message")),
+        "canceled inspection must not publish message evidence"
+    );
+    drop(memory);
+    assert_eq!(stats(&runtime.memory_monitor)["active_websockets"], 0);
+    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
+}
+
+#[tokio::test]
 async fn relay_diagnostic_error_still_ends_the_session() {
     let directory = tempfile::tempdir().unwrap();
     let mut runtime = runtime(directory.path());
