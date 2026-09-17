@@ -15,6 +15,7 @@ use std::{
 
 use http_body_util::BodyExt;
 use hyper::{Request, Response, body::Body, header};
+use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -107,6 +108,7 @@ pub(super) struct RequestContext {
     valid_context: bool,
     trace: Option<Arc<RequestTrace>>,
     inspection: Option<Box<RequestInspection>>,
+    stop: Option<watch::Receiver<bool>>,
 }
 
 /// Call after network/circuit admission and CONNECT exclusion. Only reserved
@@ -219,6 +221,7 @@ pub(super) fn prepare<B>(
         valid_context,
         trace,
         inspection: None,
+        stop: None,
     }))
 }
 
@@ -244,11 +247,18 @@ impl RequestContext {
             valid_context: false,
             trace,
             inspection: None,
+            stop: None,
         })
     }
 
     pub(super) fn attach_traffic(&mut self, traffic: Arc<super::traffic::Traffic>) {
         self.traffic = Some(traffic);
+    }
+
+    /// Share the connection owner's stop signal with the buffered request scan.
+    /// This is the same lifetime boundary used by response and WebSocket scans.
+    pub(super) fn attach_stop(&mut self, stop: watch::Receiver<bool>) {
+        self.stop = Some(stop);
     }
 
     pub(super) fn attach_live(&mut self, live: Option<Arc<crate::traffic_view::Exchange>>) {
@@ -377,18 +387,57 @@ impl RequestContext {
                     return Err("pattern inspection unavailable".into());
                 };
                 tokio::pin!(scan);
+                let mut stop = self.stop.clone();
+                if stop.as_ref().is_some_and(|stop| *stop.borrow()) {
+                    cancel.store(true, Ordering::Relaxed);
+                    let _ = scan.await;
+                    return Err("request inspection cancelled".into());
+                }
+                let stopped = async {
+                    match stop.as_mut() {
+                        Some(stop) => {
+                            let _ = stop.changed().await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(stopped);
                 let inspected = tokio::select! {
+                    biased;
+                    _ = &mut stopped => {
+                        cancel.store(true, Ordering::Relaxed);
+                        let _ = scan.await;
+                        return Err("request inspection cancelled".into());
+                    }
                     result = &mut pending.observer => {
                         if result.is_err() {
                             cancel.store(true, Ordering::Relaxed);
                             let _ = scan.await;
                             return Err("request completion aborted".into());
                         }
-                        scan.await.map_err(|_| -> Error { "pattern inspection task failed".into() })?
+                        tokio::select! {
+                            biased;
+                            _ = &mut stopped => {
+                                cancel.store(true, Ordering::Relaxed);
+                                let _ = scan.await;
+                                return Err("request inspection cancelled".into());
+                            }
+                            result = &mut scan => {
+                                result.map_err(|_| -> Error { "pattern inspection task failed".into() })?
+                            }
+                        }
                     }
                     result = &mut scan => {
                         let result = result.map_err(|_| -> Error { "pattern inspection task failed".into() })?;
-                        if (&mut pending.observer).await.is_err() {
+                        let observer = tokio::select! {
+                            biased;
+                            _ = &mut stopped => {
+                                cancel.store(true, Ordering::Relaxed);
+                                return Err("request inspection cancelled".into());
+                            }
+                            result = &mut pending.observer => result,
+                        };
+                        if observer.is_err() {
                             cancel.store(true, Ordering::Relaxed);
                             return Err("request completion aborted".into());
                         }

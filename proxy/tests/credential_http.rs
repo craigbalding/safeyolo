@@ -434,6 +434,18 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|event| event["event"] == "security.pattern_scanner")
         .collect::<Vec<_>>();
+    let mut response_events_by_request = std::collections::HashMap::new();
+    for event in &pattern_events {
+        if event["details"]["direction"] == "response" {
+            *response_events_by_request
+                .entry(event["request_id"].as_str().unwrap().to_owned())
+                .or_insert(0usize) += 1;
+        }
+    }
+    assert!(
+        response_events_by_request.values().all(|count| *count == 1),
+        "response inspection published more than once: {response_events_by_request:?}"
+    );
     assert!(
         pattern_events
             .iter()
@@ -489,9 +501,23 @@ async fn native_http_client_disconnect_cancels_scan_without_late_publication() {
     // backtracking VM is active. Shutdown must not wait for the old scan.
     tokio::time::sleep(Duration::from_millis(100)).await;
     drop(peer);
+
+    // Keep a second scan active while the connection owner's stop signal is
+    // raised. This exercises Proxy::shutdown itself rather than only the
+    // request-completion observer cancellation above.
+    let mut active_peer = UnixStream::connect(&socket).await.unwrap();
+    let active_head = format!(
+        "POST http://127.0.0.1:{origin_port}/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len() + 1
+    );
+    active_peer.write_all(active_head.as_bytes()).await.unwrap();
+    active_peer.write_all(&body).await.unwrap();
+    active_peer.write_all(b"b").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
     tokio::time::timeout(Duration::from_secs(3), proxy.shutdown())
         .await
-        .expect("disconnect left HTTP inspection worker running");
+        .expect("shutdown left active HTTP inspection worker running");
+    drop(active_peer);
     assert!(
         seen.lock().unwrap().is_empty(),
         "disconnected request reached origin"

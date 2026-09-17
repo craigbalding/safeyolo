@@ -297,6 +297,45 @@ fn pattern_local_response(
     });
 }
 
+fn enforce_response_decision(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    destination: &Destination,
+    traffic: &Arc<traffic::Traffic>,
+    inspected: &crate::inspection::Decision,
+) -> Result<Option<Response<Body>>, Error> {
+    if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
+        record_pattern_decision(
+            runtime,
+            identity,
+            request_id,
+            destination,
+            crate::inspection::Direction::Response,
+            inspected,
+        )?;
+    }
+    if matches!(
+        inspected.outcome,
+        crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
+    ) {
+        let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
+        let body = inspected
+            .body
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
+        let mut blocked = Response::builder()
+            .status(status)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-blocked-by", "pattern-scanner")
+            .body(full(body))?;
+        pattern_local_response(&mut blocked, traffic, inspected.failure);
+        return Ok(Some(prior_block(blocked)));
+    }
+    Ok(None)
+}
+
 async fn scan_response_with_lifetime(
     scanner: crate::inspection::Scanner,
     headers: Vec<(Vec<u8>, Vec<u8>)>,
@@ -2745,6 +2784,7 @@ where
         }
         request_context::Admission::Pending(context) => context,
     };
+    context.attach_stop(upgrades.stop.clone());
     let traffic = traffic.expect("CONNECT returned before ordinary HTTP hooks");
     traffic.request_headers(&request, destination);
     context.attach_traffic(traffic.clone());
@@ -3086,47 +3126,6 @@ where
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect::<Vec<_>>();
-    if let Some(options) = response_scan {
-        let (inspected, _scan_lifetime) = scan_response_with_lifetime(
-            runtime.scanner.clone(),
-            response_headers.clone(),
-            None,
-            options,
-            upgrades.stop.clone(),
-        )
-        .await?;
-        let _publication = _scan_lifetime.publication()?;
-        if _scan_lifetime.cancelled() || *upgrades.stop.borrow() {
-            return Err("response inspection cancelled".into());
-        }
-        if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
-            record_pattern_decision(
-                &runtime,
-                identity,
-                request_id,
-                destination,
-                crate::inspection::Direction::Response,
-                &inspected,
-            )?;
-        }
-        if matches!(
-            inspected.outcome,
-            crate::inspection::Outcome::MatchBlocked | crate::inspection::Outcome::InspectionError
-        ) {
-            let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
-            let body = inspected
-                .body
-                .map(|body| body.to_string())
-                .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
-            let mut blocked = Response::builder()
-                .status(status)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("x-blocked-by", "pattern-scanner")
-                .body(full(body))?;
-            pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
-            return Ok((prior_block(blocked), "deny".into()));
-        }
-    }
     let (mut parts, body) = upstream.into_parts();
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
@@ -3134,7 +3133,7 @@ where
         let prepared = request_body::prepare(body, response_length, false).await?;
         if let Some(body) = prepared.unvalidated_content {
             let body = Arc::new(body);
-            let (inspected, _scan_lifetime) = scan_response_with_lifetime(
+            let (inspected, scan_lifetime) = scan_response_with_lifetime(
                 runtime.scanner.clone(),
                 response_headers.clone(),
                 Some(body.clone()),
@@ -3142,42 +3141,48 @@ where
                 upgrades.stop.clone(),
             )
             .await?;
-            let _publication = _scan_lifetime.publication()?;
-            if _scan_lifetime.cancelled() || *upgrades.stop.borrow() {
+            let _publication = scan_lifetime.publication()?;
+            if scan_lifetime.cancelled() || *upgrades.stop.borrow() {
                 return Err("response inspection cancelled".into());
             }
-            if !matches!(inspected.outcome, crate::inspection::Outcome::NoRules) {
-                record_pattern_decision(
-                    &runtime,
-                    identity,
-                    request_id,
-                    destination,
-                    crate::inspection::Direction::Response,
-                    &inspected,
-                )?;
-            }
-            if matches!(
-                inspected.outcome,
-                crate::inspection::Outcome::MatchBlocked
-                    | crate::inspection::Outcome::InspectionError
-            ) {
-                let status = StatusCode::from_u16(inspected.status.unwrap_or(502))?;
-                let body = inspected
-                    .body
-                    .map(|body| body.to_string())
-                    .unwrap_or_else(|| "{\"error\":\"Response blocked by pattern policy\"}".into());
-                let mut blocked = Response::builder()
-                    .status(status)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header("x-blocked-by", "pattern-scanner")
-                    .body(full(body))?;
-                pattern_local_response(&mut blocked, &response_traffic, inspected.failure);
-                return Ok((prior_block(blocked), "deny".into()));
+            if let Some(blocked) = enforce_response_decision(
+                &runtime,
+                identity,
+                request_id,
+                destination,
+                &response_traffic,
+                &inspected,
+            )? {
+                return Ok((blocked, "deny".into()));
             }
             return Ok((
                 Response::from_parts(parts, full(Bytes::copy_from_slice(body.as_slice()))),
                 decision.decision,
             ));
+        }
+        if let Some(options) = response_scan {
+            let (inspected, scan_lifetime) = scan_response_with_lifetime(
+                runtime.scanner.clone(),
+                response_headers.clone(),
+                None,
+                options,
+                upgrades.stop.clone(),
+            )
+            .await?;
+            let _publication = scan_lifetime.publication()?;
+            if scan_lifetime.cancelled() || *upgrades.stop.borrow() {
+                return Err("response inspection cancelled".into());
+            }
+            if let Some(blocked) = enforce_response_decision(
+                &runtime,
+                identity,
+                request_id,
+                destination,
+                &response_traffic,
+                &inspected,
+            )? {
+                return Ok((blocked, "deny".into()));
+            }
         }
         return Ok((
             Response::from_parts(
@@ -3191,6 +3196,30 @@ where
             ),
             decision.decision,
         ));
+    }
+    if let Some(options) = response_scan {
+        let (inspected, scan_lifetime) = scan_response_with_lifetime(
+            runtime.scanner.clone(),
+            response_headers,
+            None,
+            options,
+            upgrades.stop.clone(),
+        )
+        .await?;
+        let _publication = scan_lifetime.publication()?;
+        if scan_lifetime.cancelled() || *upgrades.stop.borrow() {
+            return Err("response inspection cancelled".into());
+        }
+        if let Some(blocked) = enforce_response_decision(
+            &runtime,
+            identity,
+            request_id,
+            destination,
+            &response_traffic,
+            &inspected,
+        )? {
+            return Ok((blocked, "deny".into()));
+        }
     }
     Ok((
         Response::from_parts(
