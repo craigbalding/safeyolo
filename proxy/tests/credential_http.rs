@@ -214,7 +214,7 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     let socket = directory.path().join("agent.sock");
     let policy_path = directory.path().join("policy.json");
     let pattern = r"key-\uDCFF";
-    let write_policy = || {
+    let write_policy = |pattern: &str| {
         std::fs::write(
             &policy_path,
             json!({
@@ -234,7 +234,7 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         )
         .unwrap();
     };
-    write_policy();
+    write_policy(pattern);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin_port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -263,6 +263,23 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     assert!(blocked.starts_with(b"HTTP/1.1 403"), "{blocked:?}");
     assert_eq!(seen.lock().unwrap().len(), 1);
 
+    // An even backslash run makes the source spelling literal.  The same
+    // malformed value must therefore pass through instead of matching the
+    // true surrogateescape pattern above.
+    write_policy(r"key-\\uDCFF");
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let escaped_literal = raw_round_trip(&socket, &matching).await;
+    assert!(
+        escaped_literal.starts_with(b"HTTP/1.1 200"),
+        "{escaped_literal:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
     let nonmatching = invalid_h1_request(origin_port, "invalid-nonmatch", 0xfe);
     let allowed = raw_round_trip(&socket, &nonmatching).await;
     assert!(allowed.starts_with(b"HTTP/1.1 200"), "{allowed:?}");
@@ -271,9 +288,14 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
         .unwrap();
     {
         let requests = seen.lock().unwrap();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         assert!(
             requests[1]
+                .windows(b"key-\xff".len())
+                .any(|window| window == b"key-\xff")
+        );
+        assert!(
+            requests[2]
                 .windows(b"key-\xfe".len())
                 .any(|window| window == b"key-\xfe")
         );

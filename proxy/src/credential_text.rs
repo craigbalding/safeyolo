@@ -109,8 +109,15 @@ pub(crate) fn source_pattern(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut output = String::with_capacity(pattern.len());
     let mut index = 0;
+    let mut backslash_run = 0;
     while index < chars.len() {
+        if chars[index] == '\\' {
+            backslash_run += 1;
+        } else {
+            backslash_run = 0;
+        }
         if chars[index] == '\\'
+            && backslash_run % 2 == 1
             && chars
                 .get(index + 1)
                 .is_some_and(|value| *value == 'u' || *value == 'U')
@@ -126,6 +133,7 @@ pub(crate) fn source_pattern(pattern: &str) -> String {
                 if (0xDC80..=0xDCFF).contains(&value) {
                     output.push(source_byte((value - 0xDC00) as u8));
                     index = end;
+                    backslash_run = 0;
                     continue;
                 }
             }
@@ -279,6 +287,75 @@ mod tests {
         let pattern = source_pattern(r"key-\uDCFF");
         assert!(pattern.contains(source_byte(0xff)));
         assert_eq!(source_bytes(&source_text(b"key-\xff")), b"key-\xff");
+    }
+
+    #[test]
+    fn source_pattern_respects_backslash_parity_for_u_and_upper_u() {
+        let cases = [
+            // A single escape introduces the source-byte identity.
+            (r"key-\uDCFF", b"key-\xff".as_slice(), true),
+            // An even run escapes the slash, so the remaining spelling is
+            // literal source text and must not become a byte identity.
+            (r"key-\\uDCFF", b"key-\\uDCFF".as_slice(), true),
+            (r"key-\\uDCFF", b"key-\xff".as_slice(), false),
+            // An odd run leaves the preceding slashes literal and converts
+            // the final escape.
+            (r"key-\\\uDCFF", b"key-\\\xff".as_slice(), true),
+            (r"key-\U0000DCFF", b"key-\xff".as_slice(), true),
+            (r"key-\\U0000DCFF", b"key-\\U0000DCFF".as_slice(), true),
+            (r"key-\\U0000DCFF", b"key-\xff".as_slice(), false),
+            (r"key-\\\U0000DCFF", b"key-\\\xff".as_slice(), true),
+        ];
+        for (pattern, subject, expected) in cases {
+            let adapted = source_pattern(pattern);
+            let compiled = crate::inspection::compile_python_pattern(&adapted, false)
+                .unwrap_or_else(|_| panic!("pattern parity case did not compile: {pattern:?}"));
+            assert_eq!(
+                compiled.is_match(&source_text(subject)).unwrap(),
+                expected,
+                "pattern parity for {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "runs the source Python regex oracle when SAFEYOLO_POLICY_PYTHON is set"]
+    fn source_pattern_backslash_parity_matches_python_oracle() {
+        use std::{env, path::PathBuf, process::Command};
+
+        let python = env::var_os("SAFEYOLO_POLICY_PYTHON")
+            .expect("SAFEYOLO_POLICY_PYTHON must point to the source Python runtime");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("credential_text_source_oracle.py");
+        let output = Command::new(python)
+            .arg(script)
+            .output()
+            .expect("run source regex oracle");
+        assert!(
+            output.status.success(),
+            "source oracle failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for row in rows {
+            let pattern = row["pattern"].as_str().unwrap();
+            let bytes = row["bytes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|byte| byte.as_u64().unwrap() as u8)
+                .collect::<Vec<_>>();
+            let expected = row["matched"].as_bool().unwrap();
+            let adapted = source_pattern(pattern);
+            let compiled = crate::inspection::compile_python_pattern(&adapted, false)
+                .unwrap_or_else(|_| panic!("pattern parity case did not compile: {pattern:?}"));
+            assert_eq!(
+                compiled.is_match(&source_text(&bytes)).unwrap(),
+                expected,
+                "pattern parity for {pattern:?}"
+            );
+        }
     }
 
     #[test]

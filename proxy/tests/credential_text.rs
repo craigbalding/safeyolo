@@ -1,3 +1,4 @@
+use ring::hmac;
 use safeyolo_proxy::{
     credential_guard::{CredentialGuard, Options, OutcomeKind, Pdp},
     network_guard::Identity,
@@ -115,6 +116,19 @@ fn invalid_admitted_bytes_match_source_surrogate_pattern_without_loss() {
     assert_eq!(outcome.evaluations.len(), 1);
     assert_eq!(outcome.evaluations[0].finding.rule, "synthetic");
     assert_eq!(outcome.evaluations[0].finding.header, "Authorization");
+
+    // The source runtime's strict UTF-8 encoding rejects this lone
+    // surrogate.  HMAC therefore deliberately signs the recovered source
+    // bytes, preserving the credential identity without exposing them.
+    let expected = hmac::sign(
+        &hmac::Key::new(hmac::HMAC_SHA256, b"synthetic-key"),
+        b"key-\xff",
+    )
+    .as_ref()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(outcome.evaluations[0].finding.fingerprint, expected);
 }
 
 #[test]
