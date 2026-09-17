@@ -388,7 +388,7 @@ silently reduce accepted message sizes to a library default.
 | D57 | A source flow-record tag failure can leave the inserted flow pending on its SQLite connection. A later successful operation commits that failed record. | Native recording rolls the row and provenance tags back together, while retaining separate best-effort body search indexing. The [storage comparison](../proxy/tests/flow_store.rs) preserves the source witness and checks that the failed record stays absent after another commit and reopen. |
 | D58 | Direct source flow reads fall back to legacy agent_id when a schema-v2 row has no authoritative evidence_owner. An explicitly quarantined owner-null row is therefore readable by that legacy agent although scoped search excludes it. | Native direct reads require exact evidence_owner, matching collection scope. Foreign, unresolved, quarantined and missing records share the existing 404. [API tests](../proxy/tests/agent_api_flows.rs) prove denial before loading or decompressing a body. Existing version-1 migration still assigns owners; reads do not reattribute quarantined version-2 evidence. |
 | D59 | If shutdown finds the source audit queue full, it removes and echoes queued events without releasing their pending reservations. After the active flush finishes, pending can remain permanently nonzero. | Native shutdown releases exactly the reservations for entries removed by this fallback. Pending then reaches zero after active work finishes. Echoed events are not claimed to have reached the file. The [writer tests](../proxy/src/audit/writer/tests.rs) preserve the held-flush/full-queue case and distinguish draining from persistence. |
-| D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | Native identity still comes only from the accepted listener. The discovery report reads map metadata and records that listener owner; it does not implement source map-conflict containment or its security events. This remains an unresolved identity-parity gap. Reporting tests do not establish equivalence for mismatched identities. |
+| D60 | Source service discovery reconciles trusted UDS identity with the agent map. A disagreement removes the evidence owner, skips last-seen accounting and emits a conflict event. | The owned discovery reconciler compares the accepted listener, host map and pre-stamped metadata, removes the owner from a conflict result, suppresses last-seen updates and emits the source-shaped conflict/unavailable event. Matching, fallback, stale, unreadable, malformed and replacement outcomes have direct tests. The shared HTTP request-context call site remains pending rebase with #625, so production-chain containment is not claimed. |
 | D61 | TraceStore does not enforce the per-agent cap when an initially ownerless record later acquires an owner. A capped append moves a record to the end without updating its retained timestamp; expiry stops at the first live record and can retain a later stale record. | The native store preserves these source behaviors and their finite source witnesses. The global record and per-record step caps still apply. These retention discrepancies remain unresolved; the configured TTL and per-agent cap are not strict guarantees in these cases. |
 | D62 | A source MemoryMonitor request decode error retains earlier counters, then escapes the shared production addon container. Later request security hooks can be skipped while the HTTP layer resumes forwarding. The retained decoder fixture proves the child failure; the wider bypass path is established by static dispatcher/HTTP control flow, not a new full-chain execution. | Native memory observation errors retain partial state and produce categorical diagnostics, while existing security decisions continue. They do not skip inspection or introduce a new rejection rule. Focused HTTP and WebSocket failure controls verify that later native context/scanner decisions still run. |
 | D63 | Earlier native forced shutdown aborted outer connection tasks and dropped nested JoinSets or driver handles without joining their descendants. WebSocket close events and driver cleanup could then follow client removal or audit shutdown. | One accepted-connection task owner now retains explicit HTTP drivers, CONNECT/WS work, Hyper transport-executor jobs and actual WS scanner jobs through cancellation. Tasks registered after cancellation are dropped before their work runs. The client guard ends after that owner drains. Finite owner and owned H1/WS tests establish this transport scope; standalone API workers, anonymous spill-file jobs and ordinary process Drop remain outside the guarantee. |
@@ -2132,12 +2132,27 @@ last-seen. Early replies whose request never completes retain the existing nativ
 completion differences. Native network decisions occur at headers, so a later
 discovery refresh can follow their audit events even though source discovery
 precedes the network request hook. Exact cross-hook event ordering remains
-unverified. These hooks do not establish source map-conflict identity behavior;
-D60 remains unresolved. Operator error reports retain source exception classes
-with native content-free messages. The messages differ from Python error text.
-Existing lone-surrogate and extreme JSON-depth differences also apply to map
-reads. Filesystem fault and concurrent-reload equivalence remain bounded by the
-checks described below.
+unverified. The owned discovery reconciler now exercises source identity
+outcomes before a shared request-context call site consumes them. That call site
+is intentionally left for the active #625 integration and remains a rebase
+requirement. Operator error reports retain source exception classes with native
+content-free messages. The messages differ from Python error text. Existing
+lone-surrogate and extreme JSON-depth differences also apply to map reads.
+Filesystem fault and concurrent-reload equivalence remain bounded by the checks
+described below.
+
+The D60 source calls and native dispositions are:
+
+| Map state at the request boundary | Source call and result | Native owned reconciler | Last-seen/event result |
+| --- | --- | --- | --- |
+| Matching entry (`alice`/`10.0.0.1`) | `_reload_map` → `get_client_for_ip` → resolved UDS identity | `reconcile` returns `resolved`, source `uds` | Updates `alice`; no identity event |
+| Missing entry or map with a UDS owner | `get_client_for_ip` returns `unknown`; UDS remains authoritative | `reconcile` returns `resolved`, source `uds` | Updates the UDS owner; no identity event |
+| Missing entry or map without a UDS owner | No trusted source resolves | `reconcile` returns `unavailable` | Suppresses last-seen and emits `security.agent_identity_unavailable` |
+| Unreadable file or malformed JSON bytes | `_reload_map` catches `OSError`/`JSONDecodeError` and retains the prior reverse map | `reconcile` retains the prior map and returns its prior resolution | Only a resolved owner updates; otherwise the unavailable event is emitted |
+| Valid JSON with a non-object top level | `data.items()` raises `AttributeError` | `reconcile` returns `AttributeError` without producing an identity | No last-seen update or identity event |
+| Stale mtime after file replacement | `_reload_map` skips the unchanged mtime and retains the prior map | `reconcile` observes the same cached owner | Existing owner updates; a later mtime change can expose conflict |
+| UDS `alice`, map `bob` for the same peer | Trusted sources disagree; owner is removed and conflict event is logged | `reconcile` returns `conflict` with no agent | Suppresses last-seen and emits `security.agent_identity_conflict` |
+| Map changes after a flow starts | `flow_attribution` keeps the request snapshot; `detect_late_attribution_change` quarantines | Shared request-context integration remains a #625 rebase requirement | No retroactive owner change; late-change event remains pending native call-site wiring |
 
 The [source oracle](../proxy/tests/agent_discovery_source.py) uses owned maps,
 synthetic identities and explicit clocks. The [API tests](../proxy/tests/agent_api_discovery.rs)
@@ -2146,8 +2161,9 @@ cover authentication, global reporting and unread bodies. The
 local CONNECT containment, shared ownership, failed-reload recovery and caught
 audit-submission failures. Twenty source scenarios pass; five component tests
 include replay of fourteen applicable source workflows. The joined native
-selection passes 27 tests. These are implementation checks; full source identity
-reconciliation and independent acceptance remain pending.
+selection passes 27 tests. The owned reconciler adds direct matching, fallback,
+conflict, stale, unreadable, malformed and last-seen suppression witnesses.
+Shared request-context consumption and independent acceptance remain pending.
 
 ### HTTP metrics in operator statistics
 

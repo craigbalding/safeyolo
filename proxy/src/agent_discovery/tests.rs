@@ -362,3 +362,252 @@ fn failed_path_change_retains_new_path_and_allows_explicit_recovery() {
     assert!(owner.matches_path(first.to_str().unwrap()).unwrap());
     assert_eq!(owner.lock().unwrap().mtime, 1.0);
 }
+
+#[test]
+fn identity_reconciliation_quarantines_conflicts_and_suppresses_last_seen() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    let resolved = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-matching"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 100.0,
+        )
+        .unwrap();
+    assert_eq!(resolved.status, IdentityStatus::Resolved);
+    assert_eq!(resolved.agent.as_deref(), Some("alice"));
+    assert_eq!(resolved.source, Some("uds"));
+    assert_eq!(resolved.mapped_agent.as_deref(), Some("alice"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 100.0);
+
+    // A replacement with the same mtime is stale by the source cache rule.
+    put(&path, br#"{"bob":{"ip":"10.0.0.1"}}"#, 1.0);
+    let stale = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-stale"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 101.0,
+        )
+        .unwrap();
+    assert_eq!(stale.status, IdentityStatus::Resolved);
+    assert_eq!(stale.mapped_agent.as_deref(), Some("alice"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 101.0);
+
+    // A changed map is observed at the next boundary. It cannot reassign the
+    // trusted listener or advance the replacement owner's last-seen value.
+    put(&path, br#"{"bob":{"ip":"10.0.0.1"}}"#, 2.0);
+    let conflict = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-conflict"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 102.0,
+        )
+        .unwrap();
+    assert_eq!(conflict.status, IdentityStatus::Conflict);
+    assert!(conflict.agent.is_none());
+    assert_eq!(conflict.reason, Some("uds_ip_map_mismatch"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 101.0);
+    assert!(!owner.lock().unwrap().last_seen.contains_key("bob"));
+
+    let records = owned.records();
+    let conflict_event = records
+        .iter()
+        .find(|event| event["event"] == "security.agent_identity_conflict")
+        .unwrap();
+    assert_eq!(conflict_event["request_id"], "req-conflict");
+    assert_eq!(conflict_event["agent"], Value::Null);
+    assert_eq!(conflict_event["decision"], "log");
+    assert_eq!(conflict_event["details"]["reason"], "uds_ip_map_mismatch");
+    assert_eq!(conflict_event["details"]["uds_agent"], "alice");
+    assert_eq!(conflict_event["details"]["mapped_agent"], "bob");
+    assert_eq!(
+        conflict_event["details"]["attribution"]["attribution_status"],
+        "conflict"
+    );
+}
+
+#[test]
+fn identity_reconciliation_uses_map_fallback_and_unavailable_event() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"bob":{"ip":"10.0.0.2"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    let mapped = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.2"),
+                request_id: Some("req-map-fallback"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 200.0,
+        )
+        .unwrap();
+    assert_eq!(mapped.status, IdentityStatus::Resolved);
+    assert_eq!(mapped.agent.as_deref(), Some("bob"));
+    assert_eq!(mapped.source, Some("ip_map"));
+
+    let unavailable = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.9"),
+                request_id: Some("req-unavailable"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 201.0,
+        )
+        .unwrap();
+    assert_eq!(unavailable.status, IdentityStatus::Unavailable);
+    assert!(unavailable.agent.is_none());
+    assert_eq!(unavailable.reason, Some("no_trusted_identity"));
+    assert!(!owner.lock().unwrap().last_seen.contains_key("10.0.0.9"));
+
+    let records = owned.records();
+    let unavailable_event = records
+        .iter()
+        .find(|event| event["event"] == "security.agent_identity_unavailable")
+        .unwrap();
+    assert_eq!(unavailable_event["request_id"], "req-unavailable");
+    assert_eq!(unavailable_event["decision"], "log");
+    assert_eq!(
+        unavailable_event["details"]["reason"],
+        "no_trusted_identity"
+    );
+    assert_eq!(
+        unavailable_event["details"]["attribution"]["attribution_status"],
+        "unavailable"
+    );
+}
+
+#[test]
+fn identity_reconciliation_metadata_conflict_never_reowns_a_flow() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+    let result = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                metadata_agent: Some("spoofed"),
+                request_id: Some("req-metadata-conflict"),
+            },
+            &owned.writer,
+            || 300.0,
+        )
+        .unwrap();
+    assert_eq!(result.status, IdentityStatus::Conflict);
+    assert!(result.agent.is_none());
+    assert_eq!(result.reason, Some("trusted_metadata_mismatch"));
+    assert!(owner.lock().unwrap().last_seen.is_empty());
+    let event = owned
+        .records()
+        .into_iter()
+        .find(|event| event["event"] == "security.agent_identity_conflict")
+        .unwrap();
+    assert_eq!(event["details"]["metadata_agent"], "spoofed");
+}
+
+#[test]
+fn identity_reconciliation_preserves_source_unreadable_and_malformed_map_outcomes() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let path = owned.path("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    // OSError while reading leaves the prior reverse map in place. A UDS
+    // owner remains resolved and is the only owner whose last-seen advances.
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    File::open(&path)
+        .unwrap()
+        .set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(2)))
+        .unwrap();
+    let unreadable = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-unreadable"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 400.0,
+        )
+        .unwrap();
+    assert_eq!(unreadable.status, IdentityStatus::Resolved);
+    assert_eq!(unreadable.mapped_agent.as_deref(), Some("alice"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 400.0);
+
+    fs::remove_dir(&path).unwrap();
+    put(&path, b"{not valid json", 3.0);
+    let malformed = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-malformed"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 401.0,
+        )
+        .unwrap();
+    assert_eq!(malformed.status, IdentityStatus::Resolved);
+    assert_eq!(malformed.mapped_agent.as_deref(), Some("alice"));
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 401.0);
+
+    // A valid JSON value with the wrong top-level shape raises the source
+    // AttributeError instead of being converted into an identity.
+    put(&path, b"[]", 4.0);
+    assert_eq!(
+        owner
+            .reconcile(
+                IdentitySources {
+                    uds_agent: Some("alice"),
+                    client_ip: Some("10.0.0.1"),
+                    request_id: Some("req-attribute"),
+                    ..Default::default()
+                },
+                &owned.writer,
+                || 402.0,
+            )
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Attribute
+    );
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 401.0);
+}

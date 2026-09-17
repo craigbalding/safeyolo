@@ -48,6 +48,41 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityStatus {
+    Resolved,
+    Unavailable,
+    Conflict,
+}
+
+/// Trusted inputs available at a request boundary. `metadata_agent` is a
+/// cached output and is checked for disagreement; it is never an identity
+/// source. `client_ip` is used only to compare the host map with the listener
+/// identity and cannot establish a connection owner by itself when absent.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdentitySources<'a> {
+    pub uds_agent: Option<&'a str>,
+    pub client_ip: Option<&'a str>,
+    pub metadata_agent: Option<&'a str>,
+    pub request_id: Option<&'a str>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReconciledIdentity {
+    pub status: IdentityStatus,
+    pub agent: Option<String>,
+    pub source: Option<&'static str>,
+    pub uds_agent: Option<String>,
+    pub mapped_agent: Option<String>,
+    pub metadata_agent: Option<String>,
+    pub reason: Option<&'static str>,
+}
+impl ReconciledIdentity {
+    pub fn is_resolved(&self) -> bool {
+        self.status == IdentityStatus::Resolved
+    }
+}
+
 struct Document(C);
 impl Drop for Document {
     fn drop(&mut self) {
@@ -162,6 +197,102 @@ impl AgentDiscovery {
         Ok(())
     }
 
+    /// Reconcile the listener identity with the current host map at one
+    /// request boundary. The map is a trusted host-side metadata source only:
+    /// it can confirm a listener or provide a fallback when no listener
+    /// identity exists, but it cannot replace a conflicting listener owner.
+    /// Resolved identities update last-seen once; unavailable and conflicting
+    /// results never create or advance an agent's last-seen record.
+    pub fn reconcile(
+        &self,
+        sources: IdentitySources<'_>,
+        writer: &Writer,
+        clock: impl FnOnce() -> f64,
+    ) -> Result<ReconciledIdentity> {
+        self.reload(writer)?;
+        let uds_agent = canonical_identity(sources.uds_agent);
+        let metadata_agent = canonical_identity(sources.metadata_agent);
+        let mapped_agent = match sources.client_ip.filter(|ip| !ip.is_empty()) {
+            Some(ip) => self.map_agent(ip)?,
+            None => None,
+        };
+
+        let identity = if let (Some(uds), Some(mapped)) = (&uds_agent, &mapped_agent)
+            && uds != mapped
+        {
+            ReconciledIdentity {
+                status: IdentityStatus::Conflict,
+                agent: None,
+                source: None,
+                uds_agent,
+                mapped_agent,
+                metadata_agent,
+                reason: Some("uds_ip_map_mismatch"),
+            }
+        } else {
+            let agent = uds_agent.clone().or_else(|| mapped_agent.clone());
+            if let (Some(trusted), Some(metadata)) = (&agent, &metadata_agent)
+                && trusted != metadata
+            {
+                ReconciledIdentity {
+                    status: IdentityStatus::Conflict,
+                    agent: None,
+                    source: None,
+                    uds_agent,
+                    mapped_agent,
+                    metadata_agent,
+                    reason: Some("trusted_metadata_mismatch"),
+                }
+            } else if let Some(agent) = agent {
+                let source = if uds_agent.is_some() { "uds" } else { "ip_map" };
+                ReconciledIdentity {
+                    status: IdentityStatus::Resolved,
+                    agent: Some(agent),
+                    source: Some(source),
+                    uds_agent,
+                    mapped_agent,
+                    metadata_agent,
+                    reason: None,
+                }
+            } else {
+                ReconciledIdentity {
+                    status: IdentityStatus::Unavailable,
+                    agent: None,
+                    source: None,
+                    uds_agent,
+                    mapped_agent,
+                    metadata_agent,
+                    reason: Some("no_trusted_identity"),
+                }
+            }
+        };
+
+        match identity.status {
+            IdentityStatus::Resolved => {
+                self.observe_trusted(identity.agent.as_deref().unwrap(), clock)?;
+            }
+            IdentityStatus::Conflict => {
+                emit_identity_event(writer, sources.request_id, &identity, true);
+            }
+            IdentityStatus::Unavailable => {
+                emit_identity_event(writer, sources.request_id, &identity, false);
+            }
+        }
+        Ok(identity)
+    }
+
+    /// Return the host map's current owner for a source peer address. The
+    /// value is metadata for reconciliation and reports; callers must not use
+    /// it as a standalone connection identity when a listener is present.
+    pub fn map_agent(&self, client_ip: &str) -> Result<Option<String>> {
+        let key = IpKey::Text(client_ip.into());
+        Ok(self
+            .lock()?
+            .reverse
+            .get(&key)
+            .map(|entry| entry.name.clone()))
+    }
+
     /// Source reads the report clock before refreshing the map. Refresh can
     /// publish state and then fail at event submission; those effects persist.
     pub fn get_agents(&self, writer: &Writer, clock: impl FnOnce() -> f64) -> Result<C> {
@@ -188,6 +319,88 @@ impl AgentDiscovery {
                 report.shift_remove("count").expect("fixed report"),
             ),
         ]))
+    }
+}
+
+fn canonical_identity(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() || matches!(value, "unknown" | "default") {
+        None
+    } else {
+        Some(value.into())
+    }
+}
+
+fn emit_identity_event(
+    writer: &Writer,
+    request_id: Option<&str>,
+    identity: &ReconciledIdentity,
+    conflict: bool,
+) {
+    let (event_name, severity, summary) = if conflict {
+        (
+            "security.agent_identity_conflict",
+            Severity::Critical,
+            "Trusted agent identity sources disagree",
+        )
+    } else {
+        (
+            "security.agent_identity_unavailable",
+            Severity::Medium,
+            "Traffic has no trusted agent identity",
+        )
+    };
+    let mut provenance = IndexMap::new();
+    if let Some(agent) = identity.uds_agent.as_deref() {
+        provenance.insert("uds_agent".into(), text(agent));
+    }
+    if let Some(agent) = identity.mapped_agent.as_deref() {
+        provenance.insert("ip_map_agent".into(), text(agent));
+    }
+    if let Some(reason) = identity.reason {
+        provenance.insert("reason".into(), text(reason));
+    }
+    let mut details = IndexMap::new();
+    if let Some(reason) = identity.reason {
+        details.insert("reason".into(), text(reason));
+    }
+    if let Some(agent) = identity.uds_agent.as_deref() {
+        details.insert("uds_agent".into(), text(agent));
+    }
+    if let Some(agent) = identity.mapped_agent.as_deref() {
+        details.insert("mapped_agent".into(), text(agent));
+    }
+    if let Some(agent) = identity.metadata_agent.as_deref() {
+        details.insert("metadata_agent".into(), text(agent));
+    }
+    let mut event = Event::new(event_name, Kind::Security, severity, summary);
+    event.request_id = request_id.map(str::to_owned);
+    event.addon = Some("service-discovery".into());
+    event.decision = Some(audit::Decision::Log);
+    event.attribution = Some(attribution(
+        if conflict {
+            audit::AttributionStatus::Conflict
+        } else {
+            audit::AttributionStatus::Unavailable
+        },
+        C::Object(provenance),
+    ));
+    event.details = C::Object(details);
+    if let Err(error) = writer.emit(event) {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Agent identity event submission failed: {error}"
+        );
+    }
+}
+
+fn attribution(status: audit::AttributionStatus, provenance: C) -> audit::Attribution {
+    audit::Attribution {
+        evidence_owner: None,
+        trusted_transport_identity: None,
+        initiator: Some(audit::Initiator::Unknown),
+        status: Some(status),
+        provenance: Some(provenance),
     }
 }
 
