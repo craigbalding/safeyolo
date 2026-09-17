@@ -267,6 +267,59 @@ proxy-only; combining it with VM isolation is rejected so an isolation pass
 cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
 lanes remain available for the default Python installation path.
 
+### Installed-host stage-A smoke
+
+Use installed_host_smoke.py on a supported Linux or macOS host when a
+supplied native executable and an already prepared SafeYolo instance need
+identity and ingress checks. The script never runs install.sh, builds the
+Rust executable, boots a guest, or changes the selected operator instance.
+Keep the evidence file outside the checkout.
+
+The read-only discovery mode requires the installed CLI, native JSON
+configuration, and native executable. It records their paths, versions,
+SHA-256 values, source revisions where available, the host substrate
+(runsc on Linux or safeyolo-vm on macOS), the native readiness receipt, and
+the configured listener state:
+
+~~~bash
+python3 tests/blackbox/installed_host_smoke.py \
+  --mode discover \
+  --cli /path/to/safeyolo \
+  --rust-bin /path/to/safeyolo-proxy \
+  --rust-config /path/to/proxy.json \
+  --config-dir /path/to/prepared-instance \
+  --output /path/to/evidence/installed-discovery.json
+~~~
+
+The lifecycle smoke requires a disposable instance that has already been
+prepared through the existing CLI path. Before running it, stop that
+instance, confirm that it is not the normal ~/.safeyolo directory, and
+create .safeyolo-platform-smoke in the disposable directory. The instance
+must select proxy.backend: rust, point to the supplied native JSON file, and
+contain at least one registered agent listener and its token. The script
+then runs safeyolo start --wait, validates the actual Rust process,
+readiness marker, executable, listener sockets, and authenticated Agent API
+health response, and runs safeyolo stop:
+
+~~~bash
+python3 tests/blackbox/installed_host_smoke.py \
+  --mode smoke \
+  --cli /path/to/safeyolo \
+  --rust-bin /path/to/safeyolo-proxy \
+  --rust-config /path/to/proxy.json \
+  --config-dir /path/to/disposable-instance \
+  --output /path/to/evidence/installed-smoke.json
+~~~
+
+The command fails when the selected executable is missing, reports another
+program, publishes a stale or mismatched readiness marker, serves a different
+process, or cannot stop cleanly. It never retries with Python. A successful
+report has status smoke_ready_with_gaps: the UDS request is host-driven
+ingress evidence, not guest-isolation evidence. The report records the
+current native runtime-identity endpoint as unavailable, and it leaves
+allowed/denied origin requests, cross-guest socket access, and unsupported
+hardware explicitly for the retained stage-B pilot.
+
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*
