@@ -1176,16 +1176,6 @@ async fn raw_h2_origin(listener: TcpListener, tls: rustls::ServerConfig, partial
             .await
             .unwrap();
     }
-    stream
-        .write_all(&h2_wire_frame(6, 0, 0, b"d54-ready"))
-        .await
-        .unwrap();
-    loop {
-        let (kind, flags, _, payload) = read_h2_wire(&mut stream).await;
-        if kind == 6 && flags == 1 && payload == b"d54-ready" {
-            break;
-        }
-    }
 }
 
 struct PausedBody {
@@ -1396,7 +1386,7 @@ async fn full_proxy_h2_response_outcome(partial_reset: bool) {
     .unwrap();
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let origin = tokio::spawn(raw_h2_origin(listener, tls, partial_reset));
-    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let proxy = Proxy::start(config.clone()).await.unwrap();
     let socket = connect_tls_with_alpn(
         &config.listeners[0].socket_path,
         &authority,
