@@ -102,6 +102,14 @@ where
     if route(request) == "/gateway/services" {
         return Ok(gateway::respond(request, controls.gateway));
     }
+    if route(request) == "/gateway/request-access" {
+        let content = read_content(body).await?;
+        let content = match content {
+            Ok(content) => content,
+            Err(error) => return Ok(content_error(error)),
+        };
+        return Ok(gateway::request_access(request, controls.gateway, &content));
+    }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
     }
@@ -237,8 +245,9 @@ fn declaration_response(
             ),
             agent: Some(audit.trusted_agent),
             request_id: source_request_id.map(str::to_owned),
-            host: Some(API_HOST),
+            host: Some(API_HOST.into()),
             details: audit.details,
+            approval: None,
         }
     });
     outcome

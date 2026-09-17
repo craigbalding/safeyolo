@@ -139,6 +139,18 @@ pub enum AuditKind {
     HandlerUnavailable,
     TestContextDeclared,
     TestContextCleared,
+    GatewayAccessRequested,
+}
+
+/// The approval envelope accepted by the existing audit writer. This is an
+/// owned, non-secret projection of the request-access scope; it does not grant
+/// a service, create a credential, or enable injection.
+pub struct AuditApproval {
+    pub required: bool,
+    pub approval_type: crate::audit::ApprovalType,
+    pub key: String,
+    pub target: String,
+    pub scope_hint: Value,
 }
 
 /// Source event fields only. No token, Authorization or query is retained.
@@ -150,50 +162,71 @@ pub struct AuditIntent {
     pub summary: String,
     pub agent: Option<String>,
     pub request_id: Option<String>,
-    pub host: Option<&'static str>,
+    pub host: Option<String>,
     pub details: Value,
+    pub approval: Option<AuditApproval>,
 }
 
 impl AuditIntent {
-    /// Build only the four canonical Agent API producer envelopes. These source
+    /// Build only the canonical Agent API producer envelopes. These source
     /// hooks supply neither an approval nor flow attribution. Declaration IDs
     /// are optional source-stage metadata, not the native ingress/backstop ID.
     pub fn to_event(&self) -> crate::audit::Event {
         use crate::audit::{Decision, Event, Kind, Severity};
 
-        let (name, severity, addon, decision) = match self.kind {
+        let (name, kind, severity, addon, decision) = match self.kind {
             AuditKind::AuthenticationFailed => (
                 "security.agent_auth_failed",
+                Kind::Security,
                 Severity::High,
                 "agent-api",
                 Some(Decision::Deny),
             ),
             AuditKind::HandlerUnavailable => (
                 "security.agent_api_unavailable",
+                Kind::Security,
                 Severity::High,
                 "agent-api-request-guard",
                 Some(Decision::Deny),
             ),
             AuditKind::TestContextDeclared => (
                 "security.test_context_declared",
+                Kind::Security,
                 Severity::Low,
                 "agent-api",
                 None,
             ),
             AuditKind::TestContextCleared => (
                 "security.test_context_cleared",
+                Kind::Security,
                 Severity::Low,
                 "agent-api",
                 None,
             ),
+            AuditKind::GatewayAccessRequested => (
+                "gateway.request_access",
+                Kind::Gateway,
+                Severity::Critical,
+                "agent-api",
+                Some(Decision::RequireApproval),
+            ),
         };
-        let mut event = Event::new(name, Kind::Security, severity, self.summary.clone());
+        let mut event = Event::new(name, kind, severity, self.summary.clone());
         event.addon = Some(addon.into());
         event.decision = decision;
         event.agent = self.agent.clone();
         event.request_id = self.request_id.clone();
-        event.host = self.host.map(str::to_owned);
+        event.host = self.host.clone();
         event.details = self.details.clone().into();
+        if let Some(approval) = &self.approval {
+            event.approval = Some(crate::audit::Approval {
+                required: approval.required,
+                approval_type: approval.approval_type,
+                key: approval.key.clone(),
+                target: approval.target.clone(),
+                scope_hint: approval.scope_hint.clone().into(),
+            });
+        }
         event
     }
 }
@@ -290,7 +323,9 @@ impl Outcome<'_> {
 
     /// Apply a synchronous producer-submission failure before returning the
     /// local response. Declaration mutation is already committed: source's
-    /// handler catches the exception and returns 500 without undoing it.
+    /// handler catches the exception and returns 500 without undoing it. The
+    /// same source rule applies to a request-access approval event: its event
+    /// construction has happened before the success response is exposed.
     /// Async file failures and successful queue-full/stopped results are not
     /// submission errors and must never call this method.
     pub fn audit_submission_failed(
@@ -311,6 +346,11 @@ impl Outcome<'_> {
                 };
                 let mut outcome =
                     response(500, json!({"error":format!("Internal error: {class}")}));
+                outcome.failure = Some(Failure::AuditWrite);
+                outcome
+            }
+            Some(AuditKind::GatewayAccessRequested) => {
+                let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));
                 outcome.failure = Some(Failure::AuditWrite);
                 outcome
             }
@@ -379,9 +419,10 @@ pub fn unavailable(request: Request<'_>, failure: Failure) -> Outcome<'static> {
         summary: "Agent API handler unavailable; request contained locally".into(),
         agent: agent(request.identity).map(str::to_owned),
         request_id: Some(request.request_id.into()),
-        host: Some(API_HOST),
+        host: Some(API_HOST.into()),
         details: json!({"reason_code":"agent_api_unavailable", "handler":"agent-api",
                         "method":request.method, "path":path}),
+        approval: None,
     });
     outcome
 }
@@ -543,6 +584,7 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcom
                     sanitize(request.client_ip.unwrap_or("unknown"))
                 ),
                 details: json!({"client_ip":request.client_ip.unwrap_or("unknown"), "path":sanitize(path)}),
+                approval: None,
             });
             return Err(outcome);
         }

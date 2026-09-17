@@ -8,6 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use http_body_util::Full;
 use hyper::body::{Body, Frame};
 use serde_json::{Map, Value, json};
 
@@ -100,6 +101,70 @@ fn policy(defaults: &Value, spec: &Value) -> Policy {
     )
     .unwrap()
 }
+
+fn access_policy(service: &str) -> Policy {
+    let registry =
+        Arc::new(Registry::from_sources(&[("demo.yaml".into(), service.into())], &[]).unwrap());
+    Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, Some(registry), 0.).unwrap()
+}
+
+async fn access<'a>(
+    policy: &'a Policy,
+    body: &str,
+    identity: Identity<'_>,
+) -> agent_api::Outcome<'a> {
+    let directory = tempfile::tempdir().unwrap();
+    let token_path = directory.path().join("agent_token");
+    std::fs::write(&token_path, TOKEN).unwrap();
+    let mut body = Full::new(Bytes::copy_from_slice(body.as_bytes()));
+    let tasks = crate::tasks::Registry::default();
+    let authorization = format!("Bearer {TOKEN}");
+    agent_api::respond_with_body(
+        Request {
+            method: "POST",
+            path_and_query: "/gateway/request-access",
+            authorization: Some(authorization.as_bytes()),
+            identity,
+            client_ip: Some("192.0.2.10"),
+            request_id: "owned-access-request",
+        },
+        &token_path,
+        PolicyState::Ready(policy),
+        &tasks,
+        0.,
+        Controls {
+            gateway: Some(GatewayContext {
+                snapshot: policy.gateway(),
+            }),
+            memory: None,
+            traces: None,
+            discovery: None,
+            audit: None,
+            flows: None,
+            circuits: None,
+            declarations: None,
+        },
+        RequestBody {
+            body: &mut body,
+            content_encoding: b"",
+            content_length: None,
+            observation: None,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+const NO_CONTRACT_SERVICE: &str = r#"
+schema_version: 1
+name: demo
+default_host: api.demo.invalid
+description: Demo service
+capabilities:
+  read:
+    description: Read demo data
+    routes: []
+"#;
 
 #[tokio::test]
 async fn twenty_actual_source_catalog_responses_match_without_reading_a_body() {
@@ -237,4 +302,198 @@ fn encoded_binding_projection_retains_python_infinity_without_reparsing() {
         std::str::from_utf8(&result.response.body_bytes()).unwrap(),
         r#"{"agent": "alice", "authorized": {"demo": {"host": "", "token": "owned-token", "capability": Infinity, "account": "agent"}}, "available": []}"#
     );
+}
+
+#[tokio::test]
+async fn request_access_without_contract_returns_pending_and_existing_approval_event() {
+    let policy = access_policy(NO_CONTRACT_SERVICE);
+    let outcome = access(
+        &policy,
+        r#"{"service":"demo","capability":"read","reason":"inbox review"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(outcome.response.status, 202);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&outcome.response.body_bytes()).unwrap(),
+        json!({
+            "status":"pending",
+            "agent":"alice",
+            "service":"demo",
+            "capability":"read",
+            "reason":"inbox review",
+            "message":"Access request submitted. Operator will review in watch.",
+        })
+    );
+    let audit = outcome.audit.as_ref().expect("approval intent");
+    assert_eq!(audit.kind, agent_api::AuditKind::GatewayAccessRequested);
+    let event = audit.to_event();
+    assert_eq!(event.kind, crate::audit::Kind::Gateway);
+    assert_eq!(event.severity, crate::audit::Severity::Critical);
+    assert_eq!(
+        event.decision,
+        Some(crate::audit::Decision::RequireApproval)
+    );
+    assert_eq!(event.request_id, None);
+    assert_eq!(event.host.as_deref(), Some("api.demo.invalid"));
+    let approval = event.approval.as_ref().expect("service approval");
+    assert_eq!(approval.approval_type, crate::audit::ApprovalType::Service);
+    assert_eq!(approval.key, "alice:demo");
+    assert_eq!(approval.target, "demo");
+    assert_eq!(
+        approval.scope_hint.as_object().unwrap().get("capability"),
+        Some(&crate::circuits::CircuitValue::Other(Value::String(
+            "read".into(),
+        )))
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let audit_path = directory.path().join("audit.jsonl");
+    let writer = crate::audit::Writer::new(audit_path.clone(), crate::audit::Settings::default());
+    assert_eq!(
+        writer.emit(event).unwrap(),
+        crate::audit::Submission::Queued
+    );
+    assert!(
+        writer
+            .wait_for_drain(std::time::Duration::from_secs(1))
+            .unwrap()
+    );
+    let written: Value = serde_json::from_str(
+        std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    assert_eq!(written["event"], "gateway.request_access");
+    assert_eq!(written["kind"], "gateway");
+    assert_eq!(written["decision"], "require_approval");
+    assert_eq!(written["approval"]["approval_type"], "service");
+    assert_eq!(written["approval"]["scope_hint"]["service"], "demo");
+}
+
+#[tokio::test]
+async fn request_access_checks_catalog_and_identity_after_body_validation() {
+    let policy = access_policy(NO_CONTRACT_SERVICE);
+    let malformed = access(&policy, "{not-json", Identity::Resolved("alice")).await;
+    assert_eq!(malformed.response.status, 400);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&malformed.response.body_bytes()).unwrap(),
+        json!({"error":"Invalid JSON body"})
+    );
+    let missing_fields = access(&policy, "", Identity::Resolved("alice")).await;
+    assert_eq!(missing_fields.response.status, 400);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&missing_fields.response.body_bytes()).unwrap(),
+        json!({"error":"service and capability are required"})
+    );
+    let missing = access(
+        &policy,
+        r#"{"service":"absent","capability":"read"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(missing.response.status, 404);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&missing.response.body_bytes()).unwrap(),
+        json!({"error":"Service 'absent' not found"})
+    );
+    let identity = access(
+        &policy,
+        r#"{"service":"demo","capability":"missing"}"#,
+        Identity::Unavailable,
+    )
+    .await;
+    assert_eq!(identity.response.status, 403);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&identity.response.body_bytes()).unwrap(),
+        json!({"error":"Could not identify agent"})
+    );
+    let empty_catalog =
+        Policy::parse_with_registry_at(r#"{"gateway":{}}"#, Format::Json, None, 0.).unwrap();
+    let unavailable = access(
+        &empty_catalog,
+        r#"{"service":"demo","capability":"read"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(unavailable.response.status, 503);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&unavailable.response.body_bytes()).unwrap(),
+        json!({"error":"Service registry not available"})
+    );
+}
+
+#[tokio::test]
+async fn request_access_audit_submission_failure_is_a_500_after_event_construction() {
+    let policy = access_policy(NO_CONTRACT_SERVICE);
+    let outcome = access(
+        &policy,
+        r#"{"service":"demo","capability":"read"}"#,
+        Identity::Resolved("alice"),
+    )
+    .await;
+    assert_eq!(outcome.response.status, 202);
+    assert!(outcome.audit.is_some());
+    let failed = outcome.audit_submission_failed(
+        Request {
+            method: "POST",
+            path_and_query: "/gateway/request-access",
+            authorization: None,
+            identity: Identity::Resolved("alice"),
+            client_ip: Some("192.0.2.10"),
+            request_id: "owned-access-request",
+        },
+        crate::audit::ErrorKind::Io,
+    );
+    assert_eq!(failed.response.status, 500);
+    assert_eq!(failed.failure, Some(agent_api::Failure::AuditWrite));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&failed.response.body_bytes()).unwrap(),
+        json!({"error":"Internal error: RuntimeError"})
+    );
+}
+
+#[tokio::test]
+async fn request_access_authenticates_before_polling_body() {
+    let directory = tempfile::tempdir().unwrap();
+    let token_path = directory.path().join("agent_token");
+    std::fs::write(&token_path, TOKEN).unwrap();
+    let mut body = UnreadBody;
+    let tasks = crate::tasks::Registry::default();
+    let outcome = agent_api::respond_with_body(
+        Request {
+            method: "POST",
+            path_and_query: "/gateway/request-access",
+            authorization: None,
+            identity: Identity::Resolved("alice"),
+            client_ip: Some("192.0.2.10"),
+            request_id: "owned-access-auth-first",
+        },
+        &token_path,
+        PolicyState::Unavailable,
+        &tasks,
+        0.,
+        Controls {
+            gateway: None,
+            memory: None,
+            traces: None,
+            discovery: None,
+            audit: None,
+            flows: None,
+            circuits: None,
+            declarations: None,
+        },
+        RequestBody {
+            body: &mut body,
+            content_encoding: b"",
+            content_length: None,
+            observation: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.response.status, 401);
 }

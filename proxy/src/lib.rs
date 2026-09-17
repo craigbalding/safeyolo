@@ -116,6 +116,9 @@ pub(crate) struct Runtime {
     passthrough: tunnels::Passthrough,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
+    /// The encrypted credential snapshot is retained across policy reloads;
+    /// gateway selection consumes only the authorized vault reference.
+    vault: Option<credentials::Vault>,
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
@@ -202,6 +205,7 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            let vault = load_gateway_vault(&config)?;
             // CredentialGuard is a native generation owned by the same Runtime
             // publication as the accepted Policy. Reuse the key on ordinary
             // reloads; an empty environment key deliberately retries loading
@@ -331,6 +335,7 @@ impl Runtime {
                 passthrough,
                 scanner,
                 policy,
+                vault,
                 credential_guard,
                 credential_key_empty,
                 tasks,
@@ -444,6 +449,36 @@ impl Runtime {
         let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
         events.write_all(&bytes)?;
         Ok(())
+    }
+}
+
+/// Load the existing Python-compatible vault material when both files are
+/// present. The passphrase is process-local configuration and is never copied
+/// into Runtime diagnostics. A missing or unusable vault leaves the gateway
+/// unavailable so a selected request fails closed at the injection boundary.
+fn load_gateway_vault(config: &Config) -> Result<Option<credentials::Vault>, Error> {
+    let data_dir = config.data_dir();
+    let vault_path = data_dir.join("vault.yaml.enc");
+    let key_path = data_dir.join("vault.key");
+    if !vault_path.exists() || !key_path.exists() {
+        return Ok(None);
+    }
+    let passphrase = match std::fs::read_to_string(&key_path) {
+        Ok(value) => value.trim().to_owned(),
+        Err(_) => return Ok(None),
+    };
+    if passphrase.is_empty() {
+        return Ok(None);
+    }
+    match credentials::Vault::unlock(vault_path, &credentials::Secret::new(passphrase)) {
+        Ok(vault) => Ok(Some(vault)),
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Gateway vault unavailable: {error}"
+            );
+            Ok(None)
+        }
     }
 }
 

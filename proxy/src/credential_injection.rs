@@ -1,7 +1,7 @@
-//! Inactive post-selection/risk credential injection. The root must run existing
-//! service/contract/risky-route checks before entering this stage, and all later
-//! network/credential/content checks before egress. A ready header change is not
-//! permission to contact an upstream.
+//! Post-selection credential injection for the native simple-service path. The
+//! root runs service/contract/risky-route checks before entering this stage, and
+//! all later network/credential/content checks before egress. A ready header
+//! change is not permission to contact an upstream.
 //!
 //! Existing Vault clones share state; no vault, OAuth coordinator, HTTP client or
 //! background task is constructed here. Snapshot/refresh resolution can touch the
@@ -118,6 +118,38 @@ pub struct AuditIntent {
 impl AuditIntent {
     pub fn redirect(&self) -> Option<&Secret> {
         self.redirect.as_ref()
+    }
+
+    /// Convert the secret-free injection intent at the canonical audit
+    /// boundary. The redirect URL remains intentionally outside this event.
+    pub fn event(&self, attribution: crate::audit::Attribution) -> crate::audit::Event {
+        let severity = match self.severity {
+            Severity::Low => crate::audit::Severity::Low,
+            Severity::Medium => crate::audit::Severity::Medium,
+            Severity::High => crate::audit::Severity::High,
+            Severity::Critical => crate::audit::Severity::Critical,
+        };
+        let decision = match self.decision {
+            AuditDecision::Allow => crate::audit::Decision::Allow,
+            AuditDecision::Deny => crate::audit::Decision::Deny,
+            AuditDecision::Warn => crate::audit::Decision::Warn,
+            AuditDecision::RequireApproval => crate::audit::Decision::RequireApproval,
+            AuditDecision::BudgetExceeded => crate::audit::Decision::BudgetExceeded,
+        };
+        let mut event = crate::audit::Event::new(
+            self.event,
+            crate::audit::Kind::Gateway,
+            severity,
+            &self.summary,
+        );
+        event.addon = Some(self.addon.into());
+        event.decision = Some(decision);
+        event.host = Some(self.host.clone());
+        event.agent = Some(self.agent.clone());
+        event.request_id = self.request_id.clone();
+        event.attribution = Some(attribution);
+        event.details = self.details.clone().into();
+        event
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

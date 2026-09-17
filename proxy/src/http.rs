@@ -846,8 +846,13 @@ fn record_agent_api(
     outcome: &crate::agent_api::Outcome<'_>,
 ) -> Result<(), Error> {
     let audit = outcome.audit.as_ref().map(|audit| {
+        let kind = if audit.kind == crate::agent_api::AuditKind::GatewayAccessRequested {
+            "gateway"
+        } else {
+            "security"
+        };
         let mut event = json!({
-            "event": audit.event, "kind": "security",
+            "event": audit.event, "kind": kind,
             "severity": audit.severity, "addon": audit.addon,
             "summary": audit.summary, "agent": audit.agent,
             "request_id": audit.request_id, "host": audit.host,
@@ -859,6 +864,17 @@ fn record_agent_api(
                 | crate::agent_api::AuditKind::HandlerUnavailable
         ) {
             event["decision"] = json!("deny");
+        } else if audit.kind == crate::agent_api::AuditKind::GatewayAccessRequested {
+            event["decision"] = json!("require_approval");
+        }
+        if let Some(approval) = &audit.approval {
+            event["approval"] = json!({
+                "required":approval.required,
+                "approval_type":approval.approval_type.as_str(),
+                "key":approval.key,
+                "target":approval.target,
+                "scope_hint":approval.scope_hint,
+            });
         }
         event
     });
@@ -936,7 +952,7 @@ async fn local_agent_api(
     let mut outcome = if runtime.config.agent_api_enabled {
         let token_path = std::env::var_os("SAFEYOLO_DATA_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| "/safeyolo/data".into())
+            .unwrap_or_else(|| runtime.config.data_dir())
             .join("agent_token");
         let policy = runtime
             .policy
@@ -1303,6 +1319,45 @@ fn publish_credential_trace(
     }
 }
 
+fn publish_gateway_evidence(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    evidence: &crate::credential_injection::Evidence,
+) -> Result<(), Error> {
+    for intent in &evidence.audit {
+        runtime
+            .audit
+            .emit(intent.event(identity.audit_attribution()))?;
+    }
+    runtime.record(json!({
+        "event": "proxy.gateway",
+        "agent": identity.agent_id,
+        "connection_id": identity.connection_id,
+        "request_id": request_id,
+        "metadata": evidence.metadata,
+        "trace": evidence.trace,
+        "stats": evidence.stats,
+        "body_scope": "simple_service_empty_contract_body",
+        "query_scope": "signed_query_preserved_in_full_url",
+    }))?;
+    Ok(())
+}
+
+fn gateway_response(status: u16, code: &str, request_id: &str) -> Result<Response<Body>, Error> {
+    let status = StatusCode::from_u16(status)?;
+    let mut response = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-blocked-by", "service-gateway")
+        .header("x-safeyolo-request-id", request_id)
+        .body(full(
+            json!({"error":code,"addon":"service-gateway"}).to_string(),
+        ))?;
+    strip_hop_headers(response.headers_mut());
+    Ok(response)
+}
+
 // Keep the immutable request snapshot separate from the reloadable state used
 // by later requests inside CONNECT, and keep routing separate from identity.
 #[allow(clippy::too_many_arguments)]
@@ -1626,6 +1681,149 @@ async fn forward(
             trace.as_ref(),
         )?;
         return Ok((prior_block(reply), "deny".into()));
+    }
+    // Service-gateway selection is a request-local operation after network and
+    // circuit admission. It consumes the trusted UDS identity and the
+    // published snapshot, then applies a vault credential before the later
+    // credential guard and before any body observation or outbound dial.
+    if let Some(policy) = runtime.policy.as_ref() {
+        let snapshot = policy.gateway();
+        let gateway_headers: Vec<_> = ordered_headers
+            .iter()
+            .map(|(name, value)| {
+                (
+                    crate::credential_text::source_text(name),
+                    crate::credential_text::source_text(value),
+                )
+            })
+            .collect();
+        let gateway_decision = snapshot.map(|snapshot| {
+            snapshot.select(crate::services::GatewayRequest {
+                identity: crate::services::TrustedIdentity::Agent(&identity.agent_id),
+                host: &destination.policy_host,
+                request: crate::contracts::ContractRequest {
+                    method: request.method().as_str(),
+                    target: &destination.path,
+                    headers: &gateway_headers,
+                    // Simple service routes have no contract body binding. The
+                    // body remains owned by Hyper and is forwarded unchanged.
+                    body: &[],
+                },
+                route_mode: crate::services::RouteMode::CompiledPolicy(policy),
+            })
+        });
+        let decision = match gateway_decision {
+            Some(decision) => decision,
+            None => {
+                // A gateway token without an accepted catalog snapshot must
+                // never become an ordinary upstream header.
+                if gateway_headers.iter().any(|(_, value)| {
+                    value
+                        .split_once(' ')
+                        .map_or(value.as_str(), |(_, token)| token)
+                        .trim_matches(crate::policy::python_whitespace)
+                        .starts_with("sgw_")
+                }) {
+                    let reply = gateway_response(503, "GATEWAY_CONFIGURATION_ERROR", request_id)?;
+                    return Ok((prior_block(reply), "deny".into()));
+                }
+                crate::services::GatewayDecision::PassThrough
+            }
+        };
+        match decision {
+            crate::services::GatewayDecision::PassThrough => {}
+            crate::services::GatewayDecision::Deny { status, code, .. } => {
+                let reply = gateway_response(status, &code, request_id)?;
+                return Ok((prior_block(reply), "deny".into()));
+            }
+            crate::services::GatewayDecision::Compatibility { .. } => {
+                let reply = gateway_response(503, "GATEWAY_COMPATIBILITY_ERROR", request_id)?;
+                return Ok((prior_block(reply), "deny".into()));
+            }
+            crate::services::GatewayDecision::Selected { credential } => {
+                let full_url = crate::credentials::Secret::new(format!(
+                    "{}://{}{}",
+                    destination.scheme, destination.uri_authority, destination.path
+                ));
+                let start = crate::credential_injection::prepare(
+                    *credential,
+                    runtime.vault.as_ref(),
+                    crate::credential_injection::RequestInfo {
+                        method: request.method().as_str(),
+                        host: &destination.policy_host,
+                        path: &destination.path,
+                        scheme: &destination.scheme,
+                        full_url: &full_url,
+                        request_id: Some(request_id),
+                    },
+                    time::OffsetDateTime::now_utc(),
+                );
+                let start = match start {
+                    Ok(start) => start,
+                    Err(_) => {
+                        let reply = gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                };
+                match start {
+                    crate::credential_injection::Start::Ready(replacement) => {
+                        let name = replacement.name().clone();
+                        let evidence = match replacement.apply(request.headers_mut()) {
+                            Ok(evidence) => evidence,
+                            Err(_) => {
+                                let reply =
+                                    gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                                return Ok((prior_block(reply), "deny".into()));
+                            }
+                        };
+                        if let Some(value) = request.headers().get(&name) {
+                            ordered_headers.replace_value(&name, value.as_bytes());
+                        } else {
+                            ordered_headers.remove(&name);
+                        }
+                        publish_gateway_evidence(&runtime, identity, request_id, &evidence)?;
+                    }
+                    crate::credential_injection::Start::Blocked(blocked) => {
+                        publish_gateway_evidence(
+                            &runtime,
+                            identity,
+                            request_id,
+                            &blocked.evidence,
+                        )?;
+                        let body = blocked.response.body_bytes();
+                        let mut reply = Response::builder()
+                            .status(StatusCode::from_u16(blocked.response.status)?)
+                            .body(full(body))?;
+                        for (name, value) in blocked.response.headers {
+                            reply
+                                .headers_mut()
+                                .append(header::HeaderName::try_from(name)?, value.parse()?);
+                        }
+                        strip_hop_headers(reply.headers_mut());
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                    crate::credential_injection::Start::Redirect(redirect) => {
+                        publish_gateway_evidence(
+                            &runtime,
+                            identity,
+                            request_id,
+                            &redirect.evidence,
+                        )?;
+                        let mut reply = Response::builder()
+                            .status(StatusCode::from_u16(redirect.status())?)
+                            .header(header::LOCATION, redirect.location().expose_secret())
+                            .body(full(redirect.body()))?;
+                        strip_hop_headers(reply.headers_mut());
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                    crate::credential_injection::Start::Refresh(_) => {
+                        let reply =
+                            gateway_response(503, "GATEWAY_REFRESH_UNAVAILABLE", request_id)?;
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                }
+            }
+        }
     }
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation, body buffering, or any

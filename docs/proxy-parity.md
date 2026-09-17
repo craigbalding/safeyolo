@@ -369,8 +369,8 @@ silently reduce accepted message sizes to a library default.
 | D40 | The Python hostname sensor decodes lowercase ACE in absolute-form requests but preserves uppercase ACE and origin-form ACE. The same mixed-script DNS name therefore blocks in one spelling and reaches an owned parent in the other two. Uppercase ACE can also pass source validation when its decoded text fails IDNA2003 roundtrip checks. | Native network inspection decodes ACE consistently after configured bypass and identity checks. Policy matching and audit keep the source hostname. Raw-decodable mixed-script labels receive the existing homoglyph response; decoding failure receives the existing deny/warn response with a content-free inspection error. Explicit disable and configured bypass keep their order. The source's strict codec remains a separate tested primitive; this repair does not replace it with UTS46. |
 | D41 | Python 3.12's search prefilter uses Unicode negative categories for some scoped-ASCII patterns. For example, search for `(?a:\W)` misses `é`, while fullmatch and anchored search match it. The actual matching instruction uses the correct ASCII category. | Native inspection follows the configured ASCII rule. A regression blocks these matching messages, and the source prefilter defect remains a separate classification in the differential matrix. This correction changes inspection results without adding a policy rule. |
 | D42 | Native policy method conditions used Rust's newer Unicode uppercasing. An allow condition for U+1C89 therefore matched a lookup for U+1C8A, although the pinned Python engine denies it. The API's returned method was unchanged, hiding the comparison mismatch. | Policy conditions and API method normalization now share pinned Python 3.12 / Unicode 15 uppercase data. The regression compares the actual source denial with native evaluation. Host case conversion is separate and remains outside this repair. |
-| D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. This is proven at the shared policy/service boundary; the native HTTP credential pipeline remains unactivated. |
-| D44 | Normal source reload rotates gateway tokens without refreshing contract bindings. A changed body/query approval can keep its old value effective even with generated route permissions. Removed approvals also survive the explicit contract file loader and remain usable when an authored gateway permission permits the route. The stale approval uses the new current token, unlike D43. | Each accepted native snapshot replaces contract bindings together with tokens and permissions. The [gateway regression](../proxy/tests/gateway_snapshot.rs) checks alpha-to-beta replacement with unchanged generated routes, removal despite an authored allow, old-token rejection and retention after invalid TOML. The source witness exercised 32 actual request hooks across 16 observations with isolated in-memory injection and no egress. Native HTTP credential integration remains pending. |
+| D43 | After the last gateway grant is removed, the source gateway callback returns before clearing its previous token bindings. With a retained host binding and an authored gateway allow rule, an old token can still pass identity, service, capability, host and policy checks and reach vault selection. The compiled baseline already reports an empty token map. | The native gateway snapshot replaces the complete binding collection, including an empty collection. Its canonical view and selector revoke the old token together. Failed candidate construction retains the previous snapshot. The focused native UDS/origin workflow proves the stale token is rejected before origin delivery. |
+| D44 | Normal source reload rotates gateway tokens without refreshing contract bindings. A changed body/query approval can keep its old value effective even with generated route permissions. Removed approvals also survive the explicit contract file loader and remain usable when an authored gateway permission permits the route. The stale approval uses the new current token, unlike D43. | Each accepted native snapshot replaces contract bindings together with tokens and permissions. The [gateway regression](../proxy/tests/gateway_snapshot.rs) checks alpha-to-beta replacement with unchanged generated routes, removal despite an authored allow, old-token rejection and retention after invalid TOML. The source witness exercised 32 actual request hooks across 16 observations with isolated in-memory injection and no egress. Native HTTP covers only the simple no-contract workflow; contract body/query approvals remain pending. |
 | D45 | Source task clear removes the active task from PDPCore but does not invalidate the Agent API configuration cache. A populated `/config` response can retain the old task rules and hash until explicit invalidation, while direct core reads already show the baseline. This is an observed state-freshness defect; the witness does not establish an enforcement bypass. | The native projection reads the current immutable snapshot without a second cache. The [sensor configuration tests](../proxy/src/policy/sensor_config.rs) compare baseline, task replacement and the existing `without_task()` snapshot with actual source core responses, retaining the stale source handler response as evidence. HTTP task management and sensor enforcement integration remain pending; the component test does not establish a complete task-clear workflow. |
 | D46 | The source admin shield checks textual hosts before DNS. Numeric aliases, a root dot, mapped IPv6 and a DNS alias can reach a protected loopback endpoint. Configured extra ports have the same hole. Malformed digit-only extra ports raise inside both hooks; the dispatcher swallows those failures and permits the connection. An ephemeral bind or a changed port option can also leave the running listener unprotected. Admin bearer authentication remains a separate boundary. | Native request and CONNECT checks retain the source host/port rules. Before connecting, the sole egress path checks each selected socket against the protected local addresses and the actual startup-owned listener. The same numeric port at a remote address or 127.0.0.2 remains allowed. Invalid numeric extra-port configuration rejects the candidate and preserves the previous live snapshot. The [shield tests](../proxy/tests/admin_shield.rs) retain actual source socket and dispatcher witnesses; the [operator transport tests](../proxy/tests/admin_transport.rs) exercise the integrated boundary. The proxy checks the immediate configured parent socket; origin resolution beyond that parent remains the parent's responsibility. |
 | D47 | A malformed operator JSON or UTF-8 body makes the source task PUT handler write two final 400 responses for one request. Its Content-Length parser also accepts a negative length by reading until EOF, maps non-numeric lengths to a body error, and can disconnect on overflow. | The native operator facade sends one terminal malformed-body 400 with a native decoder diagnostic. Hyper rejects invalid framing before dispatch. Normal task responses retain exact source JSON bytes; decoder wording and transport rejection order are explicit differences. The [operator facade tests](../proxy/src/admin_api.rs) compare valid, auth, method, raw-document and failure contracts. These changes do not add an application body limit or a second HTTP parser. |
@@ -927,8 +927,10 @@ gateway values are retained during loading. Reads do not reopen files, compile
 rules, mint gateway tokens or consume budgets. Failed reloads retain the prior
 snapshot. A successful reload replaces gateway bindings together with their
 routes and canonical values; source-admitted grants mint tokens even when no
-service registry is initialized. Runtime gateway selection and credential
-injection still require HTTP integration.
+service registry is initialized. Native HTTP now selects accepted simple
+service bindings and performs vault injection before the credential guard and
+outbound dial. Contract body/query binding, OAuth refresh and risky-route
+approval remain outside this first workflow.
 
 ### Service catalog and agent service discovery
 
@@ -938,7 +940,9 @@ must be present or absent. These are explicit native filesystem paths, relative
 to the process working directory when not absolute; they do not apply Python's
 `expanduser().resolve()` normalization. The builtin directory must exist. A
 missing user directory contributes no definitions. This configuration publishes
-the catalog for service discovery; it does not enable HTTP credential injection.
+the catalog for service discovery; it does not by itself enable HTTP credential
+injection. Injection requires an accepted policy binding and the selected native
+HTTP path.
 
 The [catalog loader](../proxy/src/services.rs) reads top-level `*.yaml` entries
 in filename order, including dotfiles. It ignores `.yml`, `.YAML` and nested
@@ -1021,8 +1025,13 @@ owned synthetic data. Its disclosed lifecycle client and watcher seams do not
 prove full startup. [API comparisons](../proxy/src/agent_api/gateway/tests.rs)
 replay the response cases without polling a request body. Runtime and HTTP/1
 controls exercise scoped reads and coherent publication through owned listeners.
-Only the read owner is installed; this work emits no service-gateway request
-trace and does not change doctor's missing-producer verdict.
+The read owner and simple service request path are installed. The native
+request-access route emits a pending approval event; the existing operator
+route persists the selected vault entry name, and the process watcher publishes
+the binding. The HTTP path consumes the published gateway token, injects the
+selected vault credential and leaves the original request body and signed
+query available to forwarding. The simple route has no contract body binding;
+OAuth refresh, risky-route approval and broader HTTP/WS parity remain open.
 
 Catalog loading inspects all matched files in source order even after a
 failure. Each failed file attempts one `ops.config_error` event with addon
@@ -2470,7 +2479,14 @@ accepts the existing CLI's service, capability and vault credential names. It
 validates against the service catalog in the accepted policy snapshot, then
 updates the existing agent in the latest locked TOML file. Other policy fields
 and service bindings remain intact. No vault lookup or immediate policy reload
-occurs in the handler. The existing watcher owns later activation.
+occurs in the handler. The existing watcher owns later activation. A focused
+native workflow covers the authenticated Agent API request, operator
+persistence, running watcher, Agent API discovery, retry through two independent
+UDS identities and a controlled HTTP origin. The origin sees the exact synthetic
+vault credential, never the gateway token; unmapped destinations and stale
+tokens are rejected before origin delivery. HTTP injection uses the explicit
+service `auth.allow_http: true` exception; the default HTTPS refusal remains
+covered by credential-injection tests.
 
 A blocking worker owns both persistence and the subsequent canonical
 `admin.agent_service_authorized` audit attempt. Canceling the request does not
@@ -2505,5 +2521,6 @@ rollback behavior. Truthy non-string request fields remain native representation
 errors; arbitrary source JSON values and non-TOML mutation parity are unproved.
 The [request-access source fixture](../proxy/tests/gateway_access_source.py)
 separately records ten owned source dispatcher cases, including contract
-challenges and audit-before-pending response ordering. It does not establish
-native request-access behavior, identity-forgery rejection or durable auditing.
+challenges and audit-before-pending response ordering. Native covers the
+simple no-contract request-access path and trusted UDS identity; contract
+request-access behavior remains an explicit compatibility response.

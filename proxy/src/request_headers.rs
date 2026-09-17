@@ -149,6 +149,50 @@ impl RequestHeaders {
             .map(|field| (field.name.as_bytes(), field.value.as_slice()))
     }
 
+    /// Synchronize one transport header mutation into the ordered inspection
+    /// view. Original parser pairs remain available through recording_pairs;
+    /// only the value seen by a later security guard changes.
+    pub(crate) fn replace_value(&mut self, name: &hyper::header::HeaderName, value: &[u8]) {
+        if let Some(index) = self
+            .fields
+            .iter()
+            .position(|field| field.name.eq_ignore_ascii_case(name.as_str()))
+        {
+            let spelling = self.fields[index].name.clone();
+            let replacement = Field {
+                name: spelling,
+                value: Zeroizing::new(value.to_vec()),
+            };
+            let fields = std::mem::take(&mut self.fields);
+            self.fields = fields
+                .into_iter()
+                .enumerate()
+                .filter_map(|(position, field)| {
+                    if !field.name.eq_ignore_ascii_case(name.as_str()) {
+                        Some(field)
+                    } else if position == index {
+                        Some(Field {
+                            name: replacement.name.clone(),
+                            value: Zeroizing::new(replacement.value.to_vec()),
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        } else {
+            self.fields.push(Field {
+                name: name.as_str().to_owned(),
+                value: Zeroizing::new(value.to_vec()),
+            });
+        }
+    }
+
+    pub(crate) fn remove(&mut self, name: &hyper::header::HeaderName) {
+        self.fields
+            .retain(|field| !field.name.eq_ignore_ascii_case(name.as_str()));
+    }
+
     fn get(&self, name: &[u8]) -> &[u8] {
         self.iter()
             .find_map(|(field, value)| field.eq_ignore_ascii_case(name).then_some(value))
