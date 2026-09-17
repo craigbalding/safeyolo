@@ -1367,6 +1367,8 @@ def snapshot():
             'method': value.get('method'),
             'path': value.get('path'),
             'scope': value.get('scope'),
+            'created': value.get('created'),
+            'expires': value.get('expires'),
         })
     bindings = []
     for value in alice.get('contract_bindings', []):
@@ -1376,6 +1378,7 @@ def snapshot():
             'service': value.get('service'),
             'capability': value.get('capability'),
             'template': value.get('template'),
+            'created': value.get('created'),
             'grantable_operations': value.get('grantable_operations', []),
             'bound_value_keys': sorted(bound),
             'limit': bound.get('limit'),
@@ -1479,7 +1482,8 @@ print(json.dumps({
     'ids': ids,
     'state': snapshot(),
     'effective': {
-        'legacy_defaults_observed': operation == 'write-and-consume-python',
+        'legacy_fields_missing': operation == 'write-and-consume-python',
+        'legacy_defaults_observed': operation == 'reload-and-write-roundtrip',
         'supported_limit': 9223372036854775807,
         'source_consumer_action': (
             'python_grant_consumed'
@@ -1545,6 +1549,63 @@ fn native_grant_id_for_path(store: &Store, path: &str, now: OffsetDateTime) -> S
         .find(|grant| grant.grant.path == path)
         .map(|grant| grant.grant.grant_id)
         .unwrap()
+}
+
+fn snapshot_grant<'a>(snapshot: &'a Value, grant_id: &str) -> &'a Value {
+    snapshot["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|grant| grant["grant_id"].as_str() == Some(grant_id))
+        .unwrap_or_else(|| panic!("missing grant {grant_id} in snapshot"))
+}
+
+fn snapshot_binding<'a>(snapshot: &'a Value, binding_id: &str) -> &'a Value {
+    snapshot["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|binding| binding["binding_id"].as_str() == Some(binding_id))
+        .unwrap_or_else(|| panic!("missing binding {binding_id} in snapshot"))
+}
+
+fn native_binding<'a>(snapshot: &'a Value, key: &str) -> &'a Value {
+    let binding = &snapshot[key];
+    assert!(!binding.is_null(), "missing native {key} binding");
+    binding
+}
+
+fn assert_grant_metadata_preserved(expected: &Value, actual: &Value, grant_id: &str) {
+    let expected = snapshot_grant(expected, grant_id);
+    let actual = snapshot_grant(actual, grant_id);
+    for field in ["grant_id", "created", "expires", "scope"] {
+        assert_eq!(
+            expected[field], actual[field],
+            "normalized grant {grant_id} field {field} changed"
+        );
+    }
+}
+
+fn assert_binding_metadata_preserved(expected: &Value, actual: &Value, binding_id: &str) {
+    let expected = native_binding(expected, "primary_binding");
+    let actual = snapshot_binding(actual, binding_id);
+    for field in ["binding_id", "created", "template"] {
+        assert_eq!(
+            expected[field], actual[field],
+            "normalized binding {binding_id} field {field} changed"
+        );
+    }
+}
+
+fn assert_native_binding_metadata_preserved(expected: &Value, actual: &Value, binding_id: &str) {
+    let expected = native_binding(expected, "primary_binding");
+    let actual = native_binding(actual, "primary_binding");
+    for field in ["binding_id", "created", "template"] {
+        assert_eq!(
+            expected[field], actual[field],
+            "normalized binding {binding_id} field {field} changed"
+        );
+    }
 }
 
 #[test]
@@ -1682,6 +1743,17 @@ fn selected_python_native_python_native_grants_bindings_transition() {
         python_reload["ids"]["legacy_binding_id_seen"],
         legacy_binding_id
     );
+    assert!(
+        python_reload["effective"]["legacy_defaults_observed"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_grant_metadata_preserved(&initial_native, &python_reload["state"], &legacy_grant_id);
+    assert_binding_metadata_preserved(
+        &initial_native,
+        &python_reload["state"],
+        &primary_binding_id,
+    );
     let roundtrip_grant_id = python_reload["ids"]["roundtrip_grant_id"]
         .as_str()
         .unwrap()
@@ -1689,6 +1761,13 @@ fn selected_python_native_python_native_grants_bindings_transition() {
 
     let final_now = OffsetDateTime::now_utc();
     let final_store = Store::open(&policy, final_now).unwrap();
+    let reloaded_native = native_grants_snapshot(&final_store, &policy, final_now);
+    assert_grant_metadata_preserved(&initial_native, &reloaded_native, &legacy_grant_id);
+    assert_native_binding_metadata_preserved(
+        &initial_native,
+        &reloaded_native,
+        &primary_binding_id,
+    );
     let final_primary = final_store
         .binding_for_agent("alice", "mail", "send")
         .unwrap()
