@@ -6,12 +6,16 @@ restart case retains the source's default-settings reconciliation before the
 first ordinary request applies the current policy; no persisted bytes are edited.
 """
 
+import hashlib
 import http.client
 import json
+import os
 import socket
 import threading
 import time
 from contextlib import contextmanager
+
+import pytest
 
 from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.test_circuit_completion import circuits, completion_peer, wait_failure_count
@@ -307,3 +311,102 @@ def test_graceful_restart_retains_saved_failure_state_and_resets_counters(proxy_
         assert recovered["saved_at"] >= saved["saved_at"]
         assert not list(state_file.parent.glob(f"{state_file.name}.*"))
         assert origin.accepts == len(origin.requests) == 2
+
+
+def test_selected_python_native_python_circuit_state_transition(tmp_path):
+    """A real old/new process sequence keeps circuit state usable both ways."""
+    if not os.environ.get("SAFEYOLO_PYTHON_SOURCE") or not os.environ.get("SAFEYOLO_RUST_PROXY"):
+        pytest.skip("cross-backend rollback fixture requires selected Python source and Rust binary")
+
+    state_file = tmp_path / "cross-backend-circuit.json"
+    source = policy(threshold=1, timeout=1)
+    evidence = {"state_file": str(state_file), "stages": []}
+    with reload_origin() as origin:
+        python_before = tmp_path / "python-before"
+        with policy_proxy(
+            "python",
+            python_before,
+            source,
+            agent_api=True,
+            circuit_breaker_enabled=True,
+            circuit_state_file=state_file,
+        ) as proxy:
+            hit(proxy, origin, "alice", "/failure", 500)
+            before = wait_failure_count(proxy, 1)
+            assert before["domains"][HOST]["state"] == "open"
+        assert_stopped(proxy, origin.server_address, 1)
+        python_bytes = state_file.read_bytes()
+        python_state = json.loads(python_bytes)
+        assert python_state["states"][HOST]["state"] == "open"
+        evidence["stages"].append(
+            {
+                "backend": "python",
+                "operation": "write-open-circuit",
+                "sha256": hashlib.sha256(python_bytes).hexdigest(),
+                "effective": {"state": "open", "origin_contacts": origin.accepts},
+            }
+        )
+        deadline = python_state["states"][HOST]["opened_at"] + 1.05
+        while time.time() < deadline:
+            time.sleep(min(0.01, deadline - time.time()))
+
+        native_before = tmp_path / "native"
+        with policy_proxy(
+            "rust",
+            native_before,
+            source,
+            agent_api=True,
+            circuit_breaker_enabled=True,
+            circuit_state_file=state_file,
+        ) as proxy:
+            loaded = circuits(proxy)
+            assert loaded["domains"][HOST]["state"] == "open"
+            contacts = origin.accepts
+            status, _, body = send_request(
+                proxy.paths["bob"], f"http://{HOST}:{origin.server_address[1]}/recovery"
+            )
+            assert status == 200 and body == b"hello"
+            assert origin.accepts == contacts + 1
+            recovered = circuits(proxy)
+            assert recovered["domains"][HOST]["state"] == "closed"
+            assert recovered["domains"][HOST]["failure_count"] == 0
+        assert_stopped(proxy, origin.server_address, 1)
+        native_bytes = state_file.read_bytes()
+        native_state = json.loads(native_bytes)
+        assert native_state["states"][HOST]["state"] == "closed"
+        evidence["stages"].append(
+            {
+                "backend": "rust",
+                "operation": "read-open-and-write-closed-circuit",
+                "sha256": hashlib.sha256(native_bytes).hexdigest(),
+                "effective": {"loaded": "open", "after_request": "closed", "origin_contacts": origin.accepts},
+            }
+        )
+
+        python_after = tmp_path / "python-after"
+        with policy_proxy(
+            "python",
+            python_after,
+            source,
+            agent_api=True,
+            circuit_breaker_enabled=True,
+            circuit_state_file=state_file,
+        ) as proxy:
+            reloaded = circuits(proxy)
+            assert reloaded["domains"][HOST]["state"] == "closed"
+            contacts = origin.accepts
+            hit(proxy, origin, "alice", "/final", 200)
+            assert origin.accepts == contacts + 1
+            assert circuits(proxy)["domains"][HOST]["state"] == "closed"
+        assert_stopped(proxy, origin.server_address, 1)
+        evidence["stages"].append(
+            {
+                "backend": "python",
+                "operation": "read-native-closed-circuit-and-serve",
+                "sha256": hashlib.sha256(state_file.read_bytes()).hexdigest(),
+                "effective": {"state": "closed", "origin_contacts": origin.accepts},
+            }
+        )
+    assert origin.accepts == len(origin.requests) == 3
+    assert evidence["stages"][0]["sha256"] != evidence["stages"][1]["sha256"]
+    (tmp_path / "cross-backend-circuit.json").write_text(json.dumps(evidence, indent=2) + "\n")

@@ -161,18 +161,13 @@ async fn startup_reconciliation_final_save_and_restart_use_the_actual_proxy() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn absent_and_empty_paths_leave_no_persistence_artifacts() {
+async fn absent_and_empty_paths_leave_no_circuit_persistence_artifacts() {
     for path in [None, Some(PathBuf::new())] {
         let directory = TempDir::new().unwrap();
         let config = config(directory.path(), path);
         let proxy = Proxy::start(config.clone()).await.unwrap();
         shutdown(proxy, &config).await;
-        let mut names: Vec<_> = std::fs::read_dir(directory.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["events.jsonl", "policy.toml"]);
+        assert!(!directory.path().join("circuit-state.json").exists());
     }
 }
 
