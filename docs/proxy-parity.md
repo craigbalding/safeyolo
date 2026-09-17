@@ -30,6 +30,11 @@ abbreviated SNI.
 
 ## Authority and outstanding work
 
+Issue #638's complete state reader/writer inventory and rollback sequence are
+maintained in [state compatibility](state-compatibility.md). It records the
+selected prior Python comparator, durable and ephemeral state families, and
+the writer-owner dependencies that must be present before rollback is claimed.
+
 The issue, [security model](../SECURITY.md), observable behavior and documented
 public contracts establish the retained outcomes. The tables describe current
 behavior unless they explicitly identify a discrepancy. Replacement paths name
