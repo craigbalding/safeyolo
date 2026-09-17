@@ -1355,7 +1355,7 @@ expected_legacy_binding = sys.argv[7]
 assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
 policy = root / 'policy.toml'
 
-def snapshot(loaded=False):
+def snapshot():
     document = load_roundtrip(policy)
     agents = load_agents(document)
     alice = agents.get('alice', {})
@@ -1383,7 +1383,7 @@ def snapshot(loaded=False):
             'bound_value_keys': sorted(bound),
             'limit': bound.get('limit'),
         })
-    result = {
+    return {
         'policy': {
             'path': str(policy),
             'sha256': hashlib.sha256(policy.read_bytes()).hexdigest(),
@@ -1392,27 +1392,6 @@ def snapshot(loaded=False):
         'grants': grants,
         'bindings': bindings,
     }
-    if loaded:
-        active_grants = {
-            grant['grant_id']: grant
-            for grant in gateway.list_grants()
-        }
-        for grant in grants:
-            active = active_grants.get(grant['grant_id'])
-            if active is not None:
-                for field in ('created', 'expires', 'scope'):
-                    grant[field] = active[field]
-        for binding in bindings:
-            active = gateway.get_contract_binding(
-                'alice', binding['service'], binding['capability']
-            )
-            if active is not None:
-                binding.update({
-                    'binding_id': active.binding_id,
-                    'template': active.template,
-                    'created': active.created,
-                })
-    return result
 
 gateway = ServiceGateway()
 gateway._get_policy_path = lambda: policy
@@ -1472,6 +1451,16 @@ elif operation == 'reload-and-write-roundtrip':
     legacy = gateway.get_contract_binding('alice', 'mail', 'legacy')
     assert legacy is not None
     assert legacy.binding_id == expected_legacy_binding
+    gateway._persist_contract_bindings()
+    saved = snapshot()
+    saved_legacy = next(
+        binding
+        for binding in saved['bindings']
+        if binding['capability'] == 'legacy'
+    )
+    assert saved_legacy['binding_id'] == expected_legacy_binding
+    assert saved_legacy['created'] == legacy.created
+    assert saved_legacy['template'] == ''
     roundtrip = gateway.add_grant(
         'alice', 'mail', 'POST', '/v1/roundtrip', 'once'
     )
@@ -1500,7 +1489,7 @@ print(json.dumps({
         'service_gateway_file': str(pathlib.Path(__import__('safeyolo.mitm_addons.service_gateway', fromlist=['__file__']).__file__).resolve()),
     },
     'ids': ids,
-    'state': snapshot(loaded=operation == 'reload-and-write-roundtrip'),
+    'state': snapshot(),
     'effective': {
         'legacy_fields_missing': operation == 'write-and-consume-python',
         'legacy_defaults_observed': operation == 'reload-and-write-roundtrip',
