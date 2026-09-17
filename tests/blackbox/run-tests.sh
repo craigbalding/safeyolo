@@ -227,6 +227,14 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
             infrastructure_failure=true
             continue
         fi
+        if [ "$backend" = "rust" ]; then
+            # The release selector must not silently exercise the temporary
+            # Python policy adapter.  Direct pytest invocations retain the
+            # historical adapter for development comparisons.
+            export SAFEYOLO_RUST_NATIVE_ONLY=1
+        else
+            unset SAFEYOLO_RUST_NATIVE_ONLY || true
+        fi
         set +e
         pytest "${PYTEST_ARGS[@]}" \
             --junitxml="$junit" \

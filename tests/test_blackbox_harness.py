@@ -99,6 +99,7 @@ def test_backend_selector_records_actual_rust_binary_identity(tmp_path):
 
     assert result["executable"] == str(binary.resolve())
     assert result["executable_version"].startswith("safeyolo-proxy 0.1.0")
+    assert result["policy_mode"] == "native"
     assert len(result["executable_sha256"]) == 64
     assert result["test_suite"]["root"] == str(Path(__file__).parents[1].resolve())
 
@@ -319,3 +320,12 @@ def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path
     )
 
     assert result.returncode == 2
+
+
+def test_selected_rust_runner_requires_native_policy_provenance():
+    """Release Rust selection opts out of the temporary Python policy adapter."""
+    runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
+    harness = (Path(__file__).parent / "proxy_migration" / "harness.py").read_text()
+    assert 'export SAFEYOLO_RUST_NATIVE_ONLY=1' in runner
+    assert 'os.environ.get("SAFEYOLO_RUST_NATIVE_ONLY") == "1"' in harness
+    assert '"policy_mode": "native" if use_native_policy else "temporary_adapter"' in harness

@@ -267,6 +267,13 @@ proxy-only; combining it with VM isolation is rejected so an isolation pass
 cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
 lanes remain available for the default Python installation path.
 
+Selected Rust runs set native policy mode for every migration fixture.  Each
+fixture writes `native-policy-provenance.json`, which records the policy file
+and confirms that no temporary Python policy adapter was started.  Direct
+pytest invocations retain the temporary adapter when a test does not request
+`native_policy=True`; those runs are development comparisons and are not
+release acceptance.
+
 ### Installed-host stage-A smoke
 
 Use installed_host_smoke.py on a supported Linux or macOS host when a

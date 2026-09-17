@@ -177,6 +177,7 @@ def identity(
     result: dict[str, object] = {
         "schema": 1,
         "backend": backend,
+        "policy_mode": "native" if backend == "rust" else "python_reference",
         "platform": platform.platform(),
         "machine": platform.machine(),
         "python": _python_identity(python_source_for_identity),

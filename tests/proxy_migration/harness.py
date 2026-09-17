@@ -199,7 +199,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
-            if native_policy:
+            # Release acceptance must exercise the native policy/inspection
+            # path.  Keep the temporary adapter available for direct,
+            # development comparisons, but let the selected runner force
+            # native policy for every Rust fixture.
+            native_policy_only = os.environ.get("SAFEYOLO_RUST_NATIVE_ONLY") == "1"
+            use_native_policy = native_policy or native_policy_only
+            if use_native_policy:
                 config["policy_file"] = str(policy)
             else:
                 policy_socket = str(Path(sockets) / "policy.sock")
@@ -211,6 +217,19 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 ))
                 wait_ready(bridge, [Path(policy_socket)], bridge_directory / "process.log")
                 config["temporary_policy_socket"] = policy_socket
+            (directory / "native-policy-provenance.json").write_text(
+                json.dumps(
+                    {
+                        "backend": "rust",
+                        "policy_mode": "native" if use_native_policy else "temporary_adapter",
+                        "policy_file": config.get("policy_file"),
+                        "temporary_policy_socket": config.get("temporary_policy_socket"),
+                        "temporary_policy_adapter": bridge is not None,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
             if tls:
                 config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
             binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
