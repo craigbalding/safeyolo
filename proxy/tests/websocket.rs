@@ -425,104 +425,113 @@ async fn compressed_continuations_survive_control_frames_and_bytewise_transport(
 async fn compressed_fragmented_message_is_scanned_after_control_frame() {
     use safeyolo_proxy::inspection::{Direction, MessageType as ScanType, Options, Scanner};
 
-    let compression = Some(Compression::new(15, false).unwrap());
-    let mut source = frame(OpCode::Data(Data::Text), false, true, false, b"PROJ-");
-    source.extend(frame(
-        OpCode::Data(Data::Continue),
-        true,
-        true,
-        false,
-        b"12345",
-    ));
-    source.extend(text(b"allowed next message"));
-    let mut source_reader = Reader::new(Cursor::new(source), true, None);
-    let blocked = next_message(&mut source_reader).await;
-    let allowed = next_message(&mut source_reader).await;
-
-    // Encode both complete messages with negotiated per-message deflate, then
-    // insert a real control frame between the compressed data fragments. The
-    // native reader must retain the message inflater across that control event
-    // before the scanner sees the complete text.
-    let mut encoded = Vec::new();
-    Writer::new(&mut encoded, true, compression)
-        .message(blocked)
-        .await
-        .unwrap();
-    Writer::new(&mut encoded, true, compression)
-        .message(allowed)
-        .await
-        .unwrap();
-    let mut first = Cursor::new(&encoded);
-    let (_, length) = FrameHeader::parse(&mut first).unwrap().unwrap();
-    let split = first.position() as usize + length as usize;
-    encoded.splice(
-        split..split,
-        frame(
-            OpCode::Control(Control::Ping),
-            true,
-            true,
+    for direction in [Direction::Request, Direction::Response] {
+        let from_client = direction == Direction::Request;
+        let compression = Some(Compression::new(15, false).unwrap());
+        let mut source = frame(
+            OpCode::Data(Data::Text),
             false,
-            b"between-fragments",
-        ),
-    );
+            from_client,
+            false,
+            b"PROJ-",
+        );
+        source.extend(frame(
+            OpCode::Data(Data::Continue),
+            true,
+            from_client,
+            false,
+            b"12345",
+        ));
+        source.extend(frame(
+            OpCode::Data(Data::Text),
+            true,
+            from_client,
+            false,
+            b"allowed next message",
+        ));
+        let mut source_reader = Reader::new(Cursor::new(source), from_client, None);
+        let blocked = next_message(&mut source_reader).await;
+        let allowed = next_message(&mut source_reader).await;
 
-    let mut reader = Reader::new(Cursor::new(encoded), true, compression);
-    assert!(
-        matches!(reader.read().await.unwrap(), Event::Ping(bytes) if bytes == b"between-fragments")
-    );
-    let scanner = Scanner::default();
-    scanner
-        .load_policy_config(&json!({
-            "scan_patterns": [{
-                "name": "owned-marker",
-                "pattern": "PROJ-12345",
-                "scope": "body",
-                "action": "block"
-            }]
-        }))
-        .unwrap();
-    let blocked = next_message(&mut reader).await;
-    let decision = blocked
-        .with_text(|text| {
-            scanner.scan_websocket_text(
-                Direction::Request,
-                ScanType::Text,
-                text,
-                Options {
-                    block_websocket_request: Some(true),
-                    ..Options::default()
-                },
-            )
-        })
-        .unwrap()
-        .unwrap();
-    assert!(decision.drop_message);
-    let allowed = next_message(&mut reader).await;
-    let decision = allowed
-        .with_text(|text| {
-            scanner.scan_websocket_text(
-                Direction::Request,
-                ScanType::Text,
-                text,
-                Options {
-                    block_websocket_request: Some(true),
-                    ..Options::default()
-                },
-            )
-        })
-        .unwrap()
-        .unwrap();
-    assert!(!decision.drop_message);
-    let mut forwarded = Vec::new();
-    Writer::new(&mut forwarded, false, None)
-        .message(allowed)
-        .await
-        .unwrap();
-    let delivered = next_message(&mut Reader::new(Cursor::new(forwarded), false, None)).await;
-    assert_eq!(
-        delivered.with_text(str::to_owned).unwrap(),
-        "allowed next message"
-    );
+        // Encode both complete messages with negotiated per-message deflate,
+        // then insert a real control frame between the compressed data
+        // fragments. The native reader must retain the message inflater across
+        // that control event before the scanner sees the complete text.
+        let mut encoded = Vec::new();
+        Writer::new(&mut encoded, from_client, compression)
+            .message(blocked)
+            .await
+            .unwrap();
+        Writer::new(&mut encoded, from_client, compression)
+            .message(allowed)
+            .await
+            .unwrap();
+        let mut first = Cursor::new(&encoded);
+        let (_, length) = FrameHeader::parse(&mut first).unwrap().unwrap();
+        let split = first.position() as usize + length as usize;
+        encoded.splice(
+            split..split,
+            frame(
+                OpCode::Control(Control::Ping),
+                true,
+                from_client,
+                false,
+                b"between-fragments",
+            ),
+        );
+
+        let mut reader = Reader::new(Cursor::new(encoded), from_client, compression);
+        assert!(matches!(
+            reader.read().await.unwrap(),
+            Event::Ping(bytes) if bytes == b"between-fragments"
+        ));
+        let scanner = Scanner::default();
+        scanner
+            .load_policy_config(&json!({
+                "scan_patterns": [{
+                    "name": "owned-marker",
+                    "pattern": "PROJ-12345",
+                    "scope": "body",
+                    "action": "block"
+                }]
+            }))
+            .unwrap();
+        let options = if direction == Direction::Request {
+            Options {
+                block_websocket_request: Some(true),
+                ..Options::default()
+            }
+        } else {
+            Options {
+                block_websocket_response: Some(true),
+                ..Options::default()
+            }
+        };
+        let blocked = next_message(&mut reader).await;
+        let decision = blocked
+            .with_text(|text| scanner.scan_websocket_text(direction, ScanType::Text, text, options))
+            .unwrap()
+            .unwrap();
+        assert!(decision.drop_message);
+        assert_eq!(decision.finding.unwrap().direction, direction);
+        let allowed = next_message(&mut reader).await;
+        let decision = allowed
+            .with_text(|text| scanner.scan_websocket_text(direction, ScanType::Text, text, options))
+            .unwrap()
+            .unwrap();
+        assert!(!decision.drop_message);
+        let mut forwarded = Vec::new();
+        Writer::new(&mut forwarded, !from_client, None)
+            .message(allowed)
+            .await
+            .unwrap();
+        let delivered =
+            next_message(&mut Reader::new(Cursor::new(forwarded), !from_client, None)).await;
+        assert_eq!(
+            delivered.with_text(str::to_owned).unwrap(),
+            "allowed next message"
+        );
+    }
 }
 
 #[tokio::test]

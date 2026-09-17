@@ -1326,22 +1326,39 @@ fn python_unicode_categories_pin_python_312_scalar_membership() {
     // while newer Rust Unicode tables classify it as a letter. U+1E4F0 is a
     // Unicode-15 decimal digit. These witnesses keep native shorthand
     // categories tied to the source runtime rather than the build toolchain.
-    let scanner = make_scanner(json!([
-        rule("word", r"^\w$", "body", "block"),
-        rule("decimal", r"^\d$", "body", "block"),
-    ]));
+    let word = make_scanner(json!([rule("word", r"^\w$", "body", "block")]));
     for (text, expected) in [
         ("é", Outcome::MatchBlocked),
-        ("١", Outcome::MatchBlocked),
-        ("\u{1e4f0}", Outcome::MatchBlocked),
-        ("\u{13460}", Outcome::NoMatch),
         ("²", Outcome::MatchBlocked),
+        ("\u{13460}", Outcome::NoMatch),
         ("\u{301}", Outcome::NoMatch),
     ] {
-        let result = scanner
+        let result = word
             .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
             .unwrap();
         assert_eq!(result.outcome, expected, "source category witness {text:?}");
+        if expected == Outcome::MatchBlocked {
+            assert_eq!(result.finding.unwrap().rule_name, "word");
+        } else {
+            assert!(result.finding.is_none());
+        }
+    }
+    let decimal = make_scanner(json!([rule("decimal", r"^\d$", "body", "block")]));
+    for (text, expected) in [
+        ("١", Outcome::MatchBlocked),
+        ("\u{1e4f0}", Outcome::MatchBlocked),
+        ("²", Outcome::NoMatch),
+        ("\u{13460}", Outcome::NoMatch),
+    ] {
+        let result = decimal
+            .scan_websocket_text(Direction::Request, MessageType::Text, text, block())
+            .unwrap();
+        assert_eq!(result.outcome, expected, "source decimal witness {text:?}");
+        if expected == Outcome::MatchBlocked {
+            assert_eq!(result.finding.unwrap().rule_name, "decimal");
+        } else {
+            assert!(result.finding.is_none());
+        }
     }
 }
 
