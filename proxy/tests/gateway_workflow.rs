@@ -314,6 +314,26 @@ async fn wait_for_audit_event(path: &Path, name: &str) -> Value {
     .unwrap()
 }
 
+async fn wait_for_audit_count(path: &Path, name: &str, request_id: &str, count: usize) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                let observed = content
+                    .lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .filter(|event| event["event"] == name && event["request_id"] == request_id)
+                    .count();
+                if observed >= count {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {count} {name} audit events"));
+}
+
 fn approve_service_with_existing_consumer(
     root: &Path,
     event: &Value,
@@ -3053,6 +3073,13 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
             .iter()
             .any(|row| { row["event"] == "proxy.gateway" && row["request_id"] == request_id })
     );
+    wait_for_audit_count(
+        &root_path.join("audit.jsonl"),
+        "security.credential_guard",
+        &request_id,
+        2,
+    )
+    .await;
     let audit = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap();
     assert_eq!(
         audit
