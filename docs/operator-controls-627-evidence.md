@@ -27,8 +27,18 @@ observes the resulting `admin.denial` JSON frame. Invalid event-stream
 credentials receive 401 before upgrade. The canonical audit writer remains the
 only event producer; the stream does not create a second log or coordinator.
 
-The owned wire test is
-`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`.
+Approval reconstruction is chronological and request aware. A denial closes
+the prompt that precedes it (and may carry that prompt's `approval_request_id`),
+while a later retry with the same credential and destination creates a new
+pending prompt. A real native agent Unix-socket request test proves the full
+prompt → `/admin/policy/baseline/deny` → retry path: both attempts return 428,
+the controlled loopback origin receives zero requests, and
+`GET /admin/approvals` retains only the second request ID.
+
+The owned wire tests are
+`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`
+and
+`proxy/tests/operator_controls.rs::native_operator_approval_denial_then_retry_stays_pending`.
 From `candidate/proxy`, the exact guarded commands and results were:
 
 ```text
@@ -36,7 +46,10 @@ SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evi
 PASS
 
 SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --test operator_controls -- --nocapture
-PASS: 1 passed, 0 failed
+PASS: 2 passed, 0 failed
+
+SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --lib admin_api -- --nocapture
+PASS: 50 passed, 0 failed
 
 SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --test admin_budgets -- --nocapture
 PASS: 4 passed, 0 failed, 1 ignored (source-Python oracle)

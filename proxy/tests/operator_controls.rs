@@ -2,14 +2,27 @@
 //! The bearer and policy values are synthetic; responses are observed over the
 //! bound admin TCP listener and the event stream is a real WebSocket upgrade.
 
-use std::{net::Ipv4Addr, path::Path, time::Duration};
+use std::{
+    net::Ipv4Addr,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
+use bytes::Bytes;
+use http_body_util::{BodyExt, Empty};
+use hyper::{Request, Uri, body::Incoming};
+use hyper_util::rt::TokioIo;
 use safeyolo_proxy::{Config, Proxy};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream, UnixStream},
+    sync::Notify,
 };
 
 const POLICY: &str = r#"
@@ -203,8 +216,113 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     proxy.shutdown().await;
 }
 
+#[tokio::test]
+async fn native_operator_approval_denial_then_retry_stays_pending() {
+    let directory = TempDir::new().unwrap();
+    let token = "operator-controls-synthetic";
+    let policy = r#"
+budget = 10
+
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+
+[[permissions]]
+action = "credential:use"
+resource = "*"
+effect = "prompt"
+
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-[a-z]+"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+
+[addons.credential_guard]
+enabled = true
+
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+"#;
+    let config = config_with_policy(directory.path(), token, policy);
+    let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let origin_count = Arc::new(AtomicUsize::new(0));
+    let origin_ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(approval_origin(origin, origin_count.clone(), origin_ready));
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+
+    let stream = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let uri: Uri = format!("http://127.0.0.1:{origin_port}/approval")
+        .parse()
+        .unwrap();
+
+    let first = agent_request(&mut sender, uri.clone(), "Bearer key-retry").await;
+    assert_eq!(first.status(), 428);
+    let first_response_id = agent_request_id(&first);
+    let _ = first.collect().await.unwrap();
+    assert_eq!(origin_count.load(Ordering::Acquire), 0);
+
+    let first_pending = wait_for_pending(port, token, None).await;
+    let first_event = first_pending["approvals"]
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap();
+    let fingerprint = first_event["approval"]["key"].as_str().unwrap().to_owned();
+    let destination = first_event["approval"]["target"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first_prompt_id = first_event["request_id"].as_str().unwrap().to_owned();
+    assert_eq!(first_prompt_id, first_response_id);
+    let denial = serde_json::to_vec(&json!({
+        "destination": destination,
+        "cred_id": fingerprint,
+        "reason": "fixture",
+        "approval_request_id": first_prompt_id,
+    }))
+    .unwrap();
+    assert_eq!(
+        admin(port, token, "POST", "/admin/policy/baseline/deny", &denial,)
+            .await
+            .status,
+        200
+    );
+
+    let second = agent_request(&mut sender, uri, "Bearer key-retry").await;
+    assert_eq!(second.status(), 428);
+    let second_response_id = agent_request_id(&second);
+    let _ = second.collect().await.unwrap();
+    assert_ne!(first_response_id, second_response_id);
+    assert_eq!(origin_count.load(Ordering::Acquire), 0);
+
+    let second_pending = wait_for_pending(port, token, Some(&second_response_id)).await;
+    let pending = second_pending["approvals"].as_array().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["request_id"], second_response_id);
+    assert_eq!(pending[0]["approval"]["key"], fingerprint);
+    assert_eq!(pending[0]["approval"]["target"], destination);
+
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
 fn config(directory: &Path, token: &str) -> Config {
-    std::fs::write(directory.join("policy.toml"), POLICY).unwrap();
+    config_with_policy(directory, token, POLICY)
+}
+
+fn config_with_policy(directory: &Path, token: &str, policy: &str) -> Config {
+    std::fs::write(directory.join("policy.toml"), policy).unwrap();
     std::fs::write(directory.join("operator-token"), token).unwrap();
     serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock")}],
@@ -219,6 +337,86 @@ fn config(directory: &Path, token: &str) -> Config {
         "event_log":directory.join("events.jsonl")
     }))
     .unwrap()
+}
+
+async fn approval_origin(listener: TcpListener, count: Arc<AtomicUsize>, ready: Arc<Notify>) {
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        let count = count.clone();
+        let ready = ready.clone();
+        tokio::spawn(async move {
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let Ok(read) = stream.read(&mut chunk).await else {
+                    return;
+                };
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            count.fetch_add(1, Ordering::Release);
+            ready.notify_one();
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await;
+        });
+    }
+}
+
+async fn wait_for_pending(port: u16, token: &str, request_id: Option<&str>) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let pending = admin(port, token, "GET", "/admin/approvals", b"").await;
+            let document = pending.json();
+            let matches = document["approvals"].as_array().is_some_and(|items| {
+                !items.is_empty()
+                    && request_id.is_none_or(|request_id| {
+                        items.iter().any(|item| item["request_id"] == request_id)
+                    })
+            });
+            if matches {
+                return document;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn agent_request(
+    sender: &mut hyper::client::conn::http1::SendRequest<Empty<Bytes>>,
+    uri: Uri,
+    credential: &str,
+) -> hyper::Response<Incoming> {
+    sender
+        .send_request(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("Authorization", credential)
+                .body(Empty::new())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+fn agent_request_id(response: &hyper::Response<Incoming>) -> String {
+    response
+        .headers()
+        .get("x-safeyolo-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned()
 }
 
 fn admin_port(config: &Config) -> u16 {

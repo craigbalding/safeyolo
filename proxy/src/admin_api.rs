@@ -690,16 +690,36 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
 
 fn pending_approvals(path: &Path) -> Value {
     let events = read_audit_events(path);
-    let resolved = events
-        .iter()
-        .flat_map(resolved_approval_keys)
-        .collect::<std::collections::HashSet<_>>();
-    let mut seen = std::collections::HashSet::new();
-    let mut pending = Vec::new();
-    // `read_audit_events` returns newest first. Keep the first matching row so
-    // repeated prompts are coalesced to the latest request, then restore the
-    // source's chronological response order below.
-    for event in events {
+    let mut durable_resolutions = std::collections::HashSet::new();
+    let mut pending: std::collections::HashMap<String, (usize, Value)> =
+        std::collections::HashMap::new();
+    // `read_audit_events` returns newest first. Walk it chronologically so a
+    // denial closes only an already-seen prompt; a later retry then replaces
+    // that prompt and remains pending. Durable policy resolutions continue to
+    // suppress matching future prompts.
+    for (sequence, event) in events.iter().rev().enumerate() {
+        let event_name = event.get("event").and_then(Value::as_str);
+        for key in resolved_approval_keys(event) {
+            if event_name == Some("admin.denial") {
+                let Some((_, prompt)) = pending.get(&key) else {
+                    continue;
+                };
+                let request_matches = event
+                    .get("details")
+                    .and_then(Value::as_object)
+                    .and_then(|details| details.get("approval_request_id"))
+                    .and_then(Value::as_str)
+                    .is_none_or(|request_id| {
+                        prompt.get("request_id").and_then(Value::as_str) == Some(request_id)
+                    });
+                if request_matches {
+                    pending.remove(&key);
+                }
+            } else {
+                durable_resolutions.insert(key.clone());
+                pending.remove(&key);
+            }
+        }
         let Some(approval) = event.get("approval") else {
             continue;
         };
@@ -711,16 +731,17 @@ fn pending_approvals(path: &Path) -> Value {
         {
             continue;
         }
-        let Some(key) = approval_key(&event) else {
+        let Some(key) = approval_key(event) else {
             continue;
         };
-        if resolved.contains(&key) || !seen.insert(key) {
+        if durable_resolutions.contains(&key) {
             continue;
         }
-        pending.push(event);
+        pending.insert(key, (sequence, event.clone()));
     }
-    pending.reverse();
-    Value::Array(pending)
+    let mut pending = pending.into_values().collect::<Vec<_>>();
+    pending.sort_unstable_by_key(|(sequence, _)| *sequence);
+    Value::Array(pending.into_iter().map(|(_, event)| event).collect())
 }
 
 fn json_toml_value(value: &Value) -> std::result::Result<toml_edit::Value, ()> {
@@ -1403,17 +1424,30 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             .get("reason")
             .and_then(Value::as_str)
             .unwrap_or("user_denied");
+        let approval_request_id = fields
+            .get("approval_request_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty());
         let mut outcome = response(
             StatusCode::OK,
             json!({"status":"logged","destination":destination,"cred_id":credential,"reason":reason}),
         );
+        let mut details = json!({
+            "client_ip":client_ip,
+            "destination":destination,
+            "cred_id":credential,
+            "reason":reason
+        });
+        if let Some(approval_request_id) = approval_request_id {
+            details["approval_request_id"] = Value::String(approval_request_id.to_owned());
+        }
         outcome.audit = Some(mutation(
             "admin.denial",
             format!(
                 "Credential denied for {}",
                 crate::network_guard::sanitize(destination)
             ),
-            json!({"client_ip":client_ip,"destination":destination,"cred_id":credential,"reason":reason}),
+            details,
         ));
         return Ok(outcome);
     }
