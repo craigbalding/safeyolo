@@ -99,6 +99,7 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         ));
     };
     let writer = audit.writer.clone();
+    let mutation_owner = audit.mutation_owner.clone();
     let client_ip = Zeroizing::new(audit.client_ip.to_owned());
     let target = Zeroizing::new(audit.target.to_owned());
     let authorization = Authorization {
@@ -108,18 +109,21 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         credential: Zeroizing::new(credential.to_owned()),
     };
     let path = path.to_owned();
-    // Request cancellation detaches this worker. It must own the audit attempt
-    // after its write, even when nobody remains to receive the response.
-    tokio::task::spawn_blocking(move || {
-        let outcome = persist(path, authorization)?;
-        let mut outcome = outcome.submit_audit(&writer, &client_ip, &target)?;
-        // The listener still submits intents for other routes; this one has
-        // already reached its canonical submission owner.
-        outcome.audit = None;
-        Ok(outcome)
-    })
-    .await
-    .map_err(|_| Error::ServiceMutation)?
+    // Request cancellation drops only this receiver. The process owner retains
+    // the worker and its audit attempt until graceful shutdown joins it.
+    let result = mutation_owner
+        .spawn_blocking(move || {
+            let outcome = persist(path, authorization)?;
+            let mut outcome = outcome.submit_audit(&writer, &client_ip, &target)?;
+            // The listener still submits intents for other routes; this one has
+            // already reached its canonical submission owner.
+            outcome.audit = None;
+            Ok(outcome)
+        })
+        .await?
+        .await
+        .map_err(|_| Error::ServiceMutation)?;
+    result
 }
 
 fn persist(path: PathBuf, authorization: Authorization) -> Result<Outcome, Error> {

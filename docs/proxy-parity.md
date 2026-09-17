@@ -2474,18 +2474,31 @@ occurs in the handler. The existing watcher owns later activation.
 
 A blocking worker owns both persistence and the subsequent canonical
 `admin.agent_service_authorized` audit attempt. Canceling the request does not
-cancel that worker or discard its audit responsibility. The listener does not
-resubmit that event. A failure to submit evidence after persistence does not
-undo the saved binding; an audit attempt is not a durability guarantee.
+cancel that worker or discard its audit responsibility. The process-owned
+service-mutation drain closes admission before listener shutdown, joins every
+admitted worker (including one whose request was canceled), and only then
+stops the audit writer. The listener does not resubmit that event. A failure to
+submit evidence after persistence does not undo the saved binding; an audit
+attempt is not a durability guarantee.
+
+The ownership chain is explicit: authenticated request validation owns
+admission, `ServiceMutationOwner` owns blocking persistence execution, that
+same worker owns the canonical audit submission, and `Proxy::shutdown` owns
+the admission stop followed by the worker join. A worker rejected after the
+admission stop performs no persistence. Blocking filesystem work can still
+extend graceful shutdown; forced process termination and ordinary `Drop` do
+not claim this drain.
 
 The [operator route tests](../proxy/src/admin_api/services/tests.rs) cover
 authentication before body/file access, validation order, absent runtime owners,
 replacement and preservation, inline agent tables, changes made after the
 accepted snapshot, lock failure, and audit failure after persistence. A held
 file-lock control cancels the actual request future, then releases the worker
-and observes the binding and exactly one event. A later loader invocation
-checks the saved binding; this does not prove a running watcher or the complete
-service authorization and forwarding workflow.
+and observes the binding and exactly one event. The shutdown-owner control
+closes admission, joins that canceled worker before stopping the writer, and
+rejects later work. A later loader invocation checks the saved binding; this
+does not prove a running watcher or the complete service authorization and
+forwarding workflow.
 
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation

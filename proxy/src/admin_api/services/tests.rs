@@ -17,6 +17,7 @@ struct Fixture {
     registry: Arc<crate::services::Registry>,
     policy: Policy,
     writer: Arc<crate::audit::Writer>,
+    mutation_owner: crate::admin_api::ServiceMutationOwner,
 }
 impl Fixture {
     fn new() -> Self {
@@ -46,6 +47,7 @@ impl Fixture {
             path,
             registry,
             policy,
+            mutation_owner: crate::admin_api::ServiceMutationOwner::default(),
         }
     }
     async fn call(&self, agent: &str, body: &str) -> Result<Outcome, Error> {
@@ -71,6 +73,7 @@ impl Fixture {
                     writer: &self.writer,
                     client_ip: "127.0.0.1",
                     target: "/admin/agents/alice/services",
+                    mutation_owner: &self.mutation_owner,
                 }),
             },
         )
@@ -371,4 +374,51 @@ async fn canceled_service_request_still_audits_its_committed_write_once() {
     let events = fixture.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["event"], "admin.agent_service_authorized");
+}
+
+#[tokio::test]
+async fn shutdown_owner_drains_canceled_mutation_before_audit_shutdown() {
+    let fixture = Arc::new(Fixture::new());
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(fixture.directory.path().join(".policy.toml.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let request_fixture = fixture.clone();
+    let request = tokio::spawn(async move { request_fixture.call("alice", BODY).await });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while Arc::strong_count(&fixture.writer) == 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    request.abort();
+    assert!(matches!(request.await, Err(error) if error.is_cancelled()));
+
+    // This is the process shutdown ordering: close admission, release the
+    // held mutation, join its canonical audit attempt, then stop the writer.
+    fixture.mutation_owner.stop_admission().await;
+    lock.unlock().unwrap();
+    fixture.mutation_owner.drain().await;
+    assert_eq!(
+        fixture.persisted()["agents"]["alice"]["services"]["mail"]["token"],
+        "vault-entry"
+    );
+    let events = fixture.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["event"], "admin.agent_service_authorized");
+    fixture
+        .writer
+        .shutdown(std::time::Duration::from_secs(3))
+        .unwrap();
+
+    // Work admitted after shutdown is rejected before a blocking worker starts.
+    assert!(matches!(
+        fixture.call("alice", BODY).await,
+        Err(Error::ServiceMutation)
+    ));
 }

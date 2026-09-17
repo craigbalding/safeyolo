@@ -119,6 +119,7 @@ pub(crate) struct Runtime {
     credential_guard: Option<credential_guard::CredentialGuard>,
     credential_key_empty: bool,
     tasks: tasks::Registry,
+    service_mutations: admin_api::ServiceMutationOwner,
     admin_address: Option<std::net::SocketAddr>,
     admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
@@ -172,6 +173,9 @@ impl Runtime {
         )?;
         let tasks = previous
             .map(|runtime| runtime.tasks.clone())
+            .unwrap_or_default();
+        let service_mutations = previous
+            .map(|runtime| runtime.service_mutations.clone())
             .unwrap_or_default();
         let audit = match previous {
             Some(runtime) => runtime.audit.clone(),
@@ -330,6 +334,7 @@ impl Runtime {
                 credential_guard,
                 credential_key_empty,
                 tasks,
+                service_mutations,
                 admin_address,
                 admin_shield,
                 network_guard,
@@ -1116,6 +1121,13 @@ impl Proxy {
 
     pub async fn shutdown(mut self) {
         clear_readiness(&self.readiness_file, &self.default_via);
+        let service_mutations = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .service_mutations
+            .clone();
+        service_mutations.stop_admission().await;
         if let Some(listener) = self.admin.take() {
             self.draining.push(listener.stop());
         }
@@ -1127,6 +1139,7 @@ impl Proxy {
                 eprintln!("listener shutdown failed: {error}");
             }
         }
+        service_mutations.drain().await;
         let recorder = self
             .runtime
             .read()

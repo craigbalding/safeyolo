@@ -1,11 +1,13 @@
 //! Authenticated operator operations on the management listener.
 //!
-//! The caller owns loopback binding, startup token loading, transport framing,
-//! audit persistence and shutdown. This facade neither activates tasks nor
+//! The caller owns loopback binding, startup token loading, and transport
+//! framing. The process owner retains admitted service mutation execution and
+//! its audit attempt through shutdown. This facade neither activates tasks nor
 //! accepts an agent identity. Other management routes remain unimplemented.
 
 use std::fmt;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 
@@ -18,6 +20,10 @@ use hyper::{
 };
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
+use tokio::{
+    sync::{Mutex as AsyncMutex, oneshot},
+    task::JoinSet,
+};
 use zeroize::Zeroizing;
 
 use crate::policy::{BudgetStatsError, Policy};
@@ -42,6 +48,53 @@ pub enum Error {
     BudgetReporting(BudgetStatsError),
     CircuitOperation(crate::circuits::ErrorKind),
     Audit(crate::audit::ErrorKind),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ServiceMutationOwner {
+    state: Arc<AsyncMutex<ServiceMutationState>>,
+}
+
+#[derive(Default)]
+struct ServiceMutationState {
+    closing: bool,
+    tasks: JoinSet<()>,
+}
+
+impl ServiceMutationOwner {
+    /// Admit one blocking service mutation into the process owner. A caller
+    /// may drop the receiver, but the owner retains and joins the work.
+    pub(crate) async fn spawn_blocking(
+        &self,
+        work: impl FnOnce() -> Result<Outcome, Error> + Send + 'static,
+    ) -> Result<oneshot::Receiver<Result<Outcome, Error>>, Error> {
+        let (sender, receiver) = oneshot::channel();
+        let mut state = self.state.lock().await;
+        while state.tasks.try_join_next().is_some() {}
+        if state.closing {
+            return Err(Error::ServiceMutation);
+        }
+        state.tasks.spawn_blocking(move || {
+            let _ = sender.send(work());
+        });
+        Ok(receiver)
+    }
+
+    /// Close admission before any process-owned mutation drain begins.
+    pub(crate) async fn stop_admission(&self) {
+        self.state.lock().await.closing = true;
+    }
+
+    /// Join every admitted mutation, including work whose request was
+    /// canceled, before the process shuts down its audit writer.
+    pub(crate) async fn drain(&self) {
+        let mut state = self.state.lock().await;
+        while let Some(result) = state.tasks.join_next().await {
+            if let Err(error) = result {
+                eprintln!("service mutation owner failed: {error}");
+            }
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -653,6 +706,7 @@ pub(crate) struct ServiceAudit<'a> {
     pub writer: &'a std::sync::Arc<crate::audit::Writer>,
     pub client_ip: &'a str,
     pub target: &'a str,
+    pub mutation_owner: &'a ServiceMutationOwner,
 }
 
 /// Borrowed owners from one accepted runtime snapshot. Disk policy updates
