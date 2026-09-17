@@ -119,6 +119,9 @@ pub(crate) struct Runtime {
     /// The encrypted credential snapshot is retained across policy reloads;
     /// gateway selection consumes only the authorized vault reference.
     vault: Option<credentials::Vault>,
+    /// One process-owned refresh coordinator shares flights across requests.
+    /// Its vault clone is the same state used for credential injection.
+    oauth: Option<oauth::OAuthRefresh>,
     /// One process-owned store for contract bindings and risky grants. Clones
     /// share reservations; reloads reconcile its durable view before publish.
     gateway_grants: Option<grants::Store>,
@@ -209,6 +212,7 @@ impl Runtime {
                 })
                 .transpose()?;
             let vault = load_gateway_vault(&config)?;
+            let oauth = vault.clone().map(oauth::OAuthRefresh::new);
             let gateway_grants = if let Some(previous_store) = previous
                 .filter(|runtime| runtime.config.policy_file == config.policy_file)
                 .and_then(|runtime| runtime.gateway_grants.as_ref())
@@ -367,6 +371,7 @@ impl Runtime {
                 scanner,
                 policy,
                 vault,
+                oauth,
                 gateway_grants,
                 credential_guard,
                 credential_key_empty,

@@ -1356,6 +1356,126 @@ fn publish_gateway_evidence(
     Ok(())
 }
 
+/// Execute the host-owned OAuth token request through the same egress path as
+/// ordinary upstream traffic. The endpoint is selected by the already
+/// authorized vault credential; it is never passed through agent network
+/// policy or gateway credential injection. No redirect is followed and the
+/// response is bounded before it reaches the native refresh decoder.
+async fn execute_refresh(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    tasks: &UpgradeTasks,
+    refresh: &crate::oauth::RefreshRequest,
+) -> std::result::Result<crate::oauth::RefreshResponse, crate::oauth::TransportFailure> {
+    let endpoint = refresh.endpoint().expose_secret();
+    let endpoint_uri: Uri = endpoint
+        .parse()
+        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let scheme = endpoint_uri.scheme_str().unwrap_or_default();
+    if !matches!(scheme, "http" | "https") || endpoint_uri.authority().is_none() {
+        return Err(crate::oauth::TransportFailure::Protocol);
+    }
+    let probe = Request::builder()
+        .method(Method::POST)
+        .uri(endpoint_uri.clone())
+        .body(full(Bytes::new()))
+        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let destination = Destination::from_request(&probe, None)
+        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let outbound = open_outbound(
+        runtime,
+        &AllowedRequest {
+            tasks,
+            destination: &destination,
+            identity,
+            request_id,
+        },
+        false,
+        None,
+        None,
+    )
+    .await
+    .map_err(|_| {
+        if destination.scheme == "https" {
+            crate::oauth::TransportFailure::Tls
+        } else {
+            crate::oauth::TransportFailure::Connect
+        }
+    })?;
+    let request_uri = if runtime.parent.is_some() && destination.scheme == "http" {
+        endpoint_uri
+    } else {
+        destination
+            .path
+            .parse::<Uri>()
+            .map_err(|_| crate::oauth::TransportFailure::Protocol)?
+    };
+    let body = Bytes::copy_from_slice(refresh.form_body().expose_secret().as_bytes());
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(request_uri)
+        .header(header::HOST, destination.authority.as_str())
+        .header(header::CONTENT_TYPE, refresh.content_type())
+        .header(header::CONTENT_LENGTH, body.len())
+        .header(header::CONNECTION, "close")
+        .header(header::VIA, format!("1.1 {}", runtime.via_token))
+        .body(full(body))
+        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
+        .handshake(TokioIo::new(outbound.stream))
+        .await
+        .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+    tasks.spawn(async move {
+        let _ = connection.await;
+    });
+    let exchange = async {
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|_| crate::oauth::TransportFailure::Protocol)?;
+        let status = response.status().as_u16();
+        let bytes = Limited::new(response.into_body(), 1024 * 1024)
+            .collect()
+            .await
+            .map_err(|_| crate::oauth::TransportFailure::Body)?
+            .to_bytes();
+        Ok(crate::oauth::RefreshResponse::new(status, bytes.to_vec()))
+    };
+    match tokio::time::timeout(refresh.io_timeout(), exchange).await {
+        Ok(result) => result,
+        Err(_) => Err(crate::oauth::TransportFailure::Timeout),
+    }
+}
+
+async fn resolve_refresh(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    request_id: &str,
+    tasks: &UpgradeTasks,
+    pending: Box<crate::credential_injection::PendingInjection>,
+) -> Result<crate::credential_injection::Start, Error> {
+    let Some(oauth) = runtime.oauth.as_ref() else {
+        return Err("native OAuth refresh is unavailable".into());
+    };
+    let name = pending.credential_name().to_owned();
+    let started = oauth
+        .begin(&name, time::OffsetDateTime::now_utc())
+        .map_err(|_| "native OAuth refresh state is unavailable")?;
+    let outcome = match started {
+        crate::oauth::RefreshStart::NotNeeded(reason) => {
+            return pending.not_needed(reason).map_err(|error| error.into());
+        }
+        crate::oauth::RefreshStart::Leader(attempt) => {
+            let response =
+                execute_refresh(runtime, identity, request_id, tasks, attempt.request()).await;
+            attempt.complete(response, time::OffsetDateTime::now_utc())
+        }
+        crate::oauth::RefreshStart::Follower(mut waiter) => waiter.wait().await,
+    };
+    pending.resume(outcome).map_err(|error| error.into())
+}
+
 fn gateway_response(status: u16, code: &str, request_id: &str) -> Result<Response<Body>, Error> {
     let status = StatusCode::from_u16(status)?;
     let mut response = Response::builder()
@@ -1937,6 +2057,16 @@ where
                     "{}://{}{}",
                     destination.scheme, destination.uri_authority, destination.path
                 ));
+                // The process-owned vault is the refresh coordinator's state
+                // as well as the injection snapshot. Reconcile visible
+                // external edits before selecting a credential. A malformed,
+                // changed-salt, or unreadable reload deliberately retains the
+                // last accepted snapshot; the subsequent snapshot check and
+                // atomic refresh publication still fail closed on a visible
+                // replacement.
+                if let Some(vault) = runtime.vault.as_ref() {
+                    let _ = vault.reload_if_changed();
+                }
                 let start = crate::credential_injection::prepare(
                     *credential,
                     runtime.vault.as_ref(),
@@ -1950,6 +2080,19 @@ where
                     },
                     time::OffsetDateTime::now_utc(),
                 );
+                let start = match start {
+                    Ok(start) => start,
+                    Err(_) => {
+                        let reply = gateway_response(503, "GATEWAY_INJECTION_ERROR", request_id)?;
+                        return Ok((prior_block(reply), "deny".into()));
+                    }
+                };
+                let start = match start {
+                    crate::credential_injection::Start::Refresh(pending) => {
+                        resolve_refresh(&runtime, identity, request_id, &upgrades, pending).await
+                    }
+                    start => Ok(start),
+                };
                 let start = match start {
                     Ok(start) => start,
                     Err(_) => {

@@ -12,7 +12,7 @@ use std::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixStream},
-    sync::oneshot,
+    sync::{Notify, oneshot},
 };
 
 const PASS: &str = "synthetic-vault-passphrase";
@@ -879,4 +879,261 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     }
     origin_task.abort();
     wrong_origin_task.abort();
+}
+
+/// The gateway's expired OAuth path is exercised through the real UDS listener,
+/// watcher publication and two controlled TCP origins. The token endpoint is
+/// intentionally delayed so the second request must join the first flight.
+#[tokio::test]
+async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        std::fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    std::fs::write(
+        root_path.join("services/simple.yaml"),
+        SERVICE.replace(
+            "allow_http: true",
+            "allow_http: true\n  refresh_on_401: true",
+        ),
+    )
+    .unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let token_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let token_port = token_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_port));
+    let token_seen = Arc::new(Mutex::new(Vec::new()));
+    let token_ready = Arc::new(Notify::new());
+    let token_task = tokio::spawn({
+        let token_seen = token_seen.clone();
+        let token_ready = token_ready.clone();
+        async move {
+            loop {
+                let Ok((mut stream, _)) = token_listener.accept().await else {
+                    return;
+                };
+                let token_seen = token_seen.clone();
+                let token_ready = token_ready.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 4096];
+                    loop {
+                        let Ok(size) = stream.read(&mut buffer).await else {
+                            return;
+                        };
+                        if size == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(&buffer[..size]);
+                        let Some(split) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        else {
+                            continue;
+                        };
+                        let length = std::str::from_utf8(&request[..split])
+                            .ok()
+                            .and_then(|headers| {
+                                headers.lines().find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= split + 4 + length {
+                            break;
+                        }
+                    }
+                    token_seen.lock().unwrap().push(request);
+                    token_ready.notify_one();
+                    // Hold the response long enough for a concurrent caller to
+                    // become a follower of the same native flight.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    let body =
+                        br#"{"access_token":"synthetic-refreshed-access","expires_in":3600}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.write_all(body).await;
+                });
+            }
+        }
+    });
+
+    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
+    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault_path = root_path.join("data/vault.yaml.enc");
+    let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    let mut oauth = Credential::new(
+        "simple-secret",
+        "oauth2",
+        Secret::new("synthetic-expired-access"),
+    );
+    oauth.refresh_token = Some(Secret::new("synthetic-refresh"));
+    oauth.token_url = Some(format!("http://127.0.0.1:{token_port}/oauth/token"));
+    oauth.client_id = Some("synthetic-client".into());
+    oauth.client_secret = Some(Secret::new("synthetic-client-secret"));
+    oauth.expires_at = Some("2099-01-01T00:00:00+00:00".into());
+    vault.store(oauth.clone()).unwrap();
+
+    let socket = root_path.join("alice.sock");
+    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&std::fs::read(root_path.join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let pending = raw_http(&socket, &request_access()).await;
+    status(&pending, "202");
+    let event =
+        wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
+    let approval = approve_service_with_existing_consumer(root_path, &event, "simple-secret");
+    assert!(
+        approval.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approval.stderr)
+    );
+    let authorized = admin_http(admin_port, &admin_request(root_path)).await;
+    status(&authorized, "200");
+
+    let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
+    let watcher = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => { proxy.shutdown().await; break; }
+                _ = proxy.wait_for_service_catalog_check() => { let _ = proxy.reload_services_if_changed().await; }
+                _ = proxy.wait_for_policy_check() => { let _ = proxy.reload_policy_if_changed().await; }
+            }
+        }
+    });
+    let view = wait_for_alice(&socket).await;
+    let gateway_token = view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let current = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
+    status(&current, "200");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while origin_seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(token_seen.lock().unwrap().is_empty());
+    assert!(
+        origin_seen.lock().unwrap()[0]
+            .windows(b"Authorization: Bearer synthetic-expired-access".len())
+            .any(|window| window == b"Authorization: Bearer synthetic-expired-access")
+    );
+
+    // An external vault edit is picked up at the native request boundary. The
+    // same process then takes the refresh path for the next pair of requests.
+    oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
+    vault.store(oauth).unwrap();
+
+    let first = tokio::spawn({
+        let socket = socket.clone();
+        let gateway_token = gateway_token.clone();
+        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+    });
+    if tokio::time::timeout(Duration::from_secs(2), token_ready.notified())
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "token request timed out; events: {}",
+            std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
+        );
+        eprintln!("token rows: {:?}", token_seen.lock().unwrap());
+        panic!("token endpoint was not reached");
+    }
+    let second = tokio::spawn({
+        let socket = socket.clone();
+        let gateway_token = gateway_token.clone();
+        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+    });
+    let (first, second) = tokio::join!(first, second);
+    let first = first.unwrap();
+    let second = second.unwrap();
+    status(&first, "200");
+    status(&second, "200");
+    assert_eq!(body(&first), b"ok");
+    assert_eq!(body(&second), b"ok");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while origin_seen.lock().unwrap().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(token_seen.lock().unwrap().len(), 1);
+    assert!(
+        token_seen.lock().unwrap()[0]
+            .windows(b"refresh_token=synthetic-refresh".len())
+            .any(|window| window == b"refresh_token=synthetic-refresh")
+    );
+    {
+        let requests = origin_seen.lock().unwrap();
+        assert!(requests[1..].iter().all(|request| {
+            request
+                .windows(b"Authorization: Bearer synthetic-refreshed-access".len())
+                .any(|window| window == b"Authorization: Bearer synthetic-refreshed-access")
+        }));
+    }
+
+    // The accepted expiry is persisted in the encrypted vault. A later request
+    // is current-token delivery and cannot contact the token endpoint again.
+    let third = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
+    status(&third, "200");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while origin_seen.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(token_seen.lock().unwrap().len(), 1);
+    let reopened = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
+    assert_eq!(
+        reopened
+            .get("simple-secret")
+            .unwrap()
+            .unwrap()
+            .value
+            .expose_secret(),
+        "synthetic-refreshed-access"
+    );
+
+    let _ = stop_tx.send(());
+    watcher.await.unwrap();
+    proxy = Proxy::start(config(root_path)).await.unwrap();
+    let restarted_view = wait_for_alice(&socket).await;
+    let restarted_token = restarted_view["authorized"]["simple"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let stale = send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await;
+    status(&stale, "403");
+    let after_restart = send_agent(&socket, origin_port, &restarted_token, "127.0.0.1").await;
+    status(&after_restart, "200");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while origin_seen.lock().unwrap().len() < 5 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(token_seen.lock().unwrap().len(), 1);
+    proxy.shutdown().await;
+    origin_task.abort();
+    token_task.abort();
 }
