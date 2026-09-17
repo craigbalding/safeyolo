@@ -206,6 +206,66 @@ async fn origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, ready: Ar
     }
 }
 
+/// Capture a complete ordinary HTTP/1 request at the controlled origin. The
+/// existing origin helper intentionally stops at the head because most guard
+/// cases have no body; this owner is used where the forwarding assertion must
+/// compare the application bytes exactly.
+async fn full_origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, ready: Arc<Notify>) {
+    loop {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let seen = seen.clone();
+        let ready = ready.clone();
+        tokio::spawn(async move {
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let Ok(size) = socket.read(&mut buffer).await else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..size]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    break position + 4;
+                }
+            };
+            let content_length = std::str::from_utf8(&request[..header_end])
+                .ok()
+                .and_then(|headers| {
+                    headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let Ok(size) = socket.read(&mut buffer).await else {
+                    return;
+                };
+                if size == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..size]);
+            }
+            seen.lock().unwrap().push(request);
+            ready.notify_one();
+            let body = b"origin-ok";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.write_all(body).await;
+        });
+    }
+}
+
 async fn wait_for_seen(seen: &Arc<Mutex<Vec<Vec<u8>>>>, count: usize) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while seen.lock().unwrap().len() < count {
@@ -294,6 +354,80 @@ fn hex_bytes(text: &str) -> Vec<u8> {
         .step_by(2)
         .map(|offset| u8::from_str_radix(&text[offset..offset + 2], 16).unwrap())
         .collect()
+}
+
+#[tokio::test]
+async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-exact-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"synthetic",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(full_origin(listener, seen.clone(), ready.clone()));
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    // This is an actual UDS-to-TCP wire request. The credential guard may
+    // inspect it, but every allowed application byte must reach the origin in
+    // the same order, including duplicate header fields and binary body data.
+    let body = b"raw-body\0with-ff-\xff\n";
+    let mut request = format!(
+        "POST http://127.0.0.1:{origin_port}/exact?Q=%252F HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer clean\r\naUtHoRiZaTiOn: auxiliary\r\nX-Dup: one\r\nx-dup: two\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    let response = raw_round_trip(&socket, &request).await;
+    assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
+    let wire = seen.lock().unwrap().first().cloned().unwrap();
+    let split = wire
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .unwrap();
+    assert_eq!(
+        &wire[split..],
+        body,
+        "allowed body bytes changed in transit"
+    );
+    let head = std::str::from_utf8(&wire[..split]).unwrap();
+    assert!(head.contains("POST /exact?Q=%252F HTTP/1.1\r\n"));
+    assert!(head.contains("Authorization: Bearer clean\r\n"), "{head:?}");
+    assert!(head.contains("aUtHoRiZaTiOn: auxiliary\r\n"), "{head:?}");
+    assert!(head.contains("X-Dup: one\r\n"), "{head:?}");
+    assert!(head.contains("x-dup: two\r\n"), "{head:?}");
+    assert!(!head.contains("Connection:"), "{head:?}");
+
+    proxy.shutdown().await;
+    origin_task.abort();
 }
 
 #[tokio::test]
@@ -702,9 +836,15 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
                     .unwrap();
                 assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
                 let service = service_fn(move |request: Request<Incoming>| {
-                    if let Some(value) = request.headers().get("authorization") {
-                        origin_seen.lock().unwrap().push(value.as_bytes().to_vec());
-                    }
+                    // Record every origin stream, including one with no
+                    // Authorization header. A denied sibling must leave no
+                    // stream behind, even if its application body was ready.
+                    origin_seen.lock().unwrap().push(
+                        request
+                            .headers()
+                            .get("authorization")
+                            .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+                    );
                     async move {
                         Ok::<_, Infallible>(
                             hyper::Response::builder()
@@ -805,6 +945,48 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     assert_eq!(blocked.status(), 403);
     let _ = blocked.collect().await.unwrap();
     assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // The denied stream and an allowed stream share the same owned TLS/H2
+    // connection. A stream-local credential decision must not cancel or alter
+    // its sibling, and the denied application bytes must never reach origin.
+    let mut blocked_sender = sender.clone();
+    let mut allowed_sender = sender.clone();
+    let (blocked, allowed) = tokio::join!(
+        blocked_sender.send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/blocked-concurrent"))
+                .header(
+                    "authorization",
+                    hyper::header::HeaderValue::from_bytes(b"Bearer key-\xff").unwrap(),
+                )
+                .body(Full::new(Bytes::from_static(b"forbidden-h2-body")))
+                .unwrap(),
+        ),
+        allowed_sender.send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/allowed-concurrent"))
+                .header("authorization", "Bearer clear-h2")
+                .body(Full::new(Bytes::from_static(b"allowed-h2-body")))
+                .unwrap(),
+        ),
+    );
+    let blocked = blocked.unwrap();
+    let allowed = allowed.unwrap();
+    assert_eq!(blocked.status(), 403);
+    assert_eq!(allowed.status(), 200);
+    let _ = blocked.collect().await.unwrap();
+    let _ = allowed.collect().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while seen.lock().unwrap().len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 3);
+    assert_eq!(seen.lock().unwrap()[2], b"Bearer clear-h2");
+    drop(blocked_sender);
+    drop(allowed_sender);
     drop(sender);
     let _ = connection_task.await;
     proxy.shutdown().await;
