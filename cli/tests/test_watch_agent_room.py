@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -53,6 +54,25 @@ def test_renders_operator_and_agent_events_in_one_timeline(watcher_module, capsy
     output = capsys.readouterr().out
     assert "OP      Report the current cursor." in output
     assert "AGENT   This cycle received cursor 4." in output
+
+
+def test_renders_local_jsonl_stream_with_factory_timeline(watcher_module, capsys):
+    watcher_module._watch_jsonl(
+        io.StringIO(
+            '{"type":"thread.started","thread_id":"review-1"}\n'
+            '{"type":"item.completed","item":{"type":"command_execution",'
+            '"command":"cargo test -p proxy","exit_code":0}}\n'
+        ),
+        240,
+        "rendered",
+        False,
+        False,
+        False,
+    )
+
+    output = capsys.readouterr().out
+    assert "SESSION thread=review-1" in output
+    assert "TOOL    completed command rc=0 cargo test -p proxy" in output
 
 
 def test_renders_wait_event_without_full_tool_result(watcher_module):

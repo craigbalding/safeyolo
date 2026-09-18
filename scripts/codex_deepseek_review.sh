@@ -10,6 +10,9 @@ set -euo pipefail
 repo=${SAFEYOLO_REVIEW_REPO:-/home/agent/safeyolo-rust-620}
 root=${SAFEYOLO_REVIEW_LOG_ROOT:-/home/agent/safeyolo-rust-620-evidence/deepseek-reviews}
 profile=${SAFEYOLO_REVIEW_PROFILE:-opencode-go-review}
+launcher_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+viewer_repo=${SAFEYOLO_REVIEW_VIEWER_REPO:-$launcher_root}
+viewer_script="$viewer_repo/contrib/watch-agent-room.py"
 model_provider=opencode_go_review
 model=deepseek-v4.1-flash
 reasoning=max
@@ -31,6 +34,8 @@ die() { echo "codex-deepseek-review: $*" >&2; exit 2; }
 
 git -C "$repo" rev-parse --show-toplevel >/dev/null 2>&1 || \
   die "review repository is not a git checkout: $repo"
+[[ -f "$viewer_script" ]] || die "factory JSONL viewer is missing: $viewer_script"
+command -v uv >/dev/null 2>&1 || die "uv is required for the factory JSONL viewer"
 mkdir -p "$root"
 
 extract_session() {
@@ -100,10 +105,21 @@ launch() {
   fi
   {
     printf '#!/usr/bin/env bash\nset -u -o pipefail\nset +e\n'
+    printf "printf '%%s\\\\n' %q\n" "DeepSeek review issue=$issue candidate=${CANDIDATE:-unknown}"
+    printf "printf '%%s\\\\n' %q\n" "Live view uses contrib/watch-agent-room.py; raw JSONL and receipt are retained."
     printf ' %q' "${command[@]}"
-    printf ' 2>%q | tee %q\n' "$err" "$log"
-    printf 'status=${PIPESTATUS[0]}\n'
+    printf ' 2>%q | tee %q |' "$err" "$log"
+    printf ' %q' uv run --project "$viewer_repo" --no-sync python "$viewer_script" \
+      --jsonl - --max-text 240 --show-unknown
+    printf '\n'
+    printf 'pipe_status=("${PIPESTATUS[@]}")\n'
+    printf 'status=${pipe_status[0]:-125}\nraw_status=${pipe_status[1]:-125}\nviewer_status=${pipe_status[2]:-125}\n'
     printf 'if [[ -s %q ]]; then cp -- %q %q; fi\n' "$last" "$last" "$receipt"
+    printf 'disposition=$(grep -E -m1 "^(READY|CHANGES_REQUIRED|BLOCKED)([[:space:]]|$)" %q || true)\n' "$last"
+    printf 'printf "review finished: codex=%%s raw=%%s viewer=%%s disposition=%%s\\n" "$status" "$raw_status" "$viewer_status" "${disposition:-unreported}"\n'
+    printf 'if [[ "$status" -ne 0 || "$raw_status" -ne 0 || "$viewer_status" -ne 0 || "${disposition:-}" != READY ]]; then\n'
+    printf '  if [[ -n "${TMUX_PANE:-}" ]]; then tmux set-option -p -t "$TMUX_PANE" remain-on-exit on || true; fi\n'
+    printf 'fi\n'
     printf 'exit "$status"\n'
   } >"$runner"
   chmod 700 "$runner"
@@ -111,9 +127,9 @@ launch() {
   if [[ -n "${TMUX_PANE:-}" ]]; then
     tmux_session=$(tmux display-message -p -t "$TMUX_PANE" '#S')
     # -h gives a vertical divider (side-by-side panes) in the operator's
-    # current window. Keep the completed pane visible for evidence inspection.
+    # current window. Failed or non-READY reviews keep their concise pane;
+    # successful READY reviews close it after the receipt is retained.
     tmux_pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$TMUX_PANE" -c "$repo" bash "$runner")
-    tmux set-option -p -t "$tmux_pane" remain-on-exit on
     visible=true
   else
     tmux new-session -d -s "$tmux_session" -c "$repo" bash "$runner"

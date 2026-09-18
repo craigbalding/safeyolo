@@ -553,6 +553,7 @@ async def _watch(
                 colour=colour,
             )
             await asyncio.sleep(delay)
+
     if failures:
         _connection_line("recovered", "retained history is readable", colour=colour)
     for message in history:
@@ -605,6 +606,50 @@ async def _watch(
             await asyncio.sleep(delay)
 
 
+def _watch_jsonl(
+    source: str | Any,
+    limit: int | None,
+    mode: str,
+    colour: bool,
+    redact: bool,
+    show_unknown: bool,
+) -> None:
+    """Render a local Codex JSONL stream with the same factory timeline."""
+
+    if hasattr(source, "read"):
+        stream = source
+        close_stream = False
+    else:
+        stream = sys.stdin if source == "-" else open(source, encoding="utf-8")
+        close_stream = stream is not sys.stdin
+    try:
+        for line in stream:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            try:
+                json.loads(line)
+            except json.JSONDecodeError:
+                print(f"[jsonl] invalid event: {line[:limit or 240]}", file=sys.stderr, flush=True)
+                continue
+            _render(
+                {
+                    "sent_at": int(datetime.now(UTC).timestamp() * 1000),
+                    "sender_kind": "agent",
+                    "sender_agent_name": "reviewer",
+                    "body": line,
+                },
+                limit,
+                mode,
+                colour,
+                redact,
+                show_unknown,
+            )
+    finally:
+        if close_stream:
+            stream.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -616,7 +661,12 @@ def main() -> int:
             """
         ),
     )
-    parser.add_argument("room")
+    parser.add_argument("room", nargs="?")
+    parser.add_argument(
+        "--jsonl",
+        metavar="PATH",
+        help="Render a local Codex JSONL file, or '-' for a piped stream",
+    )
     parser.add_argument("--history", type=int, default=30)
     parser.add_argument(
         "--max-text",
@@ -641,6 +691,11 @@ def main() -> int:
         parser.error("invalid numeric option")
     mode = "json" if args.json else "raw" if args.raw else "rendered"
     colour = mode == "rendered" and sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ
+    if args.jsonl is not None:
+        _watch_jsonl(args.jsonl, args.max_text, mode, colour, args.redact, args.show_unknown)
+        return 0
+    if not args.room:
+        parser.error("a room is required unless --jsonl is supplied")
     try:
         asyncio.run(
             _watch(

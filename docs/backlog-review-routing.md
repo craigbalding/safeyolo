@@ -62,3 +62,9 @@ release acceptance. The launcher grants write access only to the configured
 evidence root for disposable output; each issue reuses its
 `targets/<issue>` directory across correction rounds and concurrent issues use
 distinct target directories.
+
+The visible pane reuses the factory timeline renderer in
+`contrib/watch-agent-room.py` with its local `--jsonl -` input. It shows
+bounded session, tool, agent, completion and error lines while the raw JSONL
+remains the retained source of truth. A successful `READY` pane closes after
+its receipt is copied; a failed or non-READY pane remains for inspection.
