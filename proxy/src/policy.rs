@@ -2337,6 +2337,9 @@ fn is_integer_char(byte: u8) -> bool {
 
 fn integer_literal_candidate(literal: &str) -> bool {
     if literal.starts_with('+') || literal.starts_with('-') {
+        if matches!(literal, "+inf" | "-inf" | "+nan" | "-nan") {
+            return false;
+        }
         return !literal[1..].contains(['.', 'e', 'E', ':']);
     }
     if literal.starts_with("0x") || literal.starts_with("0o") || literal.starts_with("0b") {
@@ -3617,6 +3620,19 @@ mod yaml_tests {
             assert!(
                 parse_toml_document(&format!("number = {signed_radix}\n")).is_err(),
                 "{signed_radix}"
+            );
+        }
+        for special_float in ["+inf", "-inf", "+nan", "-nan"] {
+            let special_source = format!("number = {special_float}\n");
+            let (special_document, special_context) = parse_toml_for_edit(&special_source).unwrap();
+            assert_eq!(
+                restore_large_toml_integers(&special_document.to_string(), &special_context),
+                special_source
+            );
+            assert_eq!(
+                parse_toml_document(&special_source).unwrap_err().kind,
+                ErrorKind::Unsupported,
+                "{special_float} must reach TOML float handling"
             );
         }
         let radix_source = concat!(
