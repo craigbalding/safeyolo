@@ -129,6 +129,7 @@ pub enum Audit {
     CircuitReset(CircuitResetAudit),
     TrafficScopeUpdated(TrafficScopeAudit),
     ServiceAuthorized(services::Authorization),
+    ServiceRevoked(services::Revocation),
     TaskUpdated {
         task_id: String,
         permission_count: usize,
@@ -1920,6 +1921,18 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
     {
         let agent = agent.to_owned();
         return services::authorize(request, agent, policy, policy_path, service_audit).await;
+    }
+    if method == Method::DELETE
+        && let Some((agent, service)) = services::revocation_path(&path)
+    {
+        return services::revoke(
+            request,
+            agent.to_owned(),
+            service.to_owned(),
+            policy_path,
+            service_audit,
+        )
+        .await;
     }
     if path == "/admin/gateway/grant"
         || path == "/admin/gateway/grants"

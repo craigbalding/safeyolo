@@ -117,6 +117,44 @@ async fn body(outcome: Outcome) -> Value {
     .unwrap()
 }
 
+async fn revoke(fixture: &Fixture, agent: &str, service: &str) -> Result<Outcome, Error> {
+    let tasks = crate::tasks::Registry::default();
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/admin/agents/{agent}/services/{service}"))
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    respond_with_context(
+        request,
+        TOKEN,
+        OperatorContext {
+            tasks: &tasks,
+            policy: Some(&fixture.policy),
+            circuits: None,
+            stats: None,
+            view: None,
+            policy_path: Some(&fixture.path),
+            instance_id: None,
+            admin_address: None,
+            operator_modes: None,
+            agent_discovery: None,
+            listeners: &[],
+            audit: None,
+            client_ip: None,
+            service_audit: Some(crate::admin_api::ServiceAudit {
+                writer: &fixture.writer,
+                client_ip: "127.0.0.1",
+                target: "/admin/agents/alice/services/mail",
+                mutation_owner: &fixture.mutation_owner,
+                gateway_store: None,
+            }),
+            plumb: None,
+        },
+    )
+    .await
+}
+
 #[tokio::test]
 async fn service_authorization_persists_preserves_and_requires_later_reload() {
     let fixture = Fixture::new();
@@ -357,6 +395,88 @@ async fn service_update_uses_latest_locked_document_and_accepts_inline_agents() 
         saved["agents"]["alice"]["services"]["mail"]["token"],
         "vault-entry"
     );
+}
+
+#[tokio::test]
+async fn service_removal_deletes_last_binding_and_keeps_other_service_control() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.call("alice", BODY).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let outcome = revoke(&fixture, "alice", "mail").await.unwrap();
+    assert_eq!(outcome.status(), StatusCode::OK);
+    assert!(outcome.audit().is_none());
+    assert_eq!(
+        body(outcome).await,
+        json!({
+            "status":"revoked",
+            "agent":"alice",
+            "service":"mail",
+            "credential":"vault-entry"
+        })
+    );
+    let saved = fixture.persisted();
+    assert!(saved["agents"]["alice"]["services"].get("mail").is_none());
+    assert_eq!(
+        saved["agents"]["alice"]["services"]["other"]["token"],
+        "old-name"
+    );
+
+    // The observer reads the saved document through the same gateway snapshot
+    // constructor used by the running proxy; no test-only cache is refreshed.
+    let observed =
+        Policy::from_path_with_registry_at(&fixture.path, Some(fixture.registry.clone()), 1001.)
+            .unwrap();
+    let services: Value = serde_json::from_str(
+        observed
+            .gateway()
+            .unwrap()
+            .agent_services_json("alice")
+            .unwrap()
+            .expose_secret(),
+    )
+    .unwrap();
+    assert!(services.get("mail").is_none());
+    assert!(
+        services["other"]["token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty())
+    );
+
+    // Removing the remaining binding removes the empty services table. This
+    // prevents a stale last binding from surviving a later reload.
+    let last = revoke(&fixture, "alice", "other").await.unwrap();
+    assert_eq!(last.status(), StatusCode::OK);
+    assert_eq!(body(last).await["credential"], "old-name");
+    assert!(
+        fixture.persisted()["agents"]["alice"]
+            .get("services")
+            .is_none()
+    );
+
+    let events = fixture.events();
+    assert!(events.iter().any(|event| {
+        event["event"] == "admin.agent_service_revoked"
+            && event["details"]["agent"] == "alice"
+            && event["details"]["service"] == "mail"
+            && event["details"]["credential"] == "vault-entry"
+    }));
+}
+
+#[tokio::test]
+async fn service_removal_rejects_unknown_agent_or_service_without_mutation() {
+    let fixture = Fixture::new();
+    for (agent, service) in [("missing", "mail"), ("alice", "missing")] {
+        let outcome = revoke(&fixture, agent, service).await.unwrap();
+        assert_eq!(outcome.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body(outcome).await["error"],
+            format!("agent '{agent}' or service '{service}' not found")
+        );
+        assert_eq!(std::fs::read_to_string(&fixture.path).unwrap(), INITIAL);
+    }
 }
 
 #[tokio::test]

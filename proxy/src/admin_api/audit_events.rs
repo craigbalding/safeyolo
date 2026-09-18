@@ -37,6 +37,24 @@ impl Audit {
                 }).into();
                 vec![event]
             }
+            Self::ServiceRevoked(revocation) => {
+                let mut event = event(
+                    "admin.agent_service_revoked",
+                    Kind::Admin,
+                    Severity::Medium,
+                    format!(
+                        "Agent service revoked: {} -> {}",
+                        sanitize(&revocation.agent),
+                        sanitize(&revocation.service)
+                    ),
+                    "admin-api",
+                );
+                event.details = json!({
+                    "client_ip":client_ip, "agent":revocation.agent.as_str(),
+                    "service":revocation.service.as_str(), "credential":revocation.credential.as_str(),
+                }).into();
+                vec![event]
+            }
             Self::TrafficScopeUpdated(scope) => {
                 let mut event = event(
                     "admin.traffic_scope_update",

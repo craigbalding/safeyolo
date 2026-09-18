@@ -314,6 +314,10 @@ async fn serve_connection(
                     "event":"proxy.admin_api", "audit_intent":"admin.agent_service_authorized",
                     "client_ip":client_ip,
                 })],
+                admin_api::Audit::ServiceRevoked(_) => vec![json!({
+                    "event":"proxy.admin_api", "audit_intent":"admin.agent_service_revoked",
+                    "client_ip":client_ip,
+                })],
                 admin_api::Audit::TrafficScopeUpdated(_) => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.traffic_scope_update",
                     "client_ip":client_ip,

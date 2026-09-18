@@ -240,7 +240,7 @@ checked.
 | POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
 | POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
-| DELETE `/admin/agents/{agent}/services/{service}` | Missing | Required native service-removal mutation and observer proof remain in #627. |
+| DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
 | POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Delegated | Retained-agent-workflows implementation and host boundary; no native fake endpoint. |
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; activation and consumer proof remain open where noted above. |
 | PUT `/admin/proxy/mode` | Missing | No native handler or retained consumer proof yet. |

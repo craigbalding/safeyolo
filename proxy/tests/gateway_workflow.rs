@@ -115,6 +115,22 @@ capabilities:
         path: /v1/redirect
 "#;
 
+const OTHER_SERVICE: &str = r#"
+schema_version: 1
+name: other
+default_host: 127.0.0.1
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+  allow_http: true
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /v1/other
+"#;
+
 const NO_AUTH_SERVICE: &str = r#"
 schema_version: 1
 name: simple
@@ -175,6 +191,7 @@ fn config(root: &Path) -> Config {
         ignore_hosts: Vec::new(),
         via_token: Some("gateway-workflow-test".into()),
         inspection: None,
+        plumb: Default::default(),
     }
 }
 
@@ -2142,6 +2159,7 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/simple.yaml"), SERVICE).unwrap();
+    std::fs::write(root_path.join("services/other.yaml"), OTHER_SERVICE).unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
     let vault_path = root_path.join("data/vault.yaml.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
@@ -2168,7 +2186,16 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     let wrong_seen = Arc::new(Mutex::new(Vec::new()));
     let origin_task = tokio::spawn(origin(origin_listener, seen.clone(), origin_port));
     let wrong_origin_task = tokio::spawn(origin(wrong_listener, wrong_seen.clone(), origin_port));
-    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
+    let mut policy = initial_policy(origin_port);
+    policy.push_str(
+        r#"
+
+[agents.bob.services.other]
+capability = "reader"
+token = "other-secret"
+"#,
+    );
+    std::fs::write(root_path.join("policy.toml"), policy).unwrap();
 
     let mut proxy = Proxy::start(config(root_path)).await.unwrap();
     let ready: Value =
@@ -2550,17 +2577,37 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     let bob_view_request = b"GET http://_safeyolo.proxy.internal/gateway/services HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nConnection: close\r\n\r\n";
     let bob_view = raw_http(&root_path.join("bob.sock"), bob_view_request).await;
     status(&bob_view, "200");
-    assert_eq!(
-        serde_json::from_slice::<Value>(body(&bob_view)).unwrap()["authorized"],
-        serde_json::json!({})
+    let bob_services: Value = serde_json::from_slice(body(&bob_view)).unwrap();
+    assert!(
+        bob_services["authorized"]["other"]["token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty())
     );
 
-    // Removing the persisted binding and waiting for watcher publication
-    // revokes the old token atomically with the policy snapshot.
-    // Let the accepted snapshot's watermark advance before replacing the
-    // durable binding. The native watcher compares the source mtime.
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    std::fs::write(root_path.join("policy.toml"), initial_policy(origin_port)).unwrap();
+    // Remove the binding through the retained native operator consumer. The
+    // response is durable first; the process-owned watcher then publishes the
+    // complete replacement snapshot.
+    let revoke = admin_http(
+        admin_port,
+        format!(
+            "DELETE /admin/agents/alice/services/simple HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await;
+    status(&revoke, "200");
+    let revoke_body: Value = serde_json::from_slice(body(&revoke)).unwrap();
+    assert_eq!(revoke_body["status"], "revoked");
+    assert_eq!(revoke_body["agent"], "alice");
+    assert_eq!(revoke_body["service"], "simple");
+    assert_eq!(revoke_body["credential"], "simple-secret");
+    let revoke_event = wait_for_audit_event(
+        &root_path.join("audit.jsonl"),
+        "admin.agent_service_revoked",
+    )
+    .await;
+    assert_eq!(revoke_event["details"]["agent"], "alice");
+    assert_eq!(revoke_event["details"]["service"], "simple");
     tokio::time::timeout(Duration::from_secs(6), async {
         loop {
             let response = raw_http(&root_path.join("alice.sock"), bob_view_request).await;
@@ -2575,6 +2622,14 @@ async fn simple_service_access_watcher_discovery_retry_and_isolation() {
     })
     .await
     .unwrap();
+    let bob_after_revoke = raw_http(&root_path.join("bob.sock"), bob_view_request).await;
+    status(&bob_after_revoke, "200");
+    let bob_services: Value = serde_json::from_slice(body(&bob_after_revoke)).unwrap();
+    assert!(
+        bob_services["authorized"]["other"]["token"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty())
+    );
     let stale = send_agent(
         &root_path.join("alice.sock"),
         origin_port,
