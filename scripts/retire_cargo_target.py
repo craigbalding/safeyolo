@@ -25,11 +25,29 @@ def directory_size(path: Path) -> int:
     return sum(file.stat().st_size for file in path.rglob("*") if file.is_file())
 
 
-def git_root(path: Path) -> Path:
+def git_root(path: Path) -> Path | None:
     for parent in (path.parent, *path.parents):
         if (parent / ".git").exists():
             return Path(subprocess.check_output(["git", "-C", parent, "rev-parse", "--show-toplevel"], text=True).strip())
-    raise SystemExit("target is not beneath a Git worktree; retire it manually with its experiment evidence")
+    return None
+
+
+def source_git_root(target: Path) -> Path:
+    """Find the checkout whose commit and lockfile produced this target.
+
+    Cargo targets may be kept outside a checkout so concurrent candidates do
+    not share a worktree. In that case this helper's own checkout is the
+    source of the accepted commit and lockfile evidence.
+    """
+    root = git_root(target)
+    if root is not None:
+        return root
+    root = git_root(Path(__file__).resolve())
+    if root is not None:
+        return root
+    raise SystemExit(
+        "target is not beneath a Git worktree and the retirement helper has no Git worktree"
+    )
 
 
 def caller_ancestors() -> set[int]:
@@ -73,11 +91,11 @@ def main() -> int:
 
     target = args.target.resolve()
     receipt = args.receipt.resolve()
-    if target.name != "target" or not target.is_dir():
-        raise SystemExit("--target must name an existing Cargo target directory")
+    if (target.name != "target" and not target.name.startswith("target-")) or not target.is_dir():
+        raise SystemExit("--target must name an existing Cargo target directory (target or target-*)")
     if not receipt.is_file():
         raise SystemExit("--receipt must be an existing acceptance receipt")
-    root = git_root(target)
+    root = source_git_root(target)
     commit = subprocess.check_output(["git", "-C", root, "rev-parse", f"{args.commit}^{{commit}}"], text=True).strip()
     if commit not in receipt.read_text(errors="replace"):
         raise SystemExit("acceptance receipt does not name the exact candidate commit")

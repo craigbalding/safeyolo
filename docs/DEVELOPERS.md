@@ -394,6 +394,12 @@ scripts/retire_cargo_target.py \
   --record /path/to/cargo-target-retirements.jsonl
 ```
 
+The target may be outside the candidate checkout (for example,
+`/workspace/target-623-parser`) when concurrent candidates use isolated Cargo
+targets. Invoke the retirement helper from that candidate checkout; it uses
+the helper's checkout for commit and lockfile provenance, and keeps the
+receipt and JSONL record outside the target before removing it.
+
 The retirement command refuses a live target, verifies the receipt names the
 candidate commit, writes command-independent evidence (receipt/lockfile hashes,
 toolchain, target size and top-level binary hashes), then removes only the Cargo
