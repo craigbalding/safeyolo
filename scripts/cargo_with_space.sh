@@ -63,11 +63,25 @@ fi
 cargo_pid=$!
 interrupted=0
 reserve_crossed=0
+cargo_stop_grace_seconds=5
+
+cargo_target_alive() {
+  if (( process_group )); then
+    # In setsid mode the process group is the owned Cargo target.  The leader
+    # may exit while a child still owns Cargo's output pipes, so probe the
+    # group instead of the leader PID.
+    kill -0 -- "-$cargo_pid" 2>/dev/null
+  else
+    # Without setsid this is necessarily the narrower leader-only check.
+    kill -0 "$cargo_pid" 2>/dev/null
+  fi
+}
+
 signal_cargo() {
   local signal_number=$1
-  if kill -0 "$cargo_pid" 2>/dev/null; then
+  if cargo_target_alive; then
     if (( process_group )); then
-      kill -"$signal_number" -- "-$cargo_pid" 2>/dev/null || kill -"$signal_number" "$cargo_pid" 2>/dev/null || true
+      kill -"$signal_number" -- "-$cargo_pid" 2>/dev/null || true
     else
       kill -"$signal_number" "$cargo_pid" 2>/dev/null || true
     fi
@@ -81,11 +95,11 @@ stop_cargo() {
   # it does not alter the reserve check or stop unrelated process groups.
   signal_cargo INT
   local attempts=0
-  while kill -0 "$cargo_pid" 2>/dev/null && (( attempts < 50 )); do
+  while cargo_target_alive && (( attempts < cargo_stop_grace_seconds * 10 )); do
     sleep 0.1
     ((attempts += 1))
   done
-  if kill -0 "$cargo_pid" 2>/dev/null; then
+  if cargo_target_alive; then
     echo 'Cargo did not exit after interrupt; forcing its process group to stop' >&2
     signal_cargo KILL
   fi
@@ -99,7 +113,7 @@ cleanup() {
 }
 trap 'cleanup; exit 130' INT TERM
 
-while kill -0 "$cargo_pid" 2>/dev/null; do
+while cargo_target_alive; do
   if ! check_space; then
     reserve_crossed=1
     if (( hard_stop )); then
@@ -109,7 +123,7 @@ while kill -0 "$cargo_pid" 2>/dev/null; do
       break
     fi
     echo 'Cargo reserve crossed: finish this command, retire eligible reviewed targets, and do not dispatch another build batch' >&2
-    while kill -0 "$cargo_pid" 2>/dev/null; do
+    while cargo_target_alive; do
       sleep "$poll_seconds"
     done
     break

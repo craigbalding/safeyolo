@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -10,8 +11,12 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = ROOT / "scripts" / "cargo_with_space.sh"
+sys.path.insert(0, str(ROOT / "scripts"))
+import validate_rust_dependencies as dependency_validator  # noqa: E402
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -22,6 +27,14 @@ def _write_executable(path: Path, content: str) -> None:
 def _pid_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
     return True
@@ -170,3 +183,88 @@ def test_macos_hard_stop_interrupts_cargo_but_leaves_child(tmp_path: Path) -> No
                     os.kill(pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+
+
+def test_linux_validator_timeout_kills_real_setsid_group_only(tmp_path: Path) -> None:
+    if not sys.platform.startswith("linux"):
+        pytest.skip("the regression exercises Linux process-group semantics")
+    real_setsid = shutil.which("setsid")
+    if real_setsid is None:
+        pytest.skip("setsid is required for the process-group regression")
+
+    bin_dir, _ = _fixture(tmp_path, darwin=False, with_setsid=False)
+    (bin_dir / "setsid").symlink_to(real_setsid)
+    cargo_pid_file = tmp_path / "cargo-pids"
+    child_pid_file = tmp_path / "child-pid"
+    child_code = (
+        "import os, signal, time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    _write_executable(
+        bin_dir / "cargo",
+        f"#!{sys.executable}\n"
+        "import os\n"
+        "import signal\n"
+        "import subprocess\n"
+        "import time\n"
+        f"child = subprocess.Popen([{sys.executable!r}, '-c', {child_code!r}])\n"
+        f"while not os.path.exists({str(child_pid_file)!r}):\n"
+        "    time.sleep(0.01)\n"
+        f"open({str(cargo_pid_file)!r}, 'w').write(f'{{os.getpid()}}\\n{{child.pid}}\\n')\n"
+        "def interrupt(signum, frame):\n"
+        "    raise SystemExit(130)\n"
+        "signal.signal(signal.SIGINT, interrupt)\n"
+        "signal.pause()\n",
+    )
+
+    sentinel = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    cargo_pid = 0
+    try:
+        report: dict[str, object] = {"commands": []}
+        runner = dependency_validator.Runner(
+            report,
+            offline=True,
+            report_path=tmp_path / "report.json",
+            target_dir=tmp_path / "target",
+        )
+        result, _ = runner.command(
+            "real-setsid-timeout",
+            ["cargo", "build"],
+            kind="regression",
+            environment={
+                "PATH": str(bin_dir),
+                "CARGO_TARGET_DIR": str(tmp_path / "missing" / "target"),
+                "SAFEYOLO_CARGO_RESERVE_GIB": "0",
+                "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
+                "CARGO_PID_FILE": str(cargo_pid_file),
+            },
+            expect_failure=True,
+            timeout=0.1,
+            print_output=False,
+        )
+        assert result.returncode == 124
+        assert report["commands"][0]["timed_out"] is True  # type: ignore[index]
+        cargo_pid, child_pid = (
+            int(value) for value in cargo_pid_file.read_text().splitlines()
+        )
+        assert sentinel.poll() is None, "outer sentinel was signalled"
+        deadline = time.monotonic() + 2
+        while _process_group_exists(cargo_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _process_group_exists(cargo_pid), "Cargo process group survived"
+        assert not _pid_exists(child_pid), "interrupt-ignoring child survived"
+    finally:
+        if cargo_pid:
+            try:
+                os.killpg(cargo_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if sentinel.poll() is None:
+            sentinel.terminate()
+            sentinel.wait()

@@ -45,6 +45,9 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out;"
 )
 RUNNING_RE = re.compile(r"running (?P<count>\d+) tests?\b")
+# The wrapper's interrupt-to-kill grace is five seconds; allow ten here so its
+# trap can finish the group reap before the validator escalates its own group.
+VALIDATOR_TERM_GRACE_SECONDS = 10
 # The order is meaningful: a vendored/current hash supersedes an intermediate
 # post-patch hash when a checkpoint records more than one value.
 HASH_KEYS = ("vendored_sha256", "after_sha256", "candidate_sha256")
@@ -232,7 +235,9 @@ class Runner:
             timed_out = True
             _stop_process_group(process, signal.SIGTERM)
             try:
-                stdout, stderr = process.communicate(timeout=5)
+                stdout, stderr = process.communicate(
+                    timeout=VALIDATOR_TERM_GRACE_SECONDS
+                )
             except subprocess.TimeoutExpired:
                 _stop_process_group(process, signal.SIGKILL)
                 stdout, stderr = process.communicate()
