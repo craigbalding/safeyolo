@@ -3156,6 +3156,12 @@ where
     strip_hop_headers(&mut parts.headers);
     if response_buffering {
         let prepared = request_body::prepare(body, response_length, false).await?;
+        if prepared.unvalidated_content.is_some() && completion.response_incomplete() {
+            // A NO_ERROR reset can look like clean EOF to Hyper's H2 Incoming.
+            // Never hand that captured prefix to the scanner or release it as
+            // a complete buffered response.
+            return Err("upstream response ended before protocol completion".into());
+        }
         if let Some(body) = prepared.unvalidated_content {
             let body = Arc::new(body);
             let (inspected, scan_lifetime) = scan_response_with_lifetime(

@@ -1176,22 +1176,15 @@ async fn raw_h2_origin(
         .await
         .unwrap();
     if partial_reset {
-        // Wait until the proxy's H2 client has delivered DATA to its body
-        // owner and released receive capacity. This keeps the frozen DATA and
-        // RST frames distinct on the wire and prevents a reset from racing
-        // ahead of the shared prefix.
-        loop {
-            let (kind, _, _, _) = read_h2_wire(&mut stream).await;
-            if kind == 8 {
-                break;
-            }
-        }
+        // The test releases this peer only after the downstream client has
+        // observed the 503 head and shared DATA prefix. This keeps the frozen
+        // DATA and RST frames distinct without relying on flow-control timing.
+        let _ = release.await;
         stream
             .write_all(&h2_wire_frame(3, 0, 1, &0_u32.to_be_bytes()))
             .await
             .unwrap();
     }
-    let _ = release.await;
 }
 
 struct PausedBody {
@@ -1440,19 +1433,23 @@ async fn full_proxy_h2_response_outcome(partial_reset: bool) {
         .unwrap()
         .unwrap();
     assert_eq!(first.into_data().unwrap(), b"body".as_slice());
-    let terminal = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
-        .await
-        .unwrap();
     if partial_reset {
+        let _ = release.send(());
+        let terminal = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+            .await
+            .unwrap();
         assert!(
             matches!(terminal, Some(Err(_))),
             "reset must fail downstream"
         );
     } else {
+        let terminal = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+            .await
+            .unwrap();
         assert!(terminal.is_none(), "END_STREAM must remain clean");
+        let _ = release.send(());
     }
     drop(response);
-    let _ = release.send(());
     drop(sender);
     client.abort();
     proxy.shutdown().await;

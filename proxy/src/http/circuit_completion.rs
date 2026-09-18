@@ -1046,7 +1046,7 @@ mod tests {
 
     #[tokio::test]
     async fn actual_h2_live_driver_distinguishes_unread_completion_from_body_cancellation() {
-        for terminal in ["complete", "partial"] {
+        for terminal in ["complete", "partial", "partial_reset"] {
             let fixture = Fixture::new(false);
             let (client, peer) = tokio::io::duplex(4096);
             let (mut sender, connection) =
@@ -1061,7 +1061,7 @@ mod tests {
             // Poll the owner directly so this assertion does not depend on the
             // relative scheduling of the already-woken connection driver.
             let observed = completion.try_finish();
-            assert_eq!(observed, (terminal == "complete").then_some(false));
+            assert_eq!(observed, Some(false));
             let response = tokio::time::timeout(LIMIT, response)
                 .await
                 .unwrap()
