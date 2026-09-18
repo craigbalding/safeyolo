@@ -962,6 +962,19 @@ mod tests {
         (Task(task), receiver)
     }
 
+    async fn wait_for_completion(completion: &Completion) -> Option<bool> {
+        tokio::time::timeout(LIMIT, async {
+            loop {
+                if let Some(observed) = completion.try_finish() {
+                    break observed;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("completion observer reached a terminal result")
+    }
+
     #[tokio::test]
     async fn actual_h2_latched_unread_response_survives_unpolled_driver_drop_once() {
         for mode in [
@@ -1060,8 +1073,17 @@ mod tests {
             tokio::time::timeout(LIMIT, barrier).await.unwrap().unwrap();
             // Poll the owner directly so this assertion does not depend on the
             // relative scheduling of the already-woken connection driver.
-            let observed = completion.try_finish();
-            assert_eq!(observed, Some(false));
+            let observed = if terminal == "partial" {
+                // A response with neither END_STREAM nor reset is still
+                // pending until dropping its body cancels the stream.
+                completion.try_finish()
+            } else {
+                // The peer barrier only proves that the frames were accepted
+                // by the connection; the driver may publish the observer on
+                // its next poll. Wait for that terminal state explicitly.
+                wait_for_completion(&completion).await
+            };
+            assert_eq!(observed, (terminal != "partial").then_some(false));
             let response = tokio::time::timeout(LIMIT, response)
                 .await
                 .unwrap()
@@ -1070,7 +1092,7 @@ mod tests {
             // Body drop aborts incomplete reception. A previously latched END_STREAM
             // remains successful even though none of its buffered body was read.
             drop(response);
-            assert_eq!(completion.try_finish(), Some(false));
+            assert_eq!(wait_for_completion(&completion).await, Some(false));
             drop(driver);
             assert_eq!(
                 fixture.failures(),
