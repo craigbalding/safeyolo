@@ -680,6 +680,10 @@ def thread_cpu_seconds(pid):
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
 def test_native_pending_fragment_disconnect(native_development_proxy, tmp_path, tls):
+    # One incomplete-message check establishes the cleanup path. Repeating the
+    # same controlled cancellation also measures whether anonymous message
+    # spools accumulate across a WS/WSS batch (D6/#639).
+    sessions = 4
     directory = tmp_path / native_development_proxy
     pem, public, proxy_ca = prepare_tls(directory, tls)
 
@@ -690,42 +694,53 @@ def test_native_pending_fragment_disconnect(native_development_proxy, tmp_path, 
     with origin_server(script, pem=pem) as origin:
         with launch_proxy(native_development_proxy, directory, POLICY, tls=tls, upstream_ca=public,
                           inspection={}) as proxy:
-            with connect_peer(origin, path=proxy.paths["alice"], ca=proxy_ca) as peer:
-                before = anonymous_files(proxy.process.pid)
-                payload = b"unfinished binary message " + b"x" * (256 * 1024)
-                peer.stream.sendall(frame(2, payload, final=False, masked=True))
-                deadline = time.monotonic() + 5
-                while True:
-                    pending = {inode: size for inode, size in anonymous_files(proxy.process.pid).items()
-                               if inode not in before}
-                    if pending and max(pending.values()) >= len(payload):
-                        break
-                    assert time.monotonic() < deadline, "Pending frame never reached an anonymous spool"
-                    time.sleep(0.01)
-                assert proxy.events("proxy.websocket.message") == []
-                peer.stream.close()
-                observed, frames = origin.results.get(timeout=5)
-                assert observed[0] == 8
-                assert frames == 0, "Unfinished message data escaped to the origin"
-                deadline = time.monotonic() + 3
-                while not proxy.events("proxy.websocket.end"):
-                    assert time.monotonic() < deadline, "Disconnected WebSocket did not finish"
-                    time.sleep(0.01)
-                assert proxy.process.poll() is None
-                assert pending.keys().isdisjoint(anonymous_files(proxy.process.pid))
-                assert proxy.events("proxy.websocket.message") == []
-                ended = proxy.events("proxy.websocket.end")
-                assert len(ended) == 1
-                assert ended[0]["closed_by_client"] is True
-                assert ended[0]["drained"] is True
-                (directory / "lifecycle.json").write_text(json.dumps({
-                    "pending_spool_bytes": max(pending.values()),
-                    "pending_spool_count": len(pending),
-                    "pending_spools_retained": 0,
-                    "origin_data_frames": frames,
-                    "complete_message_events": len(proxy.events("proxy.websocket.message")),
-                    "end": ended[0],
-                }, indent=2) + "\n")
+            payload = b"unfinished binary message " + b"x" * (256 * 1024)
+            peak_spool_bytes = 0
+            peak_spool_count = 0
+            all_pending = set()
+            frames = []
+            for _ in range(sessions):
+                with connect_peer(origin, path=proxy.paths["alice"], ca=proxy_ca) as peer:
+                    before = anonymous_files(proxy.process.pid)
+                    peer.stream.sendall(frame(2, payload, final=False, masked=True))
+                    deadline = time.monotonic() + 5
+                    while True:
+                        pending = {inode: size for inode, size in anonymous_files(proxy.process.pid).items()
+                                   if inode not in before}
+                        if pending and max(pending.values()) >= len(payload):
+                            break
+                        assert time.monotonic() < deadline, "Pending frame never reached an anonymous spool"
+                        time.sleep(0.01)
+                    peak_spool_bytes = max(peak_spool_bytes, max(pending.values()))
+                    peak_spool_count = max(peak_spool_count, len(pending))
+                    all_pending.update(pending)
+                    assert proxy.events("proxy.websocket.message") == []
+                    peer.stream.close()
+                    observed, frame_count = origin.results.get(timeout=5)
+                    assert observed[0] == 8
+                    assert frame_count == 0, "Unfinished message data escaped to the origin"
+                    frames.append(frame_count)
+                    deadline = time.monotonic() + 3
+                    while len(proxy.events("proxy.websocket.end")) < len(frames):
+                        assert time.monotonic() < deadline, "Disconnected WebSocket did not finish"
+                        time.sleep(0.01)
+                    assert proxy.process.poll() is None
+                    assert pending.keys().isdisjoint(anonymous_files(proxy.process.pid))
+                    assert proxy.events("proxy.websocket.message") == []
+
+            assert all_pending.isdisjoint(anonymous_files(proxy.process.pid))
+            ended = proxy.events("proxy.websocket.end")
+            assert len(ended) == sessions
+            assert all(event["closed_by_client"] is True and event["drained"] is True for event in ended)
+            (directory / "lifecycle.json").write_text(json.dumps({
+                "sessions": sessions,
+                "pending_spool_bytes_peak": peak_spool_bytes,
+                "pending_spool_count_peak": peak_spool_count,
+                "pending_spools_retained_after_batch": len(all_pending & anonymous_files(proxy.process.pid).keys()),
+                "origin_data_frames": frames,
+                "complete_message_events": len(proxy.events("proxy.websocket.message")),
+                "end": ended,
+            }, indent=2) + "\n")
 
 
 @pytest.mark.parametrize("trigger", ["peer_close", "shutdown"])
