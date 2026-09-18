@@ -1900,7 +1900,9 @@ policy representation.
 Owner checks compare 903 detector cases, the 17-rule generated catalogue,
 112 actual Python addon/PDP operations, eight cached reload steps and 1,800
 addon-enable queries. Native H1 and H2-inside-owned-TLS request-head activation
-is covered by focused wire candidates but independent acceptance remains
+is covered by focused wire candidates; the parser-boundary subset (D48, ordered
+duplicates and invalid-byte forwarding) is independently accepted at
+`629e7754`, while full credential-path and production-chain acceptance remains
 pending. Header values that contain invalid UTF-8 retain each source byte in a
 private reversible security-text representation, and source `\uDCxx` patterns
 match those bytes while parser-owned forwarding remains unchanged. Controlled
