@@ -1,8 +1,8 @@
 # #627 native operator controls evidence
 
 This candidate is based on integration commit
-`fe3df9c5f5a907a9505396c9f68e1d2bc7b11e6e` on branch
-`feat/issue-627-candidate`. It keeps the operator listener, audit writer,
+`46681aa7a23d58bdaffec6f631cb7e9227b2241a` on branch
+`feat/issue-627-facade-resume`. It keeps the operator listener, audit writer,
 policy owner, agent discovery state, service mutation owner, and gateway store
 already supplied by the native runtime. The test fixture uses only synthetic
 tokens, policy identifiers, and loopback endpoints.
@@ -35,30 +35,45 @@ prompt → `/admin/policy/baseline/deny` → retry path: both attempts return 42
 the controlled loopback origin receives zero requests, and
 `GET /admin/approvals` retains only the second request ID.
 
-The owned wire tests are
-`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`
-and
-`proxy/tests/operator_controls.rs::native_operator_approval_denial_then_retry_stays_pending`.
-From `candidate/proxy`, the exact guarded commands and results were:
+The owned native wire tests are
+`proxy/tests/operator_controls.rs::native_operator_consumer_controls_and_event_stream_are_live`,
+`native_operator_approval_denial_then_retry_is_resolved`,
+`native_operator_event_reconnect_does_not_replay_old_events`,
+`native_operator_stalled_event_subscriber_does_not_block_controls`,
+`native_operator_invalid_mutations_are_terminal_and_state_preserving`, and
+`native_operator_mutations_keep_committed_state_when_audit_sink_fails`.
+The retained Python consumers are
+`tests/proxy_migration/test_operator_consumer_approval.py`,
+`test_operator_task_api.py`, and
+`test_operator_modes_and_listeners.py`. The latter drives the existing mode
+and listener consumers against live enforcement and records the exact
+ignore-host publication and clearing events while #631 retains matching
+semantics. From `candidate/proxy`, the exact guarded commands and results were:
 
 ```text
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh check
+SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh check
 PASS
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --test operator_controls -- --nocapture
-PASS: 2 passed, 0 failed
+SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh test --test operator_controls -- --nocapture
+PASS: 6 passed, 0 failed
 
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --lib admin_api -- --nocapture
-PASS: 50 passed, 0 failed
-
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh test --test admin_budgets -- --nocapture
-PASS: 4 passed, 0 failed, 1 ignored (source-Python oracle)
-
-SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/623-http-work/target ../scripts/cargo_with_space.sh clippy --lib --tests -- -D warnings
+SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh build --bin safeyolo-proxy
 PASS
+
+SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_modes_and_listeners.py --proxy-backend rust
+PASS: 3 passed, 0 failed
+
+SAFEYOLO_DATA_DIR=/tmp/safeyolo-facade-py-data SAFEYOLO_RUST_PROXY=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target/debug/safeyolo-proxy SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration/test_operator_consumer_approval.py tests/proxy_migration/test_operator_task_api.py --proxy-backend rust
+PASS: 3 passed, 0 failed
+
+uv run --frozen pytest -q cli/tests/test_api.py cli/tests/test_ignore_hosts.py
+PASS: 62 passed, 0 failed
 
 cargo fmt --all -- --check
-PASS
+KNOWN BASELINE DIFF: proxy/src/trace/tests.rs and proxy/tests/credential_http.rs
+
+SAFEYOLO_CARGO_RESERVE_GIB=20 CARGO_TARGET_DIR=/home/agent/safeyolo-rust-620-evidence/facade-resume-work/target ../scripts/cargo_with_space.sh clippy --lib --tests -- -D warnings
+KNOWN BASELINE FAILURE: existing dead-code, clippy style, and too-many-arguments findings in agent_api/plumb.rs, admin_api.rs, admin_listener/mutation_tests.rs, grants.rs, and policy.rs
 ```
 
 The existing `admin_transport` source-parity test remains a known inherited
@@ -69,10 +84,10 @@ change that unrelated startup audit behavior or its fixture.
 
 The following acceptance work remains with the existing owners and is not
 claimed by this slice: native agent start, stop, and desktop presentation;
-proxy listener mode, ignore-host, and web-tailnet controls; plumb approval and
-conversation routes; task activation/deletion; full live agent approval/retry
-flows; gateway grant and contract-binding mutations already owned by the
-retained #624/#625 handlers; and Python CLI selection of the native event URL.
-Those routes require their existing lifecycle, gateway, plumb, presentation,
-or collaboration owners. No duplicate state store or alternate service client
-was added here.
+passthrough matching and reload/removal semantics owned by #631; web-tailnet
+controls; plumb approval and conversation routes; full live agent
+approval/retry flows; gateway grant and contract-binding mutations already
+owned by the retained #624/#625 handlers; and Python CLI selection of the
+native event URL. Those routes require their existing lifecycle, gateway,
+plumb, presentation, or collaboration owners. No duplicate state store or
+alternate service client was added here.

@@ -230,12 +230,12 @@ checked.
 
 | Operation | Status | Owner or evidence |
 |---|---|---|
-| GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; focused facade and transport tests. |
-| GET `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents` | Implemented | Native `admin_api`; state and audit owners. |
+| GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
+| GET `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents` | Implemented | Native `admin_api`; state and audit owners, with the native wire and retained approval workflows exercising identity, approval, and agent reads. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
 | GET `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` | Implemented | Native #625 gateway store and retained plumb owner. |
-| POST `/admin/policy/validate`, `/admin/policy/baseline/{approve,deny}` | Implemented | Native policy file and canonical audit writer. |
+| POST `/admin/policy/validate`, `/admin/policy/baseline/{approve,deny}` | Implemented | Native policy file and canonical audit writer; approval and denial consumers are covered by `tests/proxy_migration/test_operator_consumer_approval.py`. |
 | POST `/admin/policy/host/{allow,deny,rate,bypass}`, `/admin/budgets/reset`, `/admin/circuit-breaker/reset` | Implemented | Native approval, budget and circuit owners. |
 | POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
 | POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
@@ -245,12 +245,25 @@ checked.
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
 | POST `/admin/policy/task/{id}/activate` | Implemented | Native task activation publishes enforcement, `/config` and hash together; retained `AdminAPI` and live listener workflow prove the boundary. |
 | DELETE `/admin/policy/task/{id}` | Implemented | Native task clear removes the registered document and selected overlay; retained `AdminAPI` and live listener workflow prove baseline restoration. |
-| PUT `/admin/proxy/mode` | Retained consumer wiring | Rust listener updates use `rust_proxy.sync_listeners`: the existing agent lifecycle consumer edits only managed entries, sends SIGHUP, and waits for the exact readiness reload marker. Direct proxy-mode HTTP remains a Python-only route. |
-| PUT `/admin/proxy/ignore-hosts` | Delegated | The existing CLI normalizes entries and retains the publication call; passthrough matching, reload effect and removal remain owned by #631. |
+| PUT `/admin/proxy/mode` | Retained consumer wiring | Rust listener updates use `rust_proxy.sync_listeners`: the existing agent lifecycle consumer edits only managed entries, sends SIGHUP, and waits for the exact readiness reload marker. Direct proxy-mode HTTP remains a Python-only route; the live mode consumer is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
+| PUT `/admin/proxy/ignore-hosts` | Delegated | The existing CLI normalizes entries and the live consumer publication is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`; passthrough matching, reload effect and removal remain owned by #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
-| Add/remove listeners through retained operator consumers | Implemented | `sync_proxy_modes` replaces only conventional managed sockets, preserves custom listeners, signals the native reload owner and confirms the resulting socket set. The real Rust workflow test adds Bob, removes Alice, and sends requests through the resulting sockets. |
+| Add/remove listeners through retained operator consumers | Implemented | `sync_proxy_modes` replaces only conventional managed sockets, preserves custom listeners, signals the native reload owner and confirms the resulting socket set. `tests/proxy_migration/test_operator_modes_and_listeners.py` adds Bob, removes Alice, and sends requests through the resulting sockets. |
 | GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`; its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. |
 | GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
+
+The focused native facade and retained-client workflows are grouped by the
+consumer that crosses the boundary. `proxy/tests/operator_controls.rs`
+exercises authenticated native reads, policy and mode mutations, audit event
+streaming, malformed mutation handling, and audit-sink failures over the real
+admin listener. `tests/proxy_migration/test_operator_consumer_approval.py`
+uses the existing `AdminAPI` and approval helpers for scoped network and
+credential decisions. `tests/proxy_migration/test_operator_task_api.py`
+uses the same client for task registration, activation, clearing, and reload
+ownership. `tests/proxy_migration/test_operator_modes_and_listeners.py`
+uses the existing mode and listener consumers against live enforcement and
+also verifies exact ignore-host publication and clearing. The #631 owner
+retains passthrough matching and its reload/removal semantics.
 
 ## TLS and WebSocket library risks
 

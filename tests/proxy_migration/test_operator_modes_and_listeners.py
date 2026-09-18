@@ -7,11 +7,13 @@ reload marker alone is not sufficient.
 """
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 from safeyolo import rust_proxy
 from safeyolo.api import AdminAPI
+from safeyolo.proxy import sync_proxy_ignore_hosts
 from safeyolo.runtime_identity import process_start_token
 from safeyolo.sockets import path_for
 from tests.proxy_migration.harness import request as send_request
@@ -72,10 +74,70 @@ def test_retained_admin_client_mode_change_reaches_live_enforcement(tmp_path, mo
             assert status == 403, body
             assert origin.accepts == 1
 
+            changed = client.set_all_modes("warn")
+            assert changed["status"] == "updated"
+            modes = client.get_modes()["modes"]
+            assert modes and all(mode == "warn" for mode in modes.values())
+            status, _, body = send_request(proxy.paths["alice"], target)
+            assert status == 200, body
+            assert body == b"hello"
+            assert origin.accepts == 2
 
-def test_retained_listener_consumer_adds_and_removes_real_native_sockets(
-    tmp_path, monkeypatch
-):
+            changed = client.set_all_modes("block")
+            assert changed["status"] == "updated"
+            modes = client.get_modes()["modes"]
+            assert modes and all(mode == "block" for mode in modes.values())
+            status, _, body = send_request(proxy.paths["alice"], target)
+            assert status == 403, body
+            assert origin.accepts == 2
+
+
+def test_retained_ignore_host_consumer_publishes_and_clears_native_entries(tmp_path, monkeypatch):
+    """The existing CLI publisher reaches the native ignore-host route."""
+    cli_root = tmp_path / "cli"
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cli_root))
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "cli-logs"))
+    cli_token = cli_root / "data" / "admin_token"
+    cli_token.parent.mkdir(parents=True)
+    cli_token.write_text("synthetic-ignore-consumer-token\n")
+    token_file = tmp_path / "operator-token"
+    token_file.write_text("synthetic-ignore-consumer-token\n")
+
+    directory = tmp_path / "ignore-hosts"
+    with policy_proxy(
+        "rust",
+        directory,
+        ALLOW,
+        admin_port=0,
+        admin_api_token_file=token_file,
+    ) as proxy:
+        marker = json.loads(proxy.readiness_file.read_text())
+        port = marker["admin_port"]
+        assert sync_proxy_ignore_hosts(["example.test:443"], admin_port=port, timeout=5)
+        assert sync_proxy_ignore_hosts([], admin_port=port, timeout=5)
+
+        audit = directory / "audit.jsonl"
+        deadline = time.monotonic() + 3
+        updates = []
+        while time.monotonic() < deadline:
+            if audit.exists():
+                updates = [
+                    json.loads(line)
+                    for line in audit.read_text().splitlines()
+                    if line and json.loads(line).get("event") == "admin.proxy_ignore_hosts_update"
+                ]
+                if len(updates) >= 2:
+                    break
+            time.sleep(0.02)
+
+        assert len(updates) >= 2
+        assert updates[-2]["details"]["hosts"] == ["example.test:443"]
+        assert updates[-2]["details"]["operator_entry_count"] == 1
+        assert updates[-1]["details"]["hosts"] == []
+        assert updates[-1]["details"]["operator_entry_count"] == 0
+
+
+def test_retained_listener_consumer_adds_and_removes_real_native_sockets(tmp_path, monkeypatch):
     """sync_proxy_modes changes the live native listener set via SIGHUP."""
     cli_root = tmp_path / "cli"
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(cli_root))
