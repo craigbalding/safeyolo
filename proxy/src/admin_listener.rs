@@ -3,6 +3,9 @@
 #[cfg(test)]
 mod stats_tests;
 
+#[cfg(test)]
+mod mutation_tests;
+
 use std::{
     future::Future,
     net::{Ipv4Addr, SocketAddr},

@@ -5,6 +5,7 @@
 use std::{
     io::Write as _,
     net::Ipv4Addr,
+    os::unix::fs::PermissionsExt,
     path::Path,
     sync::{
         Arc,
@@ -529,6 +530,209 @@ use_default_credential_rules = false
     origin_task.abort();
 }
 
+#[tokio::test]
+async fn native_operator_invalid_mutations_are_terminal_and_state_preserving() {
+    let directory = TempDir::new().unwrap();
+    let token = "operator-controls-synthetic";
+    let config = config(directory.path(), token);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let policy_path = config.policy_file.as_ref().unwrap();
+    let before_policy = std::fs::read(policy_path).unwrap();
+
+    // Malformed JSON reaches one terminal response and never enters the
+    // policy transaction.
+    let malformed_baseline = admin(port, token, "PUT", "/admin/policy/baseline", b"{").await;
+    assert_eq!(malformed_baseline.status, 400);
+    assert_eq!(
+        malformed_baseline.json()["error"],
+        "Malformed JSON in request body"
+    );
+    assert_eq!(std::fs::read(policy_path).unwrap(), before_policy);
+
+    // A syntactically valid body with an invalid policy is also rejected before
+    // the durable file changes.
+    let invalid_policy = admin(
+        port,
+        token,
+        "PUT",
+        "/admin/policy/baseline",
+        br#"{"policy":{"permissions":[{"action":"network:request","resource":"*","effect":"not-a-policy-effect"}]}}"#,
+    )
+    .await;
+    assert_eq!(invalid_policy.status, 400);
+    assert_eq!(invalid_policy.json()["error"], "invalid policy");
+    assert_eq!(std::fs::read(policy_path).unwrap(), before_policy);
+
+    // Registration has its own atomic document owner. Both malformed JSON and
+    // an invalid replacement retain the previously registered task.
+    let initial_task = br#"{"policy":{"permissions":[]}}"#;
+    assert_eq!(
+        admin(port, token, "PUT", "/admin/policy/task/alpha", initial_task,)
+            .await
+            .status,
+        200
+    );
+    let malformed_task = admin(port, token, "PUT", "/admin/policy/task/alpha", b"{").await;
+    assert_eq!(malformed_task.status, 400);
+    assert_eq!(
+        malformed_task.json()["error"],
+        "Malformed JSON in request body"
+    );
+    assert_eq!(
+        admin(port, token, "GET", "/admin/policy/task/alpha", b"")
+            .await
+            .json()["policy"],
+        json!({"permissions": []})
+    );
+    let invalid_task = admin(
+        port,
+        token,
+        "PUT",
+        "/admin/policy/task/alpha",
+        br#"{"policy":{"permissions":false}}"#,
+    )
+    .await;
+    assert_eq!(invalid_task.status, 400);
+    assert_eq!(invalid_task.json()["error"], "Invalid policy document");
+    assert_eq!(
+        admin(port, token, "GET", "/admin/policy/task/alpha", b"")
+            .await
+            .json()["policy"],
+        json!({"permissions": []})
+    );
+
+    // The malformed reset bodies terminate before either owner is consulted.
+    // Component controls separately prove that the corresponding counters and
+    // circuit domains retain their pre-request state.
+    let malformed_budget = admin(port, token, "POST", "/admin/budgets/reset", b"{").await;
+    assert_eq!(malformed_budget.status, 400);
+    assert_eq!(
+        malformed_budget.json()["error"],
+        "Malformed JSON in request body"
+    );
+    let malformed_circuit =
+        admin(port, token, "POST", "/admin/circuit-breaker/reset", b"\xff").await;
+    assert_eq!(malformed_circuit.status, 400);
+    assert_eq!(
+        malformed_circuit.json()["error"],
+        "Malformed JSON in request body"
+    );
+
+    let malformed_mode = admin(port, token, "PUT", "/plugins/network-guard/mode", b"{").await;
+    assert_eq!(malformed_mode.status, 400);
+    assert_eq!(
+        malformed_mode.json()["error"],
+        "Malformed JSON in request body"
+    );
+    assert_eq!(
+        admin(port, token, "GET", "/plugins/network-guard/mode", b"",)
+            .await
+            .json()["mode"],
+        "block"
+    );
+
+    // Make the policy directory unable to create the transaction temporary
+    // file. The existing policy bytes remain the only accepted snapshot, and
+    // both baseline and host mutations return one ordinary 400 response.
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let failed_baseline = admin(
+        port,
+        token,
+        "PUT",
+        "/admin/policy/baseline",
+        br#"{"policy":{"budget":10,"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}}"#,
+    )
+    .await;
+    assert_eq!(failed_baseline.status, 400);
+    assert_eq!(failed_baseline.json()["error"], "invalid policy");
+    assert_eq!(std::fs::read(policy_path).unwrap(), before_policy);
+    let failed_host = admin(
+        port,
+        token,
+        "POST",
+        "/admin/policy/host/allow",
+        br#"{"host":"write-failure.example","rate":5}"#,
+    )
+    .await;
+    assert_eq!(failed_host.status, 400);
+    assert_eq!(failed_host.json()["error"], "invalid policy");
+    assert_eq!(std::fs::read(policy_path).unwrap(), before_policy);
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    proxy.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn native_operator_mutations_keep_committed_state_when_audit_sink_fails() {
+    let directory = TempDir::new().unwrap();
+    let token = "operator-controls-synthetic";
+    let mut config = config(directory.path(), token);
+    // This is an actual failing canonical audit sink after Writer::emit has
+    // accepted the event. The worker reports the asynchronous flush failure
+    // through stderr fallback and continues; mutation owners retain their
+    // normal committed response semantics and do not roll state back.
+    // Synchronous submission errors are covered by the crate-internal listener
+    // test.
+    config.audit_log_path = Some("/dev/full".into());
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let policy_path = config.policy_file.as_ref().unwrap();
+
+    let baseline = admin(
+        port,
+        token,
+        "PUT",
+        "/admin/policy/baseline",
+        br#"{"policy":{"budget":10,"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}}"#,
+    )
+    .await;
+    assert_eq!(baseline.status, 200);
+    assert_eq!(baseline.header("x-safeyolo-evidence-error"), None);
+    assert!(
+        std::fs::read_to_string(policy_path)
+            .unwrap()
+            .contains("action = \"network:request\"")
+    );
+
+    let mode = admin(
+        port,
+        token,
+        "PUT",
+        "/plugins/network-guard/mode",
+        br#"{"mode":"warn"}"#,
+    )
+    .await;
+    assert_eq!(mode.status, 200);
+    assert_eq!(mode.header("x-safeyolo-evidence-error"), None);
+    assert_eq!(
+        admin(port, token, "GET", "/plugins/network-guard/mode", b"",)
+            .await
+            .json()["mode"],
+        "warn"
+    );
+
+    let host = admin(
+        port,
+        token,
+        "POST",
+        "/admin/policy/host/allow",
+        br#"{"host":"diagnostic-failure.example","rate":5}"#,
+    )
+    .await;
+    assert_eq!(host.status, 200);
+    assert_eq!(host.header("x-safeyolo-evidence-error"), None);
+    assert!(
+        std::fs::read_to_string(policy_path)
+            .unwrap()
+            .contains("diagnostic-failure.example")
+    );
+
+    proxy.shutdown().await;
+}
+
 async fn connect_stalled_events(port: u16, token: &str) -> TcpStream {
     let socket = TcpSocket::new_v4().unwrap();
     socket.set_recv_buffer_size(4096).unwrap();
@@ -690,10 +894,18 @@ fn admin_port(config: &Config) -> u16 {
 
 struct Reply {
     status: u16,
+    headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
 impl Reply {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+
     fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap()
     }
@@ -715,12 +927,20 @@ async fn admin(port: u16, token: &str, method: &str, path: &str, body: &[u8]) ->
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(
+        bytes
+            .windows(b"HTTP/1.1 ".len())
+            .filter(|window| *window == b"HTTP/1.1 ")
+            .count(),
+        1,
+        "one request must produce one final HTTP response"
+    );
     let split = bytes
         .windows(4)
         .position(|value| value == b"\r\n\r\n")
         .unwrap();
-    let status = std::str::from_utf8(&bytes[..split])
-        .unwrap()
+    let head = std::str::from_utf8(&bytes[..split]).unwrap();
+    let status = head
         .lines()
         .next()
         .unwrap()
@@ -729,8 +949,17 @@ async fn admin(port: u16, token: &str, method: &str, path: &str, body: &[u8]) ->
         .unwrap()
         .parse()
         .unwrap();
+    let headers = head
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let (name, value) = line.split_once(':').unwrap();
+            (name.to_owned(), value.trim().to_owned())
+        })
+        .collect();
     Reply {
         status,
+        headers,
         body: bytes[split + 4..].to_vec(),
     }
 }

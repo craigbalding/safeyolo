@@ -659,6 +659,23 @@ preserve the response and set `X-SafeYolo-Evidence-Error`. Synchronous canonical
 submission exceptions terminate the operator handler before its response;
 accepted task mutations remain committed.
 
+The [native operator control workflow](../proxy/tests/operator_controls.rs)
+also drives malformed baseline/task/mode/reset bodies and invalid baseline/task
+documents over the real admin TCP listener. Each malformed request produces one
+terminal response and leaves the prior document or mode unchanged. A read-only
+policy directory makes the baseline and host transaction writes fail; both
+routes retain the original policy bytes and return their stable 400 response.
+The same workflow points the canonical audit writer at an actual failing sink
+after `Writer::emit` has accepted the event while changing baseline policy, mode
+and host state. This proves the asynchronous flush failure path: the writer
+reports its failure through its bounded fallback, while each committed mutation
+retains its normal 200 response and remains observable through a later read or
+file check. A separate [crate-internal listener test](../proxy/src/admin_listener/mutation_tests.rs)
+poisons the runtime writer so `Writer::emit` fails synchronously for each of
+those three mutations. The real listener then closes the request without an
+HTTP response, while the file or mode state remains committed. These two tests
+cover distinct canonical audit failure boundaries.
+
 The listener uses the first Authorization header and exact `Bearer ` prefix.
 It adds no Origin, Host or CORS restriction. Origin-form targets retain the source
 normalization of leading slashes; absolute-form paths remain distinct.
