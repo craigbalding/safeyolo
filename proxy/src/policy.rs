@@ -2319,7 +2319,9 @@ fn skip_toml_string(bytes: &[u8], start: usize) -> Option<usize> {
     let mut index = start + if triple { 3 } else { 1 };
     while index < bytes.len() {
         if triple {
-            if bytes.get(index..index + 3) == Some(&[quote, quote, quote]) {
+            if bytes.get(index..index + 3) == Some(&[quote, quote, quote])
+                && (quote == b'\'' || !is_escaped(bytes, index))
+            {
                 return Some(index + 3);
             }
             index += 1;
@@ -3682,6 +3684,17 @@ mod yaml_tests {
                 .unwrap()
                 .to_string(),
             "18446744073709551617"
+        );
+        let escaped_triple = "text = \"\"\"before \\\"\"\" 18446744073709551617 after\"\"\"\n";
+        let escaped_value = parse_toml_document(escaped_triple).unwrap();
+        assert_eq!(
+            escaped_value["text"],
+            "before \"\"\" 18446744073709551617 after"
+        );
+        let (escaped_document, escaped_context) = parse_toml_for_edit(escaped_triple).unwrap();
+        assert_eq!(
+            restore_large_toml_integers(&escaped_document.to_string(), &escaped_context),
+            escaped_triple
         );
         let table_key = "[9223372036854775808]\nvalue = 1\n";
         assert_eq!(
