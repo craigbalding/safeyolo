@@ -103,14 +103,23 @@ Use new, empty evidence directories outside the checkout. The commands below
 use `/tmp/safeyolo-migration` as disposable local evidence. The second capture
 reuses the first run's synthetic origin ports, so comparisons retain exact
 ports. The proxy implementations run sequentially.
+Each capture selects the Python source/interpreter or native executable
+explicitly and writes schema 2 identity/resource observations beside the raw
+event and process logs. Rust captures force the native policy path; they never
+include the temporary Python policy adapter.
 
 ```sh
 uv run --frozen python -m tests.proxy_migration.run capture \
-  --backend python --extended-workloads \
+  --backend python --python-source "$PWD" --python-executable "$(command -v python)" \
+  --extended-workloads \
   --evidence /tmp/safeyolo-migration/old \
   --output /tmp/safeyolo-migration/old.json
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/safeyolo/rust-620-target}"
+SAFEYOLO_CARGO_RESERVE_GIB=20 scripts/cargo_with_space.sh \
+  build --locked --release --manifest-path proxy/Cargo.toml
 uv run --frozen python -m tests.proxy_migration.run capture \
-  --backend rust --fixture-from /tmp/safeyolo-migration/old.json \
+  --backend rust --rust-binary "$CARGO_TARGET_DIR/release/safeyolo-proxy" \
+  --rust-build-profile release --fixture-from /tmp/safeyolo-migration/old.json \
   --evidence /tmp/safeyolo-migration/rust \
   --output /tmp/safeyolo-migration/rust.json
 uv run --frozen python -m tests.proxy_migration.run compare \
@@ -133,6 +142,22 @@ the evidence directories. `proxy.egress` observes the old pre-DNS
 `server_connect` hook or Rust's sole outbound entrypoint; neither event claims
 that a socket connection succeeded.
 
+Schema 2 also records the selected source checkout commits and dirty states,
+interpreter/native executable hashes, native-policy provenance, each fixture's
+JSON configuration hash and command line, externally sampled RSS/high-water RSS,
+virtual memory, thread and open-FD counts, and the independent origin request
+observations. The resource samples are observations, not a newly invented
+limit: repeated controls must establish any justified regression tolerance.
+The output and evidence directory are raw result locations and must be retained
+with the exact candidate identity. A debug or unspecified Rust profile remains
+development evidence and must not be called release measurement.
+The result also carries the integrated WebSocket cancellation witness at
+`48761dbc` (owner candidate `afa279b1`): four sequential incomplete-fragment
+WS/WSS cancellations reclaimed anonymous spools and produced no origin frames.
+It keeps RSS/allocator retention, concurrent/compressed/completed workloads and
+large-pattern scans open; this focused capture does not relabel that witness as
+final resource evidence.
+
 ## Workload scope and limits
 
 By default, each capture measures 100 sequential HTTP requests with fresh
@@ -143,18 +168,21 @@ select individual workloads instead. Run WS against Python until the Rust
 slice supports that protocol. Failure in a workload remains a command failure.
 
 On the same development machine, from the repository root with the dependencies
-and binary prepared as described earlier, use fresh evidence directories to
-capture 1,000 short connections and minute-long sessions:
+and release binary prepared as described earlier, use fresh evidence directories
+to capture 1,000 short connections and minute-long sessions:
 
 ```sh
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/safeyolo/rust-620-target}"
 uv run --frozen python -m tests.proxy_migration.run capture \
-  --backend python --workload short --workload sse --workload websocket \
+  --backend python --python-source "$PWD" --python-executable "$(command -v python)" \
+  --workload short --workload sse --workload websocket \
   --requests 1000 --stream-seconds 60 \
   --websocket-seconds 60 --websocket-interval 0.005 \
   --evidence /tmp/safeyolo-migration/sustained-python \
   --output /tmp/safeyolo-migration/sustained-python.json
 uv run --frozen python -m tests.proxy_migration.run capture \
-  --backend rust --workload short --workload sse \
+  --backend rust --rust-binary "$CARGO_TARGET_DIR/release/safeyolo-proxy" \
+  --rust-build-profile release --workload short --workload sse \
   --requests 1000 --stream-seconds 60 \
   --fixture-from /tmp/safeyolo-migration/sustained-python.json \
   --evidence /tmp/safeyolo-migration/sustained-rust \
@@ -167,11 +195,12 @@ arrival and samples memory about once per second. The WS fixture sends
 five-byte echoes for the requested duration. These sessions do not inspect
 fragmentation, compression, large messages, cancellation or slow readers.
 
-On Linux, reports read resident set size (RSS) and process high-water memory from
-`/proc`. Measurements include the temporary policy adapter as a separate role
-when present. The summed RSS counts shared pages more than once; it is not a
-unique physical-memory measurement. Other platforms report unavailable memory
-values. Latency/throughput values are observations, without a performance target.
+On Linux, reports read resident set size (RSS), process high-water memory,
+virtual memory, thread count and open-FD count from `/proc` for the proxy (and
+any explicitly selected child process). The native capture requires no policy
+adapter. The summed RSS counts shared pages more than once; it is not a unique
+physical-memory measurement. Other platforms report unavailable memory values.
+Latency/throughput values are observations, without a performance target.
 
 Neither the original two-second smoke stream nor the later single-stream
 minute-long session proves bounded memory under concurrent production load.

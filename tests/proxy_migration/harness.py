@@ -212,7 +212,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             config["fixture_agent_api"] = agent_api
-            command = [str(python_executable or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]
+            selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
+            command = [str(selected_python or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
