@@ -2647,6 +2647,25 @@ rejects later work. A later loader invocation checks the saved binding; this
 does not prove a running watcher or the complete service authorization and
 forwarding workflow.
 
+The native plumb owner applies the same process-lifetime rule to its blocking
+SQLite calls, memory projections and conversation long polls. Agent request-chat,
+message and leave operations, plus operator approval, denial and close, keep
+their committed projection and canonical audit attempt inside the process-owned
+operation. Shutdown closes plumb admission and wakes active polls before
+listener drain, then joins admitted operations and their store calls; a
+canceled caller drops only its response receiver. New calls return the existing
+503 unavailable response after the stop fence. The focused plumb controls
+`shutdown_wakes_waiters_and_closes_new_plumb_admission`,
+`canceled_store_call_remains_owned_until_plumb_drain`,
+`canceled_request_chat_keeps_projection_and_canonical_audit` and
+`canceled_approval_keeps_projection_and_both_canonical_audits` cover these
+boundaries. `request_audit_submission_failure_keeps_committed_projection` and
+`admin_audit_submission_failure_keeps_committed_projection` inject writer
+failure and verify that committed state remains durable. The existing
+persistence test reopens the same state directory after a restart. Blocking
+SQLite work can still extend graceful shutdown, and abrupt termination or
+ordinary `Drop` do not claim this drain.
+
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation
 errors; arbitrary source JSON values and non-TOML mutation parity are unproved.

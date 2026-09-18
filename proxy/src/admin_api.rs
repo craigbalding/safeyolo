@@ -620,6 +620,25 @@ fn mutation(event: &'static str, summary: impl Into<String>, details: Value) -> 
     })
 }
 
+/// Build the canonical operator plumb events while the process-owned mailbox
+/// worker still owns the committed projection and its audit responsibility.
+pub(crate) fn plumb_events(
+    event: &'static str,
+    summary: String,
+    details: Value,
+    agent: Option<String>,
+    decision: crate::audit::Decision,
+) -> Vec<crate::audit::Event> {
+    Audit::PlumbMutation(PlumbMutationAudit {
+        event,
+        summary,
+        details,
+        agent,
+        decision,
+    })
+    .canonical_events("", "")
+}
+
 fn require_policy_path(path: Option<&Path>) -> Result<&Path, Box<Outcome>> {
     path.ok_or_else(|| {
         Box::new(response(
@@ -1385,7 +1404,8 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 json!({"error":"plumb backing state unavailable"}),
             ));
         }
-        let (result, event, summary, details, agent, decision) = match path.as_str() {
+        let writer = audit.cloned();
+        let result = match path.as_str() {
             "/admin/plumb/approve" => {
                 let Some(request_id) = fields
                     .get("request_id")
@@ -1402,36 +1422,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     Value::String(value) => value.parse().ok(),
                     _ => None,
                 });
-                let result = owner.approve(request_id, operator_ttl).await;
-                let participants = result
-                    .get("participants")
-                    .cloned()
-                    .unwrap_or_else(|| json!([]));
-                let conversation_id = result
-                    .get("conversation_id")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let agent = result
-                    .get("requested_by")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                (
-                    result.clone(),
-                    "plumb.approved",
-                    format!(
-                        "chat approved: {}",
-                        participants
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ),
-                    json!({"request_id":request_id,"participants":participants,"conversation_id":conversation_id}),
-                    agent,
-                    crate::audit::Decision::Allow,
-                )
+                owner
+                    .approve_owned(request_id.to_owned(), operator_ttl, writer.clone())
+                    .await?
             }
             "/admin/plumb/deny" => {
                 let Some(request_id) = fields
@@ -1444,26 +1437,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         json!({"error":"missing 'request_id'"}),
                     ));
                 };
-                let pending = owner.pending_details(request_id).await;
-                let result = owner.deny(request_id).await;
-                let participants = pending
-                    .as_ref()
-                    .and_then(|value| value.get("participants"))
-                    .cloned()
-                    .unwrap_or_else(|| json!([]));
-                let agent = pending
-                    .as_ref()
-                    .and_then(|value| value.get("requester"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-                (
-                    result.clone(),
-                    "plumb.denied",
-                    format!("chat denied: {request_id}"),
-                    json!({"request_id":request_id,"participants":participants}),
-                    agent,
-                    crate::audit::Decision::Deny,
-                )
+                owner
+                    .deny_owned(request_id.to_owned(), writer.clone())
+                    .await?
             }
             _ => {
                 let Some(conversation_id) = fields
@@ -1476,29 +1452,12 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         json!({"error":"missing 'conversation_id'"}),
                     ));
                 };
-                let result = owner.close(conversation_id).await;
-                (
-                    result.clone(),
-                    "plumb.conversation_closed",
-                    format!("conversation {conversation_id} closed: operator closed"),
-                    json!({"conversation_id":conversation_id,"reason":"operator closed"}),
-                    None,
-                    crate::audit::Decision::Log,
-                )
+                owner
+                    .close_owned(conversation_id.to_owned(), writer.clone())
+                    .await?
             }
         };
-        let status = result.get("status").and_then(Value::as_u64).unwrap_or(200);
-        let mut outcome = plumb_response(result);
-        if status == 200 {
-            outcome.audit = Some(Audit::PlumbMutation(PlumbMutationAudit {
-                event,
-                summary,
-                details,
-                agent,
-                decision,
-            }));
-        }
-        return Ok(outcome);
+        return Ok(plumb_response(result));
     }
     if method == Method::GET && path == "/admin/agents" {
         let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {

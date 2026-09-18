@@ -139,7 +139,7 @@ where
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
     }
     if route(request).starts_with("/plumb") {
-        return plumb::respond(request, body, controls.plumb).await;
+        return plumb::respond(request, body, controls.plumb, controls.audit.cloned()).await;
     }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);

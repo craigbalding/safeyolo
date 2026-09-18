@@ -4,12 +4,13 @@
 //! files used by the legacy host service.  Request identity is supplied by
 //! the accepted agent listener; participant fields are data only.  The
 //! operator and agent routes below share one owner and therefore observe one
-//! approval/membership state.  Long polls wait on a per-conversation watch
-//! channel and are owned by the request task, so shutdown cannot leave a
-//! detached polling worker behind.
+//! approval/membership state. Long polls wait on a per-conversation watch
+//! channel, while admitted mutations and their audit attempts stay with the
+//! process owner after a request future is dropped.
 
 use std::{
     collections::HashMap,
+    future::Future,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -18,7 +19,10 @@ use std::{
 use hyper::body::Body;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex as AsyncMutex, watch};
+use tokio::{
+    sync::{Mutex as AsyncMutex, oneshot, watch},
+    task::JoinSet,
+};
 use zeroize::Zeroizing;
 
 use super::declarations::{content_error, read_content};
@@ -426,16 +430,20 @@ impl Drop for WaiterGuard<'_> {
 
 /// Process-owned owner for one native mailbox. Runtime retains one owner across
 /// policy reloads; tests can construct an isolated owner with `for_data_dir`.
+#[derive(Clone)]
 pub(crate) struct PlumbOwner {
     store: Option<Arc<Store>>,
-    memory: AsyncMutex<Memory>,
+    memory: Arc<AsyncMutex<Memory>>,
+    calls: Arc<AsyncMutex<JoinSet<()>>>,
+    operations: Arc<AsyncMutex<JoinSet<()>>>,
+    closing: Arc<std::sync::atomic::AtomicBool>,
     error: Option<String>,
-    limits: std::sync::RwLock<Limits>,
+    limits: Arc<std::sync::RwLock<Limits>>,
     scanner: Scanner,
-    scan_failure: std::sync::atomic::AtomicBool,
-    waiters: std::sync::atomic::AtomicUsize,
+    scan_failure: Arc<std::sync::atomic::AtomicBool>,
+    waiters: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    waiter_started: tokio::sync::Notify,
+    waiter_started: Arc<tokio::sync::Notify>,
 }
 
 impl PlumbOwner {
@@ -453,30 +461,36 @@ impl PlumbOwner {
         match Store::open(&path) {
             Ok((store, memory)) => Self {
                 store: Some(store),
-                memory: AsyncMutex::new(memory),
+                memory: Arc::new(AsyncMutex::new(memory)),
+                calls: Arc::new(AsyncMutex::new(JoinSet::new())),
+                operations: Arc::new(AsyncMutex::new(JoinSet::new())),
+                closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 error: None,
-                limits: std::sync::RwLock::new(Limits::default()),
+                limits: Arc::new(std::sync::RwLock::new(Limits::default())),
                 scanner,
-                scan_failure: std::sync::atomic::AtomicBool::new(scan_failure),
-                waiters: std::sync::atomic::AtomicUsize::new(0),
+                scan_failure: Arc::new(std::sync::atomic::AtomicBool::new(scan_failure)),
+                waiters: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 #[cfg(test)]
-                waiter_started: tokio::sync::Notify::new(),
+                waiter_started: Arc::new(tokio::sync::Notify::new()),
             },
             Err(error) => Self {
                 store: None,
-                memory: AsyncMutex::new(Memory {
+                memory: Arc::new(AsyncMutex::new(Memory {
                     pending: HashMap::new(),
                     conversations: HashMap::new(),
                     notifications: HashMap::new(),
                     generation: HashMap::new(),
-                }),
+                })),
+                calls: Arc::new(AsyncMutex::new(JoinSet::new())),
+                operations: Arc::new(AsyncMutex::new(JoinSet::new())),
+                closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 error: Some(error.to_string()),
-                limits: std::sync::RwLock::new(Limits::default()),
+                limits: Arc::new(std::sync::RwLock::new(Limits::default())),
                 scanner,
-                scan_failure: std::sync::atomic::AtomicBool::new(scan_failure),
-                waiters: std::sync::atomic::AtomicUsize::new(0),
+                scan_failure: Arc::new(std::sync::atomic::AtomicBool::new(scan_failure)),
+                waiters: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 #[cfg(test)]
-                waiter_started: tokio::sync::Notify::new(),
+                waiter_started: Arc::new(tokio::sync::Notify::new()),
             },
         }
     }
@@ -493,6 +507,59 @@ impl PlumbOwner {
 
     pub(crate) fn available(&self) -> bool {
         self.error.is_none()
+    }
+
+    /// Stop new store work and wake long polls before the process drains its
+    /// accepted listeners. Existing calls remain owned by this process until
+    /// their blocking SQLite operation returns.
+    pub(crate) async fn stop_admission(&self) {
+        let _operations = self.operations.lock().await;
+        self.closing
+            .store(true, std::sync::atomic::Ordering::Release);
+        let memory = self.memory.lock().await;
+        for sender in memory.notifications.values() {
+            let next = sender.borrow().saturating_add(1);
+            sender.send_replace(next);
+        }
+    }
+
+    /// Join all blocking store calls admitted before shutdown. A canceled
+    /// request drops only its result receiver; the blocking call remains in
+    /// this owner until it reaches a terminal SQLite result.
+    pub(crate) async fn drain(&self) {
+        {
+            let mut operations = self.operations.lock().await;
+            while let Some(result) = operations.join_next().await {
+                if let Err(error) = result {
+                    eprintln!("plumb operation failed: {error}");
+                }
+            }
+        }
+        let mut calls = self.calls.lock().await;
+        while let Some(result) = calls.join_next().await {
+            if let Err(error) = result {
+                eprintln!("plumb store task failed: {error}");
+            }
+        }
+    }
+
+    /// Run the whole mailbox operation under the process owner. The caller
+    /// receives only a result channel; dropping that channel does not cancel
+    /// persistence, projection updates, or the operation's audit attempt.
+    async fn spawn_owned<T: Send + 'static>(
+        &self,
+        work: impl Future<Output = T> + Send + 'static,
+    ) -> Result<oneshot::Receiver<T>, ()> {
+        let (sender, receiver) = oneshot::channel();
+        let mut operations = self.operations.lock().await;
+        while operations.try_join_next().is_some() {}
+        if self.closing.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(());
+        }
+        operations.spawn(async move {
+            let _ = sender.send(work.await);
+        });
+        Ok(receiver)
     }
 
     pub(crate) fn configure_limits(
@@ -549,14 +616,26 @@ impl PlumbOwner {
     }
 
     async fn db_call<T: Send + 'static>(
+        &self,
         store: Arc<Store>,
         call: impl FnOnce(Arc<Store>) -> rusqlite::Result<T> + Send + 'static,
     ) -> Result<T, ()> {
-        tokio::task::spawn_blocking(move || call(store))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .ok_or(())
+        let (sender, receiver) = oneshot::channel();
+        let mut calls = self.calls.lock().await;
+        while calls.try_join_next().is_some() {}
+        calls.spawn_blocking(move || {
+            let _ = sender.send(call(store));
+        });
+        drop(calls);
+        receiver.await.ok().and_then(Result::ok).ok_or(())
+    }
+
+    async fn is_closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn closing_response() -> Value {
+        json!({"status":503,"error":"plumb backing state unavailable"})
     }
 
     fn id(prefix: &str) -> String {
@@ -610,6 +689,9 @@ impl PlumbOwner {
         note: Option<&Value>,
         ttl: Option<&Value>,
     ) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let mut invalid_participant = false;
         let mut names = participants
             .iter()
@@ -655,7 +737,8 @@ impl PlumbOwner {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         };
         let db_request = request.clone();
-        if Self::db_call(store.clone(), move |store| store.put_pending(&db_request))
+        if self
+            .db_call(store.clone(), move |store| store.put_pending(&db_request))
             .await
             .is_err()
         {
@@ -677,6 +760,9 @@ impl PlumbOwner {
     }
 
     pub(crate) async fn list_conversations(&self, agent_name: &str) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let memory = self.memory.lock().await;
         let conversations = memory
             .conversations
@@ -735,7 +821,10 @@ impl PlumbOwner {
         body: &str,
         references: Value,
     ) -> Value {
-        let raw_size = body.as_bytes().len();
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
+        let raw_size = body.len();
         let limits = self.limits();
         if limits.max_message_bytes != 0 && raw_size > limits.max_message_bytes {
             return json!({"status":413,"error":"message too large"});
@@ -772,7 +861,8 @@ impl PlumbOwner {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         };
         let message_id = message.id.clone();
-        if Self::db_call(store.clone(), move |store| store.append_message(&message))
+        if self
+            .db_call(store.clone(), move |store| store.append_message(&message))
             .await
             .is_err()
         {
@@ -790,6 +880,9 @@ impl PlumbOwner {
         wait: u64,
         limit: usize,
     ) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let configured_page_limit = self.limits().page_limit;
         let page_limit = if limit == 0 {
             configured_page_limit
@@ -810,7 +903,7 @@ impl PlumbOwner {
         let conversation_for_page = conversation_id.to_owned();
         let after_for_page = after.clone();
         let snapshot = || async {
-            Self::db_call(store_for_page.clone(), {
+            self.db_call(store_for_page.clone(), {
                 let conversation_id = conversation_for_page.clone();
                 let after = after_for_page.clone();
                 move |store| store.list_messages(&conversation_id, after.as_deref(), page_limit)
@@ -834,6 +927,9 @@ impl PlumbOwner {
                 let _waiter = WaiterGuard(&self.waiters);
                 let timeout = tokio::time::Duration::from_secs(wait.min(MAX_WAIT_SECONDS));
                 let _ = tokio::time::timeout(timeout, receiver.changed()).await;
+                if self.is_closing().await {
+                    return Self::closing_response();
+                }
                 page = match snapshot().await {
                     Ok(page) => page,
                     Err(()) => {
@@ -851,11 +947,15 @@ impl PlumbOwner {
         })
     }
 
+    #[cfg(test)]
     pub(crate) async fn leave(&self, agent_name: &str, conversation_id: &str) -> Value {
         self.leave_with_closed(agent_name, conversation_id).await.0
     }
 
     async fn leave_with_closed(&self, agent_name: &str, conversation_id: &str) -> (Value, bool) {
+        if self.is_closing().await {
+            return (Self::closing_response(), false);
+        }
         let Some(store) = &self.store else {
             return (
                 json!({"status":503,"error":"plumb backing state unavailable"}),
@@ -877,14 +977,14 @@ impl PlumbOwner {
         updated.participants.retain(|value| value != agent_name);
         let close = updated.participants.len() <= 1;
         let result = if close {
-            Self::db_call(store.clone(), {
+            self.db_call(store.clone(), {
                 let id = conversation_id.to_owned();
                 move |store| store.close_conversation(&id)
             })
             .await
         } else {
             let db_updated = updated.clone();
-            Self::db_call(store.clone(), move |store| {
+            self.db_call(store.clone(), move |store| {
                 store.put_conversation(&db_updated)
             })
             .await
@@ -906,11 +1006,17 @@ impl PlumbOwner {
     }
 
     pub(crate) async fn list_pending(&self) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let memory = self.memory.lock().await;
         json!({"status":200,"pending":memory.pending.values().filter(|request| request.status == "pending").map(pending_json).collect::<Vec<_>>()})
     }
 
     pub(crate) async fn pending_details(&self, request_id: &str) -> Option<Value> {
+        if self.is_closing().await {
+            return None;
+        }
         let memory = self.memory.lock().await;
         memory
             .pending
@@ -920,11 +1026,17 @@ impl PlumbOwner {
     }
 
     pub(crate) async fn admin_list_conversations(&self) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let memory = self.memory.lock().await;
         json!({"status":200,"conversations":memory.conversations.values().map(conversation_json).collect::<Vec<_>>()})
     }
 
     pub(crate) async fn approve(&self, request_id: &str, operator_ttl: Option<i64>) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let Some(store) = &self.store else {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         };
@@ -949,11 +1061,12 @@ impl PlumbOwner {
             expires_at: now() + ttl as f64,
         };
         let db_conversation = conversation.clone();
-        let result = Self::db_call(store.clone(), {
-            let request_id = request_id.to_owned();
-            move |store| store.approve_request(&request_id, &db_conversation)
-        })
-        .await;
+        let result = self
+            .db_call(store.clone(), {
+                let request_id = request_id.to_owned();
+                move |store| store.approve_request(&request_id, &db_conversation)
+            })
+            .await;
         if result.is_err() {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         }
@@ -969,6 +1082,9 @@ impl PlumbOwner {
     }
 
     pub(crate) async fn deny(&self, request_id: &str) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let Some(store) = &self.store else {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         };
@@ -981,12 +1097,13 @@ impl PlumbOwner {
         else {
             return json!({"status":404,"error":"unknown or already-resolved request"});
         };
-        if Self::db_call(store.clone(), {
-            let request_id = request_id.to_owned();
-            move |store| store.set_pending_status(&request_id, "denied")
-        })
-        .await
-        .is_err()
+        if self
+            .db_call(store.clone(), {
+                let request_id = request_id.to_owned();
+                move |store| store.set_pending_status(&request_id, "denied")
+            })
+            .await
+            .is_err()
         {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         }
@@ -997,6 +1114,9 @@ impl PlumbOwner {
     }
 
     pub(crate) async fn close(&self, conversation_id: &str) -> Value {
+        if self.is_closing().await {
+            return Self::closing_response();
+        }
         let Some(store) = &self.store else {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         };
@@ -1004,18 +1124,301 @@ impl PlumbOwner {
         if !memory.conversations.contains_key(conversation_id) {
             return json!({"status":404,"error":"unknown conversation"});
         }
-        if Self::db_call(store.clone(), {
-            let id = conversation_id.to_owned();
-            move |store| store.close_conversation(&id)
-        })
-        .await
-        .is_err()
+        if self
+            .db_call(store.clone(), {
+                let id = conversation_id.to_owned();
+                move |store| store.close_conversation(&id)
+            })
+            .await
+            .is_err()
         {
             return json!({"status":503,"error":"plumb backing state unavailable"});
         }
         memory.conversations.remove(conversation_id);
         json!({"status":200,"closed":conversation_id})
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn request_chat_owned(
+        &self,
+        request_id: String,
+        requester: String,
+        participants: Vec<Value>,
+        topic: Option<Value>,
+        note: Option<Value>,
+        ttl: Option<Value>,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Value {
+        let owner = self.clone();
+        let receiver = match self
+            .spawn_owned(async move {
+                let result = owner
+                    .request_chat(
+                        &requester,
+                        &participants,
+                        topic.as_ref(),
+                        note.as_ref(),
+                        ttl.as_ref(),
+                    )
+                    .await;
+                if result["status"].as_u64() == Some(202)
+                    && submit_agent_audit(
+                        writer.as_ref(),
+                        Some(audit_request_values(
+                            &request_id,
+                            &requester,
+                            result.clone(),
+                        )),
+                    )
+                    .is_err()
+                {
+                    return json!({"status":500,"error":"Internal error: RuntimeError"});
+                }
+                result
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Self::closing_response(),
+        };
+        receiver.await.unwrap_or_else(|_| Self::closing_response())
+    }
+
+    async fn post_message_owned(
+        &self,
+        request_id: String,
+        agent_name: String,
+        conversation_id: String,
+        body: String,
+        references: Value,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Value {
+        let owner = self.clone();
+        let raw_size = body.len();
+        let receiver = match self
+            .spawn_owned(async move {
+                let result = owner
+                    .post_message(&agent_name, &conversation_id, &body, references)
+                    .await;
+                let _ = submit_agent_audit(
+                    writer.as_ref(),
+                    message_audit_values(
+                        &request_id,
+                        &agent_name,
+                        &conversation_id,
+                        raw_size,
+                        &result,
+                    ),
+                );
+                result
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Self::closing_response(),
+        };
+        receiver.await.unwrap_or_else(|_| Self::closing_response())
+    }
+
+    async fn leave_owned(
+        &self,
+        request_id: String,
+        agent_name: String,
+        conversation_id: String,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Value {
+        let owner = self.clone();
+        let conversation_for_audit = conversation_id.clone();
+        let receiver = match self
+            .spawn_owned(async move {
+                let (result, closed) = owner.leave_with_closed(&agent_name, &conversation_id).await;
+                if closed && result["status"].as_u64() == Some(200) {
+                    let _ = submit_agent_audit(
+                        writer.as_ref(),
+                        Some(conversation_closed_audit_values(
+                            &request_id,
+                            &conversation_for_audit,
+                            "last participant left",
+                        )),
+                    );
+                }
+                result
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Self::closing_response(),
+        };
+        receiver.await.unwrap_or_else(|_| Self::closing_response())
+    }
+
+    pub(crate) async fn approve_owned(
+        &self,
+        request_id: String,
+        operator_ttl: Option<i64>,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Result<Value, crate::admin_api::Error> {
+        let owner = self.clone();
+        let request_for_audit = request_id.clone();
+        let receiver = match self
+            .spawn_owned(async move {
+                let result = owner.approve(&request_id, operator_ttl).await;
+                if result["status"].as_u64() == Some(200) {
+                    let participants = result
+                        .get("participants")
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                    let details = json!({
+                        "request_id": request_for_audit,
+                        "participants": participants,
+                        "conversation_id": result.get("conversation_id").cloned().unwrap_or(Value::Null),
+                    });
+                    let agent = result
+                        .get("requested_by")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    submit_admin_plumb_audit(
+                        writer.as_ref(),
+                        "plumb.approved",
+                        format!(
+                            "chat approved: {}",
+                            details["participants"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                        details,
+                        agent,
+                        crate::audit::Decision::Allow,
+                    )?;
+                }
+                Ok(result)
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Ok(Self::closing_response()),
+        };
+        receiver
+            .await
+            .unwrap_or_else(|_| Ok(Self::closing_response()))
+    }
+
+    pub(crate) async fn deny_owned(
+        &self,
+        request_id: String,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Result<Value, crate::admin_api::Error> {
+        let owner = self.clone();
+        let request_for_audit = request_id.clone();
+        let receiver = match self
+            .spawn_owned(async move {
+                let pending = owner.pending_details(&request_id).await;
+                let result = owner.deny(&request_id).await;
+                if result["status"].as_u64() == Some(200) {
+                    let participants = pending
+                        .as_ref()
+                        .and_then(|value| value.get("participants"))
+                        .cloned()
+                        .unwrap_or_else(|| json!([]));
+                    let agent = pending
+                        .as_ref()
+                        .and_then(|value| value.get("requester"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    submit_admin_plumb_audit(
+                        writer.as_ref(),
+                        "plumb.denied",
+                        format!("chat denied: {request_for_audit}"),
+                        json!({
+                            "request_id": request_for_audit,
+                            "participants": participants,
+                        }),
+                        agent,
+                        crate::audit::Decision::Deny,
+                    )?;
+                }
+                Ok(result)
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Ok(Self::closing_response()),
+        };
+        receiver
+            .await
+            .unwrap_or_else(|_| Ok(Self::closing_response()))
+    }
+
+    pub(crate) async fn close_owned(
+        &self,
+        conversation_id: String,
+        writer: Option<Arc<crate::audit::Writer>>,
+    ) -> Result<Value, crate::admin_api::Error> {
+        let owner = self.clone();
+        let conversation_for_audit = conversation_id.clone();
+        let receiver = match self
+            .spawn_owned(async move {
+                let result = owner.close(&conversation_id).await;
+                if result["status"].as_u64() == Some(200) {
+                    submit_admin_plumb_audit(
+                        writer.as_ref(),
+                        "plumb.conversation_closed",
+                        format!("conversation {conversation_for_audit} closed: operator closed"),
+                        json!({
+                            "conversation_id": conversation_for_audit,
+                            "reason": "operator closed",
+                        }),
+                        None,
+                        crate::audit::Decision::Log,
+                    )?;
+                }
+                Ok(result)
+            })
+            .await
+        {
+            Ok(receiver) => receiver,
+            Err(()) => return Ok(Self::closing_response()),
+        };
+        receiver
+            .await
+            .unwrap_or_else(|_| Ok(Self::closing_response()))
+    }
+}
+
+fn submit_agent_audit(
+    writer: Option<&Arc<crate::audit::Writer>>,
+    intent: Option<super::AuditIntent>,
+) -> Result<(), crate::audit::ErrorKind> {
+    if let (Some(writer), Some(intent)) = (writer, intent) {
+        writer
+            .emit(intent.to_event())
+            .map(|_| ())
+            .map_err(|error| error.kind())?;
+    }
+    Ok(())
+}
+
+fn submit_admin_plumb_audit(
+    writer: Option<&Arc<crate::audit::Writer>>,
+    event: &'static str,
+    summary: String,
+    details: Value,
+    agent: Option<String>,
+    decision: crate::audit::Decision,
+) -> Result<(), crate::admin_api::Error> {
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+    for event in crate::admin_api::plumb_events(event, summary, details, agent, decision) {
+        writer
+            .emit(event)
+            .map_err(|error| crate::admin_api::Error::Audit(error.kind()))?;
+    }
+    Ok(())
 }
 
 fn pending_json(request: &Pending) -> Value {
@@ -1073,8 +1476,25 @@ fn query(path_and_query: &str, name: &str) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn message_audit(
     request: Request<'_>,
+    agent_name: &str,
+    conversation_id: &str,
+    raw_size: usize,
+    result: &Value,
+) -> Option<super::AuditIntent> {
+    message_audit_values(
+        request.request_id,
+        agent_name,
+        conversation_id,
+        raw_size,
+        result,
+    )
+}
+
+fn message_audit_values(
+    request_id: &str,
     agent_name: &str,
     conversation_id: &str,
     raw_size: usize,
@@ -1139,7 +1559,7 @@ fn message_audit(
         addon: "plumb",
         summary,
         agent: Some(agent_name.to_owned()),
-        request_id: Some(request.request_id.to_owned()),
+        request_id: Some(request_id.to_owned()),
         host: Some(super::API_HOST.to_owned()),
         details: json!({
             "conversation_id": conversation_id,
@@ -1149,8 +1569,17 @@ fn message_audit(
     })
 }
 
+#[cfg(test)]
 fn conversation_closed_audit(
     request: Request<'_>,
+    conversation_id: &str,
+    reason: &str,
+) -> super::AuditIntent {
+    conversation_closed_audit_values(request.request_id, conversation_id, reason)
+}
+
+fn conversation_closed_audit_values(
+    request_id: &str,
     conversation_id: &str,
     reason: &str,
 ) -> super::AuditIntent {
@@ -1165,7 +1594,7 @@ fn conversation_closed_audit(
             sanitize(reason)
         ),
         agent: None,
-        request_id: Some(request.request_id.to_owned()),
+        request_id: Some(request_id.to_owned()),
         host: Some(super::API_HOST.to_owned()),
         details: json!({
             "conversation_id": conversation_id,
@@ -1179,6 +1608,7 @@ pub(super) async fn respond<B>(
     request: Request<'_>,
     body: RequestBody<'_, B>,
     owner: Option<&PlumbOwner>,
+    audit: Option<Arc<crate::audit::Writer>>,
 ) -> Result<Outcome<'static>, B::Error>
 where
     B: Body<Data = bytes::Bytes> + Unpin,
@@ -1215,12 +1645,14 @@ where
             .and_then(|object| object.get("reason"))
             .or_else(|| object.and_then(|object| object.get("note")));
         let result = owner
-            .request_chat(
-                agent_name,
-                participants,
-                object.and_then(|object| object.get("topic")),
-                note,
-                object.and_then(|object| object.get("ttl_seconds")),
+            .request_chat_owned(
+                request.request_id.to_owned(),
+                agent_name.to_owned(),
+                participants.to_vec(),
+                object.and_then(|object| object.get("topic")).cloned(),
+                note.cloned(),
+                object.and_then(|object| object.get("ttl_seconds")).cloned(),
+                audit.clone(),
             )
             .await;
         let mut response_value = result.clone();
@@ -1229,15 +1661,7 @@ where
             fields.remove("note");
             fields.remove("ttl_seconds");
         }
-        let mut outcome = result_response(response_value);
-        if result.get("status").and_then(Value::as_u64) == Some(202) {
-            outcome.audit = Some(audit_request(
-                request,
-                super::AuditKind::PlumbRequested,
-                result,
-            ));
-        }
-        return Ok(outcome);
+        return Ok(result_response(response_value));
     }
     let Some((conversation_id, tail)) = path
         .strip_prefix("/plumb/conversations/")
@@ -1288,26 +1712,28 @@ where
                 .cloned()
                 .unwrap_or_else(|| json!([]));
             let body = string_field(object.and_then(|object| object.get("body")));
-            let raw_size = body.as_bytes().len();
             let result = owner
-                .post_message(agent_name, conversation_id, &body, references)
+                .post_message_owned(
+                    request.request_id.to_owned(),
+                    agent_name.to_owned(),
+                    conversation_id.to_owned(),
+                    body,
+                    references,
+                    audit.clone(),
+                )
                 .await;
-            let audit = message_audit(request, agent_name, conversation_id, raw_size, &result);
-            let mut outcome = result_response(result);
-            outcome.audit = audit;
-            Ok(outcome)
+            Ok(result_response(result))
         }
         ("POST", "leave") => {
-            let (result, closed) = owner.leave_with_closed(agent_name, conversation_id).await;
-            let mut outcome = result_response(result);
-            if closed {
-                outcome.audit = Some(conversation_closed_audit(
-                    request,
-                    conversation_id,
-                    "last participant left",
-                ));
-            }
-            Ok(outcome)
+            let result = owner
+                .leave_owned(
+                    request.request_id.to_owned(),
+                    agent_name.to_owned(),
+                    conversation_id.to_owned(),
+                    audit,
+                )
+                .await;
+            Ok(result_response(result))
         }
         _ => Ok(response(404, json!({"error":"Not Found"}))),
     }
@@ -1323,53 +1749,38 @@ pub(crate) fn result_response(mut value: Value) -> Outcome<'static> {
     response(status, value)
 }
 
-pub(super) fn audit_request(
-    request: Request<'_>,
-    kind: super::AuditKind,
-    details: Value,
-) -> super::AuditIntent {
-    let agent_name = agent(request.identity).map(str::to_owned);
-    let (event, severity, addon, summary, approval) = match kind {
-        super::AuditKind::PlumbRequested => (
-            "plumb.requested",
-            "critical",
-            "plumb",
-            "Agent requested a plumb conversation".to_owned(),
-            Some(super::AuditApproval {
-                required: true,
-                approval_type: crate::audit::ApprovalType::Plumb,
-                key: details
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                target: details
-                    .get("participants")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .unwrap_or_default(),
-                scope_hint: details.clone(),
-            }),
-        ),
-        _ => unreachable!("plumb audit helper called for another event"),
-    };
+fn audit_request_values(request_id: &str, agent_name: &str, details: Value) -> super::AuditIntent {
     super::AuditIntent {
-        kind,
-        event,
-        severity,
-        addon,
-        summary,
-        agent: agent_name,
-        request_id: Some(request.request_id.to_owned()),
+        kind: super::AuditKind::PlumbRequested,
+        event: "plumb.requested",
+        severity: "critical",
+        addon: "plumb",
+        summary: "Agent requested a plumb conversation".to_owned(),
+        agent: Some(agent_name.to_owned()),
+        request_id: Some(request_id.to_owned()),
         host: Some(super::API_HOST.to_owned()),
+        approval: Some(super::AuditApproval {
+            required: true,
+            approval_type: crate::audit::ApprovalType::Plumb,
+            key: details
+                .get("request_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            target: details
+                .get("participants")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default(),
+            scope_hint: details.clone(),
+        }),
         details,
-        approval,
     }
 }
 
@@ -1668,6 +2079,271 @@ mod tests {
                 .read_messages("alice", &conversation_id, None, 0, DEFAULT_PAGE_LIMIT)
                 .await["status"],
             403
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_wakes_waiters_and_closes_new_plumb_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let approved = owner.approve(&text(&request, "request_id"), None).await;
+        let conversation_id = text(&approved, "conversation_id");
+
+        let waiter_ready = owner.waiter_started.notified();
+        let owner_for_wait = owner.clone();
+        let conversation_for_wait = conversation_id.clone();
+        let mut waiting = tokio::spawn(async move {
+            owner_for_wait
+                .read_messages("alice", &conversation_for_wait, None, MAX_WAIT_SECONDS, 1)
+                .await
+        });
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), waiter_ready)
+            .await
+            .expect("shutdown control must observe the active waiter");
+        assert_eq!(owner.waiters.load(std::sync::atomic::Ordering::Acquire), 1);
+
+        owner.stop_admission().await;
+        let result = tokio::time::timeout(tokio::time::Duration::from_secs(1), &mut waiting)
+            .await
+            .expect("shutdown must release an active long poll")
+            .expect("waiter task must join");
+        assert_eq!(result["status"], 503);
+        assert_eq!(owner.waiters.load(std::sync::atomic::Ordering::Acquire), 0);
+        assert_eq!(
+            owner
+                .request_chat("alice", &[json!("carol")], None, None, None)
+                .await["status"],
+            503
+        );
+        assert_eq!(owner.list_pending().await["status"], 503);
+        assert_eq!(owner.admin_list_conversations().await["status"], 503);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_store_call_remains_owned_until_plumb_drain() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let store = owner.store.clone().expect("test owner has a store");
+        let (started_sender, started_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = std::sync::mpsc::channel();
+        let owner_for_call = owner.clone();
+        let call = tokio::spawn(async move {
+            owner_for_call
+                .db_call(store, move |_| {
+                    started_sender
+                        .send(())
+                        .expect("test call receiver must still exist");
+                    release_receiver.recv().expect("test call must be released");
+                    Ok::<_, rusqlite::Error>(())
+                })
+                .await
+        });
+        started_receiver.await.expect("owned store call must start");
+        call.abort();
+        owner.stop_admission().await;
+        release_sender
+            .send(())
+            .expect("owned store call must still be running");
+        owner.drain().await;
+        assert!(owner.calls.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_audit_submission_failure_keeps_committed_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = PlumbOwner::for_data_dir(directory.path());
+        let writer = Arc::new(crate::audit::Writer::new(
+            directory.path().join("audit.jsonl"),
+            crate::audit::Settings::default(),
+        ));
+        writer.poison_for_test();
+
+        let result = owner
+            .request_chat_owned(
+                "request-audit-failure".into(),
+                "alice".into(),
+                vec![json!("bob")],
+                None,
+                None,
+                None,
+                Some(writer.clone()),
+            )
+            .await;
+        assert_eq!(result["status"], 500);
+        owner.stop_admission().await;
+        owner.drain().await;
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        assert_eq!(
+            reloaded.list_pending().await["pending"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(!directory.path().join("audit.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn admin_audit_submission_failure_keeps_committed_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = PlumbOwner::for_data_dir(directory.path());
+        let request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let request_id = text(&request, "request_id");
+        let writer = Arc::new(crate::audit::Writer::new(
+            directory.path().join("audit.jsonl"),
+            crate::audit::Settings::default(),
+        ));
+        writer.poison_for_test();
+
+        let result = owner.approve_owned(request_id, None, Some(writer)).await;
+        assert!(matches!(result, Err(crate::admin_api::Error::Audit(_))));
+        owner.stop_admission().await;
+        owner.drain().await;
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        assert_eq!(
+            reloaded.admin_list_conversations().await["conversations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_request_chat_keeps_projection_and_canonical_audit() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let store = owner.store.clone().expect("test owner has a store");
+        let connection = store.connection.lock().unwrap();
+        let audit_path = directory.path().join("audit.jsonl");
+        let writer = Arc::new(crate::audit::Writer::new(
+            audit_path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        let caller = {
+            let owner = owner.clone();
+            let writer = writer.clone();
+            tokio::spawn(async move {
+                owner
+                    .request_chat_owned(
+                        "request-chat-cancelled".into(),
+                        "alice".into(),
+                        vec![json!("bob")],
+                        None,
+                        None,
+                        None,
+                        Some(writer),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if !owner.calls.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request mutation must enter the owned SQLite task");
+        caller.abort();
+        owner.stop_admission().await;
+        drop(connection);
+        owner.drain().await;
+        assert_eq!(owner.list_pending().await["status"], 503);
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        assert_eq!(
+            reloaded.list_pending().await["pending"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let rows: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.requested")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_approval_keeps_projection_and_both_canonical_audits() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let request_id = text(&request, "request_id");
+        let store = owner.store.clone().expect("test owner has a store");
+        let audit_path = directory.path().join("audit.jsonl");
+        let writer = Arc::new(crate::audit::Writer::new(
+            audit_path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        while owner.calls.lock().await.try_join_next().is_some() {}
+        let connection = store.connection.lock().unwrap();
+        let caller = {
+            let owner = owner.clone();
+            let writer = writer.clone();
+            let request_id = request_id.clone();
+            tokio::spawn(async move { owner.approve_owned(request_id, None, Some(writer)).await })
+        };
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if !owner.calls.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("approval mutation must enter the owned SQLite task");
+        caller.abort();
+        drop(connection);
+        owner.stop_admission().await;
+        owner.drain().await;
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        assert_eq!(
+            reloaded.admin_list_conversations().await["conversations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let rows: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.approved")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.conversation_created")
+                .count(),
+            1
         );
     }
 }
