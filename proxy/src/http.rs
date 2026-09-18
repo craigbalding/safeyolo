@@ -1250,8 +1250,24 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::GatewayAccessRequested
                 | crate::agent_api::AuditKind::GatewayBindingSubmitted
+                | crate::agent_api::AuditKind::PlumbRequested
+                | crate::agent_api::AuditKind::PlumbMessageBlocked
+                | crate::agent_api::AuditKind::PlumbMessageFlagged
+                | crate::agent_api::AuditKind::PlumbMessageAllowed
+                | crate::agent_api::AuditKind::PlumbConversationClosed
         ) {
-            "gateway"
+            if matches!(
+                audit.kind,
+                crate::agent_api::AuditKind::PlumbRequested
+                    | crate::agent_api::AuditKind::PlumbMessageBlocked
+                    | crate::agent_api::AuditKind::PlumbMessageFlagged
+                    | crate::agent_api::AuditKind::PlumbMessageAllowed
+                    | crate::agent_api::AuditKind::PlumbConversationClosed
+            ) {
+                "plumb"
+            } else {
+                "gateway"
+            }
         } else {
             "security"
         };
@@ -1272,8 +1288,19 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::GatewayAccessRequested
                 | crate::agent_api::AuditKind::GatewayBindingSubmitted
+                | crate::agent_api::AuditKind::PlumbRequested
         ) {
             event["decision"] = json!("require_approval");
+        } else if matches!(audit.kind, crate::agent_api::AuditKind::PlumbMessageBlocked) {
+            event["decision"] = json!("deny");
+        } else if matches!(
+            audit.kind,
+            crate::agent_api::AuditKind::PlumbMessageFlagged
+                | crate::agent_api::AuditKind::PlumbMessageAllowed
+        ) {
+            event["decision"] = json!("allow");
+        } else if audit.kind == crate::agent_api::AuditKind::PlumbConversationClosed {
+            event["decision"] = json!("log");
         }
         if let Some(approval) = &audit.approval {
             event["approval"] = json!({
@@ -1410,6 +1437,7 @@ where
                         owner: &runtime.test_context,
                         now: declaration_time,
                     }),
+                plumb: Some(runtime.plumb.as_ref()),
             },
             agent_api::RequestBody {
                 body: request.body_mut(),

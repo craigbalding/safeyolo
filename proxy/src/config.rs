@@ -58,6 +58,33 @@ pub struct Inspection {
     pub block_websocket_response: bool,
 }
 
+/// Native plumb bounds mirror the source service's [plumb] configuration.
+/// Zero disables only the message-size cap; the other zero values resolve to
+/// their source defaults.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlumbConfig {
+    #[serde(default = "plumb_default_max_participants")]
+    pub max_participants: usize,
+    #[serde(default = "plumb_default_max_message_bytes")]
+    pub max_message_bytes: usize,
+    #[serde(default = "plumb_default_message_page_limit")]
+    pub message_page_limit: usize,
+    #[serde(default = "plumb_default_ttl_seconds")]
+    pub default_ttl_seconds: i64,
+}
+
+impl Default for PlumbConfig {
+    fn default() -> Self {
+        Self {
+            max_participants: plumb_default_max_participants(),
+            max_message_bytes: plumb_default_max_message_bytes(),
+            message_page_limit: plumb_default_message_page_limit(),
+            default_ttl_seconds: plumb_default_ttl_seconds(),
+        }
+    }
+}
+
 /// Development configuration. Production CLI selection comes later.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -134,6 +161,8 @@ pub struct Config {
     pub ignore_hosts: Vec<String>,
     pub via_token: Option<String>,
     pub inspection: Option<Inspection>,
+    #[serde(default)]
+    pub plumb: PlumbConfig,
 }
 
 fn enabled() -> bool {
@@ -154,6 +183,22 @@ fn flow_pruner_max() -> usize {
 
 fn flow_pruner_max_body_bytes() -> usize {
     1024 * 1024 * 1024
+}
+
+fn plumb_default_max_participants() -> usize {
+    8
+}
+
+fn plumb_default_max_message_bytes() -> usize {
+    1_048_576
+}
+
+fn plumb_default_message_page_limit() -> usize {
+    200
+}
+
+fn plumb_default_ttl_seconds() -> i64 {
+    3600
 }
 
 #[derive(Clone)]

@@ -1470,6 +1470,40 @@ impl Scanner {
             .iter()
             .any(|rule| rule.applies(direction, scope)))
     }
+
+    /// Return every matching rule for one request body. The ordinary HTTP
+    /// scanner stops at the first source ordered match; plumb retains the
+    /// source service's complete finding list so log-only and block rules can
+    /// be reported together.
+    pub(crate) fn scan_request_body_rules(&self, text: &str) -> Result<Vec<Finding>> {
+        let rules = self.rules()?;
+        if rules.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut findings = Vec::new();
+        for (index, rule) in rules.iter().enumerate() {
+            if !rule.applies(Direction::Request, "body") {
+                continue;
+            }
+            if rule
+                .pattern
+                .is_match(text)
+                .map_err(|_| error(ErrorKind::RegexRuntime, Some(index)))?
+            {
+                findings.push(rule.finding(Direction::Request, "body".into(), None));
+            }
+        }
+        self.count(
+            1,
+            findings.len() as u64,
+            findings
+                .iter()
+                .filter(|finding| finding.pattern_action == "block")
+                .count() as u64,
+        )?;
+        Ok(findings)
+    }
+
     fn rules(&self) -> Result<Arc<Vec<Rule>>> {
         Ok(self
             .snapshot

@@ -134,6 +134,7 @@ pub enum Audit {
         permission_count: usize,
     },
     PolicyMutation(PolicyMutationAudit),
+    PlumbMutation(PlumbMutationAudit),
     ModeChanged {
         addon: String,
         mode: String,
@@ -147,6 +148,22 @@ pub struct PolicyMutationAudit {
     pub(super) event: &'static str,
     pub(super) summary: String,
     pub(super) details: Value,
+}
+
+/// A committed native plumb mutation. The details are retained only until the
+/// canonical audit writer accepts the event.
+pub struct PlumbMutationAudit {
+    pub(super) event: &'static str,
+    pub(super) summary: String,
+    pub(super) details: Value,
+    pub(super) agent: Option<String>,
+    pub(super) decision: crate::audit::Decision,
+}
+
+impl Drop for PlumbMutationAudit {
+    fn drop(&mut self) {
+        crate::credentials::wipe_json(&mut self.details);
+    }
 }
 
 impl Drop for PolicyMutationAudit {
@@ -444,6 +461,17 @@ fn response(status: StatusCode, value: Value) -> Outcome {
     )
 }
 
+fn plumb_response(mut value: Value) -> Outcome {
+    let status = value
+        .as_object_mut()
+        .and_then(|object| object.remove("status"))
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .and_then(|value| StatusCode::from_u16(value).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    response(status, value)
+}
+
 fn unsupported(method: &Method) -> Outcome {
     // BaseHTTPRequestHandler.send_error escapes the method in its HTML body.
     let method_text = method
@@ -683,6 +711,21 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
                 .and_then(|scope| scope.resolved_key().ok())
                 .into_iter()
                 .collect()
+        }
+        "plumb.approved" | "plumb.denied" => {
+            let Some(request_id) = details.get("request_id").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let Some(participants) = details.get("participants").and_then(Value::as_array) else {
+                return Vec::new();
+            };
+            let participants = participants
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            (!participants.is_empty())
+                .then(|| vec![format!("{request_id}:{}", participants.join(","))])
+                .unwrap_or_default()
         }
         _ => Vec::new(),
     }
@@ -1002,6 +1045,7 @@ pub(crate) struct OperatorContext<'a> {
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub client_ip: Option<&'a str>,
     pub service_audit: Option<ServiceAudit<'a>>,
+    pub plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
 }
 
 /// The shared view uses the same operator authentication as other private reads.
@@ -1035,6 +1079,7 @@ where
             audit: None,
             client_ip: None,
             service_audit: None,
+            plumb: None,
         },
     )
     .await
@@ -1060,6 +1105,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         audit,
         client_ip,
         service_audit,
+        plumb,
     } = context;
     let method = request.method();
     if !matches!(
@@ -1126,6 +1172,180 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             StatusCode::OK,
             json!({"approvals":audit.map(|writer| pending_approvals(writer.path())).unwrap_or_else(|| Value::Array(Vec::new()))}),
         ));
+    }
+    if method == Method::GET && path == "/admin/plumb/pending" {
+        let Some(owner) = plumb else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        };
+        if !owner.available() {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        }
+        return Ok(plumb_response(owner.list_pending().await));
+    }
+    if method == Method::GET && path == "/admin/plumb/conversations" {
+        let Some(owner) = plumb else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        };
+        if !owner.available() {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        }
+        return Ok(plumb_response(owner.admin_list_conversations().await));
+    }
+    if method == Method::POST
+        && matches!(
+            path.as_str(),
+            "/admin/plumb/approve" | "/admin/plumb/deny" | "/admin/plumb/close"
+        )
+    {
+        let data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+            ParsedBody::Value(data) => data.0.clone(),
+        };
+        let Some(fields) = data.as_object() else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"request body must be an object"}),
+            ));
+        };
+        let Some(owner) = plumb else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        };
+        if !owner.available() {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"plumb backing state unavailable"}),
+            ));
+        }
+        let (result, event, summary, details, agent, decision) = match path.as_str() {
+            "/admin/plumb/approve" => {
+                let Some(request_id) = fields
+                    .get("request_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"missing 'request_id'"}),
+                    ));
+                };
+                let operator_ttl = fields.get("ttl_seconds").and_then(|value| match value {
+                    Value::Number(value) => value.as_i64(),
+                    Value::String(value) => value.parse().ok(),
+                    _ => None,
+                });
+                let result = owner.approve(request_id, operator_ttl).await;
+                let participants = result
+                    .get("participants")
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
+                let conversation_id = result
+                    .get("conversation_id")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let agent = result
+                    .get("requested_by")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                (
+                    result.clone(),
+                    "plumb.approved",
+                    format!(
+                        "chat approved: {}",
+                        participants
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                    json!({"request_id":request_id,"participants":participants,"conversation_id":conversation_id}),
+                    agent,
+                    crate::audit::Decision::Allow,
+                )
+            }
+            "/admin/plumb/deny" => {
+                let Some(request_id) = fields
+                    .get("request_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"missing 'request_id'"}),
+                    ));
+                };
+                let pending = owner.pending_details(request_id).await;
+                let result = owner.deny(request_id).await;
+                let participants = pending
+                    .as_ref()
+                    .and_then(|value| value.get("participants"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([]));
+                let agent = pending
+                    .as_ref()
+                    .and_then(|value| value.get("requester"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                (
+                    result.clone(),
+                    "plumb.denied",
+                    format!("chat denied: {request_id}"),
+                    json!({"request_id":request_id,"participants":participants}),
+                    agent,
+                    crate::audit::Decision::Deny,
+                )
+            }
+            _ => {
+                let Some(conversation_id) = fields
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"missing 'conversation_id'"}),
+                    ));
+                };
+                let result = owner.close(conversation_id).await;
+                (
+                    result.clone(),
+                    "plumb.conversation_closed",
+                    format!("conversation {conversation_id} closed: operator closed"),
+                    json!({"conversation_id":conversation_id,"reason":"operator closed"}),
+                    None,
+                    crate::audit::Decision::Log,
+                )
+            }
+        };
+        let status = result.get("status").and_then(Value::as_u64).unwrap_or(200);
+        let mut outcome = plumb_response(result);
+        if status == 200 {
+            outcome.audit = Some(Audit::PlumbMutation(PlumbMutationAudit {
+                event,
+                summary,
+                details,
+                agent,
+                decision,
+            }));
+        }
+        return Ok(outcome);
     }
     if method == Method::GET && path == "/admin/agents" {
         let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {
@@ -2339,6 +2559,104 @@ mod tests {
             retained.document()["gateway"]["literal"]["$serde_json::private::Number"],
             "17"
         );
+    }
+
+    #[tokio::test]
+    async fn plumb_resolution_events_remove_retained_pending_approval() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = crate::agent_api::plumb::PlumbOwner::for_data_dir(directory.path());
+        let requested = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let request_id = requested["request_id"].as_str().unwrap().to_owned();
+        let participants = requested["participants"].clone();
+        let path = directory.path().join("approved.jsonl");
+        let writer = crate::audit::Writer::new(path.clone(), crate::audit::Settings::default());
+        let mut prompt = crate::audit::Event::new(
+            "plumb.requested",
+            crate::audit::Kind::Plumb,
+            crate::audit::Severity::Critical,
+            "Agent requested a plumb conversation",
+        );
+        prompt.addon = Some("plumb".into());
+        prompt.decision = Some(crate::audit::Decision::RequireApproval);
+        prompt.agent = Some("alice".into());
+        prompt.approval = Some(crate::audit::Approval {
+            required: true,
+            approval_type: crate::audit::ApprovalType::Plumb,
+            key: request_id.clone(),
+            target: "alice,bob".into(),
+            scope_hint: json!({"request_id":request_id,"participants":participants}).into(),
+        });
+        prompt.details = json!({
+            "request_id": request_id,
+            "participants": participants,
+        })
+        .into();
+        writer.emit(prompt).unwrap();
+        let approved = owner.approve(&request_id, None).await;
+        assert_eq!(approved["status"], 200);
+        let mutation = Audit::PlumbMutation(PlumbMutationAudit {
+            event: "plumb.approved",
+            summary: "chat approved: alice,bob".into(),
+            details: json!({
+                "request_id": request_id,
+                "participants": approved["participants"],
+                "conversation_id": approved["conversation_id"],
+            }),
+            agent: Some("alice".into()),
+            decision: crate::audit::Decision::Allow,
+        });
+        for event in mutation.canonical_events("127.0.0.1", "/admin/plumb/approve") {
+            writer.emit(event).unwrap();
+        }
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+        assert_eq!(pending_approvals(&path), json!([]));
+
+        let denied_request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let denied_id = denied_request["request_id"].as_str().unwrap().to_owned();
+        let denied_path = directory.path().join("denied.jsonl");
+        let denied_writer =
+            crate::audit::Writer::new(denied_path.clone(), crate::audit::Settings::default());
+        let mut denied_prompt = crate::audit::Event::new(
+            "plumb.requested",
+            crate::audit::Kind::Plumb,
+            crate::audit::Severity::Critical,
+            "Agent requested a plumb conversation",
+        );
+        denied_prompt.addon = Some("plumb".into());
+        denied_prompt.decision = Some(crate::audit::Decision::RequireApproval);
+        denied_prompt.agent = Some("alice".into());
+        denied_prompt.approval = Some(crate::audit::Approval {
+            required: true,
+            approval_type: crate::audit::ApprovalType::Plumb,
+            key: denied_id.clone(),
+            target: "alice,bob".into(),
+            scope_hint: json!({"request_id":denied_id,"participants":["alice","bob"]}).into(),
+        });
+        denied_writer.emit(denied_prompt).unwrap();
+        assert_eq!(owner.deny(&denied_id).await["status"], 200);
+        let denied_mutation = Audit::PlumbMutation(PlumbMutationAudit {
+            event: "plumb.denied",
+            summary: format!("chat denied: {denied_id}"),
+            details: json!({
+                "request_id": denied_id,
+                "participants": denied_request["participants"],
+            }),
+            agent: Some("alice".into()),
+            decision: crate::audit::Decision::Deny,
+        });
+        for event in denied_mutation.canonical_events("127.0.0.1", "/admin/plumb/deny") {
+            denied_writer.emit(event).unwrap();
+        }
+        assert!(
+            denied_writer
+                .shutdown(std::time::Duration::from_secs(2))
+                .unwrap()
+        );
+        assert_eq!(pending_approvals(&denied_path), json!([]));
     }
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.
     fn source_raw_fixture() -> (&'static str, &'static str) {

@@ -68,6 +68,51 @@ impl Audit {
                 event.details = mutation.details.clone().into();
                 vec![event]
             }
+            Self::PlumbMutation(mutation) => {
+                let severity = match mutation.event {
+                    "plumb.approved" | "plumb.denied" => Severity::Medium,
+                    _ => Severity::Low,
+                };
+                let mut primary = event(
+                    mutation.event,
+                    Kind::Plumb,
+                    severity,
+                    sanitize(&mutation.summary),
+                    "plumb",
+                );
+                primary.agent = mutation.agent.clone();
+                primary.decision = Some(mutation.decision);
+                let details = match mutation.details.clone() {
+                    serde_json::Value::Object(fields) => fields,
+                    value => serde_json::Map::from_iter([(String::from("details"), value)]),
+                };
+                primary.details = serde_json::Value::Object(details).into();
+                let mut events = vec![primary];
+                if mutation.event == "plumb.approved"
+                    && let serde_json::Value::Object(details) = mutation.details.clone()
+                {
+                    let mut created = event(
+                        "plumb.conversation_created",
+                        Kind::Plumb,
+                        Severity::Low,
+                        format!(
+                            "conversation {} created",
+                            details
+                                .get("conversation_id")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                        ),
+                        "plumb",
+                    );
+                    created.decision = Some(crate::audit::Decision::Allow);
+                    created.details = json!({
+                        "participants": details.get("participants").cloned().unwrap_or_else(|| json!([])),
+                    })
+                    .into();
+                    events.push(created);
+                }
+                events
+            }
             Self::ModeChanged {
                 addon,
                 mode,

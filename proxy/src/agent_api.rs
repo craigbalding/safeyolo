@@ -22,6 +22,7 @@ mod explain;
 mod flows;
 mod gateway;
 mod memory;
+pub(crate) mod plumb;
 mod trace;
 pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
@@ -141,6 +142,11 @@ pub enum AuditKind {
     TestContextCleared,
     GatewayAccessRequested,
     GatewayBindingSubmitted,
+    PlumbRequested,
+    PlumbMessageBlocked,
+    PlumbMessageFlagged,
+    PlumbMessageAllowed,
+    PlumbConversationClosed,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -217,6 +223,41 @@ impl AuditIntent {
                 Severity::Critical,
                 "agent-api",
                 Some(Decision::RequireApproval),
+            ),
+            AuditKind::PlumbRequested => (
+                "plumb.requested",
+                Kind::Plumb,
+                Severity::Critical,
+                "plumb",
+                Some(Decision::RequireApproval),
+            ),
+            AuditKind::PlumbMessageBlocked => (
+                "plumb.message_blocked",
+                Kind::Plumb,
+                Severity::Critical,
+                "plumb",
+                Some(Decision::Deny),
+            ),
+            AuditKind::PlumbMessageFlagged => (
+                "plumb.message_flagged",
+                Kind::Plumb,
+                Severity::High,
+                "plumb",
+                Some(Decision::Allow),
+            ),
+            AuditKind::PlumbMessageAllowed => (
+                "plumb.message_allowed",
+                Kind::Plumb,
+                Severity::Low,
+                "plumb",
+                Some(Decision::Allow),
+            ),
+            AuditKind::PlumbConversationClosed => (
+                "plumb.conversation_closed",
+                Kind::Plumb,
+                Severity::Low,
+                "plumb",
+                Some(Decision::Log),
             ),
         };
         let mut event = Event::new(name, kind, severity, self.summary.clone());
@@ -357,7 +398,11 @@ impl Outcome<'_> {
                 outcome.failure = Some(Failure::AuditWrite);
                 outcome
             }
-            Some(AuditKind::GatewayAccessRequested | AuditKind::GatewayBindingSubmitted) => {
+            Some(
+                AuditKind::GatewayAccessRequested
+                | AuditKind::GatewayBindingSubmitted
+                | AuditKind::PlumbRequested,
+            ) => {
                 let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));
                 outcome.failure = Some(Failure::AuditWrite);
                 outcome

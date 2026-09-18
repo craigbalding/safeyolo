@@ -152,6 +152,7 @@ async fn gateway_call<'a>(
             flows: None,
             circuits: None,
             declarations: None,
+            plumb: None,
         },
         RequestBody {
             body: &mut body,
@@ -332,6 +333,7 @@ async fn twenty_actual_source_catalog_responses_match_without_reading_a_body() {
                 flows: None,
                 circuits: None,
                 declarations: None,
+                plumb: None,
             },
             RequestBody {
                 body: &mut body,
@@ -584,6 +586,7 @@ async fn request_access_authenticates_before_polling_body() {
             flows: None,
             circuits: None,
             declarations: None,
+            plumb: None,
         },
         RequestBody {
             body: &mut body,

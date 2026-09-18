@@ -237,6 +237,7 @@ async fn serve_connection(
                         mutation_owner: &runtime.service_mutations,
                         gateway_store: runtime.gateway_grants.as_ref(),
                     }),
+                    plumb: Some(runtime.plumb.as_ref()),
                 },
             )
             .await?
@@ -286,6 +287,7 @@ async fn serve_connection(
                 admin_api::Audit::PolicyMutation(_) | admin_api::Audit::ModeChanged { .. } => {
                     vec![]
                 }
+                admin_api::Audit::PlumbMutation(_) => vec![],
             });
             // Diagnostic sink failures remain separate from canonical producer
             // exceptions. Attempt each diagnostic without claiming rollback.
@@ -505,6 +507,11 @@ fn is_operator_event(event: &serde_json::Value) -> bool {
                 | "admin.desktop_presented"
                 | "plumb.approved"
                 | "plumb.denied"
+                | "plumb.conversation_created"
+                | "plumb.message_blocked"
+                | "plumb.message_flagged"
+                | "plumb.message_allowed"
+                | "plumb.conversation_closed"
         )
         || matches!(
             event_name,

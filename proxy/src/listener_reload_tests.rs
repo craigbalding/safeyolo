@@ -16,6 +16,42 @@ fn config(directory: &Path) -> Config {
     .unwrap()
 }
 
+#[tokio::test]
+async fn rejected_reload_preserves_published_plumb_limits() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(directory.path());
+    config.plumb.max_message_bytes = 4;
+    let mut proxy = Proxy::start(config.clone()).await.unwrap();
+    let owner = proxy.runtime.read().unwrap().plumb.clone();
+    let request = owner
+        .request_chat("alice", &[serde_json::json!("bob")], None, None, None)
+        .await;
+    let approved = owner
+        .approve(request["request_id"].as_str().unwrap(), None)
+        .await;
+    let conversation_id = approved["conversation_id"].as_str().unwrap();
+    assert_eq!(
+        owner
+            .post_message("bob", conversation_id, "12345", serde_json::json!([]))
+            .await["status"],
+        413
+    );
+
+    let occupied = directory.path().join("occupied.sock");
+    std::fs::write(&occupied, b"owned ordinary file").unwrap();
+    let mut rejected = config.clone();
+    rejected.plumb.max_message_bytes = 0;
+    rejected.listeners[0].socket_path = occupied;
+    assert!(proxy.reload(rejected).await.is_err());
+    assert_eq!(
+        owner
+            .post_message("bob", conversation_id, "12345", serde_json::json!([]))
+            .await["status"],
+        413
+    );
+    proxy.shutdown().await;
+}
+
 fn marker(path: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }

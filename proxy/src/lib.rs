@@ -57,7 +57,7 @@ mod tunnels;
 pub mod websocket;
 mod websocket_relay;
 
-pub use config::{AgentListener, Config, Inspection};
+pub use config::{AgentListener, Config, Inspection, PlumbConfig};
 
 use std::{
     collections::HashMap,
@@ -314,6 +314,7 @@ pub(crate) struct Runtime {
     credential_key_empty: bool,
     tasks: tasks::Registry,
     service_mutations: admin_api::ServiceMutationOwner,
+    plumb: Arc<agent_api::plumb::PlumbOwner>,
     admin_address: Option<std::net::SocketAddr>,
     admin_shield: admin_shield::AdminShield,
     network_guard: network_guard::NetworkGuard,
@@ -374,6 +375,13 @@ impl Runtime {
         let service_mutations = previous
             .map(|runtime| runtime.service_mutations.clone())
             .unwrap_or_default();
+        let plumb = previous
+            .map(|runtime| runtime.plumb.clone())
+            .unwrap_or_else(|| {
+                Arc::new(agent_api::plumb::PlumbOwner::for_data_dir(
+                    &config.data_dir(),
+                ))
+            });
         let audit = match previous {
             Some(runtime) => runtime.audit.clone(),
             None => Arc::new(audit::Writer::new(
@@ -608,6 +616,7 @@ impl Runtime {
                 credential_key_empty,
                 tasks,
                 service_mutations,
+                plumb,
                 admin_address,
                 admin_shield,
                 network_guard,
@@ -1111,6 +1120,19 @@ impl Proxy {
         // Keep the prepared operator socket locally owned until agent binds succeed.
         let additions = proxy.prepare_listeners(&config)?;
         proxy.commit_listeners(&config, additions);
+        {
+            let runtime = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            runtime.plumb.configure_limits(
+                runtime.config.plumb.max_participants,
+                runtime.config.plumb.max_message_bytes,
+                runtime.config.plumb.message_page_limit,
+                runtime.config.plumb.default_ttl_seconds,
+            );
+        }
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
         proxy.write_readiness()?;
         if circuit_runtime::state_path(&config).is_some() {
@@ -1430,6 +1452,12 @@ impl Proxy {
             // No fallible preparation remains before topology/runtime publication.
             clear_readiness(&self.readiness_file, &self.default_via);
             self.commit_listeners(&config, additions);
+            runtime.plumb.configure_limits(
+                runtime.config.plumb.max_participants,
+                runtime.config.plumb.max_message_bytes,
+                runtime.config.plumb.message_page_limit,
+                runtime.config.plumb.default_ttl_seconds,
+            );
             *current = runtime.clone();
         }
         policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);

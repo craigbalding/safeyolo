@@ -17,6 +17,7 @@ pub struct Controls<'a> {
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
+    pub(crate) plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
 }
 
 /// Trace expiry samples wall time only when an authorized lookup is reached.
@@ -102,7 +103,9 @@ where
                 | "/gateway/request-access"
                 | "/gateway/submit-binding"
                 | "/api/test-context/current"
-        ) || route(request).starts_with("/api/flows"))
+        ) || route(request).starts_with("/api/flows")
+            || route(request).starts_with("/plumb")
+            || route(request) == "/desktop/present")
     {
         return Ok(response(403, json!({"error":"Could not identify agent"})));
     }
@@ -133,6 +136,9 @@ where
             Err(error) => return Ok(content_error(error)),
         };
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
+    }
+    if route(request).starts_with("/plumb") {
+        return plumb::respond(request, body, controls.plumb).await;
     }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
