@@ -162,6 +162,11 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             paths = {name: str(path_for(name, ip)) for name, ip in agent_map.items()}
         config = {
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
+            # Native policy startup creates its process-owned credential HMAC
+            # file even when the gateway fixture is not enabled.  Keep that
+            # state inside this run so the selected Rust process never falls
+            # back to the host's /safeyolo/data path.
+            "data_dir": str(directory / "data"),
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
             "event_log": str(directory / "events.jsonl"),

@@ -8,6 +8,7 @@ import json
 import math
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -29,14 +30,18 @@ class Origin(ThreadingHTTPServer):
         self.accepts = 0
         self.requests = []
         self.websocket_frames = []
+        self.keep_alive = False
+        self.connection_ids = {}
         self.stream_finished = threading.Event()
         self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
 
     def get_request(self):
-        result = super().get_request()
+        request, address = super().get_request()
         self.accepts += 1
-        return result
+        if self.keep_alive:
+            self.connection_ids[id(request)] = f"origin-{uuid.uuid4().hex}"
+        return request, address
 
 
 class OriginHandler(BaseHTTPRequestHandler):
@@ -46,11 +51,14 @@ class OriginHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        self.server.requests.append({"method": self.command, "target": self.path})
+        observation = {"method": self.command, "target": self.path}
+        if self.server.keep_alive:
+            observation["connection_id"] = self.server.connection_ids[id(self.connection)]
+        self.server.requests.append(observation)
         if self.path == "/stream":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Connection", "close")
+            self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
             self.end_headers()
             chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
             for _ in range(self.server.stream_chunks):
@@ -64,7 +72,7 @@ class OriginHandler(BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Length", "5")
-        self.send_header("Connection", "close")
+        self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
         self.end_headers()
         self.wfile.write(b"hello")
 
@@ -97,8 +105,9 @@ class OriginHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def origin_server(port=0, *, stream_seconds=2.0):
+def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False):
     server = Origin(port, stream_seconds=stream_seconds)
+    server.keep_alive = keep_alive
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

@@ -28,6 +28,9 @@ The shared assertions cover:
 
 - Two simultaneously active agent listeners, alternating allowed and denied
   HTTP requests, forged agent/request identifiers, and evidence attribution.
+- Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
+  allowed/denied decisions, independent origin request targets, and stable
+  per-agent connection identities across reuse.
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
