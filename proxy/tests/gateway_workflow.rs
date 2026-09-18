@@ -519,6 +519,24 @@ async fn send_agent_request(
     raw_http(socket, request.as_bytes()).await
 }
 
+/// Model the client that follows an origin redirect. It takes the authority
+/// and path from the origin's Location header, then deliberately presents the
+/// gateway token again on the new authority. The proxy must reject that second
+/// hop before it can reach the wrong-origin listener.
+async fn follow_origin_redirect(socket: &Path, redirect: &[u8], token: &str) -> Vec<u8> {
+    let location = response_header(redirect, "location").expect("origin redirect location");
+    let (scheme, authority_and_path) = location
+        .split_once("://")
+        .expect("absolute origin redirect");
+    assert_eq!(scheme, "http");
+    let (authority, path) = authority_and_path
+        .split_once('/')
+        .expect("redirect authority and path");
+    let (host, port) = authority.rsplit_once(':').expect("redirect authority port");
+    let port = port.parse().expect("redirect port");
+    send_agent_request(socket, port, token, host, "GET", &format!("/{path}"), b"").await
+}
+
 async fn send_agent(socket: &Path, port: u16, token: &str, host: &str) -> Vec<u8> {
     send_agent_with_scheme(socket, port, token, host, "http").await
 }
@@ -2526,16 +2544,8 @@ token = "other-secret"
     })
     .await
     .unwrap();
-    let followed = send_agent_request(
-        &root_path.join("alice.sock"),
-        origin_port,
-        &current_token,
-        "127.0.0.2",
-        "GET",
-        "/evil?next=%252F",
-        b"",
-    )
-    .await;
+    let followed =
+        follow_origin_redirect(&root_path.join("alice.sock"), &redirect, &current_token).await;
     status(&followed, "403");
     assert_eq!(seen.lock().unwrap().len(), 4);
 

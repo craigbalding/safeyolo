@@ -144,6 +144,7 @@ async fn revoke(fixture: &Fixture, agent: &str, service: &str) -> Result<Outcome
             listeners: &[],
             audit: None,
             client_ip: None,
+            passthrough: None,
             service_audit: Some(crate::admin_api::ServiceAudit {
                 writer: &fixture.writer,
                 client_ip: "127.0.0.1",
