@@ -49,6 +49,69 @@ fn page(runtime: &Runtime, message: u64, offset: u64, length: usize) -> Vec<u8> 
         .unwrap()
 }
 
+async fn compressed_fragment(payload: &[u8], from_client: bool, control: Control) -> Vec<u8> {
+    let split = payload.len() / 2;
+    let mut source = frame(
+        OpCode::Data(Data::Text),
+        false,
+        from_client,
+        &payload[..split],
+    );
+    source.extend(frame(
+        OpCode::Data(Data::Continue),
+        true,
+        from_client,
+        &payload[split..],
+    ));
+    let Event::Message(message) = Reader::new(Cursor::new(source), from_client, None)
+        .read()
+        .await
+        .unwrap()
+    else {
+        panic!("fragmented source message missing");
+    };
+    let compression = Some(Compression::new(15, true).unwrap());
+    let mut encoded = Vec::new();
+    Writer::new(&mut encoded, from_client, compression)
+        .message(message)
+        .await
+        .unwrap();
+    let mut cursor = Cursor::new(&encoded);
+    let (_, length) = FrameHeader::parse(&mut cursor).unwrap().unwrap();
+    let split = cursor.position() as usize + length as usize;
+    encoded.splice(
+        split..split,
+        frame(
+            OpCode::Control(control),
+            true,
+            from_client,
+            b"between-fragments",
+        ),
+    );
+    encoded
+}
+
+async fn compressed_message(payload: &[u8], from_client: bool) -> Vec<u8> {
+    let source = frame(OpCode::Data(Data::Text), true, from_client, payload);
+    let Event::Message(message) = Reader::new(Cursor::new(source), from_client, None)
+        .read()
+        .await
+        .unwrap()
+    else {
+        panic!("complete source message missing");
+    };
+    let mut encoded = Vec::new();
+    Writer::new(
+        &mut encoded,
+        from_client,
+        Some(Compression::new(15, true).unwrap()),
+    )
+    .message(message)
+    .await
+    .unwrap();
+    encoded
+}
+
 #[tokio::test]
 async fn shared_complete_content_ranges_survive_forwarding_without_moving_its_reader() {
     for payload in [
@@ -279,6 +342,143 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
         runtime.traffic_view.detail("req-owned").is_none(),
         "closed released session becomes eligible for eviction"
     );
+    assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
+}
+
+#[tokio::test]
+async fn compressed_fragmented_relay_inspects_both_directions_and_keeps_controls_after_monitor_error()
+ {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(runtime(directory.path()));
+    let (session, guard) = live_session(&runtime);
+    let memory = memory_runtime::WebSocket::new(&runtime, ID, HOST);
+    // Poison only the monitoring owner. Its observer must be contained while
+    // the relay still scans and forwards allowed data in either direction.
+    let monitor = runtime.memory_monitor.clone();
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let _ = monitor.client_connected("poisoned", || panic!("owned clock fault"));
+    }));
+
+    let compression = Some(Compression::new(15, true).unwrap());
+    let (client, client_peer) = tokio::io::duplex(131_072);
+    let (server, server_peer) = tokio::io::duplex(131_072);
+    let (_stop, stop) = watch::channel(false);
+    let owner = ConnectionTasks::new(stop.clone());
+    let task_owner = owner.clone();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        relay(
+            Box::new(client),
+            Box::new(server),
+            Negotiated {
+                client: compression,
+                server: compression,
+                subprotocol: None,
+            },
+            session,
+            stop,
+            memory,
+            task_owner,
+        )
+        .await
+    });
+
+    let (client_read, mut client_write) = tokio::io::split(client_peer);
+    let (server_read, mut server_write) = tokio::io::split(server_peer);
+    let mut client_read = Reader::new(client_read, false, compression);
+    let mut server_read = Reader::new(server_read, true, compression);
+
+    client_write
+        .write_all(&compressed_fragment(b"PROJ-12345", true, Control::Ping).await)
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), server_read.read())
+            .await
+            .unwrap()
+            .unwrap(),
+        Event::Ping(payload) if payload == b"between-fragments"
+    ));
+    client_write
+        .write_all(&compressed_message(b"allowed request", true).await)
+        .await
+        .unwrap();
+    let Event::Message(request) = tokio::time::timeout(Duration::from_secs(2), server_read.read())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("allowed compressed request missing");
+    };
+    assert_eq!(request.with_text(str::to_owned).unwrap(), "allowed request");
+
+    server_write
+        .write_all(&compressed_fragment(b"PROJ-12345", false, Control::Pong).await)
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), client_read.read())
+            .await
+            .unwrap()
+            .unwrap(),
+        Event::Pong(payload) if payload == b"between-fragments"
+    ));
+    server_write
+        .write_all(&compressed_message(b"allowed response", false).await)
+        .await
+        .unwrap();
+    let Event::Message(response) = tokio::time::timeout(Duration::from_secs(2), client_read.read())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("allowed compressed response missing");
+    };
+    assert_eq!(
+        response.with_text(str::to_owned).unwrap(),
+        "allowed response"
+    );
+
+    let observed = transcript(&runtime);
+    let messages = observed["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        4,
+        "controls and blocked messages are excluded"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| (
+                message["from_client"].as_bool().unwrap(),
+                message["dropped"].as_bool().unwrap(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![(true, true), (true, false), (false, true), (false, false)]
+    );
+
+    client_write
+        .write_all(&frame(
+            OpCode::Control(Control::Close),
+            true,
+            true,
+            &1000_u16.to_be_bytes(),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), client_read.read())
+            .await
+            .unwrap()
+            .unwrap(),
+        Event::Close(_)
+    ));
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    owner.run(async { Ok(()) }).await;
     assert!(runtime.audit.shutdown(Duration::from_secs(1)).unwrap());
 }
 

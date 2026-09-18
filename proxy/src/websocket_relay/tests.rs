@@ -5,11 +5,12 @@ use std::{io::Cursor, panic::AssertUnwindSafe, path::Path, sync::RwLock};
 use serde_json::Value;
 use tungstenite::protocol::frame::{
     FrameHeader,
-    coding::{Data, OpCode},
+    coding::{Control, Data, OpCode},
 };
 
 use super::*;
 use crate::connection_tasks::ConnectionTasks;
+use crate::websocket::Compression;
 use crate::{Config, Runtime, audit, memory_runtime};
 use tokio::task::JoinSet;
 
