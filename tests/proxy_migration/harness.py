@@ -134,7 +134,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
-                 circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None):
+                 circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
+                 agent_map=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -142,8 +143,23 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
     policy = directory / f"policy.{policy_format}"
     policy.write_text(policy_text)
     with tempfile.TemporaryDirectory(prefix="sy-migration-") as sockets, ExitStack() as stack:
-        paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
-                 for index, name in enumerate(("alice", "bob"), 2)}
+        if agent_map is None:
+            paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
+                     for index, name in enumerate(("alice", "bob"), 2)}
+        else:
+            from safeyolo.sockets import path_for
+
+            if not isinstance(agent_map, dict) or not all(
+                isinstance(name, str) and isinstance(ip, str)
+                for name, ip in agent_map.items()
+            ):
+                raise ValueError("agent_map must map agent names to IPv4 strings")
+            data_dir = directory / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            (data_dir / "agent_map.json").write_text(
+                json.dumps({name: {"ip": ip} for name, ip in agent_map.items()})
+            )
+            paths = {name: str(path_for(name, ip)) for name, ip in agent_map.items()}
         config = {
             "listeners": [{"agent_id": name, "socket_path": path} for name, path in paths.items()],
             "readiness_file": str(directory / "ready"),
@@ -153,6 +169,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             "flow_store_enabled": False,
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
+        if agent_map is not None:
+            config["agent_map_file"] = str(directory / "data" / "agent_map.json")
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}
         for name, value in (("network_guard_enabled", network_guard_enabled),

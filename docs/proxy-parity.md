@@ -245,10 +245,10 @@ checked.
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
 | POST `/admin/policy/task/{id}/activate` | Implemented | Native task activation publishes enforcement, `/config` and hash together; retained `AdminAPI` and live listener workflow prove the boundary. |
 | DELETE `/admin/policy/task/{id}` | Implemented | Native task clear removes the registered document and selected overlay; retained `AdminAPI` and live listener workflow prove baseline restoration. |
-| PUT `/admin/proxy/mode` | Missing | No native handler or retained consumer proof yet. |
-| PUT `/admin/proxy/ignore-hosts` | Delegated | Passthrough/ignore semantics belong to #631. |
+| PUT `/admin/proxy/mode` | Retained consumer wiring | Rust listener updates use `rust_proxy.sync_listeners`: the existing agent lifecycle consumer edits only managed entries, sends SIGHUP, and waits for the exact readiness reload marker. Direct proxy-mode HTTP remains a Python-only route. |
+| PUT `/admin/proxy/ignore-hosts` | Delegated | The existing CLI normalizes entries and retains the publication call; passthrough matching, reload effect and removal remain owned by #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
-| Add/remove listeners through retained operator consumers | Missing | No native listener mutation route; startup configuration remains process-owned. |
+| Add/remove listeners through retained operator consumers | Implemented | `sync_proxy_modes` replaces only conventional managed sockets, preserves custom listeners, signals the native reload owner and confirms the resulting socket set. The real Rust workflow test adds Bob, removes Alice, and sends requests through the resulting sockets. |
 | GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`; its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. |
 | GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
 
