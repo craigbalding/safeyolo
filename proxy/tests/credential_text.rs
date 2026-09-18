@@ -132,6 +132,53 @@ fn invalid_admitted_bytes_match_source_surrogate_pattern_without_loss() {
 }
 
 #[test]
+fn configured_toml_surrogate_pattern_reaches_native_guard() {
+    // A TOML literal string preserves the source regex spelling.  This is
+    // the representation the native policy loader receives; it must reach
+    // the security-text adapter before the guard compiles the rule.
+    let policy = Policy::parse(
+        r#"
+[credential.synthetic]
+match = ['key-\uDCFF']
+[hosts."api.example"]
+allow = ["synthetic:*"]
+egress = "allow"
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+"#,
+        Format::Toml,
+    )
+    .unwrap();
+    let guard = CredentialGuard::new(b"synthetic-key");
+    let (guard, report) = guard.prepare_policy(&policy).unwrap();
+    assert_eq!(report.rules_count, 1);
+    assert_eq!(report.invalid_patterns, 0);
+
+    let outcome = guard
+        .enforce_ordered(
+            Pdp::Ready(&policy),
+            Identity::Resolved("alice"),
+            "api.example",
+            443,
+            "GET",
+            "/configured",
+            "https",
+            Some("req-configured-text"),
+            "conn-configured-text",
+            false,
+            [(b"Authorization".as_slice(), b"Bearer key-\xff".as_slice())],
+            Options { block: true },
+            1000.,
+        )
+        .unwrap();
+    assert_eq!(outcome.kind, OutcomeKind::Allowed);
+    assert_eq!(outcome.evaluations.len(), 1);
+    assert_eq!(outcome.evaluations[0].finding.rule, "synthetic");
+}
+
+#[test]
 fn bypass_and_identity_containment_precede_source_text_conversion() {
     let guard = CredentialGuard::new(b"synthetic-key");
     guard.load_sensor_config(&sensor()).unwrap();
