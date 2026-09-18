@@ -555,6 +555,16 @@ impl Policy {
         Ok(replacement)
     }
 
+    /// Compile one already registered operator document at the explicit
+    /// activation boundary. Serialization is only the bridge from the raw
+    /// JSON owner to the existing canonical task loader; the loader remains
+    /// the sole validator and matcher compiler.
+    pub(crate) fn with_task_document(&self, document: &Value) -> Result<Self> {
+        let source = serde_json::to_string(document)
+            .map_err(|error| invalid(format!("task policy JSON encoding failed: {error}")))?;
+        self.with_task_source(&source, Format::Json)
+    }
+
     pub fn with_task_path(&self, path: &Path) -> Result<Self> {
         let source = std::fs::read_to_string(path).map_err(|error| PolicyError {
             kind: ErrorKind::Read,
@@ -659,6 +669,16 @@ impl Policy {
             baseline.value["permissions"]
                 .as_array()
                 .expect("validated baseline permissions")
+                .len()
+        })
+    }
+
+    /// Count the canonical permissions contributed by the active task overlay.
+    pub(crate) fn task_permissions_count(&self) -> Option<usize> {
+        self.task.as_ref().map(|task| {
+            task.baseline.value["permissions"]
+                .as_array()
+                .expect("validated task permissions")
                 .len()
         })
     }
@@ -3489,3 +3509,83 @@ mod yaml_tests {
 
 #[cfg(test)]
 mod load_tests;
+
+#[cfg(test)]
+mod task_activation_tests {
+    use super::*;
+
+    fn request(host: &str) -> NetworkRequest<'_> {
+        NetworkRequest {
+            agent: None,
+            host,
+            port: Some(443),
+            method: "GET",
+            path: "/",
+        }
+    }
+
+    #[test]
+    fn activation_replacement_and_clear_share_enforcement_config_and_hash() {
+        let baseline = Policy::parse(
+            r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+            Format::Json,
+        )
+        .unwrap();
+        let first = serde_json::json!({
+            "permissions":[{"action":"network:request","resource":"target.invalid/*","effect":"deny"}]
+        });
+        let replacement = serde_json::json!({
+            "permissions":[{"action":"network:request","resource":"other.invalid/*","effect":"deny"}]
+        });
+        let active = baseline.with_task_document(&first).unwrap();
+        assert_eq!(
+            active
+                .evaluate(request("target.invalid"), 0., false)
+                .unwrap()
+                .effect,
+            Effect::Deny
+        );
+        let first_config = active.sensor_config().unwrap();
+        assert_eq!(first_config["policy_hash"], active.policy_hash());
+        assert_ne!(active.policy_hash(), baseline.policy_hash());
+
+        let replaced = active.with_task_document(&replacement).unwrap();
+        assert_eq!(
+            replaced
+                .evaluate(request("target.invalid"), 0., false)
+                .unwrap()
+                .effect,
+            Effect::Allow
+        );
+        assert_eq!(
+            replaced
+                .evaluate(request("other.invalid"), 0., false)
+                .unwrap()
+                .effect,
+            Effect::Deny
+        );
+        let replaced_config = replaced.sensor_config().unwrap();
+        assert_eq!(replaced_config["policy_hash"], replaced.policy_hash());
+        assert_ne!(replaced.policy_hash(), active.policy_hash());
+
+        let cleared = replaced.without_task();
+        assert_eq!(cleared.policy_hash(), baseline.policy_hash());
+        assert_eq!(
+            cleared.sensor_config().unwrap()["policy_hash"],
+            cleared.policy_hash()
+        );
+        assert_eq!(
+            cleared
+                .evaluate(request("target.invalid"), 0., false)
+                .unwrap()
+                .effect,
+            Effect::Allow
+        );
+        assert!(
+            active
+                .with_task_document(&serde_json::json!({"permissions":false}))
+                .is_err()
+        );
+        assert_eq!(active.policy_hash(), first_config["policy_hash"]);
+    }
+}

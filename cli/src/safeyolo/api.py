@@ -13,6 +13,7 @@ import httpx
 
 from . import rust_proxy
 from .config import get_admin_token, load_config
+from .core.identifiers import validate_task_id
 
 
 class APIError(Exception):
@@ -428,6 +429,19 @@ class AdminAPI:
     def set_policy(self, project: str, policy: dict[str, Any]) -> dict[str, Any]:
         """Write/update policy for a project."""
         return self._request("PUT", f"/admin/policy/{project}", json={"policy": policy})
+
+    def activate_task_policy(self, task_id: str) -> dict[str, Any]:
+        """Activate one registered task policy at the native policy boundary."""
+        task_id = validate_task_id(task_id)
+        return self._request(
+            "POST",
+            f"/admin/policy/task/{quote(task_id, safe='')}/activate",
+        )
+
+    def clear_task_policy(self, task_id: str) -> dict[str, Any]:
+        """Clear one registered task policy and its active overlay."""
+        task_id = validate_task_id(task_id)
+        return self._request("DELETE", f"/admin/policy/task/{quote(task_id, safe='')}")
 
     def add_approval(
         self,

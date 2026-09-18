@@ -213,9 +213,9 @@ access; do not substitute an agent-accessible management listener.
 | Methods | Routes |
 |---|---|
 | GET | `/health`, `/stats`, `/debug/addons`, `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets`, `/admin/traffic/scope`, `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` |
-| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
+| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
 | PUT | `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/proxy/mode`, `/admin/proxy/ignore-hosts`, `/admin/proxy/web-tailnet`, `/admin/traffic/scope` |
-| DELETE | `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
+| DELETE | `/admin/policy/task/{id}`, `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
 
 The authenticated WebSocket `/admin/events` streams selected operator audit
 events through `core/operator_event_server.py`. The web application's traffic
@@ -242,7 +242,9 @@ checked.
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
 | DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
 | POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Delegated | Retained-agent-workflows implementation and host boundary; no native fake endpoint. |
-| PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; activation and consumer proof remain open where noted above. |
+| PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
+| POST `/admin/policy/task/{id}/activate` | Implemented | Native task activation publishes enforcement, `/config` and hash together; retained `AdminAPI` and live listener workflow prove the boundary. |
+| DELETE `/admin/policy/task/{id}` | Implemented | Native task clear removes the registered document and selected overlay; retained `AdminAPI` and live listener workflow prove baseline restoration. |
 | PUT `/admin/proxy/mode` | Missing | No native handler or retained consumer proof yet. |
 | PUT `/admin/proxy/ignore-hosts` | Delegated | Passthrough/ignore semantics belong to #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
@@ -634,15 +636,18 @@ JSON in one process-local registry. It does not compile or activate task rules,
 inject a task ID into the stored document, or change the active policy hash.
 GET returns that raw document, including unknown fields and absent defaults.
 Replacing an ID retains the registry count; an invalid update retains the prior
-document. Restart starts a new empty registry. Validation reuses the canonical
-loader's schema helpers without its matcher, host expansion or token issuance.
-Schema-valid budgets or regex strings can therefore register even when native
-activation remains unsupported. Source task-file activation is a loader/engine
-library method; the inspected CLI, proxy configuration and operator API have no
-caller for it. The source standalone PDP can select a registered task through
-an explicit evaluation context, which is a separate path from file activation.
-That standalone-PDP path and its deletion remain unintegrated. Native does not
-add a task-file option or turn registration into activation.
+document. POST `/admin/policy/task/{id}/activate` is the explicit activation
+boundary: it compiles the selected raw document against the accepted baseline,
+prepares the existing credential detector, and publishes one Runtime snapshot.
+DELETE on that path clears the document and, when selected, publishes the
+baseline-only snapshot. A failed compile leaves both the registered document and
+active policy unchanged. Enforcement, `/config`, policy hashes and operator
+reads therefore switch together after activation; a replacement remains only a
+registered candidate until that boundary. Restart starts a new empty registry.
+Validation reuses the canonical loader's schema helpers without its matcher,
+host expansion or token issuance. Source task-file activation is a
+loader/engine library method; this native operator path keeps registration and
+activation explicit rather than adding a task-file option.
 
 Operator replies use Python's indented JSON presentation and the shared scalar
 formatter. GET borrows the stored document into one sized, zeroizing response
@@ -686,8 +691,10 @@ Clippy, formatting and selected repository hooks. All 210 native wire cases
 passed against one frozen executable: 69 Agent API, 36 network, 104 WebSocket
 and one [operator client workflow](../tests/proxy_migration/test_operator_task_api.py).
 The workflow uses the existing Python AdminAPI client with an owned listener
-and synthetic token. It verifies task registration, reload ownership, unchanged
-network enforcement and proxy-to-admin containment.
+and synthetic token. It verifies registration remains inactive, explicit
+activation changes enforcement and the `/config` hash, clear restores the
+baseline, reload ownership retains the remaining registered task, and
+proxy-to-admin containment still holds.
 
 All 1,010 source blobs, 22 migration fixtures and the executable stayed unchanged
 during that run. All configurations selected native policy without the temporary
@@ -1255,7 +1262,8 @@ audit-failure outcomes alongside the native correction.
 
 The source loader also has task-file activation and task-specific event
 behavior. Those library producers remain separate from the implemented operator
-registration workflow; no shipped proxy activation caller was found.
+registration workflow; no shipped caller for that source task-file activation
+method was found.
 Source/native stat-error phase differences and existing YAML/TOML/JSON
 representation limits remain explicit gaps; these events do not close them.
 

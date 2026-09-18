@@ -21,7 +21,7 @@ RAW_CANARY = "synthetic-raw-task-confidential-value"
 SHIELD_BODY = {"error": "Forbidden", "message": "Admin API not accessible through proxy"}
 
 
-def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfig, tmp_path, monkeypatch):
+def test_operator_client_registers_activates_and_clears_task_policy(pytestconfig, tmp_path, monkeypatch):
     if "rust" not in pytestconfig.getoption("--proxy-backend"):
         pytest.skip("Rust-only operator workflow; select --proxy-backend rust")
 
@@ -54,15 +54,17 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
             wrong = AdminAPI(base_url=base_url, token=NEXT_TOKEN, timeout=5)
             initial = assert_api_response(api_request(proxy, "/status"), 200)
 
-            def check_task_count(count, evaluations):
+            def check_task_state(count, evaluations, policy_hash, task_permissions):
                 report = assert_api_response(api_request(proxy, "/status", agent="bob"), 200)
                 assert report["task_policies"] == count
-                assert report["policy_hash"] == initial["policy_hash"]
-                assert report["engine_stats"]["task_permissions"] == 0
+                assert report["policy_hash"] == policy_hash
+                assert report["engine_stats"]["task_permissions"] == task_permissions
                 assert report["engine_stats"]["task_policy_path"] is None
                 assert report["engine_stats"]["evaluations"] == evaluations
 
-            check_task_count(0, 0)
+            initial_config = assert_api_response(api_request(proxy, "/config"), 200)
+            assert initial_config["policy_hash"] == initial["policy_hash"]
+            check_task_state(0, 0, initial["policy_hash"], 0)
             assert wrong.health() == {"status": "ok"}
             with pytest.raises(APIError) as failure:
                 wrong.get_policy("task/alpha")
@@ -75,7 +77,7 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 "message": "Task policy updated",
             }
             assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": raw}
-            check_task_count(1, 0)
+            check_task_state(1, 0, initial["policy_hash"], 0)
             # A registered blanket deny does not become an active overlay. Both
             # trusted agents still reach the owned origin under the same policy.
             for agent in ("alice", "bob"):
@@ -84,6 +86,24 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 )
                 assert result[0] == 200 and result[2] == b"hello"
             assert origin.accepts == 2 and len(origin.requests) == 2
+
+            assert client.activate_task_policy("alpha") == {
+                "status": "activated",
+                "task_id": "alpha",
+                "permission_count": 1,
+                "message": "Task policy activated",
+            }
+            activated_config = assert_api_response(api_request(proxy, "/config"), 200)
+            activated_hash = activated_config["policy_hash"]
+            assert activated_hash != initial["policy_hash"]
+            check_task_state(1, 2, activated_hash, 1)
+            status, headers, body = send_request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/activated-task"
+            )
+            assert status == 403 and json.loads(body)["domain"] == "127.0.0.1"
+            assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
+            assert origin.accepts == 2 and len(origin.requests) == 2
+            check_task_state(1, 3, activated_hash, 1)
 
             assert client.set_policy("task/alpha", replacement) == {
                 "status": "updated",
@@ -95,9 +115,28 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
                 client.set_policy("task/alpha", {"permissions": False})
             assert failure.value.status_code == 400
             assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": replacement}
-            check_task_count(1, 2)
+            check_task_state(1, 3, activated_hash, 1)
+
+            assert client.clear_task_policy("alpha") == {
+                "status": "cleared",
+                "task_id": "alpha",
+                "message": "Task policy cleared",
+            }
+            cleared_config = assert_api_response(api_request(proxy, "/config"), 200)
+            assert cleared_config["policy_hash"] == initial["policy_hash"]
+            check_task_state(0, 3, initial["policy_hash"], 0)
+            with pytest.raises(APIError) as failure:
+                client.get_policy("task/alpha")
+            assert failure.value.status_code == 404
+            status, _, body = send_request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/cleared-task"
+            )
+            assert status == 200 and body == b"hello"
+            assert origin.accepts == 3 and len(origin.requests) == 3
+            check_task_state(0, 4, initial["policy_hash"], 0)
+
             assert client.set_policy("task/beta", {})["permission_count"] == 0
-            check_task_count(2, 2)
+            check_task_state(1, 4, initial["policy_hash"], 0)
 
             # Startup token ownership and the actual process-local registry both
             # survive a real binary SIGHUP reload; no facade-only call substitutes.
@@ -107,8 +146,11 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
             with pytest.raises(APIError) as failure:
                 wrong.get_policy("task/alpha")
             assert failure.value.status_code == 401
-            assert client.get_policy("task/alpha") == {"task_id": "alpha", "policy": replacement}
-            check_task_count(2, 2)
+            with pytest.raises(APIError) as failure:
+                client.get_policy("task/alpha")
+            assert failure.value.status_code == 404
+            assert client.get_policy("task/beta") == {"task_id": "beta", "policy": {}}
+            check_task_state(1, 4, initial["policy_hash"], 0)
 
             before = len(proxy.events("proxy.egress")), origin.accepts
             for agent, method, target in (
@@ -127,9 +169,12 @@ def test_operator_client_registers_raw_tasks_without_activating_them(pytestconfi
             updates = [event for event in events if event["audit_intent"] == "admin.task_policy_update"]
             assert [(event["task_id"], event["permission_count"]) for event in updates] == [
                 ("alpha", 1),
+                ("alpha", 1),
                 ("alpha", 0),
                 ("beta", 0),
             ]
+            clears = [event for event in events if event["audit_intent"] == "admin.task_policy_clear"]
+            assert [event["task_id"] for event in clears] == ["alpha"]
             assert sum(event["audit_intent"] == "admin.auth_failure" for event in events) == 2
             for path in (proxy.event_log, directory / "process.log", proxy.readiness_file):
                 contents = path.read_text()

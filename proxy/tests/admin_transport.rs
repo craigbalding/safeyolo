@@ -559,6 +559,231 @@ async fn raw_registry_reload_startup_ownership_restart_and_no_activation() {
 }
 
 #[tokio::test]
+async fn task_activation_boundary_publishes_enforcement_config_hash_and_clear() {
+    let directory = TempDir::new().unwrap();
+    let token = synthetic();
+    let agent_token = synthetic();
+    let mut config = config(directory.path(), &token);
+    config.agent_api_enabled = true;
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("agent_token"), &agent_token).unwrap();
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let peer = Peer::bind((Ipv4Addr::LOCALHOST, 0), "").await;
+    let host = peer.address.to_string();
+    let target = format!("http://{host}/task");
+    let deny_first = json!({"permissions":[
+        {"action":"network:request","resource":"*","effect":"deny"}
+    ]});
+    let deny_second = json!({"permissions":[
+        {"action":"network:request","resource":"other.invalid/*","effect":"deny"}
+    ]});
+    let put = |policy: &Value| serde_json::to_vec(&json!({"policy":policy})).unwrap();
+
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "PUT",
+            "/admin/policy/task/alpha",
+            &put(&deny_first),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        200,
+        "registration does not activate enforcement"
+    );
+    let baseline_config = agent(
+        &config,
+        "alice",
+        "GET",
+        "http://_safeyolo.proxy.internal/config",
+        "_safeyolo.proxy.internal",
+        Some(&agent_token),
+        b"",
+    )
+    .await
+    .json();
+
+    let activated = admin(
+        port,
+        &token,
+        "POST",
+        "/admin/policy/task/alpha/activate",
+        b"",
+    )
+    .await;
+    assert_eq!(activated.status, 200);
+    assert_eq!(activated.json()["status"], "activated");
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        403,
+        "the published task overlay reaches the request evaluator"
+    );
+    let active_config = agent(
+        &config,
+        "alice",
+        "GET",
+        "http://_safeyolo.proxy.internal/config",
+        "_safeyolo.proxy.internal",
+        Some(&agent_token),
+        b"",
+    )
+    .await
+    .json();
+    assert_ne!(active_config["policy_hash"], baseline_config["policy_hash"]);
+    assert_eq!(active_config["policy_hash"].as_str().unwrap().len(), 23);
+    assert_eq!(
+        admin(port, &token, "GET", "/admin/policy/task/alpha", b"")
+            .await
+            .json()["policy"],
+        deny_first
+    );
+
+    // Replacement is retained as a candidate and does not silently change the
+    // selected generation until the explicit activation boundary is crossed.
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "PUT",
+            "/admin/policy/task/alpha",
+            &put(&deny_second),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        403
+    );
+    let native_invalid = json!({"permissions":[
+        {"action":"network:request","resource":"*","effect":"budget","budget":-1}
+    ]});
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "PUT",
+            "/admin/policy/task/alpha",
+            &put(&native_invalid),
+        )
+        .await
+        .status,
+        200,
+        "schema admission retains the raw candidate"
+    );
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "POST",
+            "/admin/policy/task/alpha/activate",
+            b"",
+        )
+        .await
+        .status,
+        400,
+        "native activation rejects a matcher-invalid candidate"
+    );
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        403,
+        "failed activation retains the previous enforcement generation"
+    );
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "PUT",
+            "/admin/policy/task/alpha",
+            &put(&deny_second),
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        admin(
+            port,
+            &token,
+            "POST",
+            "/admin/policy/task/alpha/activate",
+            b"",
+        )
+        .await
+        .status,
+        200
+    );
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        200,
+        "replacement takes effect only after activation"
+    );
+    let replaced_config = agent(
+        &config,
+        "alice",
+        "GET",
+        "http://_safeyolo.proxy.internal/config",
+        "_safeyolo.proxy.internal",
+        Some(&agent_token),
+        b"",
+    )
+    .await
+    .json();
+    assert_ne!(replaced_config["policy_hash"], active_config["policy_hash"]);
+
+    let cleared = admin(port, &token, "DELETE", "/admin/policy/task/alpha", b"").await;
+    assert_eq!(cleared.status, 200);
+    assert_eq!(cleared.json()["status"], "cleared");
+    assert_eq!(
+        agent(&config, "alice", "GET", &target, &host, None, b"")
+            .await
+            .status,
+        200
+    );
+    let cleared_config = agent(
+        &config,
+        "alice",
+        "GET",
+        "http://_safeyolo.proxy.internal/config",
+        "_safeyolo.proxy.internal",
+        Some(&agent_token),
+        b"",
+    )
+    .await
+    .json();
+    assert_eq!(
+        cleared_config["policy_hash"],
+        baseline_config["policy_hash"]
+    );
+    assert_eq!(
+        admin(port, &token, "GET", "/admin/policy/task/alpha", b"")
+            .await
+            .status,
+        404
+    );
+    assert_shutdown(proxy, &config, port).await;
+    peer.stop().await;
+}
+
+#[tokio::test]
 async fn occupied_operator_bind_never_publishes_agent_sockets_or_readiness() {
     let directory = TempDir::new().unwrap();
     let token = synthetic();

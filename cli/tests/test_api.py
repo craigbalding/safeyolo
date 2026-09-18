@@ -359,6 +359,52 @@ class TestAdminAPIAgentService:
             api.revoke_service(agent="boris", service="nope")
 
 
+class TestAdminAPITaskPolicy:
+    """Tests for the retained task-policy activation boundary."""
+
+    def test_activate_task_policy_uses_native_boundary(self, tmp_config_dir, mock_httpx):
+        mock_httpx["response"].json.return_value = {
+            "status": "activated",
+            "task_id": "alpha",
+            "permission_count": 1,
+        }
+
+        result = AdminAPI(token="test").activate_task_policy("alpha")
+
+        assert result["status"] == "activated"
+        mock_httpx["client"].request.assert_called_once_with(
+            "POST",
+            "http://localhost:9090/admin/policy/task/alpha/activate",
+            headers={"Authorization": "Bearer test"},
+            json=None,
+        )
+
+    def test_clear_task_policy_uses_existing_task_path(self, tmp_config_dir, mock_httpx):
+        mock_httpx["response"].json.return_value = {
+            "status": "cleared",
+            "task_id": "alpha",
+        }
+
+        result = AdminAPI(token="test").clear_task_policy("alpha")
+
+        assert result["status"] == "cleared"
+        mock_httpx["client"].request.assert_called_once_with(
+            "DELETE",
+            "http://localhost:9090/admin/policy/task/alpha",
+            headers={"Authorization": "Bearer test"},
+            json=None,
+        )
+
+    @pytest.mark.parametrize("task_id", ["", "../alpha", "not valid"])
+    def test_task_policy_methods_validate_one_path_segment(self, tmp_config_dir, task_id):
+        api = AdminAPI(token="test")
+
+        with pytest.raises(ValueError):
+            api.activate_task_policy(task_id)
+        with pytest.raises(ValueError):
+            api.clear_task_policy(task_id)
+
+
 class TestAdminAPIRequestErrors:
     """Tests for _request() error handling."""
 

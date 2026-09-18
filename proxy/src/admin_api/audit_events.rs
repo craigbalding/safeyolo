@@ -187,6 +187,17 @@ impl Audit {
                 event.details = json!({"client_ip":client_ip,"task_id":task_id,"permission_count":permission_count}).into();
                 vec![event]
             }
+            Self::TaskCleared { task_id } => {
+                let mut event = event(
+                    "admin.task_policy_clear",
+                    Kind::Admin,
+                    Severity::Medium,
+                    format!("Task policy '{}' cleared", sanitize(task_id)),
+                    "admin-api",
+                );
+                event.details = json!({"client_ip":client_ip,"task_id":task_id}).into();
+                vec![event]
+            }
             Self::BudgetsReset(reset) => {
                 let safe = reset.safe_resource();
                 let mut engine = event(

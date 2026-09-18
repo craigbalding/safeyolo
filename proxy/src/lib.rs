@@ -86,6 +86,32 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
 pub(crate) type UpgradeTasks = Arc<connection_tasks::ConnectionTasks>;
 
+/// Errors returned while preparing a task overlay for the process-owned
+/// runtime snapshot. The registry is changed only after policy and detector
+/// preparation have succeeded.
+pub(crate) enum TaskPolicyActivationError {
+    Unavailable,
+    Invalid,
+    Registry(tasks::Error),
+}
+
+/// Register a raw document through the same process state lock used by task
+/// activation. Registration alone intentionally leaves the active generation
+/// unchanged.
+pub(crate) fn register_task(
+    state: &RuntimeState,
+    task_id: &str,
+    document: Value,
+) -> Result<tasks::Upsert, TaskPolicyActivationError> {
+    let current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    current
+        .tasks
+        .upsert(task_id, document)
+        .map_err(TaskPolicyActivationError::Registry)
+}
+
 /// Owns the process boundary at which a newly persisted vault snapshot becomes
 /// active. Refresh publication is rejected after shutdown begins, while the
 /// vault rollback callback remains allowed to restore the prior active view.
@@ -407,6 +433,17 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            // The registry is process-owned across Runtime reloads. Reapply
+            // its selected task only after the new baseline has compiled;
+            // failure rejects the candidate and retains the prior snapshot.
+            if let Some(policy) = policy.as_mut()
+                && let Some((_, task)) = tasks.active().map_err(|error| Box::new(error) as Error)?
+            {
+                let candidate = policy
+                    .with_task_document(task.document())
+                    .map_err(|error| Box::new(error) as Error)?;
+                *policy = candidate;
+            }
             // A reload with the same vault path and key material must retain
             // the old state object: its OAuth flight table is part of the
             // process-owned attempt domain. A changed key/path starts a fresh
@@ -704,6 +741,106 @@ impl Runtime {
         events.write_all(&bytes)?;
         Ok(())
     }
+}
+
+/// Compile and publish an already registered task at the explicit activation
+/// boundary. The outer RuntimeState lock makes enforcement, `/config`, hash,
+/// and operator reads switch to one immutable generation together.
+pub(crate) fn activate_registered_task(
+    state: &RuntimeState,
+    task_id: &str,
+) -> Result<usize, TaskPolicyActivationError> {
+    let mut current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    let task = current
+        .tasks
+        .get(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?
+        .ok_or(TaskPolicyActivationError::Registry(tasks::Error::NotFound))?;
+    let policy = current
+        .policy
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let candidate = policy
+        .with_task_document(task.document())
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let previous_guard = current
+        .credential_guard
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let (credential_guard, _) = previous_guard
+        .prepare_policy(&candidate)
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let runtime = Arc::new(Runtime {
+        policy: Some(candidate),
+        credential_guard: Some(credential_guard),
+        ..current.as_ref().clone()
+    });
+    runtime
+        .configure_declarations()
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    current
+        .tasks
+        .activate(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?;
+    let permission_count = runtime
+        .policy
+        .as_ref()
+        .and_then(policy::Policy::task_permissions_count)
+        .unwrap_or(0);
+    *current = runtime;
+    Ok(permission_count)
+}
+
+/// Clear a registered task. When that task is active, prepare the baseline
+/// generation first and then publish it with the registry removal.
+pub(crate) fn clear_registered_task(
+    state: &RuntimeState,
+    task_id: &str,
+) -> Result<bool, TaskPolicyActivationError> {
+    let mut current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    let active = current
+        .tasks
+        .active()
+        .map_err(TaskPolicyActivationError::Registry)?
+        .is_some_and(|(active_id, _)| active_id == task_id);
+    if !active {
+        return current
+            .tasks
+            .clear(task_id)
+            .map_err(TaskPolicyActivationError::Registry);
+    }
+    let policy = current
+        .policy
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let candidate = policy.without_task();
+    let previous_guard = current
+        .credential_guard
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let (credential_guard, _) = previous_guard
+        .prepare_policy(&candidate)
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let runtime = Arc::new(Runtime {
+        policy: Some(candidate),
+        credential_guard: Some(credential_guard),
+        ..current.as_ref().clone()
+    });
+    runtime
+        .configure_declarations()
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let removed = current
+        .tasks
+        .clear(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?;
+    if removed {
+        *current = runtime;
+    }
+    Ok(removed)
 }
 
 #[derive(Clone, PartialEq, Eq)]

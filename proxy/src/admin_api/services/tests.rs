@@ -84,6 +84,7 @@ impl Fixture {
                     gateway_store: None,
                 }),
                 plumb: None,
+                task_state: None,
             },
         )
         .await
@@ -150,6 +151,7 @@ async fn revoke(fixture: &Fixture, agent: &str, service: &str) -> Result<Outcome
                 gateway_store: None,
             }),
             plumb: None,
+            task_state: None,
         },
     )
     .await
@@ -298,6 +300,7 @@ async fn service_authentication_precedes_body_and_policy_access() {
             client_ip: None,
             service_audit: None,
             plumb: None,
+            task_state: None,
         },
     )
     .await
@@ -371,6 +374,7 @@ async fn service_missing_registry_or_policy_path_never_mutates() {
                 client_ip: None,
                 service_audit: None,
                 plumb: None,
+                task_state: None,
             },
         )
         .await

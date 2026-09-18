@@ -134,6 +134,9 @@ pub enum Audit {
         task_id: String,
         permission_count: usize,
     },
+    TaskCleared {
+        task_id: String,
+    },
     PolicyMutation(PolicyMutationAudit),
     PlumbMutation(PlumbMutationAudit),
     ModeChanged {
@@ -1103,6 +1106,10 @@ pub(crate) struct OperatorContext<'a> {
     pub client_ip: Option<&'a str>,
     pub service_audit: Option<ServiceAudit<'a>>,
     pub plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
+    /// The listener supplies the outer state so task activation can publish a
+    /// complete Runtime generation. Unit callers without it retain the raw
+    /// registration-only behavior.
+    pub task_state: Option<&'a crate::RuntimeState>,
 }
 
 /// The shared view uses the same operator authentication as other private reads.
@@ -1137,6 +1144,7 @@ where
             client_ip: None,
             service_audit: None,
             plumb: None,
+            task_state: None,
         },
     )
     .await
@@ -1163,6 +1171,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         client_ip,
         service_audit,
         plumb,
+        task_state,
     } = context;
     let method = request.method();
     if !matches!(
@@ -1974,14 +1983,75 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             reset_budgets(request, policy).await
         };
     }
-    let task_id = path.strip_prefix("/admin/policy/task/");
-    if !matches!(*method, Method::GET | Method::PUT) || task_id.is_none() {
+    let task_path = path.strip_prefix("/admin/policy/task/");
+    if !matches!(
+        *method,
+        Method::GET | Method::PUT | Method::POST | Method::DELETE
+    ) || task_path.is_none()
+    {
         return Ok(response(
             StatusCode::NOT_FOUND,
             json!({"error":"not found"}),
         ));
     }
-    let task_id = task_id.expect("task route checked");
+    let task_path = task_path.expect("task route checked");
+    if method == Method::POST
+        && let Some(task_id) = task_path.strip_suffix("/activate")
+    {
+        if task_id.is_empty() {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing task_id"}),
+            ));
+        }
+        let Some(state) = task_state else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"task activation unavailable"}),
+            ));
+        };
+        let permission_count = match crate::activate_registered_task(state, task_id) {
+            Ok(count) => count,
+            Err(crate::TaskPolicyActivationError::Registry(tasks::Error::NotFound)) => {
+                return Ok(response(
+                    StatusCode::NOT_FOUND,
+                    json!({"error":format!("Task policy '{task_id}' not found")}),
+                ));
+            }
+            Err(crate::TaskPolicyActivationError::Registry(
+                tasks::Error::InvalidId | tasks::Error::InvalidPolicy,
+            ))
+            | Err(crate::TaskPolicyActivationError::Invalid) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"invalid task policy"}),
+                ));
+            }
+            Err(crate::TaskPolicyActivationError::Registry(tasks::Error::Poisoned))
+            | Err(crate::TaskPolicyActivationError::Unavailable) => {
+                return Err(Error::RegistryUnavailable);
+            }
+        };
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({
+                "status":"activated", "task_id":task_id, "permission_count":permission_count,
+                "message":"Task policy activated"
+            }),
+        );
+        outcome.audit = Some(Audit::TaskUpdated {
+            task_id: task_id.to_owned(),
+            permission_count,
+        });
+        return Ok(outcome);
+    }
+    if method == Method::POST {
+        return Ok(response(
+            StatusCode::NOT_FOUND,
+            json!({"error":"not found"}),
+        ));
+    }
+    let task_id = task_path;
     if task_id.is_empty() {
         return Ok(response(
             StatusCode::BAD_REQUEST,
@@ -2007,6 +2077,50 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             ),
         });
     }
+    if method == Method::DELETE {
+        let removed = if let Some(state) = task_state {
+            match crate::clear_registered_task(state, task_id) {
+                Ok(removed) => removed,
+                Err(crate::TaskPolicyActivationError::Registry(tasks::Error::InvalidId)) => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"Invalid task ID"}),
+                    ));
+                }
+                Err(crate::TaskPolicyActivationError::Registry(tasks::Error::Poisoned))
+                | Err(crate::TaskPolicyActivationError::Unavailable) => {
+                    return Err(Error::RegistryUnavailable);
+                }
+                Err(crate::TaskPolicyActivationError::Invalid) => {
+                    return Ok(response(
+                        StatusCode::BAD_REQUEST,
+                        json!({"error":"invalid task policy"}),
+                    ));
+                }
+                Err(crate::TaskPolicyActivationError::Registry(
+                    tasks::Error::InvalidPolicy | tasks::Error::NotFound,
+                )) => unreachable!("clear does not validate or look up a missing task"),
+            }
+        } else {
+            registry
+                .clear(task_id)
+                .map_err(|_| Error::RegistryUnavailable)?
+        };
+        if !removed {
+            return Ok(response(
+                StatusCode::NOT_FOUND,
+                json!({"error":format!("Task policy '{task_id}' not found")}),
+            ));
+        }
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({"status":"cleared","task_id":task_id,"message":"Task policy cleared"}),
+        );
+        outcome.audit = Some(Audit::TaskCleared {
+            task_id: task_id.to_owned(),
+        });
+        return Ok(outcome);
+    }
     let task_id = task_id.to_owned();
     let mut data = match read_json(request).await? {
         ParsedBody::Terminal(outcome) => return Ok(outcome),
@@ -2026,15 +2140,37 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             json!({"error":"missing 'policy' field in request body"}),
         ));
     };
-    let upsert = match registry.upsert(&task_id, raw.take()) {
-        Ok(result) => result,
-        Err(error @ (tasks::Error::InvalidId | tasks::Error::InvalidPolicy)) => {
-            return Ok(response(
-                StatusCode::BAD_REQUEST,
-                json!({"error":error.to_string()}),
-            ));
-        }
-        Err(tasks::Error::Poisoned) => return Err(Error::RegistryUnavailable),
+    let upsert = match task_state {
+        Some(state) => match crate::register_task(state, &task_id, raw.take()) {
+            Ok(result) => result,
+            Err(crate::TaskPolicyActivationError::Registry(
+                error @ (tasks::Error::InvalidId | tasks::Error::InvalidPolicy),
+            )) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":error.to_string()}),
+                ));
+            }
+            Err(crate::TaskPolicyActivationError::Registry(tasks::Error::Poisoned))
+            | Err(crate::TaskPolicyActivationError::Unavailable) => {
+                return Err(Error::RegistryUnavailable);
+            }
+            Err(crate::TaskPolicyActivationError::Invalid)
+            | Err(crate::TaskPolicyActivationError::Registry(tasks::Error::NotFound)) => {
+                unreachable!("registration does not activate or look up tasks")
+            }
+        },
+        None => match registry.upsert(&task_id, raw.take()) {
+            Ok(result) => result,
+            Err(error @ (tasks::Error::InvalidId | tasks::Error::InvalidPolicy)) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":error.to_string()}),
+                ));
+            }
+            Err(tasks::Error::Poisoned) => return Err(Error::RegistryUnavailable),
+            Err(tasks::Error::NotFound) => unreachable!("registration cannot miss a task"),
+        },
     };
     let mut outcome = response(
         StatusCode::OK,

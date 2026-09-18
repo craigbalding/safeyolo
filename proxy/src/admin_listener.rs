@@ -291,6 +291,7 @@ async fn serve_connection(
                         gateway_store: runtime.gateway_grants.as_ref(),
                     }),
                     plumb: Some(runtime.plumb.as_ref()),
+                    task_state: Some(&state),
                 },
             )
             .await?
@@ -308,6 +309,10 @@ async fn serve_connection(
                     "event":"proxy.admin_api", "audit_intent":"admin.task_policy_update",
                     "client_ip":client_ip, "task_id":task_id,
                     "permission_count":permission_count,
+                })],
+                admin_api::Audit::TaskCleared { task_id } => vec![json!({
+                    "event":"proxy.admin_api", "audit_intent":"admin.task_policy_clear",
+                    "client_ip":client_ip, "task_id":task_id,
                 })],
                 admin_api::Audit::CircuitReset(reset) => reset.events(&client_ip).into(),
                 admin_api::Audit::ServiceAuthorized(_) => vec![json!({
@@ -566,6 +571,7 @@ fn is_operator_event(event: &serde_json::Value) -> bool {
                 | "admin.mode_change"
                 | "admin.baseline_update"
                 | "admin.task_policy_update"
+                | "admin.task_policy_clear"
                 | "admin.agent_service_authorized"
                 | "admin.agent_service_revoked"
                 | "admin.gateway_grant"

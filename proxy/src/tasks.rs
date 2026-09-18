@@ -17,6 +17,7 @@ use serde_json::Value;
 pub enum Error {
     InvalidId,
     InvalidPolicy,
+    NotFound,
     Poisoned,
 }
 
@@ -25,6 +26,7 @@ impl fmt::Display for Error {
         formatter.write_str(match self {
             Self::InvalidId => "Invalid task ID",
             Self::InvalidPolicy => "Invalid policy document",
+            Self::NotFound => "Task policy not found",
             Self::Poisoned => "Task registry unavailable",
         })
     }
@@ -68,10 +70,16 @@ impl Drop for RawTask {
 }
 
 /// One shared registry per proxy process. Clones share registration state.
-/// A fresh default registry is empty; there is no persistence or activation.
+/// A fresh default registry is empty and has no persistence; activation is explicit.
 #[derive(Clone, Default)]
 pub struct Registry {
-    entries: Arc<Mutex<HashMap<String, Arc<RawTask>>>>,
+    state: Arc<Mutex<RegistryState>>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    entries: HashMap<String, Arc<RawTask>>,
+    active: Option<(String, Arc<RawTask>)>,
 }
 
 impl Registry {
@@ -80,11 +88,47 @@ impl Registry {
     pub fn upsert(&self, task_id: &str, document: Value) -> Result<Upsert, Error> {
         let raw = RawTask { document };
         crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
-        let mut entries = self.entries.lock().map_err(|_| Error::Poisoned)?;
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
         let permission_count = crate::policy::validate_task_document(raw.document())
             .map_err(|_| Error::InvalidPolicy)?;
-        entries.insert(task_id.to_owned(), Arc::new(raw));
+        state.entries.insert(task_id.to_owned(), Arc::new(raw));
         Ok(Upsert { permission_count })
+    }
+
+    /// Select an already registered document at the explicit activation
+    /// boundary. Registration alone never changes enforcement.
+    pub(crate) fn activate(&self, task_id: &str) -> Result<Arc<RawTask>, Error> {
+        crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        let task = state.entries.get(task_id).cloned().ok_or(Error::NotFound)?;
+        state.active = Some((task_id.to_owned(), task.clone()));
+        Ok(task)
+    }
+
+    /// Remove a registered document. If it is active, the caller must publish
+    /// the baseline-only policy at the same activation boundary.
+    pub(crate) fn clear(&self, task_id: &str) -> Result<bool, Error> {
+        crate::policy::validate_task_id(task_id).map_err(|_| Error::InvalidId)?;
+        let mut state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        let removed = state.entries.remove(task_id).is_some();
+        if removed
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|(active_id, _)| active_id == task_id)
+        {
+            state.active = None;
+        }
+        Ok(removed)
+    }
+
+    /// Return the selected document for Runtime reload publication.
+    pub(crate) fn active(&self) -> Result<Option<(String, Arc<RawTask>)>, Error> {
+        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        Ok(state
+            .active
+            .as_ref()
+            .map(|(task_id, task)| (task_id.clone(), task.clone())))
     }
 
     /// Invalid IDs are absent, matching the source getter. A returned owner
@@ -93,12 +137,61 @@ impl Registry {
         if crate::policy::validate_task_id(task_id).is_err() {
             return Ok(None);
         }
-        let entries = self.entries.lock().map_err(|_| Error::Poisoned)?;
-        Ok(entries.get(task_id).cloned())
+        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        Ok(state.entries.get(task_id).cloned())
     }
 
     pub fn count(&self) -> Result<usize, Error> {
-        let entries = self.entries.lock().map_err(|_| Error::Poisoned)?;
-        Ok(entries.len())
+        let state = self.state.lock().map_err(|_| Error::Poisoned)?;
+        Ok(state.entries.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replacement_waits_for_activation_and_clear_drops_selected_snapshot() {
+        let registry = Registry::default();
+        let first = json!({
+            "permissions":[{"action":"network:request","resource":"first.invalid/*","effect":"deny"}]
+        });
+        let replacement = json!({
+            "permissions":[{"action":"network:request","resource":"second.invalid/*","effect":"deny"}]
+        });
+        registry.upsert("alpha", first.clone()).unwrap();
+        registry.activate("alpha").unwrap();
+        registry.upsert("alpha", replacement.clone()).unwrap();
+
+        let (_, selected) = registry.active().unwrap().unwrap();
+        assert_eq!(selected.document(), &first);
+        assert_eq!(
+            registry.get("alpha").unwrap().unwrap().document(),
+            &replacement
+        );
+
+        registry.activate("alpha").unwrap();
+        let (_, selected) = registry.active().unwrap().unwrap();
+        assert_eq!(selected.document(), &replacement);
+        assert!(registry.clear("alpha").unwrap());
+        assert!(registry.active().unwrap().is_none());
+        assert!(registry.get("alpha").unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_replacement_preserves_registered_and_selected_documents() {
+        let registry = Registry::default();
+        let first = json!({"permissions":[]});
+        registry.upsert("alpha", first.clone()).unwrap();
+        registry.activate("alpha").unwrap();
+        assert_eq!(
+            registry.upsert("alpha", json!({"permissions":false})),
+            Err(Error::InvalidPolicy)
+        );
+        assert_eq!(registry.get("alpha").unwrap().unwrap().document(), &first);
+        assert_eq!(registry.active().unwrap().unwrap().1.document(), &first);
+        assert_eq!(registry.clear("missing"), Ok(false));
     }
 }
