@@ -444,7 +444,19 @@ impl CoordClient {
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
         }
-        let connection = self.client().await?;
+        let connection = match self.client().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                // Reconnect failure is not authoritative: another projector
+                // may have committed the edge after the previous ledger read.
+                // Close this provider path with one final SQLite ledger read.
+                let ledger = self.attention_feed(principal, since, limit).await;
+                return match ledger {
+                    Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                    _ => Err(error),
+                };
+            }
+        };
         let subject = format!("coord.attention.{principal}");
         let mut subscription = match connection.subscribe(subject).await {
             Ok(subscription) => subscription,
@@ -544,13 +556,17 @@ impl CoordClient {
                 .get_stream(room_stream(&room_id))
                 .await
                 .map_err(|_| CoordError::Unavailable)?;
+            // Recovery can be the first native operation for a room. Establish
+            // the Stage-1 baseline before looking at retained messages so
+            // pre-baseline history is never imported into the native feed.
+            self.ensure_room_projection(&room_id, &mut stream).await?;
             let state = stream
                 .info()
                 .await
-                .map(|info| (info.state.first_sequence, info.state.last_sequence))
+                .map(|info| info.state.last_sequence)
                 .map_err(|_| CoordError::Unavailable)?;
             let _ = self
-                .project_room_through(&room_id, &mut stream, state.1)
+                .project_room_through(&room_id, &mut stream, state)
                 .await?;
         }
         Ok(())
@@ -585,13 +601,24 @@ impl CoordClient {
         let db = self.owner.data_dir.clone();
         let room_for_frontier = room_id.to_owned();
         let mut frontier = tokio::task::spawn_blocking(move || {
-            ensure_projection_row(&db, &room_for_frontier)
+            read_projection_frontier(&db, &room_for_frontier)
         })
         .await
         .map_err(|_| CoordError::Unavailable)??;
         loop {
             if frontier >= through_sequence {
-                return Ok(ProjectionOutcome::Projected);
+                let db = self.owner.data_dir.clone();
+                let room_for_loss = room_id.to_owned();
+                let lost = tokio::task::spawn_blocking(move || {
+                    projection_sequence_was_lost(&db, &room_for_loss, through_sequence)
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+                return Ok(if lost {
+                    ProjectionOutcome::Lost
+                } else {
+                    ProjectionOutcome::Projected
+                });
             }
             let state = stream
                 .info()
@@ -1332,39 +1359,6 @@ enum GapAdvance {
     Conflict(u64),
 }
 
-fn ensure_projection_row(db: &Path, room_id: &str) -> Result<u64, CoordError> {
-    let conn = open_db(db, true)?;
-    conn.execute("BEGIN IMMEDIATE", [])
-        .map_err(|_| CoordError::Unavailable)?;
-    let result = (|| {
-        conn.execute(
-            "INSERT OR IGNORE INTO coord_message_attention_projection
-             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
-            params![room_id, now_ms()],
-        )
-        .map_err(|_| CoordError::Data)?;
-        conn.query_row(
-            "SELECT last_sequence FROM coord_message_attention_projection
-             WHERE room_id = ?1",
-            params![room_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|sequence| sequence.max(0) as u64)
-        .map_err(|_| CoordError::Data)
-    })();
-    match result {
-        Ok(sequence) => {
-            conn.execute("COMMIT", [])
-                .map_err(|_| CoordError::Unavailable)?;
-            Ok(sequence)
-        }
-        Err(error) => {
-            let _ = conn.execute("ROLLBACK", []);
-            Err(error)
-        }
-    }
-}
-
 fn ensure_projection_baseline(
     db: &Path,
     room_id: &str,
@@ -1392,6 +1386,56 @@ fn ensure_projection_baseline(
             Err(CoordError::Data)
         }
     }
+}
+
+fn read_projection_frontier(db: &Path, room_id: &str) -> Result<u64, CoordError> {
+    let conn = open_db(db, false)?;
+    conn.query_row(
+        "SELECT last_sequence FROM coord_message_attention_projection
+         WHERE room_id = ?1",
+        params![room_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(|_| CoordError::Data)?
+    .map(|sequence| sequence.max(0) as u64)
+    .ok_or(CoordError::Data)
+}
+
+fn projection_sequence_was_lost(
+    db: &Path,
+    room_id: &str,
+    sequence: u64,
+) -> Result<bool, CoordError> {
+    let conn = open_db(db, false)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT payload_json FROM coord_outbox
+             WHERE event_type = 'coord.attention_projection_lost'",
+        )
+        .map_err(|_| CoordError::Data)?;
+    let mut rows = statement.query([]).map_err(|_| CoordError::Data)?;
+    while let Some(row) = rows.next().map_err(|_| CoordError::Data)? {
+        let payload = row.get::<_, String>(0).map_err(|_| CoordError::Data)?;
+        let payload: Value = serde_json::from_str(&payload).map_err(|_| CoordError::Data)?;
+        let details = payload
+            .get("details")
+            .and_then(Value::as_object)
+            .ok_or(CoordError::Data)?;
+        let same_room = details.get("room_id").and_then(Value::as_str) == Some(room_id);
+        let first = details
+            .get("from_sequence")
+            .and_then(Value::as_u64)
+            .ok_or(CoordError::Data)?;
+        let last = details
+            .get("to_sequence")
+            .and_then(Value::as_u64)
+            .ok_or(CoordError::Data)?;
+        if same_room && first <= sequence && sequence <= last {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn projection_loss_event_id(room_id: &str, first: u64, last: u64) -> String {
@@ -1426,12 +1470,6 @@ fn advance_over_retention_gap(
     conn.execute("BEGIN IMMEDIATE", [])
         .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
-        conn.execute(
-            "INSERT OR IGNORE INTO coord_message_attention_projection
-             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
-            params![room_id, now_ms()],
-        )
-        .map_err(|_| CoordError::Data)?;
         let current = conn
             .query_row(
                 "SELECT last_sequence
@@ -1519,12 +1557,6 @@ fn project_attention_prefix(
     conn.execute("BEGIN IMMEDIATE", [])
         .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
-        conn.execute(
-            "INSERT OR IGNORE INTO coord_message_attention_projection
-             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
-            params![room_id, now_ms()],
-        )
-        .map_err(|_| CoordError::Data)?;
         let current = conn
             .query_row(
                 "SELECT last_sequence
