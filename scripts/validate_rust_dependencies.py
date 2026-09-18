@@ -862,17 +862,36 @@ def _validate_product_resolution(
 
 
 def _validate_feature_resolution(
-    summary: dict[str, Any], expected: dict[str, set[str]], *, scope: str
+    summary: dict[str, Any],
+    expected: dict[str, set[str]],
+    *,
+    scope: str,
+    forbidden: dict[str, set[str]] | None = None,
+    exact: bool = False,
 ) -> None:
-    """Require every feature needed by a validation lane in resolved metadata."""
+    """Check enabled features, including forbidden features for isolated lanes."""
     resolved = summary.get("resolved_features", {})
+    forbidden = forbidden or {}
     failures: list[str] = []
     for name, required in expected.items():
         actual = resolved.get(name)
         if not isinstance(actual, list):
             failures.append(f"{scope}: resolved features omitted {name}")
             continue
-        missing = sorted(required - set(actual))
+        actual_set = set(actual)
+        missing = sorted(required - actual_set)
+        unexpected = sorted(actual_set - required) if exact else []
+        forbidden_enabled = sorted(actual_set & forbidden.get(name, set()))
+        if unexpected:
+            failures.append(
+                f"{scope}: {name} has unexpected resolved features {unexpected}; "
+                f"expected exactly {sorted(required)}"
+            )
+        if forbidden_enabled:
+            failures.append(
+                f"{scope}: {name} has forbidden resolved features "
+                f"{forbidden_enabled}; actual={sorted(actual_set)}"
+            )
         if missing:
             failures.append(
                 f"{scope}: {name} is missing resolved features {missing}; "
@@ -1038,16 +1057,19 @@ def main(argv: list[str] | None = None) -> int:
                 summary,
                 {name: STANDALONE_FEATURES[name]},
                 scope=f"standalone {name}",
+                forbidden={"hyper": {"http1"}}
+                if name == "hyper"
+                else None,
             )
             standalone[name] = summary
 
         h2 = VENDOR_ROOT / "h2" / "Cargo.toml"
         h2_feature_resolutions: dict[str, Any] = {}
-        for resolution_name, features, no_default_features in (
-            ("none", None, True),
-            ("stream", "stream", False),
-            ("unstable", "unstable", False),
-            ("all", "stream,unstable", False),
+        for resolution_name, features, no_default_features, expected_features, forbidden_features in (
+            ("none", None, True, set(), {"stream", "unstable"}),
+            ("stream", "stream", False, {"stream"}, {"unstable"}),
+            ("unstable", "unstable", False, {"unstable"}, {"stream"}),
+            ("all", "stream,unstable", False, {"stream", "unstable"}, set()),
         ):
             raw = _read_metadata(
                 runner,
@@ -1064,8 +1086,11 @@ def main(argv: list[str] | None = None) -> int:
             )
             summary["no_default_features"] = no_default_features
             _validate_feature_resolution(
-                summary, {"h2": set(features.split(",")) if features else set()},
+                summary,
+                {"h2": expected_features},
                 scope=f"standalone h2 {resolution_name}",
+                forbidden={"h2": forbidden_features},
+                exact=True,
             )
             h2_feature_resolutions[resolution_name] = summary
         standalone["h2"] = {"feature_resolutions": h2_feature_resolutions}

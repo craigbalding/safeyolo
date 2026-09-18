@@ -56,18 +56,32 @@ failure-to-nonzero path without changing product source or expected assertions.
 ## Change-to-test map
 
 The map names the local change, the package and feature resolution, the
-existing regression target, its invocation, and the remaining limitation.
+existing regression target, its complete requested Cargo invocation, and the
+remaining limitation. The commands below are the default offline commands;
+the runner adds `--offline --locked` in this order before `test`, `check`, or
+`build`. The report's `requested_command` field is the authoritative generated
+argv for every invocation, including metadata commands whose host filter comes
+from `rustc -vV`.
 `docs/proxy-parity.md` remains the capability and deletion inventory; this
 document only describes dependency validation.
 
 | Local change | Package and enabled features | Regression or build command | Remaining limitation |
 | --- | --- | --- | --- |
-| Fallible VM growth, scratch release and cancellation polling | `fancy-regex` 0.19.2, default `unicode,perf,std,variable-lookbehinds` | `cargo test --offline --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test runtime_allocation -- --test-threads=1 --nocapture`; `runtime_cancellation` with `--include-ignored` | Delegated-engine allocation and cancellation remain outside the patch. |
-| Scoped ASCII references and Python scalar backreferences | `fancy-regex` 0.19.2, same default features; Python option is opt-in | `ascii_backrefs`; `python_backrefs -- --include-ignored`; the target invokes the existing CPython 3.12 oracle | The bounded tests do not establish complete Python regex parity. |
-| Original regular-header fields | Patched `hyper` 1.11.1 and `h2` 0.4.19 selected by locked `safeyolo-proxy` | `cargo test --locked --offline --manifest-path proxy/Cargo.toml --test response_head_capture -- --test-threads=1` | Six bare-parser admission differences remain outside the metadata patch. |
-| Request and response completion, unread payload and trailers | Patched `hyper`/`h2` selected by the product lock; H1 and H2 paths are separate targets | `request_completion_h1`, `request_completion_h2`, `response_completion_h1`, `response_completion_h2` in the product command | The tests cover the selected parser/client paths, not all HTTP conformance. |
-| Independent feature boundaries | Standalone `h2` default, `stream`, `unstable`, and combined features; standalone Hyper `client,http2` with no `http1` | `cargo check --locked --offline --manifest-path proxy/vendor/h2/Cargo.toml ...`; `cargo check --locked --offline --manifest-path proxy/vendor/hyper/Cargo.toml --no-default-features --features client,http2` | Standalone manifests resolve their own lockfiles; product behavior is proved by the locked product tests. |
-| Locked product build | `safeyolo-proxy` 0.1.0 with the committed `proxy/Cargo.lock` and all product targets | `cargo build --locked --offline --manifest-path proxy/Cargo.toml --all-targets` | Build coverage is compile and link validation; shared #621 owns proxy startup and origin traffic. |
+| Fallible VM growth, scratch release and cancellation polling | `fancy-regex` 0.19.2, default `unicode,perf,std,variable-lookbehinds` | `cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test runtime_allocation -- --test-threads=1 --nocapture`<br>`cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test runtime_cancellation -- --include-ignored --test-threads=1 --nocapture` | Delegated-engine allocation and cancellation remain outside the patch. |
+| Scoped ASCII references and Python scalar backreferences | `fancy-regex` 0.19.2, same default features; Python option is opt-in | `cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test ascii_backrefs -- --test-threads=1 --nocapture`<br>`cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test python_backrefs -- --include-ignored --exact every_valid_scalar_lowercase_matches_actual_python_312` (controlled missing-oracle failure)<br>`cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --test python_backrefs -- --include-ignored --test-threads=1 --nocapture` (CPython 3.12 oracle) | The bounded tests do not establish complete Python regex parity. |
+| Original regular-header fields | Patched `hyper` 1.11.1 and `h2` 0.4.19 selected by locked `safeyolo-proxy` | `cargo --offline --locked test --manifest-path proxy/Cargo.toml --test request_completion_h1 --test request_completion_h2 --test response_completion_h1 --test response_completion_h2 --test response_head_capture -- --test-threads=1 --nocapture` (includes `response_head_capture`) | Six bare-parser admission differences remain outside the metadata patch. |
+| Request and response completion, unread payload and trailers | Patched `hyper`/`h2` selected by the product lock; H1 and H2 paths are separate targets | `cargo --offline --locked test --manifest-path proxy/Cargo.toml --test request_completion_h1 --test request_completion_h2 --test response_completion_h1 --test response_completion_h2 --test response_head_capture -- --test-threads=1 --nocapture` | The tests cover the selected parser/client paths, not all HTTP conformance. |
+| Independent feature boundaries | Standalone `h2`: `none={}`, `stream={stream}`, `unstable={unstable}`, `all={stream,unstable}`; standalone Hyper: `client,http2`, with `http1` forbidden | `cargo --offline --locked check --manifest-path proxy/vendor/h2/Cargo.toml --no-default-features`<br>`cargo --offline --locked check --manifest-path proxy/vendor/h2/Cargo.toml --features stream`<br>`cargo --offline --locked check --manifest-path proxy/vendor/h2/Cargo.toml --features unstable`<br>`cargo --offline --locked check --manifest-path proxy/vendor/h2/Cargo.toml --features stream,unstable`<br>`cargo --offline --locked check --manifest-path proxy/vendor/hyper/Cargo.toml --no-default-features --features client,http2` | Standalone manifests resolve their own lockfiles; product behavior is proved by the locked product tests. |
+| Locked product build | `safeyolo-proxy` 0.1.0 with the committed `proxy/Cargo.lock` and all product targets | `cargo --offline --locked build --manifest-path proxy/Cargo.toml --all-targets` | Build coverage is compile and link validation; shared #621 owns proxy startup and origin traffic. |
+| Native inspection focused target | Locked `safeyolo-proxy` product features and patched dependencies | `cargo --offline --locked test --manifest-path proxy/Cargo.toml --test inspection -- --test-threads=1` | The seven ignored Python inspection oracles require the separately provisioned Python acceptance environment. |
+
+The runner also records these inherited smoke commands:
+
+| Package | Complete requested command |
+| --- | --- |
+| `fancy-regex` 0.19.2 | `cargo --offline --locked test --manifest-path proxy/vendor/fancy-regex/Cargo.toml --lib -- --test-threads=1` |
+| Hyper 1.11.1 | `cargo --offline --locked test --manifest-path proxy/vendor/hyper/Cargo.toml --no-default-features --lib -- --test-threads=1` |
+| h2 0.4.19 | `cargo --offline --locked test --manifest-path proxy/vendor/h2/Cargo.toml --no-default-features --lib -- hpack::huffman::test::decode_single_byte --exact --test-threads=1` |
 
 The product command includes `inspection` without ignored tests. It executes
 the native scanner's focused tests and records the seven ignored Python

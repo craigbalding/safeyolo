@@ -63,14 +63,39 @@ fi
 cargo_pid=$!
 interrupted=0
 reserve_crossed=0
-cleanup() {
+signal_cargo() {
+  local signal_number=$1
   if kill -0 "$cargo_pid" 2>/dev/null; then
     if (( process_group )); then
-      kill -INT -- "-$cargo_pid" 2>/dev/null || kill -INT "$cargo_pid" 2>/dev/null || true
+      kill -"$signal_number" -- "-$cargo_pid" 2>/dev/null || kill -"$signal_number" "$cargo_pid" 2>/dev/null || true
     else
-      kill -INT "$cargo_pid" 2>/dev/null || true
+      kill -"$signal_number" "$cargo_pid" 2>/dev/null || true
     fi
   fi
+}
+
+stop_cargo() {
+  # Preserve Cargo's normal interrupt handling first, then make a timeout or
+  # explicit emergency stop deterministic if Cargo (or one of its children)
+  # does not exit.  The bounded wait is deliberately local to this wrapper;
+  # it does not alter the reserve check or stop unrelated process groups.
+  signal_cargo INT
+  local attempts=0
+  while kill -0 "$cargo_pid" 2>/dev/null && (( attempts < 50 )); do
+    sleep 0.1
+    ((attempts += 1))
+  done
+  if kill -0 "$cargo_pid" 2>/dev/null; then
+    echo 'Cargo did not exit after interrupt; forcing its process group to stop' >&2
+    signal_cargo KILL
+  fi
+  set +e
+  wait "$cargo_pid"
+  set -e
+}
+
+cleanup() {
+  stop_cargo
 }
 trap 'cleanup; exit 130' INT TERM
 
