@@ -2895,8 +2895,8 @@ where
         );
         provenance.attach_recording(recording.clone());
     }
-    // Retain only the recording projection after source hygiene/context removal.
-    // Credential inspection is still inactive.
+    // Retain only the recording projection after source hygiene/context removal;
+    // credential and pattern inspection already consumed the ordered view.
     drop(ordered_headers);
     // The parser's initial size hint supplies source buffering classification,
     // including framing fields removed by header hygiene. It never proves EOM.

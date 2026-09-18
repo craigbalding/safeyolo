@@ -161,6 +161,33 @@ async fn stats(directory: &TempDir) -> Value {
     serde_json::from_slice(&bytes[split + 4..]).unwrap()
 }
 
+async fn set_mode(config: &Config, addon: &str, mode: &str) {
+    let ready: Value =
+        serde_json::from_slice(&std::fs::read(&config.readiness_file).unwrap()).unwrap();
+    let port = ready["admin_port"].as_u64().unwrap() as u16;
+    let body = format!(r#"{{"mode":"{mode}"}}"#);
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let request = format!(
+        "PUT /plugins/{addon}/mode HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\
+         Authorization: Bearer credential-http-admin\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let status = std::str::from_utf8(&response)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    assert_eq!(status, "200", "operator mode update failed: {response:?}");
+}
+
 async fn origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, ready: Arc<Notify>) {
     loop {
         let Ok((mut socket, _)) = listener.accept().await else {
@@ -933,7 +960,7 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
         block_websocket_request: false,
         block_websocket_response: false,
     });
-    let mut proxy = Proxy::start(proxy_config.clone()).await.unwrap();
+    let proxy = Proxy::start(proxy_config.clone()).await.unwrap();
     let matching_request = format!(
         "POST http://127.0.0.1:{origin_port}/scan HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\nSECRET"
     );
@@ -944,9 +971,9 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
         "blocked request reached origin"
     );
 
-    proxy_config.inspection.as_mut().unwrap().block_request = false;
-    proxy_config.inspection.as_mut().unwrap().block_response = true;
-    proxy.reload(proxy_config).await.unwrap();
+    // Operator mode is process-owned. Change it through retained admin control
+    // instead of expecting serialized config fields to overwrite a live mode.
+    set_mode(&proxy_config, "pattern-scanner", "block").await;
     let allowed_request = format!(
         "POST http://127.0.0.1:{origin_port}/scan HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Length: 4\r\nConnection: close\r\n\r\nsafe"
     );
@@ -1110,9 +1137,8 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let ready = Arc::new(Notify::new());
     let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
-    let mut proxy = Proxy::start(config(&directory, &policy_path, &socket, false))
-        .await
-        .unwrap();
+    let proxy_config = config(&directory, &policy_path, &socket, false);
+    let mut proxy = Proxy::start(proxy_config.clone()).await.unwrap();
     let matching = invalid_h1_request(origin_port, "invalid-match", 0xff);
     let warned = raw_round_trip(&socket, &matching).await;
     assert!(warned.starts_with(b"HTTP/1.1 200"), "{warned:?}");
@@ -1125,10 +1151,7 @@ async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
             .any(|window| window == b"key-\xff")
     );
 
-    proxy
-        .reload(config(&directory, &policy_path, &socket, true))
-        .await
-        .unwrap();
+    set_mode(&proxy_config, "credential-guard", "block").await;
     let blocked = raw_round_trip(&socket, &matching).await;
     assert!(blocked.starts_with(b"HTTP/1.1 403"), "{blocked:?}");
     assert_eq!(seen.lock().unwrap().len(), 1);
@@ -1273,7 +1296,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
             });
         }
     });
-    let mut proxy = Proxy::start(proxy_config.clone()).await.unwrap();
+    let proxy = Proxy::start(proxy_config.clone()).await.unwrap();
     let mut upstream = UnixStream::connect(&socket).await.unwrap();
     upstream
         .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
@@ -1343,8 +1366,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     .unwrap();
     assert_eq!(seen.lock().unwrap()[1], b"Bearer key-\xff");
 
-    proxy_config.credential_guard_block = true;
-    proxy.reload(proxy_config.clone()).await.unwrap();
+    set_mode(&proxy_config, "credential-guard", "block").await;
     let blocked = sender
         .send_request(
             Request::builder()
