@@ -1,6 +1,12 @@
 //! Retention publication and live HTTP observations with owned fixture state.
 
 use super::*;
+use bytes::Bytes;
+use flate2::read::ZlibDecoder;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request, StatusCode};
+use hyper_util::rt::TokioIo;
+use std::{io::Read, net::SocketAddr};
 use traffic_view::RequestInfo;
 
 fn config(directory: &Path) -> Config {
@@ -164,4 +170,293 @@ async fn ordinary_http_is_visible_while_pending_and_completes_across_reload() {
         assert!(!socket_path.exists());
         assert!(!config.readiness_file.exists());
     }).await.expect("owned HTTP view fixture must finish");
+}
+
+async fn operator_http(
+    address: SocketAddr,
+    token: &str,
+    method: Method,
+    target: &str,
+    body: &[u8],
+) -> (StatusCode, hyper::HeaderMap, Bytes) {
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let task = tokio::spawn(connection);
+    let request = Request::builder()
+        .method(method)
+        .uri(target)
+        .header("Host", "localhost")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Length", body.len())
+        .body(Full::new(Bytes::copy_from_slice(body)))
+        .unwrap();
+    let response = sender.send_request(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    drop(sender);
+    let _ = task.await;
+    (status, headers, body)
+}
+
+#[tokio::test]
+async fn live_operator_inspector_browses_scopes_and_exports_native_http() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(directory.path());
+        let policy = config.policy_file.as_ref().unwrap();
+        std::fs::write(
+            policy,
+            r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+        )
+        .unwrap();
+        config.network_guard_enabled = false;
+        let agent_socket = directory.path().join("alice.sock");
+        config.listeners.push(AgentListener {
+            agent_id: "alice".into(),
+            socket_path: agent_socket.clone(),
+            source_id: None,
+        });
+        let token = "live-inspector-token";
+        let token_path = directory.path().join("operator-token");
+        std::fs::write(&token_path, token).unwrap();
+        config.admin_port = Some(0);
+        config.admin_api_token_file = Some(token_path);
+
+        let origin = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let origin_address = origin.local_addr().unwrap();
+        let (request_ready, request_seen) = tokio::sync::oneshot::channel();
+        let (release_response, response_ready) = tokio::sync::oneshot::channel();
+        let origin_task = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut received = Vec::new();
+            loop {
+                let mut block = [0; 1024];
+                let size = stream.read(&mut block).await.unwrap();
+                assert!(size > 0);
+                received.extend_from_slice(&block[..size]);
+                if let Some(end) = received.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                    && received.len() >= end + 4 + 11
+                {
+                    assert_eq!(&received[end + 4..end + 4 + 11], b"native-body");
+                    break;
+                }
+            }
+            request_ready.send(()).unwrap();
+            response_ready.await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nnative-result",
+                )
+                .await
+                .unwrap();
+        });
+
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let admin_address = proxy.admin.as_ref().unwrap().address();
+        let mut client = tokio::net::UnixStream::connect(&agent_socket).await.unwrap();
+        let request = format!(
+            "POST http://{origin_address}/native?dup=1&dup=2 HTTP/1.1\r\nHost: {origin_address}\r\nContent-Type: text/plain\r\nContent-Length: 11\r\nConnection: close\r\n\r\nnative-body"
+        );
+        client.write_all(request.as_bytes()).await.unwrap();
+        request_seen.await.unwrap();
+
+        let (status, _, body) =
+            operator_http(admin_address, token, Method::GET, "/admin/traffic/flows", b"")
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let pending: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(pending["flows"].as_array().unwrap().len(), 1);
+        let row = &pending["flows"][0];
+        assert_eq!(row["agent"], "alice");
+        assert_eq!(row["method"], "POST");
+        assert_eq!(row["state"], "pending");
+        let id = row["id"].as_str().unwrap().to_owned();
+
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::PUT,
+            "/admin/traffic/scope",
+            br#"{"agent":"bob"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, _, body) =
+            operator_http(admin_address, token, Method::GET, "/admin/traffic/flows", b"").await;
+        let hidden: Value = serde_json::from_slice(&body).unwrap();
+        assert!(hidden["flows"].as_array().unwrap().is_empty());
+
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::PUT,
+            "/admin/traffic/scope",
+            br#"{"agent":"alice"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::PUT,
+            "/admin/traffic/filter",
+            br#"{"user_filter":"~m POST"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, _, body) =
+            operator_http(admin_address, token, Method::GET, "/admin/traffic/flows", b"").await;
+        let filtered: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(filtered["flows"][0]["id"], id);
+
+        let (_, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}"),
+            b"",
+        )
+        .await;
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["state"], "pending");
+        assert_eq!(detail["url"], format!("http://{origin_address}/native?dup=1&dup=2"));
+        let (_, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}/body?side=request"),
+            b"",
+        )
+        .await;
+        let request_body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(request_body["available"], true);
+        assert_eq!(request_body["data_base64"], STANDARD.encode(b"native-body"));
+        let (_, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}/body?side=response"),
+            b"",
+        )
+        .await;
+        let response_body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response_body["available"], false);
+        assert_eq!(response_body["reason"], "pending");
+
+        release_response.send(()).unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(response.ends_with(b"native-result"));
+        origin_task.await.unwrap();
+
+        let (_, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}"),
+            b"",
+        )
+        .await;
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["state"], "complete");
+        assert_eq!(detail["status"], 200);
+        let (_, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}/body?side=response"),
+            b"",
+        )
+        .await;
+        let response_body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response_body["available"], true);
+        assert_eq!(response_body["data_base64"], STANDARD.encode(b"native-result"));
+
+        for format in [
+            "raw",
+            "raw_request",
+            "raw_response",
+            "curl",
+            "httpie",
+            "har",
+            "zhar",
+        ] {
+            let (status, headers, body) = operator_http(
+                admin_address,
+                token,
+                Method::GET,
+                &format!("/admin/traffic/flows/{id}/export?format={format}"),
+                b"",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{format}");
+            assert!(
+                headers
+                    .get("content-disposition")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(&format!("traffic.{format}")),
+                "{format}"
+            );
+            match format {
+                "raw" => {
+                    assert!(body.windows(b"native-body".len()).any(|part| part == b"native-body"));
+                    assert!(body.windows(b"native-result".len()).any(|part| part == b"native-result"));
+                }
+                "raw_request" | "curl" | "httpie" => {
+                    assert!(body.windows(b"native-body".len()).any(|part| part == b"native-body"));
+                }
+                "raw_response" => {
+                    assert!(body.windows(b"native-result".len()).any(|part| part == b"native-result"));
+                }
+                "har" => {
+                    let har: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+                }
+                "zhar" => {
+                    let mut decoder = ZlibDecoder::new(body.as_ref());
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed).unwrap();
+                    let har: Value = serde_json::from_slice(&decompressed).unwrap();
+                    assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::PUT,
+            "/admin/traffic/scope",
+            br#"{}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::PUT,
+            "/admin/traffic/filter",
+            br#"{"user_filter":""}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        proxy.shutdown().await;
+        assert!(!agent_socket.exists());
+        assert!(!config.readiness_file.exists());
+    })
+    .await
+    .expect("live native inspector workflow must finish");
 }

@@ -2459,6 +2459,16 @@ The terminal inspector's `x` action selects `raw`, `raw_request`, `raw_response`
 operator route receives the flow ID and format. The destination path stays with
 the client. Command formats produce text and do not execute it.
 
+The bounded runtime witness
+[`live_operator_inspector_browses_scopes_and_exports_native_http`](../proxy/src/traffic_view_runtime_tests.rs)
+drives one allowed HTTP request through the native agent listener while an
+authenticated operator client lists the pending row, changes agent scope and
+filter, reads detail and request/response snapshots, then exports every retained
+format after completion. It checks HAR and ZHAR decoding and the command/raw body
+bytes. This proves the joined native selection/export path for the controlled
+HTTP case; it does not establish WebSocket, multi-row retention, terminal UI or
+full inspector parity.
+
 An export snapshots retained HTTP observations and WebSocket payload owners
 under the live-view lock. Decoding and file-backed message reads occur after
 that lock is released. Streaming retains those owners across later view changes
