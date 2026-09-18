@@ -26,8 +26,8 @@ material from logs and evidence.
 
 | State family and lifetime | Source writer → reader | Native writer → reader | Format and security invariants | Existing controls and owner dependency |
 | --- | --- | --- | --- | --- |
-| Baseline policy, host/agent settings, lists and task policy (durable) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the policy document; `policy/loader.py`, `mitm_addons/policy_engine.py` and task consumers read it. | `proxy/src/approvals.rs`, policy expiry and task writers update the existing locked policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` read and publish one accepted snapshot. | TOML is canonical for mutations; JSON/YAML are accepted policy inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. | `proxy/tests/policy.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. Root/policy writer owner must complete the integrated task and reload consumers. |
-| Approvals (durable policy mutation) | `cli/src/safeyolo/policy/engine.py` approval mutation helpers write the policy TOML; policy loader and network consumers read the result. | `proxy/src/approvals.rs::save_policy` writes atomically under the existing policy lock; `policy_runtime.rs` and `policy.rs` read the accepted candidate. | Preserve scoped agent/host/port/action, expiry and rate values; failed activation leaves the previous bytes and decision active. | `proxy/tests/approvals.rs`, policy reload tests, `tests/proxy_migration/test_native_network_policy.py`. Approval writer owner supplies final consumer transition. |
+| Baseline policy, host/agent settings, lists and task policy (durable) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the policy document; `policy/loader.py`, `mitm_addons/policy_engine.py` and task consumers read it. | `proxy/src/approvals.rs`, policy expiry and task writers update the existing locked policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` read and publish one accepted snapshot. | TOML is canonical for mutations; JSON/YAML are accepted policy inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. | `proxy/tests/policy.rs`, `proxy/tests/state_policy_transition.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. Root/policy writer owner must complete the integrated task and reload consumers. |
+| Approvals (durable policy mutation) | `cli/src/safeyolo/policy/engine.py` approval mutation helpers write the policy TOML; policy loader and network consumers read the result. | `proxy/src/approvals.rs::save_policy` writes atomically under the existing policy lock; `policy_runtime.rs` and `policy.rs` read the accepted candidate. | Preserve scoped agent/host/port/action, expiry and rate values; failed activation leaves the previous bytes and decision active. | `proxy/tests/approvals.rs`, `proxy/tests/state_policy_transition.rs`, policy reload tests, `tests/proxy_migration/test_native_network_policy.py`. Approval writer owner supplies final consumer transition. |
 | Service definitions/catalog (durable files, watched) | `cli/src/safeyolo/services/*.yaml`, `core/service_loader.py` and service commands write/read ordered YAML definitions. | `proxy/src/services/catalog.rs` reads builtin and user directories; `proxy/src/lib.rs` publishes the accepted catalog with policy/routes/tokens. No second service writer is introduced in this issue. | YAML source order, merge/override precedence, timestamps, malformed-file retention, and empty/removal semantics remain visible. | `proxy/src/services/catalog_tests.rs`, `proxy/tests/service_catalog_source.py/.json`, gateway workflow tests. #624 owner owns catalog/gateway writer integration. |
 | Service authorization, contracts, grants and bindings (durable policy records; session leases ephemeral) | `cli/src/safeyolo/mitm_addons/service_gateway.py`, `commands/services.py`, and `commands/agent.py` author and consume policy records. | `proxy/src/grants.rs`, `contracts.rs`, `admin_api/gateway.rs` and existing policy transaction helpers write/read the same policy file; process-local once reservations are intentionally ephemeral. | Keep stable grant/binding IDs, scope, revocation and consumption state; preserve unrelated TOML; do not resurrect removed access or claim exactly-once across restart. | `proxy/tests/grants.rs`, `contracts.rs`, `gateway_snapshot.rs`, `gateway_workflow.rs`, `gateway_contract_workflow.rs`. The opt-in `selected_python_native_python_native_grants_bindings_transition` uses the real Python `ServiceGateway` writer/reader and native `Store` consumers across one policy file, including legacy default normalization and rollback. #624/#625 owners supply final live writers and gateway path. |
 | Encrypted vault and OAuth credential state (durable) | `cli/src/safeyolo/core/vault.py` and `commands/vault.py` write the 16-byte-salt + Fernet-encrypted YAML; service gateway and OAuth code read/unlock it. | `proxy/src/credentials.rs` writes atomically and reloads the existing vault; `proxy/src/lib.rs` and `oauth.rs` read snapshots, while gateway integration selects entries. | Preserve salt, Fernet/PBKDF2 parameters, credential names/types, expiry and refresh fields, permissions, external-change detection, activation rollback, and no credential re-entry. Secret bytes remain in protected types and never ordinary evidence. | `proxy/tests/credentials.rs`, `oauth.rs`, `gateway_workflow.rs`; `native-credential-injection-contract.md`. The opt-in `selected_python_native_python_native_gateway_vault_transition` is the owned Python→Rust→Python→Rust transition: it records exact comparator/runtime/package identity, encrypted-file hashes and modes, Rust activation rollback, and real native gateway injection before and after Python's mutation. OAuth refresh failure/rollback remains owned by #626. |
@@ -63,7 +63,7 @@ available. Until then, this document records the owned inventory and the
 unresolved dependencies explicitly.
 
 The currently executable owned transitions are the circuit, encrypted-vault,
-interception-CA/key and grants/bindings rows. With
+interception-CA/key, grants/bindings and host-policy approval rows. With
 `SAFEYOLO_PYTHON_SOURCE` set to the clean comparator checkout and
 `SAFEYOLO_RUST_PROXY` set to the candidate binary, the migration test writes an
 open circuit and proves a Python open-state block, reads and recovers it in
@@ -72,6 +72,21 @@ open-state block and recovery. Its manifest contains exact runtime and launch
 identity, SHA-256 state hashes, and effective origin-contact counts; it contains
 no secret material. The remaining rows require their final integrated writer
 owners before they can be promoted to the same process sequence.
+
+The host-policy approval row has a separate opt-in transition in
+`proxy/tests/state_policy_transition.rs`.
+`selected_python_native_python_native_host_policy_transition` uses the exact
+prior Python `PolicyEngine` writer and reader, native `approvals` writers and
+`Policy` consumers, and a fresh native reopen. It preserves agent/host/port
+scope, comments and `0600` mode; verifies native allow and deny rules through
+the old reader; rejects one native activation and compares the raw policy
+bytes before and after rollback; then observes a Python write from native.
+The fixture retains each raw TOML stage, hashes, runtime identities and
+secret-free effective decisions. Run it with `SAFEYOLO_STATE_PYTHON_SOURCE`
+pointing to the clean comparator, `SAFEYOLO_POLICY_PYTHON` selecting its
+interpreter and `SAFEYOLO_STATE_EVIDENCE_DIR` naming the retained evidence
+directory. This is bounded host-policy evidence and does not close the
+task/service, service-catalog, flow-evidence or external coordination rows.
 
 The encrypted-vault row now has a separate opt-in native gateway transition.
 `selected_python_native_python_native_gateway_vault_transition` runs the exact
