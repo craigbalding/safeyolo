@@ -1876,6 +1876,32 @@ struct Recipient {
     membership_granted_at: i64,
 }
 
+struct WaitCandidate {
+    value: Value,
+    headers: Option<async_nats::HeaderMap>,
+}
+
+fn filter_wait_candidates(
+    candidates: Vec<WaitCandidate>,
+    principal: &str,
+    access: &RoomAccess,
+    exclude_self: bool,
+) -> Result<Vec<WaitCandidate>, CoordError> {
+    let mut filtered = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        if message_wakes_waiter(
+            candidate.headers.as_ref(),
+            &candidate.value,
+            principal,
+            access,
+            exclude_self,
+        )? {
+            filtered.push(candidate);
+        }
+    }
+    Ok(filtered)
+}
+
 fn read_access(db: &Path, room_name: &str, principal: &str) -> Result<RoomAccess, CoordError> {
     let conn = open_db(db, false)?;
     let room = conn
@@ -1892,7 +1918,16 @@ fn read_access(db: &Path, room_name: &str, principal: &str) -> Result<RoomAccess
     let mut membership_statement = conn
         .prepare(
             "SELECT principal_kind, principal_id, permissions, granted_at FROM memberships
-             WHERE room_id = ?1 AND revoked_at IS NULL ORDER BY granted_at DESC",
+             WHERE room_id = ?1 AND revoked_at IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM memberships AS newer
+                  WHERE newer.room_id = memberships.room_id
+                    AND newer.principal_kind = memberships.principal_kind
+                    AND newer.principal_id = memberships.principal_id
+                    AND newer.revoked_at IS NULL
+                    AND newer.granted_at > memberships.granted_at
+               )
+             ORDER BY granted_at DESC",
         )
         .map_err(|_| CoordError::Data)?;
     let mut memberships = membership_statement
@@ -2159,12 +2194,18 @@ async fn respond_payload(
                 json!({"error":"Method Not Allowed", "allowed":["GET"]}),
             );
         }
-        let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
-        let limit = query_u64(request.path_and_query, "limit", 1)
-            .map_or(1, |value| value.clamp(1, MAX_PAGE as u64) as usize);
-        let timeout = query_f64(request.path_and_query, "timeout", 30.0)
-            .unwrap_or(30.0)
-            .clamp(0.1, 300.0);
+        let since = match query_u64(request.path_and_query, "since", 0, 0, i64::MAX as u64) {
+            Ok(value) => value,
+            Err(()) => return response(400, json!({"error":"invalid since"})),
+        };
+        let limit = match query_u64(request.path_and_query, "limit", 1, 1, i64::MAX as u64) {
+            Ok(value) => value.min(MAX_PAGE as u64) as usize,
+            Err(()) => return response(400, json!({"error":"invalid limit"})),
+        };
+        let timeout = match query_f64(request.path_and_query, "timeout", 30.0) {
+            Ok(value) => value.max(0.1).min(300.0),
+            Err(()) => return response(400, json!({"error":"invalid timeout"})),
+        };
         return match context
             .client
             .wait_attention(&principal, since, limit, timeout)
@@ -2286,9 +2327,14 @@ async fn respond_payload(
             {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
-            let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
-            let limit = query_u64(request.path_and_query, "limit", 50)
-                .map_or(50, |value| value.clamp(1, MAX_PAGE as u64) as usize);
+            let since = match query_u64(request.path_and_query, "since", 0, 0, i64::MAX as u64) {
+                Ok(value) => value,
+                Err(()) => return response(400, json!({"error":"invalid since"})),
+            };
+            let limit = match query_u64(request.path_and_query, "limit", 50, 1, i64::MAX as u64) {
+                Ok(value) => value.min(MAX_PAGE as u64) as usize,
+                Err(()) => return response(400, json!({"error":"invalid limit"})),
+            };
             read_messages(context.client, &room_name, access, &principal, since, limit).await
         }
         "wait" => {
@@ -2305,14 +2351,22 @@ async fn respond_payload(
             {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
-            let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
-            let limit = query_u64(request.path_and_query, "limit", 1)
-                .map_or(1, |value| value.clamp(1, MAX_PAGE as u64) as usize);
-            let timeout = query_f64(request.path_and_query, "timeout", 30.0)
-                .unwrap_or(30.0)
-                .clamp(0.1, 300.0);
-            let include_self =
-                query_bool(request.path_and_query, "include_self", false).unwrap_or(false);
+            let since = match query_u64(request.path_and_query, "since", 0, 0, i64::MAX as u64) {
+                Ok(value) => value,
+                Err(()) => return response(400, json!({"error":"invalid since"})),
+            };
+            let limit = match query_u64(request.path_and_query, "limit", 1, 1, i64::MAX as u64) {
+                Ok(value) => value.min(MAX_PAGE as u64) as usize,
+                Err(()) => return response(400, json!({"error":"invalid limit"})),
+            };
+            let timeout = match query_f64(request.path_and_query, "timeout", 30.0) {
+                Ok(value) => value.max(0.1).min(300.0),
+                Err(()) => return response(400, json!({"error":"invalid timeout"})),
+            };
+            let include_self = match query_bool(request.path_and_query, "include_self", false) {
+                Ok(value) => value,
+                Err(()) => return response(400, json!({"error":"invalid include_self"})),
+            };
             wait_room(
                 context.client,
                 &room_name,
@@ -2496,71 +2550,70 @@ fn publish_unknown_response(request: Request<'_>) -> Outcome<'static> {
     outcome
 }
 
-fn query_u64(path_and_query: &str, wanted: &str, default: u64) -> Option<u64> {
+fn query_parameter(path_and_query: &str, wanted: &str) -> Result<Option<String>, ()> {
     let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
-        return Some(default);
+        return Ok(None);
     };
     for part in query.split('&') {
-        let Some((key, value)) = part.split_once('=') else {
+        if part.is_empty() {
             continue;
-        };
-        let Ok(key) = percent_encoding::percent_decode_str(key).decode_utf8() else {
-            continue;
-        };
+        }
+        let (raw_key, raw_value) = part.split_once('=').unwrap_or((part, ""));
+        let key = percent_encoding::percent_decode_str(raw_key)
+            .decode_utf8()
+            .map_err(|_| ())?;
         if key == wanted {
-            return percent_encoding::percent_decode_str(value)
+            let value = percent_encoding::percent_decode_str(raw_value)
                 .decode_utf8()
-                .ok()
-                .and_then(|value| value.parse().ok());
+                .map_err(|_| ())?;
+            return Ok(Some(value.into_owned()));
         }
     }
-    Some(default)
+    Ok(None)
 }
 
-fn query_f64(path_and_query: &str, wanted: &str, default: f64) -> Option<f64> {
-    let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
-        return Some(default);
+fn query_u64(
+    path_and_query: &str,
+    wanted: &str,
+    default: u64,
+    minimum: u64,
+    maximum: u64,
+) -> Result<u64, ()> {
+    let Some(raw) = query_parameter(path_and_query, wanted)? else {
+        return Ok(default);
     };
-    for part in query.split('&') {
-        let Some((key, value)) = part.split_once('=') else {
-            continue;
-        };
-        let Ok(key) = percent_encoding::percent_decode_str(key).decode_utf8() else {
-            continue;
-        };
-        if key == wanted {
-            return percent_encoding::percent_decode_str(value)
-                .decode_utf8()
-                .ok()
-                .and_then(|value| value.parse().ok());
-        }
+    if raw.is_empty() {
+        return Ok(default);
     }
-    Some(default)
+    let value = raw.parse::<u64>().map_err(|_| ())?;
+    (minimum..=maximum)
+        .contains(&value)
+        .then_some(value)
+        .ok_or(())
 }
 
-fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Option<bool> {
-    let Some(query) = path_and_query.split_once('?').map(|(_, query)| query) else {
-        return Some(default);
+fn query_f64(path_and_query: &str, wanted: &str, default: f64) -> Result<f64, ()> {
+    let Some(raw) = query_parameter(path_and_query, wanted)? else {
+        return Ok(default);
     };
-    for part in query.split('&') {
-        let Some((key, value)) = part.split_once('=') else {
-            continue;
-        };
-        let Ok(key) = percent_encoding::percent_decode_str(key).decode_utf8() else {
-            continue;
-        };
-        if key == wanted {
-            return percent_encoding::percent_decode_str(value)
-                .decode_utf8()
-                .ok()
-                .and_then(|value| match value.as_ref() {
-                    "1" | "true" | "yes" => Some(true),
-                    "0" | "false" | "no" => Some(false),
-                    _ => None,
-                });
-        }
+    if raw.is_empty() {
+        return Ok(default);
     }
-    Some(default)
+    raw.parse::<f64>().map_err(|_| ())
+}
+
+fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool, ()> {
+    let Some(raw) = query_parameter(path_and_query, wanted)? else {
+        return Ok(default);
+    };
+    if raw.is_empty() {
+        return Ok(default);
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => Ok(false),
+    }
 }
 
 async fn send(
@@ -2624,7 +2677,11 @@ async fn send(
                 };
                 agents.push(name.to_owned());
             }
-            Notification::Agents(agents)
+            if agents.is_empty() {
+                Notification::None
+            } else {
+                Notification::Agents(agents)
+            }
         }
         Some(_) => {
             return response(
@@ -2639,9 +2696,9 @@ async fn send(
     };
     let jetstream = jetstream::new(connection.clone());
 
-    // The SQLite grant is authoritative at the last provider boundary.  The
-    // initial RoomAccess can be stale while stream lookup is in flight, so
-    // take a fresh snapshot before constructing the manifest and publishing.
+    // The SQLite grant is authoritative for the stream lookup. A second
+    // snapshot below is taken after every preparation step, immediately
+    // before the manifest is constructed and published.
     let access = match client.access(room_name, principal).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
@@ -2666,14 +2723,44 @@ async fn send(
     {
         return error_response(error);
     }
+    let resolved_names = match &notification {
+        Notification::Agents(names) => match client.resolve_agent_names(names).await {
+            Ok(resolved_names) => Some(resolved_names),
+            Err(CoordError::Invalid | CoordError::Unavailable) => {
+                return response(
+                    400,
+                    json!({"error":"notify target is not an active agent in this room"}),
+                );
+            }
+            Err(error) => return error_response(error),
+        },
+        Notification::None | Notification::Room | Notification::LegacyRoom => None,
+    };
+    // Stream lookup, baseline setup, and target-name resolution all perform
+    // provider I/O. Re-read the newest active membership generation after
+    // those operations so a revoke/regrant cannot authorize a stale manifest.
+    let final_access = match client.access(room_name, principal).await {
+        Ok(access) => access,
+        Err(error) => return error_response(error),
+    };
+    if final_access.room_id != access.room_id {
+        return error_response(CoordError::Unavailable);
+    }
+    if !final_access
+        .permissions
+        .iter()
+        .any(|permission| permission == "send")
+    {
+        return response(403, json!({"error":"permission 'send' denied"}));
+    }
     let msg_id = format!("msg-{}", uuid::Uuid::new_v4().simple());
     let sent_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    let recipient_agents = match notification {
+    let recipient_agents = match &notification {
         Notification::None => Vec::new(),
-        Notification::Room | Notification::LegacyRoom => access
+        Notification::Room | Notification::LegacyRoom => final_access
             .members
             .iter()
             .filter(|member| {
@@ -2687,25 +2774,16 @@ async fn send(
             .map(|member| member.principal_id.clone())
             .collect::<Vec<_>>(),
         Notification::Agents(names) => {
-            let resolved_names = match client.resolve_agent_names(&names).await {
-                Ok(resolved_names) => resolved_names,
-                Err(CoordError::Invalid | CoordError::Unavailable) => {
-                    return response(
-                        400,
-                        json!({"error":"notify target is not an active agent in this room"}),
-                    );
-                }
-                Err(error) => return error_response(error),
-            };
+            let resolved_names = resolved_names.as_ref().expect("agent names resolved");
             let mut ids = Vec::with_capacity(names.len());
             for name in names {
-                let Some(agent_id) = resolved_names.get(&name) else {
+                let Some(agent_id) = resolved_names.get(name) else {
                     return response(
                         400,
                         json!({"error":"notify target is not an active agent in this room"}),
                     );
                 };
-                let Some(member) = access.members.iter().find(|member| {
+                let Some(member) = final_access.members.iter().find(|member| {
                     member.principal_kind == "agent" && member.principal_id == *agent_id
                 }) else {
                     return response(
@@ -2733,7 +2811,7 @@ async fn send(
     let recipients = recipient_agents
         .iter()
         .filter_map(|agent_id| {
-            let member = access.members.iter().find(|member| {
+            let member = final_access.members.iter().find(|member| {
                 member.principal_kind == "agent" && &member.principal_id == agent_id
             })?;
             Some(Recipient {
@@ -2753,11 +2831,16 @@ async fn send(
             })
         })
         .collect::<Vec<_>>();
-    let mode = match object.get("notify") {
-        Some(Value::String(value)) if value == "none" => "none",
-        Some(Value::String(value)) if value == "room" => "room",
-        Some(Value::Array(_)) => "agents",
-        _ => "legacy_room",
+    let manifest_mode = match &notification {
+        Notification::None => "none",
+        Notification::Room => "room",
+        Notification::LegacyRoom => "legacy_room",
+        Notification::Agents(_) => "agents",
+    };
+    let public_mode = match &notification {
+        Notification::None => "none",
+        Notification::Room | Notification::LegacyRoom => "room",
+        Notification::Agents(_) => "targeted",
     };
     let envelope = json!({
         "msg_id":msg_id,
@@ -2765,12 +2848,16 @@ async fn send(
         "sender_kind":"agent",
         "sender_agent_id":principal,
         "sender_agent_name":agent_name,
-        "origin_instance_id":access.instance_id,
+        "origin_instance_id":final_access.instance_id,
         "content_type":content_type,
         "body":body,
     });
-    let manifest =
-        json!({"version":1,"msg_id":envelope["msg_id"],"mode":mode,"recipients":recipients_json});
+    let manifest = json!({
+        "version":1,
+        "msg_id":envelope["msg_id"],
+        "mode":manifest_mode,
+        "recipients":recipients_json
+    });
     let mut headers = async_nats::HeaderMap::new();
     headers.insert(
         "Nats-Msg-Id",
@@ -2822,7 +2909,7 @@ async fn send(
             "envelope": envelope,
             "sequence": sequence,
             "attention_status":attention_status,
-            "attention_intent":{"mode":mode},
+            "attention_intent":{"mode":public_mode},
         }),
     )
 }
@@ -2980,8 +3067,31 @@ async fn read_messages_with_timeout(
     };
     let result = async {
         let deadline = tokio::time::Instant::now() + fetch_timeout;
-        let mut page = Vec::new();
+        let mut page: Vec<WaitCandidate> = Vec::new();
         loop {
+            // Recheck the grant before every additional provider fetch. If a
+            // regrant rotated the membership generation, discard candidates
+            // from the previous snapshot and keep waiting for a new match.
+            if wake_mode {
+                let current = match client.access(room_name, principal).await {
+                    Ok(current) => current,
+                    Err(CoordError::NotFound) => {
+                        return Ok((Vec::new(), (since, since)));
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !current
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "receive")
+                {
+                    return Ok((Vec::new(), (since, since)));
+                }
+                page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                if page.len() >= limit.saturating_add(1) {
+                    break;
+                }
+            }
             let remaining = deadline
                 .checked_duration_since(tokio::time::Instant::now())
                 .unwrap_or_default();
@@ -2999,7 +3109,13 @@ async fn read_messages_with_timeout(
             // Evaluate the attention manifest against a grant snapshot taken
             // after this provider fetch, before any message is exposed.
             let evaluation_access = if wake_mode {
-                Some(client.access(room_name, principal).await?)
+                match client.access(room_name, principal).await {
+                    Ok(access) => Some(access),
+                    Err(CoordError::NotFound) => {
+                        return Ok((Vec::new(), (since, since)));
+                    }
+                    Err(error) => return Err(error),
+                }
             } else {
                 None
             };
@@ -3028,28 +3144,35 @@ async fn read_messages_with_timeout(
                 if qualifies {
                     let object = value.as_object_mut().ok_or(CoordError::Data)?;
                     object.insert("sequence".to_owned(), Value::from(sequence));
-                    page.push(value);
+                    page.push(WaitCandidate {
+                        value,
+                        headers: message.headers.clone(),
+                    });
                 }
                 message.ack().await.map_err(|_| CoordError::Unavailable)?;
                 if page.len() >= limit.saturating_add(1) {
                     break;
                 }
             }
-            if !wake_mode || page.len() >= limit.saturating_add(1) {
+            if !wake_mode {
                 break;
             }
-            // A self-only or non-targeted batch must not terminate a wait.
-            // The same consumer advances beyond every acknowledged message.
+            // A self-only, non-targeted, or generation-stale batch must not
+            // terminate a wait. The same consumer advances beyond every
+            // acknowledged message; the next loop rechecks membership before
+            // fetching again.
         }
-        // A revoke can land during the NATS fetch/ack window.  Never return
-        // messages after that grant has ceased to authorize receipt.
-        let current = client.access(room_name, principal).await?;
-        if !current
-            .permissions
-            .iter()
-            .any(|permission| permission == "receive")
-        {
-            return Err(CoordError::Forbidden);
+        if !wake_mode {
+            // A revoke can land during the ordinary fetch/ack window. Never
+            // return messages after that grant has ceased to authorize receipt.
+            let current = client.access(room_name, principal).await?;
+            if !current
+                .permissions
+                .iter()
+                .any(|permission| permission == "receive")
+            {
+                return Err(CoordError::Forbidden);
+            }
         }
         Ok::<_, CoordError>((page, state))
     }
@@ -3058,10 +3181,14 @@ async fn read_messages_with_timeout(
     if let Err(error) = cleanup_result {
         return error_response(error);
     }
-    let (mut page, (first_sequence, last_sequence)) = match result {
+    let (page, (first_sequence, last_sequence)) = match result {
         Ok(value) => value,
         Err(error) => return error_response(error),
     };
+    let mut page = page
+        .into_iter()
+        .map(|candidate| candidate.value)
+        .collect::<Vec<_>>();
     let has_more = page.len() > limit;
     page.truncate(limit);
     let next_cursor = page
@@ -3069,16 +3196,16 @@ async fn read_messages_with_timeout(
         .and_then(|message| message.get("sequence"))
         .and_then(Value::as_u64)
         .unwrap_or(since);
-    response(
-        200,
-        json!({
-            "messages": page,
-            "next_cursor":next_cursor,
-            "has_more":has_more || last_sequence > next_cursor,
-            "history_truncated": first_sequence > 0 && since < first_sequence.saturating_sub(1),
-            "oldest_available_at":Value::Null,
-        }),
-    )
+    let mut result = json!({
+        "messages": page,
+        "next_cursor":next_cursor,
+        "history_truncated": first_sequence > 0 && since < first_sequence.saturating_sub(1),
+        "oldest_available_at":Value::Null,
+    });
+    if !wake_mode {
+        result["has_more"] = Value::from(has_more || last_sequence > next_cursor);
+    }
+    response(200, result)
 }
 
 #[cfg(test)]
@@ -3232,6 +3359,101 @@ mod tests {
             ),
             Err(CoordError::Data)
         ));
+    }
+
+    #[test]
+    fn query_parameters_follow_source_defaults_clamps_and_cursor_validation() {
+        assert_eq!(
+            query_u64("/api?since=0", "since", 0, 0, i64::MAX as u64),
+            Ok(0)
+        );
+        assert_eq!(
+            query_u64("/api?since=", "since", 0, 0, i64::MAX as u64),
+            Ok(0)
+        );
+        assert_eq!(query_f64("/api?timeout=", "timeout", 30.0), Ok(30.0));
+        assert_eq!(
+            query_u64("/api?limit=", "limit", 50, 1, i64::MAX as u64),
+            Ok(50)
+        );
+        assert_eq!(
+            query_u64("/api?limit=201", "limit", 50, 1, i64::MAX as u64),
+            Ok(201)
+        );
+        assert!(query_u64("/api?limit=0", "limit", 50, 1, MAX_PAGE as u64).is_err());
+        assert!(query_u64("/api?limit=-1", "limit", 50, 1, MAX_PAGE as u64).is_err());
+        assert!(query_u64("/api?limit=oops", "limit", 50, 1, MAX_PAGE as u64).is_err());
+        assert!(query_u64("/api?since=-1", "since", 0, 0, i64::MAX as u64).is_err());
+        assert!(
+            query_u64(
+                "/api?since=9223372036854775808",
+                "since",
+                0,
+                0,
+                i64::MAX as u64
+            )
+            .is_err()
+        );
+        assert_eq!(
+            query_f64("/api?timeout=301", "timeout", 30.0).map(|value| value.max(0.1).min(300.0)),
+            Ok(300.0)
+        );
+        assert_eq!(
+            query_f64("/api?timeout=-1", "timeout", 30.0).map(|value| value.max(0.1).min(300.0)),
+            Ok(0.1)
+        );
+        assert!(query_f64("/api?timeout=oops", "timeout", 30.0).is_err());
+        assert_eq!(
+            query_bool("/api?include_self=TrUe", "include_self", false),
+            Ok(true)
+        );
+        assert_eq!(
+            query_bool("/api?include_self=unexpected", "include_self", false),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn access_snapshot_keeps_only_newest_active_generation() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("v0.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=5;
+             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE memberships(
+                 room_id TEXT NOT NULL,
+                 principal_kind TEXT NOT NULL,
+                 principal_id TEXT NOT NULL,
+                 permissions TEXT NOT NULL,
+                 granted_at INTEGER NOT NULL,
+                 revoked_at INTEGER,
+                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
+             );
+             CREATE TABLE instance(id TEXT PRIMARY KEY);
+             CREATE TABLE coord_briefs(
+                 room_id TEXT PRIMARY KEY,
+                 revision INTEGER NOT NULL,
+                 markdown TEXT NOT NULL,
+                 content_hash TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
+             INSERT INTO instance(id) VALUES ('instance');
+             INSERT INTO memberships
+                 (room_id, principal_kind, principal_id, permissions, granted_at)
+                 VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);
+             INSERT INTO memberships
+                 (room_id, principal_kind, principal_id, permissions, granted_at)
+                 VALUES ('rm-shared', 'agent', 'ag-alice', 'send', 8);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let access = read_access(&db, "shared", "ag-alice").unwrap();
+        assert_eq!(access.permissions, vec!["send"]);
+        assert_eq!(access.members.len(), 1);
+        assert_eq!(access.members[0].granted_at, 8);
     }
 
     #[test]
