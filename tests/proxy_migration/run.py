@@ -294,6 +294,8 @@ def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
                 if interval:
                     time.sleep(interval)
             elapsed = time.perf_counter() - started
+            origin_frames = list(origin.websocket_frames)
+            assert len(origin_frames) == sent, (len(origin_frames), sent)
             return {"workload": "small_websocket_echo", "messages": sent, "payload_bytes": sent * 5,
                     "elapsed_seconds": elapsed, "messages_per_second": sent / elapsed,
                     "requested_session_seconds": seconds, "message_interval_seconds": interval,
@@ -303,7 +305,8 @@ def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
                     "origin_observation": {
                         "accepted_connections": origin.accepts,
                         "requests": list(origin.requests),
-                        "messages_observed_by_origin": sent,
+                        "messages_observed_by_origin": len(origin_frames),
+                        "received_frames": origin_frames,
                     },
                     "proxy_identity": proxy_identity(proxy),
                     "limitation": "five-byte messages only; no compression/fragmentation/inspection workload"}
@@ -363,7 +366,9 @@ def candidate_identity(args):
     python_executable = Path(args.python_executable).expanduser()
     identity["python_executable"]["sha256"] = _sha256(python_executable)
     identity["python_executable"]["size_bytes"] = python_executable.stat().st_size
-    executable = Path(args.rust_binary).expanduser().resolve() if args.rust_binary else None
+    # A Python capture may inherit a stale SAFEYOLO_RUST_PROXY value. It is
+    # irrelevant to that process and must not be hashed after the workload.
+    executable = Path(args.rust_binary).expanduser().resolve() if args.backend == "rust" and args.rust_binary else None
     if executable is not None:
         identity["rust_executable"] = {
             "path": str(executable),

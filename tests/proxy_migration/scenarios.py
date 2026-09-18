@@ -28,6 +28,7 @@ class Origin(ThreadingHTTPServer):
     def __init__(self, port=0, *, stream_seconds=2.0):
         self.accepts = 0
         self.requests = []
+        self.websocket_frames = []
         self.stream_finished = threading.Event()
         self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
@@ -85,6 +86,12 @@ class OriginHandler(BaseHTTPRequestHandler):
             mask = self.rfile.read(4)
             payload = self.rfile.read(5)
             plain = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+            self.server.websocket_frames.append({
+                "index": len(self.server.websocket_frames),
+                "opcode": prefix[0] & 0x0F,
+                "payload_bytes": len(plain),
+                "payload_sha256": hashlib.sha256(plain).hexdigest(),
+            })
             self.wfile.write(b"\x81\x05" + plain)
             self.wfile.flush()
 

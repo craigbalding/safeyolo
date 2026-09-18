@@ -146,7 +146,8 @@ Schema 2 also records the selected source checkout commits and dirty states,
 interpreter/native executable hashes, native-policy provenance, each fixture's
 JSON configuration hash and command line, externally sampled RSS/high-water RSS,
 virtual memory, thread and open-FD counts, and the independent origin request
-observations. The resource samples are observations, not a newly invented
+observations, including origin-received WebSocket frame sizes and SHA-256
+payload digests. The resource samples are observations, not a newly invented
 limit: repeated controls must establish any justified regression tolerance.
 The output and evidence directory are raw result locations and must be retained
 with the exact candidate identity. A debug or unspecified Rust profile remains
