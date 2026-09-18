@@ -47,6 +47,7 @@ enum CoordError {
     Unavailable,
     Data,
     PublishUnknown,
+    Cancelled,
 }
 
 #[derive(Clone, Copy)]
@@ -492,7 +493,11 @@ impl CoordClient {
         since: u64,
         limit: usize,
         timeout_seconds: f64,
+        mut cancellation: tokio::sync::watch::Receiver<bool>,
     ) -> Result<FeedPage, CoordError> {
+        if *cancellation.borrow() {
+            return Err(CoordError::Cancelled);
+        }
         let page = self.attention_feed(principal, since, limit).await?;
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
@@ -548,6 +553,10 @@ impl CoordClient {
             tokio::time::Instant::now() + Duration::from_secs_f64(timeout_seconds.max(0.0));
         let mut next_recovery = tokio::time::Instant::now();
         loop {
+            if *cancellation.borrow() {
+                let _ = subscription.unsubscribe().await;
+                return Err(CoordError::Cancelled);
+            }
             let page = self.attention_feed(principal, since, limit).await?;
             if !page.edges.is_empty() || page.next_cursor != since {
                 let _ = subscription.unsubscribe().await;
@@ -592,16 +601,24 @@ impl CoordClient {
                 .checked_duration_since(tokio::time::Instant::now())
                 .unwrap_or_default();
             let wait_for = remaining.min(until_recovery.max(Duration::from_millis(1)));
-            if matches!(
-                tokio::time::timeout(wait_for, subscription.next()).await,
-                Ok(None)
-            ) {
-                let ledger = self.attention_feed(principal, since, limit).await;
-                let _ = subscription.unsubscribe().await;
-                return match ledger {
-                    Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
-                    _ => Err(CoordError::Unavailable),
-                };
+            tokio::select! {
+                biased;
+                cancelled = wait_cancelled(&mut cancellation) => {
+                    if cancelled {
+                        let _ = subscription.unsubscribe().await;
+                        return Err(CoordError::Cancelled);
+                    }
+                }
+                received = tokio::time::timeout(wait_for, subscription.next()) => {
+                    if matches!(received, Ok(None)) {
+                        let ledger = self.attention_feed(principal, since, limit).await;
+                        let _ = subscription.unsubscribe().await;
+                        return match ledger {
+                            Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                            _ => Err(CoordError::Unavailable),
+                        };
+                    }
+                }
             }
         }
     }
@@ -844,6 +861,7 @@ impl CoordClient {
 
 pub struct CoordContext<'a> {
     pub(crate) client: &'a CoordClient,
+    pub(crate) cancellation: tokio::sync::watch::Receiver<bool>,
 }
 
 struct Membership {
@@ -1316,7 +1334,7 @@ fn verify_attention_edge(
 fn read_brief_revision(db: &Path, edge: &AttentionEdge) -> Result<Value, CoordError> {
     let conn = open_db(db, false)?;
     conn.query_row(
-        "SELECT room_id, revision, markdown, content_hash, updated_at
+        "SELECT room_id, revision, markdown, content_hash, created_at
          FROM coord_brief_revisions
          WHERE room_id = ?1 AND revision = ?2",
         params![
@@ -1343,7 +1361,7 @@ fn public_name_part(value: &str) -> bool {
     let bytes = value.as_bytes();
     !bytes.is_empty()
         && bytes.len() <= 64
-        && bytes[0].is_ascii_lowercase().then_some(()).is_some()
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
@@ -1361,10 +1379,15 @@ fn valid_capability(value: &str) -> bool {
                 matches!(
                     term,
                     "account"
+                        | "binding"
                         | "credential"
+                        | "credentials"
+                        | "host"
                         | "key"
                         | "password"
                         | "path"
+                        | "persona"
+                        | "route"
                         | "secret"
                         | "token"
                         | "url"
@@ -1902,6 +1925,13 @@ fn filter_wait_candidates(
     Ok(filtered)
 }
 
+async fn wait_cancelled(receiver: &mut tokio::sync::watch::Receiver<bool>) -> bool {
+    if *receiver.borrow() {
+        return true;
+    }
+    receiver.changed().await.is_err() || *receiver.borrow()
+}
+
 fn read_access(db: &Path, room_name: &str, principal: &str) -> Result<RoomAccess, CoordError> {
     let conn = open_db(db, false)?;
     let room = conn
@@ -2208,7 +2238,13 @@ async fn respond_payload(
         };
         return match context
             .client
-            .wait_attention(&principal, since, limit, timeout)
+            .wait_attention(
+                &principal,
+                since,
+                limit,
+                timeout,
+                context.cancellation.clone(),
+            )
             .await
         {
             Ok(page) => response(
@@ -2375,6 +2411,7 @@ async fn respond_payload(
                 limit,
                 timeout,
                 !include_self,
+                context.cancellation.clone(),
             )
             .await
         }
@@ -2513,6 +2550,7 @@ fn error_response(error: CoordError) -> Outcome<'static> {
             response(503, json!({"error":"coordination substrate unavailable"}))
         }
         CoordError::Data => response(500, json!({"error":"coordination state unavailable"})),
+        CoordError::Cancelled => response(503, json!({"error":"coordination wait cancelled"})),
         CoordError::PublishUnknown => response(
             503,
             json!({
@@ -2968,6 +3006,14 @@ fn consumer_delete_not_found(error: &jetstream::stream::ConsumerError) -> bool {
     )
 }
 
+fn fetch_max_messages(wake_mode: bool, limit: usize) -> usize {
+    if wake_mode {
+        1
+    } else {
+        limit.saturating_add(1)
+    }
+}
+
 async fn read_messages(
     client: &CoordClient,
     room_name: &str,
@@ -2986,6 +3032,7 @@ async fn read_messages(
         Duration::from_millis(500),
         false,
         false,
+        tokio::sync::watch::channel(false).1,
     )
     .await
 }
@@ -2998,6 +3045,7 @@ async fn wait_room(
     limit: usize,
     timeout_seconds: f64,
     exclude_self: bool,
+    cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
     let access = match client.access(room_name, principal).await {
         Ok(access) => access,
@@ -3020,6 +3068,7 @@ async fn wait_room(
         Duration::from_secs_f64(timeout_seconds.clamp(0.1, 300.0)),
         exclude_self,
         true,
+        cancellation,
     )
     .await
 }
@@ -3034,6 +3083,7 @@ async fn read_messages_with_timeout(
     fetch_timeout: Duration,
     exclude_self: bool,
     wake_mode: bool,
+    mut cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
     let connection = match client.client().await {
         Ok(connection) => connection,
@@ -3069,6 +3119,9 @@ async fn read_messages_with_timeout(
         let deadline = tokio::time::Instant::now() + fetch_timeout;
         let mut page: Vec<WaitCandidate> = Vec::new();
         loop {
+            if *cancellation.borrow() {
+                return Err(CoordError::Cancelled);
+            }
             // Recheck the grant before every additional provider fetch. If a
             // regrant rotated the membership generation, discard candidates
             // from the previous snapshot and keep waiting for a new match.
@@ -3098,14 +3151,22 @@ async fn read_messages_with_timeout(
             if remaining.is_zero() {
                 break;
             }
-            let mut messages = consumer
+            let messages = consumer
                 .fetch()
-                .max_messages(limit.saturating_add(1))
+                .max_messages(fetch_max_messages(wake_mode, limit))
                 .max_bytes(ROOM_MAX_BYTES)
                 .expires(remaining)
-                .messages()
-                .await
-                .map_err(|_| CoordError::Unavailable)?;
+                .messages();
+            let mut messages = tokio::select! {
+                biased;
+                cancelled = wait_cancelled(&mut cancellation) => {
+                    if cancelled {
+                        return Err(CoordError::Cancelled);
+                    }
+                    continue;
+                }
+                result = messages => result.map_err(|_| CoordError::Unavailable)?,
+            };
             // Evaluate the attention manifest against a grant snapshot taken
             // after this provider fetch, before any message is exposed.
             let evaluation_access = if wake_mode {
@@ -3119,7 +3180,20 @@ async fn read_messages_with_timeout(
             } else {
                 None
             };
-            while let Some(message) = messages.next().await {
+            loop {
+                let message = tokio::select! {
+                    biased;
+                    cancelled = wait_cancelled(&mut cancellation) => {
+                        if cancelled {
+                            return Err(CoordError::Cancelled);
+                        }
+                        continue;
+                    }
+                    message = messages.next() => message,
+                };
+                let Some(message) = message else {
+                    break;
+                };
                 let message = message.map_err(|_| CoordError::Unavailable)?;
                 // JetStream delivers the authoritative stream sequence in the
                 // message metadata. Nats-Sequence is absent from valid pull
@@ -3141,6 +3215,7 @@ async fn read_messages_with_timeout(
                 } else {
                     true
                 };
+                let mut return_after_ack = false;
                 if qualifies {
                     let object = value.as_object_mut().ok_or(CoordError::Data)?;
                     object.insert("sequence".to_owned(), Value::from(sequence));
@@ -3148,13 +3223,23 @@ async fn read_messages_with_timeout(
                         value,
                         headers: message.headers.clone(),
                     });
+                    // A room wait is an event-driven wake. Returning as soon
+                    // as one message qualifies avoids waiting for the pull
+                    // expiry when the batch contains fewer than its limit.
+                    return_after_ack = wake_mode;
                 }
                 message.ack().await.map_err(|_| CoordError::Unavailable)?;
+                if return_after_ack {
+                    break;
+                }
                 if page.len() >= limit.saturating_add(1) {
                     break;
                 }
             }
             if !wake_mode {
+                break;
+            }
+            if !page.is_empty() {
                 break;
             }
             // A self-only, non-targeted, or generation-stale batch must not
@@ -3359,6 +3444,84 @@ mod tests {
             ),
             Err(CoordError::Data)
         ));
+    }
+
+    #[test]
+    fn brief_attention_object_reads_created_at_as_public_updated_at() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("v0.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=5;
+             CREATE TABLE coord_brief_revisions(
+                 room_id TEXT NOT NULL,
+                 revision INTEGER NOT NULL,
+                 markdown TEXT NOT NULL,
+                 content_hash TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY(room_id, revision)
+             );
+             INSERT INTO coord_brief_revisions
+                 (room_id, revision, markdown, content_hash, created_at)
+                 VALUES ('rm-shared', 3, '# brief',
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         1234);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let edge = AttentionEdge {
+            attention_id: "attn-0123456789abcdef0123456789abcdef".to_owned(),
+            room_id: "rm-shared".to_owned(),
+            kind: "brief_changed".to_owned(),
+            object_id: "brief-shared".to_owned(),
+            revision_or_sequence: 3,
+            membership_granted_at: 7,
+        };
+        let object = read_brief_revision(&db, &edge).unwrap();
+        assert_eq!(object["updated_at"], 1234);
+        assert_eq!(object["revision"], 3);
+        assert_eq!(object["markdown"], "# brief");
+    }
+
+    #[test]
+    fn capability_grammar_matches_retained_public_validator() {
+        for value in ["svc:2fa", "a:2", "2:2", "svc.reader:worker-2"] {
+            assert!(valid_capability(value), "expected capability: {value}");
+        }
+        for value in [
+            "binding:host",
+            "svc:binding",
+            "svc:credentials",
+            "credentials:x",
+            "persona:x",
+            "route:x",
+            "host:x",
+            "svc:host",
+            "svc:persona",
+            "svc:route",
+            "svc:bad term",
+        ] {
+            assert!(!valid_capability(value), "unexpected capability: {value}");
+        }
+    }
+
+    #[test]
+    fn room_wait_fetches_one_message_to_wake_before_pull_expiry() {
+        assert_eq!(fetch_max_messages(true, 1), 1);
+        assert_eq!(fetch_max_messages(true, 200), 1);
+        assert_eq!(fetch_max_messages(false, 3), 4);
+    }
+
+    #[tokio::test]
+    async fn wait_cancellation_observes_connection_close() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(false);
+        sender.send(true).unwrap();
+        assert!(wait_cancelled(&mut receiver).await);
+
+        let (sender, mut receiver) = tokio::sync::watch::channel(false);
+        drop(sender);
+        assert!(wait_cancelled(&mut receiver).await);
     }
 
     #[test]

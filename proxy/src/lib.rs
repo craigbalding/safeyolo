@@ -64,6 +64,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::{FileTypeExt, MetadataExt},
+    os::unix::io::AsRawFd,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
@@ -1003,8 +1004,13 @@ async fn accept_agents(
                     connections.spawn(async move {
                         let _memory = memory;
                         let tasks = connection_tasks::ConnectionTasks::new(connection_stop.clone());
+                        let disconnect_monitor = monitor_agent_disconnect(&socket, &tasks);
                         let driver_tasks = tasks.clone();
                         tasks.run(serve_connection(socket, identity, connection_runtime, connection_stop, driver_tasks)).await;
+                        if let Some(disconnect_monitor) = disconnect_monitor {
+                            disconnect_monitor.abort();
+                            let _ = disconnect_monitor.await;
+                        }
                     });
                 }
                 Err(error) => {
@@ -1026,6 +1032,68 @@ async fn accept_agents(
     // the existing grace and join tracked transport tasks before dropping the client.
     stop_signal.send_replace(true);
     while connections.join_next().await.is_some() {}
+}
+
+/// Hyper cannot poll an HTTP/1 read side while the current service future is
+/// pending. Keep a duplicated descriptor solely for peer-close notification so
+/// a long coordination wait observes a client that abandoned its connection.
+/// The duplicate never consumes request bytes; POLLHUP is reported
+/// independently of the requested poll events on Unix.
+fn monitor_agent_disconnect(
+    socket: &UnixStream,
+    tasks: &Arc<connection_tasks::ConnectionTasks>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let descriptor = unsafe { libc::dup(socket.as_raw_fd()) };
+    if descriptor < 0 {
+        return None;
+    }
+    struct PollDescriptor(libc::c_int);
+    impl Drop for PollDescriptor {
+        fn drop(&mut self) {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+    let descriptor = PollDescriptor(descriptor);
+    let cancellation = tasks.cancellation_sender();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stopped = stopped.clone();
+    Some(tokio::spawn(async move {
+        struct StopMonitor(Arc<AtomicBool>);
+        impl Drop for StopMonitor {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop_monitor = StopMonitor(stopped);
+        let _ = tokio::task::spawn_blocking(move || {
+            let close_events = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+            let mut descriptor_poll = libc::pollfd {
+                fd: descriptor.0,
+                events: 0,
+                revents: 0,
+            };
+            loop {
+                if worker_stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    break;
+                }
+                if descriptor_poll.revents & close_events != 0 {
+                    cancellation.send_replace(true);
+                    break;
+                }
+            }
+        })
+        .await;
+    }))
 }
 
 async fn serve_connection(
