@@ -191,7 +191,7 @@ fn persist(path: PathBuf, authorization: Authorization) -> Result<Outcome, Error
     let result = crate::approvals::update_policy(
         &path,
         false,
-        |document| {
+        |document, _| {
             let Some(agents) = document.get_mut("agents") else {
                 missing_agent = true;
                 return Err(mutation_error());
@@ -259,7 +259,7 @@ fn persist_revocation(path: PathBuf, mut revocation: Revocation) -> Result<Outco
     let result = crate::approvals::update_policy(
         &path,
         false,
-        |document| {
+        |document, _| {
             let Some(agents) = document.get_mut("agents") else {
                 missing_binding = true;
                 return Err(mutation_error());

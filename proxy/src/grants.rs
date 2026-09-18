@@ -25,7 +25,10 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 use crate::{
     approvals::{ApprovalError, ErrorKind, update_policy},
     contracts::ContractBinding,
-    policy::{large_integer_marker_value, parse_expiry, parse_toml_document},
+    policy::{
+        LargeIntegerContext, large_integer_marker_value, parse_expiry,
+        parse_toml_document_with_context,
+    },
     services::resource_matches,
 };
 
@@ -170,8 +173,9 @@ impl Snapshot {
         document: &DocumentMut,
         now: OffsetDateTime,
         previous: Option<&Self>,
+        context: &LargeIntegerContext,
     ) -> Result<Self> {
-        let json = parse_toml_document(&document.to_string())
+        let json = parse_toml_document_with_context(&document.to_string(), context)
             .map_err(|error| invalid(error.to_string()))?;
         let mut candidate = Self {
             ttl_seconds: previous.map_or(3600, |old| old.ttl_seconds),
@@ -319,9 +323,13 @@ fn load_binding(agent: &str, raw: &Json, now: OffsetDateTime) -> Result<StoredBi
 /// Persist the defaults accepted by the old loader once, before a record can
 /// become a live grant. Regenerating IDs or creation times on each reload would
 /// invalidate an in-flight reservation and prevent durable consumption/revocation.
-fn normalize_legacy_records(document: &mut DocumentMut, now: OffsetDateTime) -> Result<()> {
-    let source =
-        parse_toml_document(&document.to_string()).map_err(|error| invalid(error.to_string()))?;
+fn normalize_legacy_records(
+    document: &mut DocumentMut,
+    now: OffsetDateTime,
+    context: &mut LargeIntegerContext,
+) -> Result<()> {
+    let source = parse_toml_document_with_context(&document.to_string(), context)
+        .map_err(|error| invalid(error.to_string()))?;
     let Some(agents) = source.get("agents") else {
         return Ok(());
     };
@@ -362,7 +370,10 @@ fn normalize_legacy_records(document: &mut DocumentMut, now: OffsetDateTime) -> 
                         || (*field == "expires"
                             && record.get(field).and_then(Item::as_str) == Some(""))
                     {
-                        record.insert(field, Item::Value(json_to_toml(&defaults[*field])?));
+                        record.insert(
+                            field,
+                            Item::Value(json_to_toml(&defaults[*field], context)?),
+                        );
                     }
                 }
             }
@@ -410,9 +421,9 @@ impl Store {
         let snapshot = update_policy(
             &path,
             true,
-            |document| {
-                normalize_legacy_records(document, now)?;
-                Snapshot::from_document(document, now, None)
+            |document, context| {
+                normalize_legacy_records(document, now, context)?;
+                Snapshot::from_document(document, now, None, context)
             },
             |_| Ok(()),
         )?;
@@ -475,17 +486,17 @@ impl Store {
         &self,
         now: OffsetDateTime,
         skip_unchanged: bool,
-        mutate: impl FnOnce(&mut DocumentMut, &mut Snapshot) -> Result<T>,
+        mutate: impl FnOnce(&mut DocumentMut, &mut Snapshot, &mut LargeIntegerContext) -> Result<T>,
         activate: impl FnMut(&str) -> std::result::Result<(), String>,
     ) -> Result<T> {
         let mut current = self.lock()?;
         let (result, next) = update_policy(
             &self.path,
             skip_unchanged,
-            |document| {
-                normalize_legacy_records(document, now)?;
-                let mut next = Snapshot::from_document(document, now, Some(&current))?;
-                let result = mutate(document, &mut next)?;
+            |document, context| {
+                normalize_legacy_records(document, now, context)?;
+                let mut next = Snapshot::from_document(document, now, Some(&current), context)?;
+                let result = mutate(document, &mut next, context)?;
                 Ok((result, next))
             },
             activate,
@@ -504,7 +515,7 @@ impl Store {
         // document, while an unchanged reload leaves its inode and mtime
         // untouched. Runtime publication can therefore reconcile an external
         // edit without racing a service-catalog token publication.
-        self.transaction(now, true, |_, _| Ok(()), activate)
+        self.transaction(now, true, |_, _, _| Ok(()), activate)
     }
     pub fn add_grant(
         &self,
@@ -521,7 +532,7 @@ impl Store {
         self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, context| {
                 let expires = now
                     .checked_add(Duration::seconds(state.ttl_seconds))
                     .ok_or_else(|| invalid("grant expiry overflow"))?;
@@ -545,6 +556,7 @@ impl Store {
                     &grant.grant_id,
                     grant_record(&grant)?,
                     None,
+                    context,
                 )? {
                     Persistence::Durable
                 } else {
@@ -579,7 +591,7 @@ impl Store {
         self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, context| {
                 let binding = &record.binding;
                 let persistence = if upsert_record(
                     document,
@@ -589,6 +601,7 @@ impl Store {
                     &binding.binding_id,
                     binding_record(&record)?,
                     Some((&binding.service, &binding.capability)),
+                    context,
                 )? {
                     Persistence::Durable
                 } else {
@@ -621,7 +634,7 @@ impl Store {
         self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, _| {
                 let Some(index) = state
                     .grants
                     .iter()
@@ -665,7 +678,7 @@ impl Store {
         self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, _| {
                 let Some(index) = state.bindings.iter().position(|record| {
                     record.binding.agent == agent && record.binding.binding_id == binding_id
                 }) else {
@@ -707,7 +720,7 @@ impl Store {
         let selected = self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, _| {
                 for expired in expired {
                     // The locked policy may contain a renewal made after the
                     // previous in-memory snapshot. Do not delete that approval.
@@ -782,7 +795,7 @@ impl Store {
         self.transaction(
             now,
             true,
-            |document, state| {
+            |document, state, _| {
                 if state.reservations.get(&lease.grant.grant_id) != Some(&lease.reservation) {
                     return Ok(ResponseOutcome::Stale);
                 }
@@ -913,6 +926,7 @@ fn upsert_record(
     value: &str,
     record: Json,
     tuple: Option<(&str, &str)>,
+    context: &mut LargeIntegerContext,
 ) -> Result<bool> {
     let inline = document
         .get("agents")
@@ -939,7 +953,7 @@ fn upsert_record(
         .as_object()
         .ok_or_else(|| invalid("record must be an object"))?
     {
-        table.insert(key, Item::Value(json_to_toml(value)?));
+        table.insert(key, Item::Value(json_to_toml(value, context)?));
     }
     if let Some(array) = item.as_array_of_tables_mut() {
         array.push(table);
@@ -954,7 +968,7 @@ fn upsert_record(
 // serde_json's arbitrary_precision Number serializes through a private marker
 // structure with non-JSON serializers. Convert values directly so even ordinary
 // integers cannot become marker tables or rounded float bindings in policy TOML.
-fn json_to_toml(value: &Json) -> Result<Value> {
+fn json_to_toml(value: &Json, context: &mut LargeIntegerContext) -> Result<Value> {
     Ok(match value {
         Json::Null => return Err(invalid("TOML cannot persist a null binding value")),
         Json::Bool(value) => Value::from(*value),
@@ -973,20 +987,20 @@ fn json_to_toml(value: &Json) -> Result<Value> {
                         })?,
                 )
             } else {
-                large_integer_marker_value(&value.to_string())
+                large_integer_marker_value(context, &value.to_string())
             }
         }
         Json::Array(values) => {
             let mut array = Array::new();
             for value in values {
-                array.push(json_to_toml(value)?);
+                array.push(json_to_toml(value, context)?);
             }
             Value::Array(array)
         }
         Json::Object(values) => {
             let mut table = InlineTable::new();
             for (key, value) in values {
-                table.insert(key, json_to_toml(value)?);
+                table.insert(key, json_to_toml(value, context)?);
             }
             Value::InlineTable(table)
         }
