@@ -73,12 +73,14 @@ base_args=(
 
 launch() {
   local issue=$1 mode=$2 id=$3 prompt=$4
-  local stamp log err last pid meta
+  local stamp log err last meta runner tmux_session
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   log="$root/${issue}-${stamp}.jsonl"
   err="$root/${issue}-${stamp}.stderr"
   last="$root/${issue}-${stamp}.last"
   meta="$root/${issue}-${stamp}.meta"
+  runner="$root/${issue}-${stamp}.run.sh"
+  tmux_session="ds-review-${issue}-${stamp}"
   {
     printf 'issue=%s\nmode=%s\n' "$issue" "$mode"
     [[ -n "$id" ]] && printf 'session_id=%s\n' "$id"
@@ -86,16 +88,35 @@ launch() {
       "${CANDIDATE:-unknown}" "$model_provider" "$model" "$reasoning"
     printf 'repo=%s\nstarted_utc=%s\n' "$repo" "$stamp"
   } >"$meta"
+  local -a command
   if [[ "$mode" == start ]]; then
-    nohup codex "${base_args[@]}" exec --json -o "$last" "$prompt" \
-      >"$log" 2>"$err" < /dev/null &
+    command=(codex "${base_args[@]}" exec --json -o "$last" "$prompt")
   else
-    nohup codex "${base_args[@]}" exec resume "$id" --json -o "$last" "$prompt" \
-      >"$log" 2>"$err" < /dev/null &
+    command=(codex "${base_args[@]}" exec resume "$id" --json -o "$last" "$prompt")
   fi
-  pid=$!
-  printf 'pid=%s\njsonl=%s\nstderr=%s\nlast=%s\n' "$pid" "$log" "$err" "$last" >>"$meta"
-  printf 'pid=%s\njsonl=%s\nstderr=%s\nmeta=%s\n' "$pid" "$log" "$err" "$meta"
+  {
+    printf '#!/usr/bin/env bash\nset -euo pipefail\nexec'
+    printf ' %q' "${command[@]}"
+    printf ' 2>%q | tee %q\n' "$err" "$log"
+  } >"$runner"
+  chmod 700 "$runner"
+  local tmux_pane visible
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    tmux_session=$(tmux display-message -p -t "$TMUX_PANE" '#S')
+    # -h gives a vertical divider (side-by-side panes) in the operator's
+    # current window. Keep the completed pane visible for evidence inspection.
+    tmux_pane=$(tmux split-window -h -P -F '#{pane_id}' -t "$TMUX_PANE" -c "$repo" bash "$runner")
+    tmux set-option -p -t "$tmux_pane" remain-on-exit on
+    visible=true
+  else
+    tmux new-session -d -s "$tmux_session" -c "$repo" bash "$runner"
+    tmux_pane=$(tmux list-panes -t "$tmux_session" -F '#{pane_id}' | head -1)
+    visible=false
+  fi
+  printf 'tmux_session=%s\ntmux_pane=%s\nvisible=%s\nrunner=%s\njsonl=%s\nstderr=%s\nlast=%s\n' \
+    "$tmux_session" "$tmux_pane" "$visible" "$runner" "$log" "$err" "$last" >>"$meta"
+  printf 'tmux_session=%s\ntmux_pane=%s\nvisible=%s\nrunner=%s\njsonl=%s\nstderr=%s\nmeta=%s\n' \
+    "$tmux_session" "$tmux_pane" "$visible" "$runner" "$log" "$err" "$meta"
 }
 
 case "${1:-}" in
