@@ -52,14 +52,17 @@ scripts/codex_deepseek_review.sh resume 627 <session-id> \
   'Recheck the repaired findings against the same stable candidate.'
 ```
 
-`--last` is intentionally rejected. The reviewer runs the required validation
-within its contained, no-approval session but does not edit product source or
-configuration, integrate commits, or change issue state. The coordinator
-records its receipt, hands concrete repairs to a Luna worker, and asks the
-same explicit review session to recheck the repaired candidate. A separate
-Sol review is started only for a bounded escalation or the final integrated
-release acceptance. The launcher grants write access only to the configured
-evidence root for disposable output; each issue reuses its
+`--last` is intentionally rejected. The reviewer runs with no interactive
+approval prompts and the nested Codex workspace in `danger-full-access` mode
+by default. The outer SafeYolo sandbox remains the containment boundary. This
+is required for real fixture sockets and for writing disposable Cargo/test
+output; it is not permission to edit product source or configuration, integrate
+commits, or change issue state. `SAFEYOLO_REVIEW_SANDBOX` can select a tighter
+mode for a diagnostic smoke, but read-only mode cannot perform acceptance
+validation. The coordinator records the receipt, hands concrete repairs to a
+Luna worker, and asks the same explicit review session to recheck the repaired
+candidate. A separate Sol review is started only for a bounded escalation or
+the final integrated release acceptance. Each issue reuses its
 `targets/<issue>` directory across correction rounds and concurrent issues use
 distinct target directories.
 

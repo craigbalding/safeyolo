@@ -16,6 +16,12 @@ viewer_script="$viewer_repo/contrib/watch-agent-room.py"
 model_provider=opencode_go_review
 model=deepseek-v4.1-flash
 reasoning=max
+# The outer SafeYolo sandbox remains the containment boundary.  Reviewers
+# need the nested Codex workspace to be read/write so they can use the
+# repository's real fixture sockets and write disposable targets under the
+# evidence root.  This is configurable for a deliberately tighter local
+# smoke, but read-only is not suitable for acceptance review.
+review_sandbox=${SAFEYOLO_REVIEW_SANDBOX:-danger-full-access}
 
 usage() {
   cat >&2 <<'EOF'
@@ -68,7 +74,7 @@ PY
 base_args=(
   --profile "$profile"
   --cd "$repo"
-  --sandbox read-only
+  --sandbox "$review_sandbox"
   --add-dir "$root"
   --ask-for-approval never
   -c 'model_provider="opencode_go_review"'
