@@ -582,7 +582,7 @@ impl CoordClient {
             .await
             .map(|info| info.state.last_sequence)
             .map_err(|_| CoordError::Unavailable)?;
-        let db = self.owner.data_dir.clone();
+        let db = self.owner.data_dir.join("v0.db");
         let room_id = room_id.to_owned();
         tokio::task::spawn_blocking(move || {
             ensure_projection_baseline(&db, &room_id, last_sequence)
@@ -598,7 +598,7 @@ impl CoordClient {
         stream: &mut jetstream::stream::Stream,
         through_sequence: u64,
     ) -> Result<ProjectionOutcome, CoordError> {
-        let db = self.owner.data_dir.clone();
+        let db = self.owner.data_dir.join("v0.db");
         let room_for_frontier = room_id.to_owned();
         let mut frontier = tokio::task::spawn_blocking(move || {
             read_projection_frontier(&db, &room_for_frontier)
@@ -607,7 +607,7 @@ impl CoordClient {
         .map_err(|_| CoordError::Unavailable)??;
         loop {
             if frontier >= through_sequence {
-                let db = self.owner.data_dir.clone();
+                let db = self.owner.data_dir.join("v0.db");
                 let room_for_loss = room_id.to_owned();
                 let lost = tokio::task::spawn_blocking(move || {
                     projection_sequence_was_lost(&db, &room_for_loss, through_sequence)
@@ -627,7 +627,7 @@ impl CoordClient {
                 .map_err(|_| CoordError::Unavailable)?;
             let next_sequence = frontier.saturating_add(1);
             if state.0 > next_sequence {
-                let db = self.owner.data_dir.clone();
+                let db = self.owner.data_dir.join("v0.db");
                 let room_for_gap = room_id.to_owned();
                 let gap = tokio::task::spawn_blocking(move || {
                     advance_over_retention_gap(&db, &room_for_gap, frontier, state.0)
@@ -683,7 +683,7 @@ impl CoordClient {
                     recipients,
                 });
             }
-            let db = self.owner.data_dir.clone();
+            let db = self.owner.data_dir.join("v0.db");
             let room_for_projection = room_id.to_owned();
             match tokio::task::spawn_blocking(move || {
                 project_attention_prefix(&db, &room_for_projection, frontier, messages)
