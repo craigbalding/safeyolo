@@ -645,6 +645,8 @@ async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
     .await;
     assert_eq!(status, 200);
     assert_eq!(body["hosts"], json!([intercepted_authority]));
+    assert_eq!(body["operator_entry_count"], 1);
+    assert_eq!(body["pattern_count"], 2);
 
     let admitted_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admitted_authority = admitted_listener.local_addr().unwrap().to_string();
@@ -669,7 +671,7 @@ async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
     let mut admitted = connect_raw(&config.listeners[0].socket_path, &admitted_authority).await;
     admitted.write_all(admitted_payload).await.unwrap();
     tokio::task::yield_now().await;
-    let (status, _) = admin_transport(
+    let (status, body) = admin_transport(
         admin_port,
         token,
         "PUT",
@@ -678,6 +680,8 @@ async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
     )
     .await;
     assert_eq!(status, 200);
+    assert_eq!(body["operator_entry_count"], 0);
+    assert_eq!(body["pattern_count"], 1);
     admitted.write_all(after_removal).await.unwrap();
     admitted.shutdown().await.unwrap();
     admitted_origin.await.unwrap();

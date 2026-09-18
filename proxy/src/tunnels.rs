@@ -81,7 +81,13 @@ impl Passthrough {
         };
         for value in Self::normalize_hosts(hosts)? {
             let (host, port) = Self::parse_host(&value)?;
-            result.hosts.push((host, port));
+            if !result
+                .hosts
+                .iter()
+                .any(|(entry, entry_port)| entry == &host && *entry_port == port)
+            {
+                result.hosts.push((host, port));
+            }
         }
         for cidr in cidrs
             .split(',')
@@ -110,9 +116,16 @@ impl Passthrough {
                 return Err("ignore CIDRs require an IPv4 prefix between /8 and /32".into());
             }
             let mask = u32::MAX << (32 - prefix);
-            result.networks.push((address & mask, mask));
+            let network = (address & mask, mask);
+            if !result.networks.contains(&network) {
+                result.networks.push(network);
+            }
         }
         Ok(result)
+    }
+
+    pub(crate) fn pattern_count(&self) -> usize {
+        self.hosts.len() + self.networks.len()
     }
 
     pub(crate) fn matches(&self, host: &str, port: u16, peer: Option<Ipv4Addr>) -> bool {
@@ -492,5 +505,19 @@ mod tests {
             assert!(Passthrough::new(&[entry.into()], "").is_err());
         }
         assert!(Passthrough::new(&[], "10.0.0.0/7").is_err());
+    }
+
+    #[test]
+    fn passthrough_pattern_count_deduplicates_builtin_and_cidr_entries() {
+        let config = Passthrough::new(
+            &[
+                "API.ASTERFOLD.AI:7000".into(),
+                "example.test".into(),
+                "EXAMPLE.TEST".into(),
+            ],
+            "10.2.9.1/16, 10.2.0.0/16",
+        )
+        .unwrap();
+        assert_eq!(config.pattern_count(), 3);
     }
 }

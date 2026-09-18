@@ -1264,22 +1264,33 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
-        if passthrough
+        let active_pattern_count = passthrough
             .write()
-            .map(|mut current| *current = replacement)
-            .is_err()
-        {
-            return Err(Error::RegistryUnavailable);
-        }
-        let count = normalized.len();
+            .map(|mut current| {
+                *current = replacement;
+                current.pattern_count()
+            })
+            .map_err(|_| Error::RegistryUnavailable)?;
+        let operator_entry_count = normalized.len();
         let mut outcome = response(
             StatusCode::OK,
-            json!({"status":"updated","hosts":normalized.clone(),"pattern_count":count}),
+            json!({
+                "status":"updated",
+                "hosts":normalized.clone(),
+                "operator_entry_count":operator_entry_count,
+                "pattern_count":active_pattern_count
+            }),
         );
         outcome.audit = Some(mutation(
             "admin.proxy_ignore_hosts_update",
-            format!("Proxy TLS passthrough list replaced ({count} operator entries)"),
-            json!({"hosts":normalized,"pattern_count":count}),
+            format!(
+                "Proxy TLS passthrough list replaced ({operator_entry_count} operator entries, {active_pattern_count} active patterns)"
+            ),
+            json!({
+                "hosts":normalized,
+                "operator_entry_count":operator_entry_count,
+                "pattern_count":active_pattern_count
+            }),
         ));
         return Ok(outcome);
     }

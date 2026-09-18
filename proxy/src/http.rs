@@ -2198,12 +2198,17 @@ where
         // server greets the client before receiving any client bytes.
         // Source logging selects a destination before DNS. Keep the existing
         // later transport matcher, including its resolved-peer behavior.
+        // Freeze the generation used for admission before DNS/dial. The same
+        // snapshot must decide the post-resolution peer and whether this
+        // physical connection owns passthrough lifecycle events; an admin
+        // update during the dial cannot change an admitted connection.
+        let passthrough_matcher = runtime
+            .passthrough
+            .read()
+            .map_err(|_| "passthrough configuration unavailable")?
+            .clone();
         let ignored = (runtime.parent.is_none()
-            && runtime
-                .passthrough
-                .read()
-                .map_err(|_| "passthrough configuration unavailable")?
-                .matches(&destination.host, destination.port, None))
+            && passthrough_matcher.matches(&destination.host, destination.port, None))
         .then_some(crate::ignored_host_logger::SelectedDestination {
             host: &destination.host,
             port: destination.port,
@@ -2227,11 +2232,8 @@ where
             peer,
             observation,
         } = connected;
-        let passthrough = runtime
-            .passthrough
-            .read()
-            .map_err(|_| "passthrough configuration unavailable")?
-            .matches(&destination.host, destination.port, peer);
+        let passthrough = runtime.parent.is_none()
+            && passthrough_matcher.matches(&destination.host, destination.port, peer);
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
         let destination = destination.clone();
@@ -3643,6 +3645,52 @@ mod tests {
                 .map(|value| value.phase),
             Some(phase)
         );
+    }
+
+    #[tokio::test]
+    async fn passthrough_snapshot_survives_replacement_while_dial_is_pending() {
+        let host = "pending.example.test";
+        let port = 443;
+        let current = Arc::new(std::sync::RwLock::new(
+            crate::tunnels::Passthrough::new(&[format!("{host}:{port}")], "").unwrap(),
+        ));
+        let snapshot = current.read().unwrap().clone();
+        let admitted = snapshot.matches(host, port, None);
+        assert!(admitted);
+
+        let dial_started = Arc::new(tokio::sync::Notify::new());
+        let release_dial = Arc::new(tokio::sync::Notify::new());
+        let started = dial_started.clone();
+        let release = release_dial.clone();
+        let address = "127.0.0.1:443".parse().unwrap();
+        let pending_dial = tokio::spawn(async move {
+            resolve_and_connect_egress(
+                None,
+                || async move { Ok::<_, Error>(vec![address]) },
+                move |_address| {
+                    started.notify_one();
+                    let release = release.clone();
+                    async move {
+                        release.notified().await;
+                        Ok::<_, Error>(())
+                    }
+                },
+                |_address| true,
+                || Ok(()),
+            )
+            .await
+        });
+        dial_started.notified().await;
+
+        // The live admin set changes while the socket is still in its dial
+        // phase. The pending connection must keep using its earlier snapshot.
+        *current.write().unwrap() = crate::tunnels::Passthrough::new(&[], "").unwrap();
+        release_dial.notify_one();
+        pending_dial.await.unwrap().unwrap();
+
+        let post_resolution = snapshot.matches(host, port, Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(post_resolution, admitted);
+        assert!(!current.read().unwrap().matches(host, port, None));
     }
 
     #[tokio::test(start_paused = true)]
