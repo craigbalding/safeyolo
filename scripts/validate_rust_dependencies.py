@@ -27,6 +27,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = ROOT / "proxy" / "vendor"
+DEPENDENCY_TARGET_ROOT_ENV = "SAFEYOLO_DEPENDENCY_TARGET_ROOT"
+DEFAULT_DEPENDENCY_TARGET_ROOT = ROOT.parent / ".safeyolo-rust-dependency-targets"
+DEPENDENCY_TARGET_PREFIX = "safeyolo-rust-dependency-target-"
 CRATES = {
     "fancy-regex": {"version": "0.19.2"},
     "hyper": {"version": "1.11.1"},
@@ -135,6 +138,44 @@ def _parse_test_counts(output: str) -> dict[str, int]:
 
 def _command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
+
+
+def _dependency_target_root() -> Path:
+    """Choose the filesystem parent for temporary Cargo target directories."""
+    configured = os.environ.get(DEPENDENCY_TARGET_ROOT_ENV)
+    root = (
+        Path(configured).expanduser()
+        if configured and configured.strip()
+        else DEFAULT_DEPENDENCY_TARGET_ROOT
+    )
+    return root.resolve()
+
+
+def _create_dependency_target(root: Path) -> tuple[Any, Path]:
+    """Create one disposable target directory below ``root``.
+
+    Only the per-run child is owned by the returned TemporaryDirectory.  The
+    configured parent is retained so it cannot be removed with the generated
+    Cargo artifacts.
+    """
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as error:
+        raise ValidationError(
+            f"cannot create dependency target root {root}: {error}"
+        ) from error
+    if not root.is_dir():
+        raise ValidationError(f"dependency target root is not a directory: {root}")
+    try:
+        context = tempfile.TemporaryDirectory(
+            prefix=DEPENDENCY_TARGET_PREFIX,
+            dir=str(root),
+        )
+    except OSError as error:
+        raise ValidationError(
+            f"cannot create dependency target directory under {root}: {error}"
+        ) from error
+    return context, Path(context.name)
 
 
 def _stop_process_group(process: subprocess.Popen[str], signal_number: int) -> None:
@@ -998,6 +1039,12 @@ def main(argv: list[str] | None = None) -> int:
     }
     target_context = None
     try:
+        target_root = _dependency_target_root()
+        report["target"] = {
+            "root": str(target_root),
+            "directory": None,
+            "cleanup": "remove the per-run directory after validation; retain the root",
+        }
         rust_host = _rust_host()
         report["repository"] = {
             "revision": _git_value("rev-parse", "HEAD"),
@@ -1015,14 +1062,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"mode={report['mode']}")
         print(f"report={report_path}")
         _provenance(report)
-        target_context = tempfile.TemporaryDirectory(
-            prefix="safeyolo-rust-dependency-target-"
-        )
+        target_context, target_directory = _create_dependency_target(target_root)
+        report["target"]["directory"] = str(target_directory)
+        print(f"target_root={target_root}")
+        print(f"target={target_directory}")
         runner = Runner(
             report,
             offline=offline,
             report_path=report_path,
-            target_dir=Path(target_context.name),
+            target_dir=target_directory,
         )
 
         product_manifest = ROOT / "proxy" / "Cargo.toml"

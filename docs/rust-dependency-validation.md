@@ -3,13 +3,18 @@
 Run the command from the repository root with Rust 1.94.0 and CPython 3.12.
 Cargo runs offline by default and requires the dependencies to be present in
 the local cache. Use `--online` only when the operator intends Cargo to fetch
-missing packages. The script uses a temporary `CARGO_TARGET_DIR` outside the
-checkout and removes it after the run, so a successful run leaves no generated
-Cargo artifacts in the worktree. The report is written outside the checkout
-unless `--report` specifies another path.
+missing packages. The script uses a fresh temporary `CARGO_TARGET_DIR` under
+`SAFEYOLO_DEPENDENCY_TARGET_ROOT` and removes it after the run, so a successful
+run leaves no generated Cargo artifacts in the worktree. By default, the
+target root is `.safeyolo-rust-dependency-targets` beside the checkout, keeping
+the build on the candidate filesystem instead of the often-small system
+temporary filesystem. Set the variable to a directory on another build
+filesystem when needed. The report is written outside the checkout unless
+`--report` specifies another path.
 
 ```sh
 SAFEYOLO_POLICY_PYTHON="$(command -v python3)" \
+  SAFEYOLO_DEPENDENCY_TARGET_ROOT="$PWD/../dependency-targets" \
   ./scripts/validate_rust_dependencies.py \
   --report /tmp/safeyolo-rust-dependency-validation.json
 ```
@@ -37,10 +42,14 @@ focused inspection and parser-completion targets. Every Cargo invocation is
 executed through `scripts/cargo_with_space.sh`, and the report records both the
 requested Cargo command and the guarded command that actually ran.
 
-Each run uses a fresh temporary target directory named
-`safeyolo-rust-dependency-target-*` under the system temporary directory via
-`CARGO_TARGET_DIR`; the path is recorded in every command entry and removed at
-exit. The reviewable report path is
+Each run creates a fresh directory named
+`safeyolo-rust-dependency-target-*` under the configured target root and passes
+it as `CARGO_TARGET_DIR`; the root is created with private permissions when it
+does not exist. The exact root and per-run directory are recorded in the
+report, and every command entry records the same `CARGO_TARGET_DIR`. Cleanup
+removes only that per-run directory and leaves the configured root and
+checkout source untouched. Keep any custom report or evidence path outside the
+generated child. The reviewable report path is
 `/tmp/safeyolo-rust-dependency-validation.json` when using the command above.
 The coordinator must run this plan with the repository checkout as its
 working directory and leave the existing hosted CI matrix unchanged.

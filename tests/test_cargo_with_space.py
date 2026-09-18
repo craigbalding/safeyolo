@@ -8,6 +8,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -90,6 +91,44 @@ def _run_wrapper(
         capture_output=True,
         check=False,
     )
+
+
+def test_dependency_target_root_defaults_to_checkout_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(dependency_validator.DEPENDENCY_TARGET_ROOT_ENV, raising=False)
+
+    root = dependency_validator._dependency_target_root()
+
+    assert root == dependency_validator.DEFAULT_DEPENDENCY_TARGET_ROOT.resolve()
+    assert root != Path(tempfile.gettempdir())
+    assert root.parent == ROOT.parent.resolve()
+
+
+def test_dependency_target_root_honours_configuration_and_cleans_only_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    configured_root = tmp_path / "build-targets"
+    source = tmp_path / "source-evidence.txt"
+    source.write_text("retain me\n")
+    monkeypatch.setenv(
+        dependency_validator.DEPENDENCY_TARGET_ROOT_ENV, str(configured_root)
+    )
+
+    root = dependency_validator._dependency_target_root()
+    context, target_directory = dependency_validator._create_dependency_target(root)
+    try:
+        assert root == configured_root.resolve()
+        assert target_directory.parent == root
+        assert target_directory.name.startswith(
+            dependency_validator.DEPENDENCY_TARGET_PREFIX
+        )
+        assert target_directory.is_dir()
+        (target_directory / "generated-cargo-artifact").write_text("generated\n")
+    finally:
+        context.cleanup()
+
+    assert configured_root.is_dir()
+    assert not target_directory.exists()
+    assert source.read_text() == "retain me\n"
 
 
 def test_linux_uses_dedicated_process_group_when_setsid_exists(tmp_path: Path) -> None:
