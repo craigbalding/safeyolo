@@ -15,15 +15,15 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
-
 
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR_ROOT = ROOT / "proxy" / "vendor"
@@ -45,9 +45,22 @@ TEST_RESULT_RE = re.compile(
     r"(?P<filtered>\d+) filtered out;"
 )
 RUNNING_RE = re.compile(r"running (?P<count>\d+) tests?\b")
-HASH_KEYS = {"candidate_sha256", "after_sha256", "vendored_sha256"}
+# The order is meaningful: a vendored/current hash supersedes an intermediate
+# post-patch hash when a checkpoint records more than one value.
+HASH_KEYS = ("vendored_sha256", "after_sha256", "candidate_sha256")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 LICENSE_RE = re.compile(r"^license\s*=\s*\"([^\"]+)\"\s*$", re.MULTILINE)
+
+FANCY_DEFAULT_FEATURES = {"unicode", "perf", "std", "variable-lookbehinds"}
+PRODUCT_FEATURES = {
+    "fancy-regex": FANCY_DEFAULT_FEATURES,
+    "hyper": {"client", "server", "http1", "http2"},
+    "h2": set(),
+}
+STANDALONE_FEATURES = {
+    "fancy-regex": FANCY_DEFAULT_FEATURES,
+    "hyper": {"client", "http2"},
+}
 
 
 class ValidationError(RuntimeError):
@@ -121,6 +134,17 @@ def _command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def _stop_process_group(process: subprocess.Popen[str], signal_number: int) -> None:
+    """Stop a timed-out command and its descendants where POSIX permits it."""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal_number)
+            return
+        except ProcessLookupError:
+            return
+    process.send_signal(signal_number)
+
+
 class Runner:
     """Execute commands and retain concise machine-readable evidence."""
 
@@ -183,24 +207,37 @@ class Runner:
         full_environment = self._environment(environment)
         guarded_command = command
         if command and command[0] == "cargo":
-            guarded_command = [str(ROOT / "scripts" / "cargo_with_space.sh"), *command[1:]]
+            guarded_command = [
+                str(ROOT / "scripts" / "cargo_with_space.sh"), *command[1:]
+            ]
         print(f"\n[{name}] ")
         print(f"$ {_command_text(guarded_command)}")
         started = time.monotonic()
         timed_out = False
+        process = subprocess.Popen(
+            guarded_command,
+            cwd=ROOT,
+            env=full_environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
         try:
-            result = subprocess.run(
-                guarded_command,
-                cwd=ROOT,
-                env=full_environment,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+            stdout, stderr = process.communicate(timeout=timeout)
+            result = subprocess.CompletedProcess(
+                guarded_command, process.returncode, stdout, stderr
             )
         except subprocess.TimeoutExpired as error:
             timed_out = True
-            stdout = error.stdout or ""
-            stderr = error.stderr or ""
+            _stop_process_group(process, signal.SIGTERM)
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                _stop_process_group(process, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+            stdout = stdout or error.stdout or ""
+            stderr = stderr or error.stderr or ""
             if isinstance(stdout, bytes):
                 stdout = stdout.decode(errors="replace")
             if isinstance(stderr, bytes):
@@ -215,7 +252,7 @@ class Runner:
             "index": self.command_index,
             "name": name,
             "kind": kind,
-            "command": _command_text(command),
+            "command": _command_text(guarded_command),
             "cwd": str(ROOT),
             "environment": display,
             "exit_code": result.returncode,
@@ -224,6 +261,8 @@ class Runner:
             "output_sha256": hashlib.sha256(output.encode()).hexdigest(),
             "output_tail": output[-8192:],
         }
+        if guarded_command != command:
+            entry["requested_command"] = _command_text(command)
         if counts["suites"]:
             entry["tests"] = counts
         if timed_out:
@@ -293,6 +332,104 @@ def _normalise_vendor_path(name: str, version: str, path: str) -> str:
     return path
 
 
+def _safe_vendor_path(directory: Path, relative: str) -> bool:
+    """Keep metadata checkpoints confined to their package directory."""
+    if not relative or Path(relative).is_absolute():
+        return False
+    try:
+        (directory / relative).resolve().relative_to(directory.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _record_checkpoint(
+    name: str,
+    directory: Path,
+    relative: Any,
+    detail: Any,
+    context: str,
+    current_expected: dict[str, str],
+    failures: list[str],
+) -> bool:
+    if not isinstance(relative, str) or not relative:
+        failures.append(f"{name}: {context} has no file path")
+        return False
+    if not _safe_vendor_path(directory, relative):
+        failures.append(
+            f"{name}: {context} escapes the vendor directory: {relative!r}"
+        )
+        return False
+    if not isinstance(detail, dict):
+        failures.append(f"{name}: {context} must be an object")
+        return False
+    present = [key for key in HASH_KEYS if key in detail]
+    if not present:
+        failures.append(f"{name}: {context} has no cumulative hash")
+        return False
+    expected_hash: str | None = None
+    for key in HASH_KEYS:
+        if key not in detail:
+            continue
+        expected = detail[key]
+        if not isinstance(expected, str) or not SHA256_RE.fullmatch(expected):
+            failures.append(f"{name}: {context} has invalid {key}")
+            continue
+        if expected_hash is None:
+            expected_hash = expected
+    if expected_hash is None:
+        return False
+    current_expected[relative] = expected_hash
+    return True
+
+
+def _collect_checkpoints(
+    name: str,
+    version: str,
+    directory: Path,
+    value: Any,
+    current_expected: dict[str, str],
+    failures: list[str],
+    context: str,
+) -> int:
+    checkpoints = 0
+    if isinstance(value, dict):
+        path_value = value.get("path")
+        if isinstance(path_value, str):
+            relative = _normalise_vendor_path(name, version, path_value)
+            checkpoints += _record_checkpoint(
+                name,
+                directory,
+                relative,
+                value,
+                f"{context} path {path_value!r}",
+                current_expected,
+                failures,
+            )
+        for key, child in value.items():
+            checkpoints += _collect_checkpoints(
+                name,
+                version,
+                directory,
+                child,
+                current_expected,
+                failures,
+                f"{context}.{key}",
+            )
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            checkpoints += _collect_checkpoints(
+                name,
+                version,
+                directory,
+                child,
+                current_expected,
+                failures,
+                f"{context}[{index}]",
+            )
+    return checkpoints
+
+
 def _provenance(report: dict[str, Any]) -> None:
     """Verify current source hashes against cumulative UPSTREAM checkpoints."""
     provenance: dict[str, Any] = {}
@@ -304,6 +441,9 @@ def _provenance(report: dict[str, Any]) -> None:
             metadata = json.loads(upstream_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             failures.append(f"{name}: cannot read UPSTREAM.json: {error}")
+            continue
+        if not isinstance(metadata, dict):
+            failures.append(f"{name}: UPSTREAM.json must contain an object")
             continue
         if metadata.get("version") != spec["version"]:
             failures.append(
@@ -322,8 +462,12 @@ def _provenance(report: dict[str, Any]) -> None:
             failures.append(f"{name}: UPSTREAM archive checksum is missing or invalid")
         if name != "fancy-regex":
             patch_source = metadata.get("patch_source_sha256")
-            if not isinstance(patch_source, str) or not SHA256_RE.fullmatch(patch_source):
-                failures.append(f"{name}: UPSTREAM patch source checksum is missing or invalid")
+            if not isinstance(patch_source, str) or not SHA256_RE.fullmatch(
+                patch_source
+            ):
+                failures.append(
+                    f"{name}: UPSTREAM patch source checksum is missing or invalid"
+                )
         if not (directory / "LICENSE").is_file():
             failures.append(f"{name}: retained LICENSE is missing")
         license_path = directory / "LICENSE"
@@ -352,58 +496,104 @@ def _provenance(report: dict[str, Any]) -> None:
             else:
                 for relative, detail in file_map.items():
                     if not isinstance(detail, dict):
+                        failures.append(
+                            f"{name}: UPSTREAM files entry {relative!r} must be an "
+                            "object"
+                        )
                         continue
-                    expected = detail.get("vendored_sha256")
-                    if isinstance(expected, str) and SHA256_RE.fullmatch(expected):
-                        current_expected[relative] = expected
-                        checkpoints += 1
-            for component in metadata.get("additional_components", []):
+                    checkpoints += _record_checkpoint(
+                        name,
+                        directory,
+                        relative,
+                        detail,
+                        f"files[{relative!r}]",
+                        current_expected,
+                        failures,
+                    )
+            components = metadata.get("additional_components", [])
+            if not isinstance(components, list):
+                failures.append(f"{name}: additional_components must be an array")
+                components = []
+            for component in components:
                 if not isinstance(component, dict):
                     continue
                 source_metadata = component.get("source_metadata")
                 source_license = component.get("source_license")
                 expected_metadata = component.get("vendored_sha256")
+                if source_metadata and not isinstance(source_metadata, str):
+                    failures.append(
+                        f"{name}: additional component metadata path must be a string"
+                    )
                 if source_metadata and isinstance(expected_metadata, str):
+                    if not _safe_vendor_path(directory, source_metadata):
+                        failures.append(
+                            f"{name}: additional component metadata escapes the vendor "
+                            f"directory: {source_metadata!r}"
+                        )
+                        continue
                     path = directory / source_metadata
                     actual = _sha256(path) if path.is_file() else "MISSING"
                     if actual != expected_metadata:
                         failures.append(
-                            f"{name}: {source_metadata} hash {actual} != {expected_metadata}"
+                            f"{name}: {source_metadata} hash {actual} != "
+                            f"{expected_metadata}"
                         )
                 if source_license:
+                    if not isinstance(source_license, str):
+                        failures.append(
+                            f"{name}: additional component license path must be "
+                            "a string"
+                        )
+                        continue
                     expected_license = component.get("source_license_sha256")
+                    if not _safe_vendor_path(directory, source_license):
+                        failures.append(
+                            f"{name}: additional component license escapes the vendor "
+                            f"directory: {source_license!r}"
+                        )
+                        continue
                     path = directory / source_license
                     actual = _sha256(path) if path.is_file() else "MISSING"
-                    if isinstance(expected_license, str) and actual != expected_license:
+                    if not isinstance(expected_license, str) or not SHA256_RE.fullmatch(
+                        expected_license
+                    ):
                         failures.append(
-                            f"{name}: {source_license} hash {actual} != {expected_license}"
+                            f"{name}: {source_license} has missing or invalid "
+                            "license checksum"
+                        )
+                    elif actual != expected_license:
+                        failures.append(
+                            f"{name}: {source_license} hash {actual} != "
+                            f"{expected_license}"
                         )
             if not (directory / "PATCH.diff").is_file():
                 failures.append(f"{name}: PATCH.diff is missing")
         else:
-            def visit(value: Any) -> None:
-                nonlocal checkpoints
-                if isinstance(value, dict):
-                    path_value = value.get("path")
-                    if isinstance(path_value, str):
-                        relative = _normalise_vendor_path(
-                            name, spec["version"], path_value
-                        )
-                        for key in HASH_KEYS:
-                            expected = value.get(key)
-                            if isinstance(expected, str) and SHA256_RE.fullmatch(expected):
-                                current_expected[relative] = expected
-                                checkpoints += 1
-                    for child in value.values():
-                        visit(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        visit(child)
-
-            visit(metadata.get("files", []))
+            checkpoints += _collect_checkpoints(
+                name,
+                spec["version"],
+                directory,
+                metadata.get("files", []),
+                current_expected,
+                failures,
+                "files",
+            )
             for key, value in metadata.items():
                 if key != "files":
-                    visit(value)
+                    checkpoints += _collect_checkpoints(
+                        name,
+                        spec["version"],
+                        directory,
+                        value,
+                        current_expected,
+                        failures,
+                        key,
+                    )
+
+        if checkpoints == 0:
+            failures.append(
+                f"{name}: UPSTREAM contains no usable source hash checkpoints"
+            )
 
         mismatches: list[dict[str, str]] = []
         for relative, expected in sorted(current_expected.items()):
@@ -420,7 +610,9 @@ def _provenance(report: dict[str, Any]) -> None:
             lowercase = directory / "PYTHON_LOWERCASE.json"
             license_path = directory / "LICENSE-CPYTHON"
             if not lowercase.is_file() or not license_path.is_file():
-                failures.append(f"{name}: generated lowercase data or its license is missing")
+                failures.append(
+                    f"{name}: generated lowercase data or its license is missing"
+                )
         provenance[name] = {
             "upstream_json_sha256": _sha256(upstream_path),
             "version": metadata.get("version"),
@@ -430,10 +622,8 @@ def _provenance(report: dict[str, Any]) -> None:
             "retained_license_file": "LICENSE"
             if (directory / "LICENSE").is_file()
             else None,
-            "recorded_source": metadata.get("source", metadata.get("repository")),
-            "recorded_archive_or_crates_io_sha256": metadata.get(
-                "archive_sha256", metadata.get("crates_io_package_sha256")
-            ),
+            "recorded_source": recorded_source,
+            "recorded_archive_or_crates_io_sha256": recorded_archive,
             "recorded_patch_source_sha256": metadata.get("patch_source_sha256"),
             "recorded_upstream_commit": metadata.get("git_commit"),
             "license_sha256": license_actual,
@@ -458,19 +648,88 @@ def _provenance(report: dict[str, Any]) -> None:
 def _metadata_summary(
     raw: dict[str, Any], names: set[str], *, manifest: Path
 ) -> dict[str, Any]:
+    package_by_id = {
+        package.get("id"): package
+        for package in raw.get("packages", [])
+        if isinstance(package, dict) and isinstance(package.get("id"), str)
+    }
+
+    def dependency_id(value: Any) -> str | None:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            package_id = value.get("pkg") or value.get("id")
+            return package_id if isinstance(package_id, str) else None
+        return None
+
+    resolve = raw.get("resolve") or {}
+    nodes = {
+        node.get("id"): node
+        for node in resolve.get("nodes", [])
+        if isinstance(node, dict) and isinstance(node.get("id"), str)
+    }
+    root_ids = []
+    root_id = resolve.get("root")
+    if isinstance(root_id, str) and root_id in package_by_id:
+        root_ids.append(root_id)
+    else:
+        root_ids.extend(
+            member
+            for member in resolve.get("workspace_members", [])
+            if isinstance(member, str) and member in package_by_id
+        )
+
+    # Cargo's resolve graph identifies the package actually used by each root
+    # dependency.  Selecting the last package with a matching name is unsafe
+    # when a registry copy and a path-patched copy coexist in metadata.
+    selected_by_name: dict[str, list[str]] = {name: [] for name in names}
+    for current_root in root_ids:
+        root_package = package_by_id.get(current_root, {})
+        root_name = root_package.get("name")
+        if root_name in selected_by_name:
+            selected_by_name[root_name].append(current_root)
+        node = nodes.get(current_root, {})
+        dependency_ids: list[str] = []
+        for dependency in node.get("deps", []):
+            package_id = dependency_id(dependency)
+            if package_id:
+                dependency_ids.append(package_id)
+        for dependency in node.get("dependencies", []):
+            package_id = dependency_id(dependency)
+            if package_id:
+                dependency_ids.append(package_id)
+        for package_id in dependency_ids:
+            package = package_by_id.get(package_id, {})
+            package_name = package.get("name")
+            if package_name in selected_by_name:
+                selected_by_name[package_name].append(package_id)
+
+    # Keep summaries useful for older Cargo metadata fixtures that omit the
+    # resolve root or dependency edges, while making ambiguity visible to the
+    # product-resolution check below.
+    if not root_ids:
+        for package_id, package in package_by_id.items():
+            package_name = package.get("name")
+            if package_name in selected_by_name:
+                selected_by_name[package_name].append(package_id)
+    selected_by_name = {
+        name: list(dict.fromkeys(package_ids))
+        for name, package_ids in selected_by_name.items()
+    }
+
     packages: list[dict[str, Any]] = []
-    selected_ids: dict[str, str] = {}
     for package in raw.get("packages", []):
         if package.get("name") not in names:
             continue
         package_id = package.get("id", "")
-        selected_ids[package["name"]] = package_id
         packages.append(
             {
+                "id": package_id,
                 "name": package.get("name"),
                 "version": package.get("version"),
                 "source": package.get("source"),
                 "manifest_path": package.get("manifest_path"),
+                "selected": package_id in selected_by_name.get(package.get("name"), []),
                 "targets": [
                     {
                         "name": target.get("name"),
@@ -481,19 +740,33 @@ def _metadata_summary(
             }
         )
     features: dict[str, list[str]] = {}
-    resolve = raw.get("resolve") or {}
-    for node in resolve.get("nodes", []):
-        package_id = node.get("id", "")
-        for name, selected_id in selected_ids.items():
-            if package_id == selected_id:
-                features[name] = sorted(node.get("features", []))
+    resolved_package_features: dict[str, list[dict[str, Any]]] = {}
+    for name, package_ids in selected_by_name.items():
+        records: list[dict[str, Any]] = []
+        for package_id in package_ids:
+            node = nodes.get(package_id)
+            if node is None:
+                continue
+            package_features = sorted(
+                feature
+                for feature in node.get("features", [])
+                if isinstance(feature, str)
+            )
+            records.append({"id": package_id, "features": package_features})
+        if records:
+            resolved_package_features[name] = records
+            features[name] = sorted(
+                {feature for record in records for feature in record["features"]}
+            )
     lock_path = manifest.parent / "Cargo.lock"
     return {
         "manifest": str(manifest),
         "lock_sha256": _sha256(lock_path) if lock_path.is_file() else None,
         "packages": packages,
+        "selected_package_ids": selected_by_name,
         "enabled_features": features,
         "resolved_features": features,
+        "resolved_package_features": resolved_package_features,
     }
 
 
@@ -535,24 +808,47 @@ def _read_metadata(
 def _validate_product_resolution(
     report: dict[str, Any], metadata: dict[str, Any]
 ) -> None:
-    selected = {
-        package["name"]: package
-        for package in metadata["packages"]
-        if package["name"] in {"fancy-regex", "hyper", "h2"}
+    packages_by_id = {
+        package.get("id"): package
+        for package in metadata.get("packages", [])
+        if isinstance(package, dict) and isinstance(package.get("id"), str)
     }
     failures: list[str] = []
     for name, spec in CRATES.items():
-        package = selected.get(name)
+        selected_map = metadata.get("selected_package_ids")
+        if isinstance(selected_map, dict):
+            selected_ids = selected_map.get(name, [])
+        else:
+            selected_ids = [
+                package.get("id")
+                for package in metadata.get("packages", [])
+                if package.get("name") == name and isinstance(package.get("id"), str)
+            ]
+        if not isinstance(selected_ids, list):
+            selected_ids = [selected_ids]
+        if len(selected_ids) != 1:
+            failures.append(
+                f"product did not resolve exactly one direct {name} package: "
+                f"{selected_ids!r}"
+            )
+            continue
+        package = packages_by_id.get(selected_ids[0])
         expected_manifest = (VENDOR_ROOT / name / "Cargo.toml").resolve()
         if package is None:
-            failures.append(f"product metadata omitted {name}")
+            failures.append(
+                f"product metadata omitted selected {name} package "
+                f"{selected_ids[0]!r}"
+            )
             continue
         if package.get("version") != spec["version"]:
             failures.append(
-                f"product selected {name} {package.get('version')} instead of {spec['version']}"
+                f"product selected {name} {package.get('version')} instead of "
+                f"{spec['version']}"
             )
         if package.get("source") is not None:
-            failures.append(f"product selected registry {name}; local patch is not active")
+            failures.append(
+                f"product selected registry {name}; local patch is not active"
+            )
         if Path(package.get("manifest_path", "")).resolve() != expected_manifest:
             failures.append(
                 f"product selected {name} manifest {package.get('manifest_path')} "
@@ -560,7 +856,32 @@ def _validate_product_resolution(
             )
     report["product_resolution"] = metadata
     if failures:
-        raise ValidationError("product resolution checks failed: " + "; ".join(failures))
+        raise ValidationError(
+            "product resolution checks failed: " + "; ".join(failures)
+        )
+
+
+def _validate_feature_resolution(
+    summary: dict[str, Any], expected: dict[str, set[str]], *, scope: str
+) -> None:
+    """Require every feature needed by a validation lane in resolved metadata."""
+    resolved = summary.get("resolved_features", {})
+    failures: list[str] = []
+    for name, required in expected.items():
+        actual = resolved.get(name)
+        if not isinstance(actual, list):
+            failures.append(f"{scope}: resolved features omitted {name}")
+            continue
+        missing = sorted(required - set(actual))
+        if missing:
+            failures.append(
+                f"{scope}: {name} is missing resolved features {missing}; "
+                f"actual={sorted(actual)}"
+            )
+    if failures:
+        raise ValidationError(
+            "feature resolution checks failed: " + "; ".join(failures)
+        )
 
 
 def _cargo_test_args(
@@ -690,6 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
             manifest=product_manifest,
         )
         _validate_product_resolution(report, product)
+        _validate_feature_resolution(product, PRODUCT_FEATURES, scope="product")
 
         standalone: dict[str, Any] = {}
         standalone_specs = {
@@ -712,6 +1034,11 @@ def main(argv: list[str] | None = None) -> int:
                 features.split(",") if features else ["default"]
             )
             summary["no_default_features"] = no_default_features
+            _validate_feature_resolution(
+                summary,
+                {name: STANDALONE_FEATURES[name]},
+                scope=f"standalone {name}",
+            )
             standalone[name] = summary
 
         h2 = VENDOR_ROOT / "h2" / "Cargo.toml"
@@ -736,6 +1063,10 @@ def main(argv: list[str] | None = None) -> int:
                 features.split(",") if features else []
             )
             summary["no_default_features"] = no_default_features
+            _validate_feature_resolution(
+                summary, {"h2": set(features.split(",")) if features else set()},
+                scope=f"standalone h2 {resolution_name}",
+            )
             h2_feature_resolutions[resolution_name] = summary
         standalone["h2"] = {"feature_resolutions": h2_feature_resolutions}
         report["standalone_resolution"] = standalone

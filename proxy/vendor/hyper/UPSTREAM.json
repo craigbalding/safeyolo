@@ -161,5 +161,14 @@
       "proxy/tests/response_head_capture.rs"
     ],
     "license": "MIT (existing LICENSE unchanged)"
+  },
+  "latest_vendored_checkpoint": {
+    "scope": "Post-validation integration source checkpoint",
+    "files": [
+      {
+        "path": "src/ext/mod.rs",
+        "vendored_sha256": "9a0132e0648dff0fec9ee353b56c51f752ba723e50bcf932756782cf035c348f"
+      }
+    ]
   }
 }

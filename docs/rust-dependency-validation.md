@@ -21,10 +21,29 @@ the command, exit code, elapsed time, test counts, output hash and output tail
 in the JSON report. The report also records the Git revision, Rust and Cargo
 versions, package manifests, actual resolved features from Cargo metadata,
 lockfile hashes, and the cumulative source hashes from each `UPSTREAM.json`.
+Product package selection follows the Cargo resolve graph's root dependency
+IDs, so a same-version registry package cannot be mistaken for the selected
+path package; the report retains those IDs beside each feature record.
 Standalone metadata is filtered to the host target and uses each package's
 committed lockfile. The vendored `fancy-regex` lockfile is committed beside
 its manifest so its standalone dependency versions are reproducible.
 The product and standalone package commands all pass `--locked`.
+
+The coordinator's validation plan is: verify provenance; resolve the locked
+product graph and each standalone feature set; run the selected package
+regressions, including the intentional missing-oracle failure; check the
+independent feature builds; then build all locked product targets and run the
+focused inspection and parser-completion targets. Every Cargo invocation is
+executed through `scripts/cargo_with_space.sh`, and the report records both the
+requested Cargo command and the guarded command that actually ran.
+
+Each run uses a fresh temporary target directory named
+`safeyolo-rust-dependency-target-*` under the system temporary directory via
+`CARGO_TARGET_DIR`; the path is recorded in every command entry and removed at
+exit. The reviewable report path is
+`/tmp/safeyolo-rust-dependency-validation.json` when using the command above.
+The coordinator must run this plan with the repository checkout as its
+working directory and leave the existing hosted CI matrix unchanged.
 
 The first Python oracle command intentionally unsets
 `SAFEYOLO_POLICY_PYTHON` and selects the real
@@ -74,4 +93,5 @@ their MIT licenses, license checksums and cumulative source hashes in their
 respective `UPSTREAM.json` files. The script checks every latest cumulative
 candidate hash, the generated lowercase JSON and its CPython license, and
 requires the recorded source, archive and patch checksums without replacing or
-rewriting vendored source.
+rewriting vendored source. The latest Hyper checkpoint also covers the
+post-validation `src/ext/mod.rs` integration edit retained by current main.
