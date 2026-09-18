@@ -966,7 +966,7 @@ mod tests {
         tokio::time::timeout(LIMIT, async {
             loop {
                 if let Some(observed) = completion.try_finish() {
-                    break observed;
+                    break Some(observed);
                 }
                 tokio::task::yield_now().await;
             }
