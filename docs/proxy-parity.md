@@ -2658,13 +2658,16 @@ canceled caller drops only its response receiver. New calls return the existing
 `shutdown_wakes_waiters_and_closes_new_plumb_admission`,
 `canceled_store_call_remains_owned_until_plumb_drain`,
 `canceled_request_chat_keeps_projection_and_canonical_audit` and
+`canceled_message_keeps_projection_and_canonical_audit`,
+`canceled_leave_keeps_projection_and_canonical_audit` and
 `canceled_approval_keeps_projection_and_both_canonical_audits` cover these
 boundaries. `request_audit_submission_failure_keeps_committed_projection` and
 `admin_audit_submission_failure_keeps_committed_projection` inject writer
 failure and verify that committed state remains durable. The existing
-persistence test reopens the same state directory after a restart. Blocking
-SQLite work can still extend graceful shutdown, and abrupt termination or
-ordinary `Drop` do not claim this drain.
+persistence test opens a second owner on the same state directory and verifies
+the projection; it does not claim a process restart. Blocking SQLite work can
+still extend graceful shutdown, and abrupt termination or ordinary `Drop` do
+not claim this drain.
 
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation

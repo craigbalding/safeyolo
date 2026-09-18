@@ -629,6 +629,8 @@ pub(crate) fn plumb_events(
     agent: Option<String>,
     decision: crate::audit::Decision,
 ) -> Vec<crate::audit::Event> {
+    // PlumbMutation's retained event schema has no operator peer/path fields;
+    // canonical_events intentionally ignores those two common arguments.
     Audit::PlumbMutation(PlumbMutationAudit {
         event,
         summary,

@@ -1479,7 +1479,8 @@ where
     // synchronous producer error changes its outcome; queue drops and async
     // sink failures retain the already-established source response semantics.
     let mut evidence_failed = false;
-    if let Some(audit) = &outcome.audit
+    if !outcome.audit_owned
+        && let Some(audit) = &outcome.audit
         && let Err(error) = runtime.audit.emit(audit.to_event())
     {
         evidence_failed = true;

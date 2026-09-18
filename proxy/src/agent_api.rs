@@ -344,6 +344,10 @@ impl Response<'_> {
 pub struct Outcome<'a> {
     pub response: Response<'a>,
     pub audit: Option<AuditIntent>,
+    /// The process-owned handler already attempted this canonical audit. The
+    /// intent remains attached so the diagnostic `proxy.agent_api` record can
+    /// retain its audit and failure markers without submitting a second event.
+    pub audit_owned: bool,
     pub blocked_by: &'static str,
     pub handler_owned: bool,
     /// Remove both auth headers and the query before any downstream observer.
@@ -436,6 +440,7 @@ fn response(status: u16, body: Value) -> Outcome<'static> {
             body: ResponseBody::Json(body),
         },
         audit: None,
+        audit_owned: false,
         blocked_by: "agent-api",
         handler_owned: true,
         scrub_request: false,

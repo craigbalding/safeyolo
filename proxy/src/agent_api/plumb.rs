@@ -1148,7 +1148,7 @@ impl PlumbOwner {
         note: Option<Value>,
         ttl: Option<Value>,
         writer: Option<Arc<crate::audit::Writer>>,
-    ) -> Value {
+    ) -> OwnedAgentResult {
         let owner = self.clone();
         let receiver = match self
             .spawn_owned(async move {
@@ -1161,27 +1161,41 @@ impl PlumbOwner {
                         ttl.as_ref(),
                     )
                     .await;
-                if result["status"].as_u64() == Some(202)
-                    && submit_agent_audit(
-                        writer.as_ref(),
-                        Some(audit_request_values(
-                            &request_id,
-                            &requester,
-                            result.clone(),
-                        )),
-                    )
-                    .is_err()
-                {
-                    return json!({"status":500,"error":"Internal error: RuntimeError"});
+                let intent = (result["status"].as_u64() == Some(202))
+                    .then(|| audit_request_values(&request_id, &requester, result.clone()));
+                let audit_owned = writer.is_some() && intent.is_some();
+                let audit_failed = intent
+                    .as_ref()
+                    .is_some_and(|intent| submit_agent_audit(writer.as_ref(), intent).is_err());
+                OwnedAgentResult {
+                    value: if audit_failed {
+                        json!({"status":500,"error":"Internal error: RuntimeError"})
+                    } else {
+                        result
+                    },
+                    audit: intent,
+                    audit_owned,
+                    failure: audit_failed.then_some(super::Failure::AuditWrite),
                 }
-                result
             })
             .await
         {
             Ok(receiver) => receiver,
-            Err(()) => return Self::closing_response(),
+            Err(()) => {
+                return OwnedAgentResult {
+                    value: Self::closing_response(),
+                    audit: None,
+                    audit_owned: false,
+                    failure: None,
+                };
+            }
         };
-        receiver.await.unwrap_or_else(|_| Self::closing_response())
+        receiver.await.unwrap_or_else(|_| OwnedAgentResult {
+            value: Self::closing_response(),
+            audit: None,
+            audit_owned: false,
+            failure: None,
+        })
     }
 
     async fn post_message_owned(
@@ -1192,7 +1206,7 @@ impl PlumbOwner {
         body: String,
         references: Value,
         writer: Option<Arc<crate::audit::Writer>>,
-    ) -> Value {
+    ) -> OwnedAgentResult {
         let owner = self.clone();
         let raw_size = body.len();
         let receiver = match self
@@ -1200,24 +1214,42 @@ impl PlumbOwner {
                 let result = owner
                     .post_message(&agent_name, &conversation_id, &body, references)
                     .await;
-                let _ = submit_agent_audit(
-                    writer.as_ref(),
-                    message_audit_values(
-                        &request_id,
-                        &agent_name,
-                        &conversation_id,
-                        raw_size,
-                        &result,
-                    ),
+                let intent = message_audit_values(
+                    &request_id,
+                    &agent_name,
+                    &conversation_id,
+                    raw_size,
+                    &result,
                 );
-                result
+                let audit_owned = writer.is_some() && intent.is_some();
+                if let Some(intent) = intent.as_ref() {
+                    let _ = submit_agent_audit(writer.as_ref(), intent);
+                }
+                OwnedAgentResult {
+                    value: result,
+                    audit: intent,
+                    audit_owned,
+                    failure: None,
+                }
             })
             .await
         {
             Ok(receiver) => receiver,
-            Err(()) => return Self::closing_response(),
+            Err(()) => {
+                return OwnedAgentResult {
+                    value: Self::closing_response(),
+                    audit: None,
+                    audit_owned: false,
+                    failure: None,
+                };
+            }
         };
-        receiver.await.unwrap_or_else(|_| Self::closing_response())
+        receiver.await.unwrap_or_else(|_| OwnedAgentResult {
+            value: Self::closing_response(),
+            audit: None,
+            audit_owned: false,
+            failure: None,
+        })
     }
 
     async fn leave_owned(
@@ -1226,30 +1258,48 @@ impl PlumbOwner {
         agent_name: String,
         conversation_id: String,
         writer: Option<Arc<crate::audit::Writer>>,
-    ) -> Value {
+    ) -> OwnedAgentResult {
         let owner = self.clone();
         let conversation_for_audit = conversation_id.clone();
         let receiver = match self
             .spawn_owned(async move {
                 let (result, closed) = owner.leave_with_closed(&agent_name, &conversation_id).await;
-                if closed && result["status"].as_u64() == Some(200) {
-                    let _ = submit_agent_audit(
-                        writer.as_ref(),
-                        Some(conversation_closed_audit_values(
-                            &request_id,
-                            &conversation_for_audit,
-                            "last participant left",
-                        )),
-                    );
+                let intent = (closed && result["status"].as_u64() == Some(200)).then(|| {
+                    conversation_closed_audit_values(
+                        &request_id,
+                        &conversation_for_audit,
+                        "last participant left",
+                    )
+                });
+                let audit_owned = writer.is_some() && intent.is_some();
+                if let Some(intent) = intent.as_ref() {
+                    let _ = submit_agent_audit(writer.as_ref(), intent);
                 }
-                result
+                OwnedAgentResult {
+                    value: result,
+                    audit: intent,
+                    audit_owned,
+                    failure: None,
+                }
             })
             .await
         {
             Ok(receiver) => receiver,
-            Err(()) => return Self::closing_response(),
+            Err(()) => {
+                return OwnedAgentResult {
+                    value: Self::closing_response(),
+                    audit: None,
+                    audit_owned: false,
+                    failure: None,
+                };
+            }
         };
-        receiver.await.unwrap_or_else(|_| Self::closing_response())
+        receiver.await.unwrap_or_else(|_| OwnedAgentResult {
+            value: Self::closing_response(),
+            audit: None,
+            audit_owned: false,
+            failure: None,
+        })
     }
 
     pub(crate) async fn approve_owned(
@@ -1389,16 +1439,24 @@ impl PlumbOwner {
     }
 }
 
+struct OwnedAgentResult {
+    value: Value,
+    audit: Option<super::AuditIntent>,
+    audit_owned: bool,
+    failure: Option<super::Failure>,
+}
+
 fn submit_agent_audit(
     writer: Option<&Arc<crate::audit::Writer>>,
-    intent: Option<super::AuditIntent>,
+    intent: &super::AuditIntent,
 ) -> Result<(), crate::audit::ErrorKind> {
-    if let (Some(writer), Some(intent)) = (writer, intent) {
-        writer
-            .emit(intent.to_event())
-            .map(|_| ())
-            .map_err(|error| error.kind())?;
-    }
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+    writer
+        .emit(intent.to_event())
+        .map(|_| ())
+        .map_err(|error| error.kind())?;
     Ok(())
 }
 
@@ -1655,13 +1713,18 @@ where
                 audit.clone(),
             )
             .await;
-        let mut response_value = result.clone();
+        let mut response_value = result.value;
         if let Some(fields) = response_value.as_object_mut() {
             fields.remove("topic");
             fields.remove("note");
             fields.remove("ttl_seconds");
         }
-        return Ok(result_response(response_value));
+        return Ok(owned_result_response(
+            response_value,
+            result.audit,
+            result.audit_owned,
+            result.failure,
+        ));
     }
     let Some((conversation_id, tail)) = path
         .strip_prefix("/plumb/conversations/")
@@ -1722,7 +1785,12 @@ where
                     audit.clone(),
                 )
                 .await;
-            Ok(result_response(result))
+            Ok(owned_result_response(
+                result.value,
+                result.audit,
+                result.audit_owned,
+                result.failure,
+            ))
         }
         ("POST", "leave") => {
             let result = owner
@@ -1733,7 +1801,12 @@ where
                     audit,
                 )
                 .await;
-            Ok(result_response(result))
+            Ok(owned_result_response(
+                result.value,
+                result.audit,
+                result.audit_owned,
+                result.failure,
+            ))
         }
         _ => Ok(response(404, json!({"error":"Not Found"}))),
     }
@@ -1747,6 +1820,19 @@ pub(crate) fn result_response(mut value: Value) -> Outcome<'static> {
         .and_then(|value| u16::try_from(value).ok())
         .unwrap_or(200);
     response(status, value)
+}
+
+fn owned_result_response(
+    value: Value,
+    audit: Option<super::AuditIntent>,
+    audit_owned: bool,
+    failure: Option<super::Failure>,
+) -> Outcome<'static> {
+    let mut outcome = result_response(value);
+    outcome.audit = audit;
+    outcome.audit_owned = audit_owned;
+    outcome.failure = failure;
+    outcome
 }
 
 fn audit_request_values(request_id: &str, agent_name: &str, details: Value) -> super::AuditIntent {
@@ -2172,7 +2258,7 @@ mod tests {
                 Some(writer.clone()),
             )
             .await;
-        assert_eq!(result["status"], 500);
+        assert_eq!(result.value["status"], 500);
         owner.stop_admission().await;
         owner.drain().await;
 
@@ -2283,6 +2369,150 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_message_keeps_projection_and_canonical_audit() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let request_id = text(&request, "request_id");
+        let approved = owner.approve(&request_id, None).await;
+        let conversation_id = text(&approved, "conversation_id");
+        owner.drain().await;
+
+        let store = owner.store.clone().expect("test owner has a store");
+        let connection = store.connection.lock().unwrap();
+        let audit_path = directory.path().join("audit.jsonl");
+        let writer = Arc::new(crate::audit::Writer::new(
+            audit_path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        let caller = {
+            let owner = owner.clone();
+            let writer = writer.clone();
+            let conversation_id = conversation_id.clone();
+            tokio::spawn(async move {
+                owner
+                    .post_message_owned(
+                        "message-cancelled".into(),
+                        "bob".into(),
+                        conversation_id,
+                        "hello from the canceled caller".into(),
+                        json!([]),
+                        Some(writer),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if !owner.calls.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("message mutation must enter the owned SQLite task");
+        caller.abort();
+        drop(connection);
+        owner.stop_admission().await;
+        owner.drain().await;
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        let page = reloaded
+            .read_messages("alice", &conversation_id, None, 0, 1)
+            .await;
+        assert_eq!(
+            page["messages"][0]["body"],
+            "hello from the canceled caller"
+        );
+        let rows: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.message_allowed")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_leave_keeps_projection_and_canonical_audit() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
+        let request = owner
+            .request_chat("alice", &[json!("bob")], None, None, None)
+            .await;
+        let request_id = text(&request, "request_id");
+        let approved = owner.approve(&request_id, None).await;
+        let conversation_id = text(&approved, "conversation_id");
+        owner.drain().await;
+
+        let store = owner.store.clone().expect("test owner has a store");
+        let connection = store.connection.lock().unwrap();
+        let audit_path = directory.path().join("audit.jsonl");
+        let writer = Arc::new(crate::audit::Writer::new(
+            audit_path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        let caller = {
+            let owner = owner.clone();
+            let writer = writer.clone();
+            let conversation_id = conversation_id.clone();
+            tokio::spawn(async move {
+                owner
+                    .leave_owned(
+                        "leave-cancelled".into(),
+                        "bob".into(),
+                        conversation_id,
+                        Some(writer),
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(tokio::time::Duration::from_secs(1), async {
+            loop {
+                if !owner.calls.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("leave mutation must enter the owned SQLite task");
+        caller.abort();
+        drop(connection);
+        owner.stop_admission().await;
+        owner.drain().await;
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+
+        let reloaded = PlumbOwner::for_data_dir(directory.path());
+        assert_eq!(
+            reloaded.admin_list_conversations().await["conversations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        let rows: Vec<Value> = std::fs::read_to_string(audit_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.conversation_closed")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canceled_approval_keeps_projection_and_both_canonical_audits() {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
@@ -2296,7 +2526,7 @@ mod tests {
             audit_path.clone(),
             crate::audit::Settings::default(),
         ));
-        while owner.calls.lock().await.try_join_next().is_some() {}
+        owner.drain().await;
         let connection = store.connection.lock().unwrap();
         let caller = {
             let owner = owner.clone();
