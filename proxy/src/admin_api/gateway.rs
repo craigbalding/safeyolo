@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retained_binding_api_rejects_unsupported_large_integer_explicitly() {
+    async fn retained_binding_api_rejects_unsupported_large_integer_and_retains_saved_binding() {
         let directory = tempfile::tempdir().unwrap();
         let policy = directory.path().join("policy.toml");
         std::fs::write(&policy, "[agents.alice]\n").unwrap();
@@ -499,38 +499,97 @@ mod tests {
             crate::audit::Settings::default(),
         ));
         let owner = crate::admin_api::ServiceMutationOwner::default();
-        let source = r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":18446744073709551616},"grantable_operations":["send"]}"#;
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/admin/gateway/contract-binding")
-            .header("Content-Length", source.len())
-            .body(Full::new(Bytes::copy_from_slice(source.as_bytes())))
-            .unwrap();
-        let outcome = {
-            let audit = ServiceAudit {
-                writer: &writer,
-                client_ip: "127.0.0.1",
-                target: "/admin/gateway/contract-binding",
-                mutation_owner: &owner,
-                gateway_store: Some(&store),
-            };
-            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
-        };
-        // Native durable bindings retain the source integer through parsing,
-        // then reject values outside TOML's signed 64-bit range before any
-        // state or audit publication. This is the explicit D22 contract.
-        assert!(matches!(outcome, Err(Error::ServiceMutation)));
-        assert!(
+
+        // Establish a real, supported binding through the retained operator
+        // route first. The failed D22 replacement below must leave this exact
+        // saved value available to the same Store and after reload.
+        let (status, _) = call(
+            &store,
+            &writer,
+            &owner,
+            "/admin/gateway/contract-binding",
+            Method::POST,
+            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":9223372036854775807,"array":[1,2.5,true,{"nested":3}]},"grantable_operations":["send"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let expected_values = json!({
+            "limit": i64::MAX,
+            "array": [1, 2.5, true, {"nested": 3}],
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert_eq!(
             store
                 .binding_for_agent("alice", "mail", "send")
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_values
         );
+        let saved = std::fs::read_to_string(&policy).unwrap();
+
+        for source in [
+            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":18446744073709551616},"grantable_operations":["send"]}"#,
+            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"array":[1,null]},"grantable_operations":["send"]}"#,
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/admin/gateway/contract-binding")
+                .header("Content-Length", source.len())
+                .body(Full::new(Bytes::copy_from_slice(source.as_bytes())))
+                .unwrap();
+            let outcome = {
+                let audit = ServiceAudit {
+                    writer: &writer,
+                    client_ip: "127.0.0.1",
+                    target: "/admin/gateway/contract-binding",
+                    mutation_owner: &owner,
+                    gateway_store: Some(&store),
+                };
+                respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+            };
+            // Native durable bindings retain source numbers through parsing,
+            // then reject values outside TOML's signed 64-bit range and
+            // unsupported nested nulls before state or audit publication.
+            assert!(matches!(outcome, Err(Error::ServiceMutation)));
+            assert_eq!(
+                store
+                    .binding_for_agent("alice", "mail", "send")
+                    .unwrap()
+                    .unwrap()
+                    .binding
+                    .bound_values,
+                expected_values
+            );
+            assert_eq!(std::fs::read_to_string(&policy).unwrap(), saved);
+        }
+
+        // Reopen the persisted document through the same Store consumer. This
+        // proves the rejected replacement did not leave a partial file that
+        // only the in-memory snapshot happened to hide.
+        store
+            .reload(time::OffsetDateTime::now_utc(), |_| Ok(()))
+            .unwrap();
         assert_eq!(
-            std::fs::read_to_string(&policy).unwrap(),
-            "[agents.alice]\n"
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_values
         );
-        assert!(!directory.path().join("audit.jsonl").exists());
+        assert!(
+            writer
+                .wait_for_drain(std::time::Duration::from_secs(3))
+                .unwrap()
+        );
+        let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+        assert!(audit.contains("admin.contract_binding_approved"));
+        assert!(!audit.contains("18446744073709551616"));
     }
 
     #[tokio::test]
