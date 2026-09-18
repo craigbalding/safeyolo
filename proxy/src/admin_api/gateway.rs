@@ -489,7 +489,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retained_binding_api_rejects_unsupported_large_integer_and_retains_saved_binding() {
+    async fn retained_binding_api_persists_large_integer_and_rejects_nested_null() {
         let directory = tempfile::tempdir().unwrap();
         let policy = directory.path().join("policy.toml");
         std::fs::write(&policy, "[agents.alice]\n").unwrap();
@@ -529,47 +529,44 @@ mod tests {
                 .bound_values,
             expected_values
         );
-        let saved = std::fs::read_to_string(&policy).unwrap();
-
-        for source in [
-            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":18446744073709551616},"grantable_operations":["send"]}"#,
-            r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"array":[1,null]},"grantable_operations":["send"]}"#,
-        ] {
-            let request = Request::builder()
-                .method(Method::POST)
-                .uri("/admin/gateway/contract-binding")
-                .header("Content-Length", source.len())
-                .body(Full::new(Bytes::copy_from_slice(source.as_bytes())))
-                .unwrap();
-            let outcome = {
-                let audit = ServiceAudit {
-                    writer: &writer,
-                    client_ip: "127.0.0.1",
-                    target: "/admin/gateway/contract-binding",
-                    mutation_owner: &owner,
-                    gateway_store: Some(&store),
-                };
-                respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+        let large_source = r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"limit":18446744073709551616},"grantable_operations":["send"]}"#;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/gateway/contract-binding")
+            .header("Content-Length", large_source.len())
+            .body(Full::new(Bytes::copy_from_slice(large_source.as_bytes())))
+            .unwrap();
+        let outcome = {
+            let audit = ServiceAudit {
+                writer: &writer,
+                client_ip: "127.0.0.1",
+                target: "/admin/gateway/contract-binding",
+                mutation_owner: &owner,
+                gateway_store: Some(&store),
             };
-            // Native durable bindings retain source numbers through parsing,
-            // then reject values outside TOML's signed 64-bit range and
-            // unsupported nested nulls before state or audit publication.
-            assert!(matches!(outcome, Err(Error::ServiceMutation)));
-            assert_eq!(
-                store
-                    .binding_for_agent("alice", "mail", "send")
-                    .unwrap()
-                    .unwrap()
-                    .binding
-                    .bound_values,
-                expected_values
-            );
-            assert_eq!(std::fs::read_to_string(&policy).unwrap(), saved);
-        }
+            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+        };
+        assert!(matches!(outcome, Ok(response) if response.status() == StatusCode::OK));
+        let large_integer: serde_json::Value =
+            serde_json::from_str("18446744073709551616").unwrap();
+        let expected_large_values = serde_json::json!({"limit": large_integer})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_large_values
+        );
+        let saved_large = std::fs::read_to_string(&policy).unwrap();
+        assert!(saved_large.contains("limit = 18446744073709551616"));
 
         // Reopen the persisted document through the same Store consumer. This
-        // proves the rejected replacement did not leave a partial file that
-        // only the in-memory snapshot happened to hide.
+        // proves the exact authored integer survives the real reload path.
         store
             .reload(time::OffsetDateTime::now_utc(), |_| Ok(()))
             .unwrap();
@@ -580,7 +577,36 @@ mod tests {
                 .unwrap()
                 .binding
                 .bound_values,
-            expected_values
+            expected_large_values
+        );
+
+        let invalid_source = r#"{"agent":"alice","service":"mail","capability":"send","template":"mail.v1","bindings":{"array":[1,null]},"grantable_operations":["send"]}"#;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/admin/gateway/contract-binding")
+            .header("Content-Length", invalid_source.len())
+            .body(Full::new(Bytes::copy_from_slice(invalid_source.as_bytes())))
+            .unwrap();
+        let outcome = {
+            let audit = ServiceAudit {
+                writer: &writer,
+                client_ip: "127.0.0.1",
+                target: "/admin/gateway/contract-binding",
+                mutation_owner: &owner,
+                gateway_store: Some(&store),
+            };
+            respond(request, "/admin/gateway/contract-binding", Some(&audit)).await
+        };
+        assert!(matches!(outcome, Err(Error::ServiceMutation)));
+        assert_eq!(std::fs::read_to_string(&policy).unwrap(), saved_large);
+        assert_eq!(
+            store
+                .binding_for_agent("alice", "mail", "send")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_large_values
         );
         assert!(
             writer
@@ -588,8 +614,9 @@ mod tests {
                 .unwrap()
         );
         let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
-        assert!(audit.contains("admin.contract_binding_approved"));
-        assert!(!audit.contains("18446744073709551616"));
+        // Two successful route calls were audited; the nested-null rejection
+        // published neither a third success nor a partial mutation.
+        assert_eq!(audit.matches("admin.contract_binding_approved").count(), 2);
     }
 
     #[tokio::test]

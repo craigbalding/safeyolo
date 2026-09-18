@@ -617,7 +617,7 @@ fn expired_snapshot_cannot_delete_an_externally_renewed_grant() {
 }
 
 #[test]
-fn binding_numbers_keep_types_and_unsupported_toml_integers_fail_before_publication() {
+fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
     let (_directory, path, store) = setup(SOURCE);
     let mut input = binding("alice");
     input.bound_values = json!({
@@ -659,34 +659,16 @@ fn binding_numbers_keep_types_and_unsupported_toml_integers_fail_before_publicat
     );
     for unsupported in ["9223372036854775808", "18446744073709551617"] {
         let mut too_big = input.clone();
+        let integer: Value = serde_json::from_str(unsupported).unwrap();
         too_big
             .bound_values
-            .insert("integer".into(), serde_json::from_str(unsupported).unwrap());
-        assert_eq!(
-            store
-                .approve_binding(too_big, now(), validate)
-                .unwrap_err()
-                .kind,
-            ErrorKind::Unsupported
-        );
-        assert_eq!(fs::read_to_string(&path).unwrap(), saved);
-        assert_eq!(
-            store
-                .binding_for_agent("alice", "gmail", "read_messages")
-                .unwrap()
-                .unwrap()
-                .binding
-                .bound_values,
-            input.bound_values
-        );
-        // Python tomlkit persists these integers exactly. Their authored reload
-        // remains a retained-workflow gap until the shared TOML parser is lossless.
-        fs::write(
-            &path,
-            saved.replace("integer = 137", &format!("integer = {unsupported}")),
-        )
-        .unwrap();
-        assert!(store.reload(now(), validate).is_err());
+            .insert("integer".into(), integer.clone());
+        store
+            .approve_binding(too_big.clone(), now(), |_| Ok(()))
+            .unwrap();
+        let expected_values = too_big.bound_values.clone();
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains(&format!("integer = {unsupported}")));
         assert_eq!(
             store
                 .binding_for_agent("alice", "gmail", "read_messages")
@@ -694,14 +676,26 @@ fn binding_numbers_keep_types_and_unsupported_toml_integers_fail_before_publicat
                 .unwrap()
                 .binding
                 .bound_values,
-            input.bound_values
+            expected_values
         );
-        fs::write(&path, &saved).unwrap();
+        // The retained Store consumer sees the authored TOML integer, not an
+        // in-memory marker or a rounded JSON number, after a real reload.
+        store.reload(now(), |_| Ok(())).unwrap();
         assert_eq!(
-            GrantScope::from_admin_lifetime(&serde_json::from_str(unsupported).unwrap()).unwrap(),
+            store
+                .binding_for_agent("alice", "gmail", "read_messages")
+                .unwrap()
+                .unwrap()
+                .binding
+                .bound_values,
+            expected_values
+        );
+        assert_eq!(
+            GrantScope::from_admin_lifetime(&integer).unwrap(),
             GrantScope::Session
         );
     }
+    let before_invalid = fs::read_to_string(&path).unwrap();
     let mut null = input;
     null.bound_values.insert("invalid".into(), Value::Null);
     assert_eq!(
@@ -711,7 +705,7 @@ fn binding_numbers_keep_types_and_unsupported_toml_integers_fail_before_publicat
             .kind,
         ErrorKind::Invalid
     );
-    assert_eq!(fs::read_to_string(path).unwrap(), saved);
+    assert_eq!(fs::read_to_string(path).unwrap(), before_invalid);
 }
 
 #[test]

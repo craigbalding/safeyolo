@@ -7,10 +7,10 @@
 //! sessions survive reload. No transport, HTTP authentication, or secret access is
 //! activated here; callers supply trusted agent identity and activation callbacks.
 //!
-//! Retained-workflow gap: Python tomlkit persists integers beyond signed 64-bit
-//! TOML range. Native mutation rejects those binding values before publication,
-//! and unsupported reload leaves the prior snapshot active. A lossless shared
-//! TOML strategy is still required before cutover for those existing documents.
+//! Binding persistence keeps authored integers beyond TOML's native i64 syntax
+//! lossless through the shared policy adapter. The on-disk representation stays
+//! an integer literal, while edits use a private in-memory marker only while
+//! toml_edit holds the document.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -25,7 +25,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 use crate::{
     approvals::{ApprovalError, ErrorKind, update_policy},
     contracts::ContractBinding,
-    policy::{parse_expiry, parse_toml_document},
+    policy::{large_integer_marker_value, parse_expiry, parse_toml_document},
     services::resource_matches,
 };
 
@@ -973,10 +973,7 @@ fn json_to_toml(value: &Json) -> Result<Value> {
                         })?,
                 )
             } else {
-                return Err(ApprovalError {
-                    kind: ErrorKind::Unsupported,
-                    message: "binding integer exceeds TOML signed 64-bit range".into(),
-                });
+                large_integer_marker_value(&value.to_string())
             }
         }
         Json::Array(values) => {
