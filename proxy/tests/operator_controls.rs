@@ -212,12 +212,17 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     // Invalid credentials are rejected before any event upgrade.
     let unauthorized = admin(port, "wrong-synthetic-token", "GET", "/admin/events", b"").await;
     assert_eq!(unauthorized.status, 401);
-    events.shutdown().await.unwrap();
     proxy.shutdown().await;
+    let (header, _) = read_ws_frame(&mut events).await;
+    assert_eq!(
+        header[0] & 0x0f,
+        8,
+        "shutdown must close owned event streams"
+    );
 }
 
 #[tokio::test]
-async fn native_operator_approval_denial_then_retry_stays_pending() {
+async fn native_operator_approval_denial_then_retry_is_resolved() {
     let directory = TempDir::new().unwrap();
     let token = "operator-controls-synthetic";
     let policy = r#"
@@ -304,12 +309,19 @@ use_default_credential_rules = false
     assert_ne!(first_response_id, second_response_id);
     assert_eq!(origin_count.load(Ordering::Acquire), 0);
 
-    let second_pending = wait_for_pending(port, token, Some(&second_response_id)).await;
-    let pending = second_pending["approvals"].as_array().unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0]["request_id"], second_response_id);
-    assert_eq!(pending[0]["approval"]["key"], fingerprint);
-    assert_eq!(pending[0]["approval"]["target"], destination);
+    let second_pending = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let pending = admin(port, token, "GET", "/admin/approvals", b"").await;
+            let document = pending.json();
+            if document["approvals"].as_array().is_some_and(Vec::is_empty) {
+                break document;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(second_pending["approvals"].as_array().unwrap().is_empty());
 
     drop(sender);
     let _ = connection_task.await;

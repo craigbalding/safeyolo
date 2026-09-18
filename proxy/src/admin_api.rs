@@ -674,6 +674,17 @@ fn approval_key(event: &Value) -> Option<String> {
     Some(format!("{key}:{target}"))
 }
 
+fn credential_resolution_key(credential: &str, destination: &str) -> String {
+    if let Some(service) = destination.strip_prefix("gateway:") {
+        let mut parts = credential.splitn(3, ':');
+        if let (Some(agent), Some(method), Some(path)) = (parts.next(), parts.next(), parts.next())
+        {
+            return format!("gw:{agent}:{service}:{method}:{path}:{service}");
+        }
+    }
+    format!("{credential}:{destination}")
+}
+
 fn resolved_approval_keys(event: &Value) -> Vec<String> {
     let Some(event_name) = event.get("event").and_then(Value::as_str) else {
         return Vec::new();
@@ -688,13 +699,71 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
                 return Vec::new();
             };
             match details.get("cred_id") {
-                Some(Value::String(credential)) => vec![format!("{credential}:{destination}")],
+                Some(Value::String(credential)) => {
+                    vec![credential_resolution_key(credential, destination)]
+                }
                 Some(Value::Array(credentials)) => credentials
                     .iter()
                     .filter_map(Value::as_str)
-                    .map(|credential| format!("{credential}:{destination}"))
+                    .map(|credential| credential_resolution_key(credential, destination))
                     .collect(),
                 _ => Vec::new(),
+            }
+        }
+        "admin.gateway_grant" => {
+            let agent = details
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let service = details
+                .get("service")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if agent.is_empty() || service.is_empty() {
+                return Vec::new();
+            }
+            let method = details
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let path = details
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            vec![format!("gw:{agent}:{service}:{method}:{path}:{service}")]
+        }
+        "admin.agent_service_authorized" | "admin.agent_service_revoked" => {
+            let agent = details
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let service = details
+                .get("service")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if agent.is_empty() || service.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("{agent}:{service}:{service}")]
+            }
+        }
+        "admin.contract_binding_approved" => {
+            let agent = details
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let service = details
+                .get("service")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let capability = details
+                .get("capability")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if agent.is_empty() || service.is_empty() || capability.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("{agent}:{service}:{capability}:{service}")]
             }
         }
         "admin.host_allowed" | "admin.host_denied" => {
@@ -736,28 +805,15 @@ fn pending_approvals(path: &Path) -> Value {
     let mut durable_resolutions = std::collections::HashSet::new();
     let mut pending: std::collections::HashMap<String, (usize, Value)> =
         std::collections::HashMap::new();
-    // `read_audit_events` returns newest first. Walk it chronologically so a
-    // denial closes only an already-seen prompt; a later retry then replaces
-    // that prompt and remains pending. Durable policy resolutions continue to
-    // suppress matching future prompts.
+    // `read_audit_events` returns newest first. Walk it chronologically so the
+    // same durable-resolution semantics as the retained Python watcher apply
+    // to both an earlier prompt and a later retry.
     for (sequence, event) in events.iter().rev().enumerate() {
         let event_name = event.get("event").and_then(Value::as_str);
         for key in resolved_approval_keys(event) {
             if event_name == Some("admin.denial") {
-                let Some((_, prompt)) = pending.get(&key) else {
-                    continue;
-                };
-                let request_matches = event
-                    .get("details")
-                    .and_then(Value::as_object)
-                    .and_then(|details| details.get("approval_request_id"))
-                    .and_then(Value::as_str)
-                    .is_none_or(|request_id| {
-                        prompt.get("request_id").and_then(Value::as_str) == Some(request_id)
-                    });
-                if request_matches {
-                    pending.remove(&key);
-                }
+                durable_resolutions.insert(key.clone());
+                pending.remove(&key);
             } else {
                 durable_resolutions.insert(key.clone());
                 pending.remove(&key);
@@ -2658,6 +2714,68 @@ mod tests {
         );
         assert_eq!(pending_approvals(&denied_path), json!([]));
     }
+
+    #[test]
+    fn resolved_keys_match_retained_operator_consumers() {
+        assert_eq!(
+            resolved_approval_keys(&json!({
+                "event":"admin.denial",
+                "details":{"cred_id":"alice:POST:/send","destination":"gateway:gmail"}
+            })),
+            vec!["gw:alice:gmail:POST:/send:gmail"]
+        );
+        assert_eq!(
+            resolved_approval_keys(&json!({
+                "event":"admin.gateway_grant",
+                "details":{"agent":"alice","service":"gmail","method":"POST","path":"/send"}
+            })),
+            vec!["gw:alice:gmail:POST:/send:gmail"]
+        );
+        assert_eq!(
+            resolved_approval_keys(&json!({
+                "event":"admin.agent_service_authorized",
+                "details":{"agent":"alice","service":"gmail"}
+            })),
+            vec!["alice:gmail:gmail"]
+        );
+        assert_eq!(
+            resolved_approval_keys(&json!({
+                "event":"admin.agent_service_revoked",
+                "details":{"agent":"alice","service":"gmail"}
+            })),
+            vec!["alice:gmail:gmail"]
+        );
+        assert_eq!(
+            resolved_approval_keys(&json!({
+                "event":"admin.contract_binding_approved",
+                "details":{"agent":"alice","service":"gmail","capability":"mail"}
+            })),
+            vec!["alice:gmail:mail:gmail"]
+        );
+    }
+
+    #[test]
+    fn credential_denial_suppresses_a_later_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        let prompt = json!({
+            "event":"security.credential",
+            "request_id":"first",
+            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
+        });
+        let denial = json!({
+            "event":"admin.denial",
+            "details":{"destination":"api.openai.com","cred_id":"hmac:xyz","reason":"user_denied"}
+        });
+        let retry = json!({
+            "event":"security.credential",
+            "request_id":"second",
+            "approval":{"required":true,"approval_type":"credential","key":"hmac:xyz","target":"api.openai.com"}
+        });
+        std::fs::write(&path, format!("{}\n{}\n{}\n", prompt, denial, retry)).unwrap();
+        assert_eq!(pending_approvals(&path), json!([]));
+    }
+
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.
     fn source_raw_fixture() -> (&'static str, &'static str) {
         (

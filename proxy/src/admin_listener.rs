@@ -4,6 +4,7 @@
 mod stats_tests;
 
 use std::{
+    future::Future,
     net::{Ipv4Addr, SocketAddr},
     path::Path,
     sync::Arc,
@@ -18,7 +19,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
-    sync::watch,
+    sync::{Mutex as AsyncMutex, watch},
     task::{JoinHandle, JoinSet},
 };
 use zeroize::Zeroizing;
@@ -32,6 +33,8 @@ pub(crate) struct Prepared {
     token: Arc<Zeroizing<String>>,
     address: SocketAddr,
 }
+
+type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
 
 impl Prepared {
     pub(crate) async fn bind(config: &Config) -> Result<Option<Self>, Error> {
@@ -54,10 +57,12 @@ impl Prepared {
 
     pub(crate) fn start(self, state: RuntimeState) -> Running {
         let (stop, receiver) = watch::channel(false);
+        let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
         Running {
             address: self.address,
             stop,
-            task: Some(tokio::spawn(accept(self, state, receiver))),
+            _event_tasks: event_tasks.clone(),
+            task: Some(tokio::spawn(accept(self, state, receiver, event_tasks))),
         }
     }
 }
@@ -65,6 +70,7 @@ impl Prepared {
 pub(crate) struct Running {
     address: SocketAddr,
     stop: watch::Sender<bool>,
+    _event_tasks: EventTasks,
     task: Option<JoinHandle<()>>,
 }
 
@@ -118,7 +124,12 @@ fn read_token(path: Option<&Path>) -> Result<Zeroizing<String>, Error> {
     Ok(token)
 }
 
-async fn accept(prepared: Prepared, state: RuntimeState, mut stop: watch::Receiver<bool>) {
+async fn accept(
+    prepared: Prepared,
+    state: RuntimeState,
+    mut stop: watch::Receiver<bool>,
+    event_tasks: EventTasks,
+) {
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -127,7 +138,12 @@ async fn accept(prepared: Prepared, state: RuntimeState, mut stop: watch::Receiv
             accepted = prepared.listener.accept() => match accepted {
                 Ok((socket, peer)) => {
                     connections.spawn(serve_connection(
-                        socket, peer, state.clone(), prepared.token.clone(), stop.clone(),
+                        socket,
+                        peer,
+                        state.clone(),
+                        prepared.token.clone(),
+                        stop.clone(),
+                        event_tasks.clone(),
                     ));
                 }
                 Err(_) => {
@@ -151,6 +167,40 @@ async fn accept(prepared: Prepared, state: RuntimeState, mut stop: watch::Receiv
         connections.abort_all();
         while connections.join_next().await.is_some() {}
     }
+    let event_tasks_for_join = event_tasks.clone();
+    if tokio::time::timeout(
+        Duration::from_secs(2),
+        drain_event_tasks(event_tasks_for_join.clone()),
+    )
+    .await
+    .is_err()
+    {
+        let mut tasks = event_tasks_for_join.lock().await;
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
+}
+
+async fn drain_event_tasks(event_tasks: EventTasks) {
+    let mut tasks = event_tasks.lock().await;
+    while let Some(result) = tasks.join_next().await {
+        if let Err(error) = result {
+            eprintln!("operator event stream failed: {error}");
+        }
+    }
+}
+
+async fn spawn_event_task<F>(event_tasks: &EventTasks, task: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut tasks = event_tasks.lock().await;
+    while let Some(result) = tasks.try_join_next() {
+        if let Err(error) = result {
+            eprintln!("operator event stream failed: {error}");
+        }
+    }
+    tasks.spawn(task);
 }
 
 async fn serve_connection(
@@ -159,12 +209,14 @@ async fn serve_connection(
     state: RuntimeState,
     token: Arc<Zeroizing<String>>,
     mut stop: watch::Receiver<bool>,
+    event_tasks: EventTasks,
 ) {
     let event_stop = stop.clone();
     let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
         let state = state.clone();
         let token = token.clone();
         let event_stop = event_stop.clone();
+        let event_tasks = event_tasks.clone();
         async move {
             let runtime = state
                 .read()
@@ -206,6 +258,7 @@ async fn serve_connection(
                     event_stop,
                     client_ip,
                     path,
+                    event_tasks,
                 )
                 .await;
             }
@@ -328,6 +381,7 @@ async fn serve_events(
     stop: watch::Receiver<bool>,
     client_ip: String,
     target: String,
+    event_tasks: EventTasks,
 ) -> Result<hyper::Response<crate::admin_api::AdminBody>, admin_api::Error> {
     if !admin_api::authenticate(request.headers(), token)
         .map_err(|_| admin_api::Error::AuthenticationEncoding)?
@@ -336,6 +390,11 @@ async fn serve_events(
             .submit_audit(&runtime.audit, &client_ip, &target)?
             .into_response());
     }
+    let path = runtime.audit.path().to_owned();
+    // Capture the source position after authentication, but before the 101 is
+    // returned. Events appended while the handshake is in flight are then
+    // delivered, while no event already present in the log is replayed.
+    let offset = audit_offset(&path);
     let handshake = Handshake::request(&mut request).map_err(|_| admin_api::Error::BodyFraming)?;
     let upgrade = hyper::upgrade::on(request);
     let body = Full::new(Bytes::new())
@@ -344,27 +403,31 @@ async fn serve_events(
     let response = handshake
         .server_response(body)
         .map_err(|_| admin_api::Error::BodyFraming)?;
-    let path = runtime.audit.path().to_owned();
-    tokio::spawn(async move {
+    spawn_event_task(&event_tasks, async move {
         let Ok(upgraded) = upgrade.await else {
             return;
         };
-        stream_events(upgraded, path, stop).await;
-    });
+        stream_events(upgraded, path, offset, stop).await;
+    })
+    .await;
     Ok(response)
+}
+
+fn audit_offset(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
 }
 
 async fn stream_events(
     upgraded: hyper::upgrade::Upgraded,
     path: std::path::PathBuf,
+    mut offset: u64,
     mut stop: watch::Receiver<bool>,
 ) {
     let (read, write) = tokio::io::split(TokioIo::new(upgraded));
     let mut reader = Reader::new(read, true, None);
     let mut writer = Writer::new(write, false, None);
-    let mut offset = std::fs::metadata(&path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
     let mut pending = Vec::new();
     loop {
         tokio::select! {
@@ -534,4 +597,55 @@ fn is_operator_event(event: &serde_json::Value) -> bool {
             .get("severity")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|severity| matches!(severity, "high" | "critical"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[tokio::test]
+    async fn captured_audit_offset_excludes_old_lines_and_includes_following_lines() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        std::fs::write(&path, b"{\"event\":\"admin.denial\",\"details\":{}}\n").unwrap();
+        let mut offset = audit_offset(&path);
+        let mut pending = Vec::new();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"event\":\"admin.host_allowed\",\"details\":{}}\n")
+            .unwrap();
+
+        let lines = read_event_lines(&path, &mut offset, &mut pending).await;
+        assert_eq!(lines.len(), 1);
+        let event: serde_json::Value = serde_json::from_slice(&lines[0]).unwrap();
+        assert_eq!(event["event"], "admin.host_allowed");
+    }
+
+    #[tokio::test]
+    async fn completed_event_subscription_is_reaped_before_reconnect() {
+        let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
+        let (finished, wait_for_finish) = tokio::sync::oneshot::channel();
+        spawn_event_task(&event_tasks, async move {
+            let _ = finished.send(());
+        })
+        .await;
+        wait_for_finish.await.unwrap();
+        // Let the completed subscription reach the JoinSet before the
+        // replacement subscription models a reconnect.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        let (_release, release_receiver) = tokio::sync::oneshot::channel::<()>();
+        spawn_event_task(&event_tasks, async move {
+            let _ = release_receiver.await;
+        })
+        .await;
+
+        let mut tasks = event_tasks.lock().await;
+        assert_eq!(tasks.len(), 1, "the completed subscription was reaped");
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
 }

@@ -222,6 +222,34 @@ events through `core/operator_event_server.py`. The web application's traffic
 routes expose stock flow operations through the shared master. Compatibility
 concerns the retained user workflows, not every undocumented mitmproxy endpoint.
 
+The following is the compact status map for the retained operator operations.
+It records the current native route owner and the remaining owner when Rust
+does not yet implement an operation; a route marked implemented still needs
+the issue's independent consumer and effect proof before its acceptance box is
+checked.
+
+| Operation | Status | Owner or evidence |
+|---|---|---|
+| GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; focused facade and transport tests. |
+| GET `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents` | Implemented | Native `admin_api`; state and audit owners. |
+| GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
+| GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
+| GET `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` | Implemented | Native #625 gateway store and retained plumb owner. |
+| POST `/admin/policy/validate`, `/admin/policy/baseline/{approve,deny}` | Implemented | Native policy file and canonical audit writer. |
+| POST `/admin/policy/host/{allow,deny,rate,bypass}`, `/admin/budgets/reset`, `/admin/circuit-breaker/reset` | Implemented | Native approval, budget and circuit owners. |
+| POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
+| POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
+| POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
+| DELETE `/admin/agents/{agent}/services/{service}` | Missing | Required native service-removal mutation and observer proof remain in #627. |
+| POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Delegated | Retained-agent-workflows implementation and host boundary; no native fake endpoint. |
+| PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; activation and consumer proof remain open where noted above. |
+| PUT `/admin/proxy/mode` | Missing | No native handler or retained consumer proof yet. |
+| PUT `/admin/proxy/ignore-hosts` | Delegated | Passthrough/ignore semantics belong to #631. |
+| PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
+| Add/remove listeners through retained operator consumers | Missing | No native listener mutation route; startup configuration remains process-owned. |
+| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events and owned shutdown task. |
+| GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
+
 ## TLS and WebSocket library risks
 
 These are source-backed compatibility findings, not library acceptance tests.
@@ -587,18 +615,19 @@ The native request constructor also matches those 155 rows. All 22 existing
 Rust transport tests, strict all-target Clippy and selected hooks pass.
 These are owner results, without independent acceptance or macOS/guest evidence.
 
-The native [operator API](../proxy/src/admin_api.rs) implements GET `/health`,
-authenticated GET/PUT `/admin/policy/task/{id}`, GET `/admin/budgets` and
-POST `/admin/budgets/reset` and POST `/admin/circuit-breaker/reset` on a
-separate IPv4-loopback listener.
+The native operator route status is maintained in the compact
+[operator operation map above](#operator-api-and-events). It records the
+current authenticated read/control handlers, native `/admin/events` stream,
+and the explicit missing, delegated, and deferred operations. An implemented
+route still requires its issue-specific consumer and effect proof before
+acceptance.
 Development configuration opts in with `admin_port`; port zero binds
 an ephemeral port reported as `admin_port` in readiness. The optional
 `admin_api_token_file` contains the startup token. The listener reads and strips
 that file once. Missing or empty tokens deny management access; health remains public.
 Policy reload preserves the actual listener, startup token and task registry.
 Listener or token changes require a process restart, matching the source server's
-startup ownership. Other operator routes and production CLI selection remain
-unimplemented.
+startup ownership.
 
 A successful task PUT validates the existing model schema and stores the supplied
 JSON in one process-local registry. It does not compile or activate task rules,
