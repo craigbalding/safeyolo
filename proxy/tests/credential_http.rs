@@ -552,6 +552,116 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
 }
 
 #[tokio::test]
+async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_body() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"parser-boundary-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"signed-target",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(full_origin(listener, seen.clone(), ready.clone()));
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, false))
+        .await
+        .unwrap();
+
+    // This is one raw UDS request through the actual H1 parser, credential
+    // guard, hygiene step, and TCP origin. The target is kept in the signed
+    // URL form used by the source witnesses; duplicate query keys and escaped
+    // octets must remain in the forwarded request target.
+    let body = b"signed-body\0with-ff-\xff\n";
+    let mut request = format!(
+        "POST http://127.0.0.1:{origin_port}/signed/%2F?Q=a%2Bb&Q=%252F HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer key-clean\r\naUtHoRiZaTiOn: auxiliary\r\nConnection: "
+    )
+    .into_bytes();
+    request.push(0xff);
+    request.extend_from_slice(
+        format!(
+            ", X-Remove\r\nX-Remove: nominated-canary\r\nX-Duplicate: first\r\nx-duplicate: second\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    );
+    request.extend_from_slice(body);
+
+    let response = raw_round_trip(&socket, &request).await;
+    assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+
+    let wire = seen.lock().unwrap().first().cloned().unwrap();
+    let split = wire
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .unwrap();
+    let head = std::str::from_utf8(&wire[..split]).unwrap();
+    assert!(
+        head.starts_with("POST /signed/%2F?Q=a%2Bb&Q=%252F HTTP/1.1\r\n"),
+        "{head:?}"
+    );
+    assert!(
+        head.contains("Authorization: Bearer key-clean\r\n"),
+        "{head:?}"
+    );
+    assert!(head.contains("aUtHoRiZaTiOn: auxiliary\r\n"), "{head:?}");
+    let first_authorization = head.find("Authorization: Bearer key-clean\r\n").unwrap();
+    let second_authorization = head.find("aUtHoRiZaTiOn: auxiliary\r\n").unwrap();
+    assert!(first_authorization < second_authorization, "{head:?}");
+    assert!(head.contains("X-Duplicate: first\r\n"), "{head:?}");
+    assert!(head.contains("x-duplicate: second\r\n"), "{head:?}");
+    assert!(
+        head.find("X-Duplicate: first\r\n").unwrap()
+            < head.find("x-duplicate: second\r\n").unwrap(),
+        "{head:?}"
+    );
+    assert!(
+        !head.contains("Connection:"),
+        "nominated connection leaked: {head:?}"
+    );
+    assert!(
+        !head.contains("X-Remove:"),
+        "nominated header leaked: {head:?}"
+    );
+    assert_eq!(&wire[split..], body, "body bytes changed in transit");
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let guard_event = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["event"] == "proxy.credential_guard")
+        .unwrap();
+    assert_eq!(guard_event["outcome"], "allowed");
+    assert_eq!(guard_event["evaluations"][0]["finding"]["rule"], "signed-target");
+    assert_eq!(guard_event["evaluations"][0]["effect"], "allow");
+
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+#[tokio::test]
 async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_uninspected() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
