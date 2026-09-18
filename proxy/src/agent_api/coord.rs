@@ -10,7 +10,6 @@ use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
-
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -140,10 +139,7 @@ impl CoordClient {
     }
 
     pub(crate) fn with_owner(owner: Arc<CoordOwner>, policy_file: Option<PathBuf>) -> Self {
-        Self {
-            owner,
-            policy_file,
-        }
+        Self { owner, policy_file }
     }
 
     pub(crate) fn owner(&self) -> Arc<CoordOwner> {
@@ -207,8 +203,7 @@ impl CoordClient {
             let Some(path) = policy_file else {
                 return Err(CoordError::Unavailable);
             };
-            let source = std::fs::read_to_string(path)
-                .map_err(|_| CoordError::Unavailable)?;
+            let source = std::fs::read_to_string(path).map_err(|_| CoordError::Unavailable)?;
             let document = source
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|_| CoordError::Unavailable)?;
@@ -222,6 +217,22 @@ impl CoordClient {
                 .and_then(|agent| agent.get("agent_id"))
                 .and_then(toml_edit::Item::as_str)
                 .ok_or(CoordError::Unavailable)?;
+            if !valid_agent_id(agent)
+                || agents
+                    .iter()
+                    .filter_map(|(_, item)| {
+                        item.as_table_like()?
+                            .get("agent_id")
+                            .and_then(toml_edit::Item::as_str)
+                    })
+                    .filter(|candidate| *candidate == agent)
+                    .count()
+                    != 1
+            {
+                // A durable ID with more than one configured display name is
+                // ambiguous. Do not let a listener name silently alias it.
+                return Err(CoordError::Unavailable);
+            }
             Ok(agent.to_owned())
         })
         .await
@@ -256,22 +267,79 @@ impl CoordClient {
             else {
                 return HashMap::new();
             };
-            agents
-                .iter()
-                .filter_map(|(name, item)| {
-                    let id = item
-                        .as_table_like()?
-                        .get("agent_id")?
-                        .as_str()?;
-                    principal_ids
-                        .iter()
-                        .any(|principal_id| principal_id == id)
-                        .then(|| (id.to_owned(), name.to_owned()))
-                })
-                .collect()
+            let mut names = HashMap::new();
+            let mut duplicate_ids = HashSet::new();
+            for (name, item) in agents.iter() {
+                let Some(id) = item
+                    .as_table_like()
+                    .and_then(|item| item.get("agent_id"))
+                    .and_then(toml_edit::Item::as_str)
+                    .filter(|id| valid_agent_id(id))
+                else {
+                    continue;
+                };
+                if principal_ids.iter().any(|principal_id| principal_id == id)
+                    && names.insert(id.to_owned(), name.to_owned()).is_some()
+                {
+                    duplicate_ids.insert(id.to_owned());
+                }
+            }
+            for id in duplicate_ids {
+                names.remove(&id);
+            }
+            names
         })
         .await
         .unwrap_or_default()
+    }
+
+    async fn resolve_agent_names(
+        &self,
+        requested_names: &[String],
+    ) -> Result<HashMap<String, String>, CoordError> {
+        let requested_names = requested_names.to_vec();
+        let policy_file = self.policy_file.clone();
+        tokio::task::spawn_blocking(move || {
+            let Some(path) = policy_file else {
+                return Err(CoordError::Unavailable);
+            };
+            let source = std::fs::read_to_string(path).map_err(|_| CoordError::Unavailable)?;
+            let document = source
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|_| CoordError::Unavailable)?;
+            let agents = document
+                .get("agents")
+                .and_then(toml_edit::Item::as_table_like)
+                .ok_or(CoordError::Unavailable)?;
+            let mut by_name = HashMap::new();
+            let mut names_by_id: HashMap<String, String> = HashMap::new();
+            let mut duplicate_ids = HashSet::new();
+            for (name, item) in agents.iter() {
+                let Some(id) = item
+                    .as_table_like()
+                    .and_then(|item| item.get("agent_id"))
+                    .and_then(toml_edit::Item::as_str)
+                    .filter(|id| valid_agent_id(id))
+                else {
+                    continue;
+                };
+                by_name.insert(name.to_owned(), id.to_owned());
+                if names_by_id.insert(id.to_owned(), name.to_owned()).is_some() {
+                    duplicate_ids.insert(id.to_owned());
+                }
+            }
+            let mut resolved = HashMap::new();
+            for name in requested_names {
+                let id = by_name.get(&name).ok_or(CoordError::Invalid)?;
+                if duplicate_ids.contains(id) {
+                    return Err(CoordError::Invalid);
+                }
+                resolved.insert(name, id.clone());
+            }
+            Ok(resolved)
+        })
+        .await
+        .map_err(|_| CoordError::Unavailable)?
     }
 
     async fn room_state(
@@ -283,15 +351,15 @@ impl CoordClient {
         let db = self.owner.data_dir.join("v0.db");
         let room = room_name.to_owned();
         let principal = principal.to_owned();
-        let data = tokio::task::spawn_blocking(move || {
-            read_state_data(&db, &room, &principal)
-        })
-        .await
-        .map_err(|_| CoordError::Unavailable)??;
+        let principal_for_read = principal.clone();
+        let data =
+            tokio::task::spawn_blocking(move || read_state_data(&db, &room, &principal_for_read))
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
         // The bounded SQLite read above is a provider boundary.  Re-read the
         // current grant before exposing the assembled state so a revoke or a
         // newer membership generation cannot race the response.
-        let current_access = self.access(room_name, principal).await?;
+        let current_access = self.access(room_name, &principal).await?;
         if !current_access
             .permissions
             .iter()
@@ -476,8 +544,8 @@ impl CoordClient {
                 _ => Err(CoordError::Unavailable),
             };
         }
-        let deadline = tokio::time::Instant::now()
-            + Duration::from_secs_f64(timeout_seconds.max(0.0));
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_secs_f64(timeout_seconds.max(0.0));
         let mut next_recovery = tokio::time::Instant::now();
         loop {
             let page = self.attention_feed(principal, since, limit).await?;
@@ -541,11 +609,10 @@ impl CoordClient {
     async fn recover_attention(&self, principal: &str) -> Result<(), CoordError> {
         let db = self.owner.data_dir.join("v0.db");
         let principal_owned = principal.to_owned();
-        let rooms = tokio::task::spawn_blocking(move || {
-            receive_room_generations(&db, &principal_owned)
-        })
-        .await
-        .map_err(|_| CoordError::Unavailable)??;
+        let rooms =
+            tokio::task::spawn_blocking(move || receive_room_generations(&db, &principal_owned))
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
         if rooms.is_empty() {
             return Ok(());
         }
@@ -600,11 +667,10 @@ impl CoordClient {
     ) -> Result<ProjectionOutcome, CoordError> {
         let db = self.owner.data_dir.join("v0.db");
         let room_for_frontier = room_id.to_owned();
-        let mut frontier = tokio::task::spawn_blocking(move || {
-            read_projection_frontier(&db, &room_for_frontier)
-        })
-        .await
-        .map_err(|_| CoordError::Unavailable)??;
+        let mut frontier =
+            tokio::task::spawn_blocking(move || read_projection_frontier(&db, &room_for_frontier))
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
         loop {
             if frontier >= through_sequence {
                 let db = self.owner.data_dir.join("v0.db");
@@ -651,11 +717,8 @@ impl CoordClient {
             if next_sequence > state.1 {
                 return Err(CoordError::Unavailable);
             }
-            let end_sequence = through_sequence.min(
-                frontier
-                    .saturating_add(PROJECTION_PAGE)
-                    .min(state.1),
-            );
+            let end_sequence =
+                through_sequence.min(frontier.saturating_add(PROJECTION_PAGE).min(state.1));
             let mut messages = Vec::new();
             for sequence in next_sequence..=end_sequence {
                 let raw = stream
@@ -664,23 +727,31 @@ impl CoordClient {
                     .map_err(|_| CoordError::Unavailable)?;
                 let envelope: Value =
                     serde_json::from_slice(&raw.payload).map_err(|_| CoordError::Data)?;
-                let msg_id = envelope
-                    .get("msg_id")
-                    .and_then(Value::as_str)
-                    .ok_or(CoordError::Data)?;
-                let recipients = match parse_attention_manifest(
-                    raw.headers
-                        .get_last("SafeYolo-Coord-Attention")
-                        .map(|value| value.as_str()),
-                    msg_id,
-                )? {
-                    Some(manifest) => manifest.recipients,
-                    None => Vec::new(),
+                let header = raw
+                    .headers
+                    .get_last("SafeYolo-Coord-Attention")
+                    .map(|value| value.as_str());
+                let (recipients, has_attention_manifest) = match header {
+                    // Existing room messages without a Stage-1 header are
+                    // still valid stream entries. Advance the projection
+                    // frontier across them without requiring native fields.
+                    None => (Vec::new(), false),
+                    Some(header) => {
+                        let msg_id = envelope
+                            .get("msg_id")
+                            .and_then(Value::as_str)
+                            .ok_or(CoordError::Data)?;
+                        let recipients = parse_attention_manifest(Some(header), msg_id)?
+                            .map(|manifest| manifest.recipients)
+                            .ok_or(CoordError::Data)?;
+                        (recipients, true)
+                    }
                 };
                 messages.push(ProjectedMessage {
                     sequence,
                     envelope,
                     recipients,
+                    has_attention_manifest,
                 });
             }
             let db = self.owner.data_dir.join("v0.db");
@@ -711,13 +782,16 @@ impl CoordClient {
         .await
         .map_err(|_| CoordError::Unavailable)??;
         if edge.kind == "brief_changed" {
+            let expected_object_id = format!("brief-{}", edge.room_id.trim_start_matches("rm-"));
+            if edge.object_id != expected_object_id {
+                return Err(CoordError::Data);
+            }
             let db = self.owner.data_dir.join("v0.db");
             let edge_for_read = edge.clone();
-            let object = tokio::task::spawn_blocking(move || {
-                read_brief_revision(&db, &edge_for_read)
-            })
-            .await
-            .map_err(|_| CoordError::Unavailable)??;
+            let object =
+                tokio::task::spawn_blocking(move || read_brief_revision(&db, &edge_for_read))
+                    .await
+                    .map_err(|_| CoordError::Unavailable)??;
             self.verify_attention_access(principal, &edge).await?;
             return Ok(json!({"edge": edge.public_json(), "object": object}));
         }
@@ -758,7 +832,10 @@ impl CoordClient {
         {
             return Err(CoordError::Data);
         }
-        object.insert("sequence".to_owned(), Value::from(edge.revision_or_sequence));
+        object.insert(
+            "sequence".to_owned(),
+            Value::from(edge.revision_or_sequence),
+        );
         let object_value = Value::Object(object.clone());
         self.verify_attention_access(principal, &edge).await?;
         Ok(json!({"edge": edge.public_json(), "object": object_value}))
@@ -831,9 +908,9 @@ fn valid_agent_id(value: &str) -> bool {
         return false;
     };
     !suffix.is_empty()
-        && suffix.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
-        })
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 fn parse_attention_manifest(
@@ -905,9 +982,7 @@ fn parse_attention_manifest(
             membership_granted_at: granted_at,
         });
     }
-    if (mode == "none" && !recipients.is_empty())
-        || (mode == "agents" && recipients.is_empty())
-    {
+    if (mode == "none" && !recipients.is_empty()) || (mode == "agents" && recipients.is_empty()) {
         return Err(CoordError::Data);
     }
     Ok(Some(AttentionManifest { mode, recipients }))
@@ -920,7 +995,10 @@ fn recipient_generation(access: &RoomAccess, agent_id: &str) -> Option<i64> {
         .find(|member| {
             member.principal_kind == "agent"
                 && member.principal_id == agent_id
-                && member.permissions.iter().any(|permission| permission == "receive")
+                && member
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "receive")
         })
         .map(|member| member.granted_at)
 }
@@ -932,28 +1010,27 @@ fn message_wakes_waiter(
     access: &RoomAccess,
     exclude_self: bool,
 ) -> Result<bool, CoordError> {
-    let sender_is_self = value
-        .get("sender_agent_id")
-        .and_then(Value::as_str)
-        == Some(principal);
-    let Some(msg_id) = value.get("msg_id").and_then(Value::as_str) else {
-        return Err(CoordError::Data);
-    };
-    let manifest = parse_attention_manifest(
-        headers
-            .and_then(|headers| headers.get_last("SafeYolo-Coord-Attention"))
-            .map(|value| value.as_str()),
-        msg_id,
-    )?;
-    let Some(manifest) = manifest else {
+    let sender_is_self = value.get("sender_agent_id").and_then(Value::as_str) == Some(principal);
+    let header = headers
+        .and_then(|headers| headers.get_last("SafeYolo-Coord-Attention"))
+        .map(|value| value.as_str());
+    // Legacy room messages have no Stage-1 header and need only the existing
+    // sender filtering. Do not require native envelope fields while scanning
+    // such nonqualifying messages.
+    let Some(header) = header else {
         return Ok(!exclude_self || !sender_is_self);
     };
+    let msg_id = value
+        .get("msg_id")
+        .and_then(Value::as_str)
+        .ok_or(CoordError::Data)?;
+    let manifest = parse_attention_manifest(Some(header), msg_id)?;
+    let manifest = manifest.ok_or(CoordError::Data)?;
     match manifest.mode.as_str() {
         "none" => Ok(false),
         "agents" => Ok(manifest.recipients.iter().any(|recipient| {
             recipient.agent_id == principal
-                && recipient_generation(access, principal)
-                    == Some(recipient.membership_granted_at)
+                && recipient_generation(access, principal) == Some(recipient.membership_granted_at)
         })),
         "room" => Ok((!exclude_self || !sender_is_self)
             && manifest.recipients.iter().any(|recipient| {
@@ -1067,12 +1144,7 @@ fn read_state_data(db: &Path, room_name: &str, principal: &str) -> Result<StateD
         )
         .map_err(|_| CoordError::Data)?
         .query_map(params![room_id, now_ms()], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-            ))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .map_err(|_| CoordError::Data)?
         .collect::<Result<Vec<_>, _>>()
@@ -1100,6 +1172,11 @@ fn read_attention_feed(
     limit: usize,
 ) -> Result<FeedPage, CoordError> {
     let conn = open_db(db, false)?;
+    // Keep the allocator high-water mark, visible edges, and final cursor
+    // lookup on one SQLite snapshot. A revoke or concurrent projection cannot
+    // make the returned page and cursor describe different states.
+    conn.execute("BEGIN", [])
+        .map_err(|_| CoordError::Unavailable)?;
     let highwater = conn
         .query_row(
             "SELECT last_sequence FROM coord_attention_feeds
@@ -1155,7 +1232,12 @@ fn read_attention_feed(
         // public edge. Re-read the last sequence by its stable attention ID.
         conn.query_row(
             "SELECT feed_sequence FROM coord_attention_edges WHERE attention_id = ?1",
-            params![edges.last().map(|edge| edge.attention_id.as_str()).unwrap_or_default()],
+            params![
+                edges
+                    .last()
+                    .map(|edge| edge.attention_id.as_str())
+                    .unwrap_or_default()
+            ],
             |row| row.get::<_, i64>(0),
         )
         .map_err(|_| CoordError::Data)?
@@ -1163,7 +1245,10 @@ fn read_attention_feed(
     } else {
         since.max(highwater)
     };
-    Ok(FeedPage { edges, next_cursor })
+    let page = FeedPage { edges, next_cursor };
+    conn.execute("COMMIT", [])
+        .map_err(|_| CoordError::Unavailable)?;
+    Ok(page)
 }
 
 fn read_attention_edge(
@@ -1234,7 +1319,10 @@ fn read_brief_revision(db: &Path, edge: &AttentionEdge) -> Result<Value, CoordEr
         "SELECT room_id, revision, markdown, content_hash, updated_at
          FROM coord_brief_revisions
          WHERE room_id = ?1 AND revision = ?2",
-        params![edge.room_id, i64::try_from(edge.revision_or_sequence).map_err(|_| CoordError::Data)?],
+        params![
+            edge.room_id,
+            i64::try_from(edge.revision_or_sequence).map_err(|_| CoordError::Data)?
+        ],
         |row| {
             Ok(json!({
                 "room_id": row.get::<_, String>(0)?,
@@ -1269,8 +1357,19 @@ fn valid_capability(value: &str) -> bool {
         && public_name_part(provider)
         && public_name_part(name)
         && ![provider, name].iter().any(|part| {
-            part.split(['.', '_', '-'])
-                .any(|term| matches!(term, "account" | "credential" | "key" | "password" | "path" | "secret" | "token" | "url"))
+            part.split(['.', '_', '-']).any(|term| {
+                matches!(
+                    term,
+                    "account"
+                        | "credential"
+                        | "key"
+                        | "password"
+                        | "path"
+                        | "secret"
+                        | "token"
+                        | "url"
+                )
+            })
         })
 }
 
@@ -1281,18 +1380,7 @@ fn write_declarations(
     capabilities: &[String],
     ttl_seconds: i64,
 ) -> Result<Value, CoordError> {
-    if capabilities.len() > MAX_DECLARATIONS_PER_AGENT
-        || !(1..=MAX_DECLARATION_TTL_SECONDS).contains(&ttl_seconds)
-        || capabilities.iter().any(|capability| !valid_capability(capability))
-    {
-        return Err(CoordError::Invalid);
-    }
     let conn = open_db(db, true)?;
-    let mut labels = capabilities.to_vec();
-    labels.sort();
-    labels.dedup();
-    let asserted_at = now_ms();
-    let valid_until = asserted_at + ttl_seconds * 1000;
     conn.execute("BEGIN IMMEDIATE", [])
         .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
@@ -1301,6 +1389,22 @@ fn write_declarations(
         if !permissions.iter().any(|permission| permission == "receive") {
             return Err(CoordError::Forbidden);
         }
+        // Check the grant before validating caller-controlled declarations.
+        // Both authorization and replacement now share this transaction, so
+        // validation cannot become an unauthorized oracle or race a revoke.
+        if capabilities.len() > MAX_DECLARATIONS_PER_AGENT
+            || !(1..=MAX_DECLARATION_TTL_SECONDS).contains(&ttl_seconds)
+            || capabilities
+                .iter()
+                .any(|capability| !valid_capability(capability))
+        {
+            return Err(CoordError::Invalid);
+        }
+        let mut labels = capabilities.to_vec();
+        labels.sort();
+        labels.dedup();
+        let asserted_at = now_ms();
+        let valid_until = asserted_at + ttl_seconds * 1000;
         conn.execute(
             "DELETE FROM coord_capability_declarations
              WHERE room_id = ?1 AND agent_id = ?2",
@@ -1325,7 +1429,8 @@ fn write_declarations(
     })();
     match result {
         Ok(value) => {
-            conn.execute("COMMIT", []).map_err(|_| CoordError::Unavailable)?;
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
             Ok(value)
         }
         Err(error) => {
@@ -1347,6 +1452,7 @@ struct ProjectedMessage {
     sequence: u64,
     envelope: Value,
     recipients: Vec<Recipient>,
+    has_attention_manifest: bool,
 }
 
 enum ProjectionCommit {
@@ -1359,11 +1465,7 @@ enum GapAdvance {
     Conflict(u64),
 }
 
-fn ensure_projection_baseline(
-    db: &Path,
-    room_id: &str,
-    baseline: u64,
-) -> Result<(), CoordError> {
+fn ensure_projection_baseline(db: &Path, room_id: &str, baseline: u64) -> Result<(), CoordError> {
     let baseline = i64::try_from(baseline).map_err(|_| CoordError::Data)?;
     let conn = open_db(db, true)?;
     conn.execute("BEGIN IMMEDIATE", [])
@@ -1440,9 +1542,8 @@ fn projection_sequence_was_lost(
 
 fn projection_loss_event_id(room_id: &str, first: u64, last: u64) -> String {
     let mut context = Context::new(&SHA256);
-    context.update(
-        format!("coord.attention_projection_lost\0{room_id}\0{first}\0{last}").as_bytes(),
-    );
+    context
+        .update(format!("coord.attention_projection_lost\0{room_id}\0{first}\0{last}").as_bytes());
     let digest = context.finish();
     let suffix = digest
         .as_ref()
@@ -1528,7 +1629,10 @@ fn advance_over_retention_gap(
         Ok(ProjectionCommit::Advanced(frontier)) => {
             conn.execute("COMMIT", [])
                 .map_err(|_| CoordError::Unavailable)?;
-            Ok(GapAdvance::Advanced { frontier, lost_last })
+            Ok(GapAdvance::Advanced {
+                frontier,
+                lost_last,
+            })
         }
         Ok(ProjectionCommit::Conflict(frontier)) => {
             let _ = conn.execute("ROLLBACK", []);
@@ -1574,17 +1678,14 @@ fn project_attention_prefix(
                 return Err(CoordError::Data);
             }
             let sequence_i64 = i64::try_from(message.sequence).map_err(|_| CoordError::Data)?;
-            let msg_id = message
-                .envelope
-                .get("msg_id")
-                .and_then(Value::as_str)
-                .ok_or(CoordError::Data)?;
-            let sent_at = message
-                .envelope
-                .get("sent_at")
-                .and_then(Value::as_i64)
-                .ok_or(CoordError::Data)?;
+            let msg_id = message.envelope.get("msg_id").and_then(Value::as_str);
+            if message.has_attention_manifest && msg_id.is_none() {
+                return Err(CoordError::Data);
+            }
+            let sent_at = message.envelope.get("sent_at").and_then(Value::as_i64);
             for recipient in &message.recipients {
+                let msg_id = msg_id.ok_or(CoordError::Data)?;
+                let sent_at = sent_at.ok_or(CoordError::Data)?;
                 let existing = conn
                     .query_row(
                         "SELECT attention_id, room_id, revision_or_sequence,
@@ -1604,7 +1705,13 @@ fn project_attention_prefix(
                     )
                     .optional()
                     .map_err(|_| CoordError::Data)?;
-                if let Some((existing_attention_id, existing_room_id, existing_sequence, existing_generation)) = existing {
+                if let Some((
+                    existing_attention_id,
+                    existing_room_id,
+                    existing_sequence,
+                    existing_generation,
+                )) = existing
+                {
                     if existing_attention_id != recipient.attention_id
                         || existing_room_id != room_id
                         || existing_sequence != sequence_i64
@@ -1632,7 +1739,14 @@ fn project_attention_prefix(
                     )
                     .optional()
                     .map_err(|_| CoordError::Data)?;
-                if let Some((existing_recipient, existing_room, existing_object, existing_sequence, existing_generation)) = attention_conflict {
+                if let Some((
+                    existing_recipient,
+                    existing_room,
+                    existing_object,
+                    existing_sequence,
+                    existing_generation,
+                )) = attention_conflict
+                {
                     if existing_recipient != recipient.agent_id
                         || existing_room != room_id
                         || existing_object != msg_id
@@ -1729,10 +1843,7 @@ fn project_attention_prefix(
     }
 }
 
-fn receive_room_generations(
-    db: &Path,
-    principal: &str,
-) -> Result<Vec<String>, CoordError> {
+fn receive_room_generations(db: &Path, principal: &str) -> Result<Vec<String>, CoordError> {
     let conn = open_db(db, false)?;
     let mut statement = conn
         .prepare(
@@ -1883,7 +1994,9 @@ fn route_parts(request: Request<'_>) -> Option<(String, &'static str)> {
     if parts.next().is_some() || room.is_empty() {
         return None;
     }
-    let room = percent_encoding::percent_decode_str(room).decode_utf8().ok()?;
+    let room = percent_encoding::percent_decode_str(room)
+        .decode_utf8()
+        .ok()?;
     Some((room.into_owned(), op))
 }
 
@@ -1915,7 +2028,10 @@ pub(super) fn is_route(request: Request<'_>) -> bool {
     super::route(request).starts_with("/api/coord/")
 }
 
-pub(super) async fn respond(request: Request<'_>, context: Option<CoordContext<'_>>) -> Outcome<'static> {
+pub(super) async fn respond(
+    request: Request<'_>,
+    context: Option<CoordContext<'_>>,
+) -> Outcome<'static> {
     respond_payload(request, context, None).await
 }
 
@@ -1964,7 +2080,7 @@ where
                 };
                 Some(content)
             }
-        };
+        }
     } else {
         None
     };
@@ -1982,7 +2098,7 @@ enum CappedContent {
 }
 
 async fn read_capped_content<B>(
-    mut body: RequestBody<'_, B>,
+    body: RequestBody<'_, B>,
     max_bytes: usize,
 ) -> Result<CappedContent, B::Error>
 where
@@ -2038,7 +2154,10 @@ async fn respond_payload(
     };
     if attention_wait_route(request) {
         if request.method != "GET" {
-            return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+            return response(
+                405,
+                json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+            );
         }
         let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
         let limit = query_u64(request.path_and_query, "limit", 1)
@@ -2069,15 +2188,25 @@ async fn respond_payload(
     }
     if let Some(attention_id) = attention_object_route(request) {
         if request.method != "GET" {
-            return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+            return response(
+                405,
+                json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+            );
         }
-        return match context.client.attention_object(&principal, &attention_id).await {
+        return match context
+            .client
+            .attention_object(&principal, &attention_id)
+            .await
+        {
             Ok(value) => response(200, value),
             Err(error) => error_response(error),
         };
     }
     let Some((room_name, operation)) = route_parts(request) else {
-        return response(404, json!({"error":"coord resource not found or not accessible"}));
+        return response(
+            404,
+            json!({"error":"coord resource not found or not accessible"}),
+        );
     };
     let access = match context.client.access(&room_name, &principal).await {
         Ok(access) => access,
@@ -2086,10 +2215,17 @@ async fn respond_payload(
     match operation {
         "join" => {
             if request.method != "POST" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["POST"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["POST"]}),
+                );
             }
             let state = if access.permissions.iter().any(|p| p == "receive") {
-                match context.client.room_state(&room_name, &principal, &access).await {
+                match context
+                    .client
+                    .room_state(&room_name, &principal, &access)
+                    .await
+                {
                     Ok(state) => state,
                     Err(error) => return error_response(error),
                 }
@@ -2110,21 +2246,44 @@ async fn respond_payload(
         }
         "send" => {
             if request.method != "POST" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["POST"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["POST"]}),
+                );
             }
-            if !access.permissions.iter().any(|permission| permission == "send") {
+            if !access
+                .permissions
+                .iter()
+                .any(|permission| permission == "send")
+            {
                 return response(403, json!({"error":"permission 'send' denied"}));
             }
             let Some(payload) = payload else {
                 return response(400, json!({"error":"body required (non-empty string)"}));
             };
-            send(context.client, request, &room_name, access, &principal, agent_name, payload).await
+            send(
+                context.client,
+                request,
+                &room_name,
+                access,
+                &principal,
+                agent_name,
+                payload,
+            )
+            .await
         }
         "messages" => {
             if request.method != "GET" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+                );
             }
-            if !access.permissions.iter().any(|permission| permission == "receive") {
+            if !access
+                .permissions
+                .iter()
+                .any(|permission| permission == "receive")
+            {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
             let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
@@ -2134,9 +2293,16 @@ async fn respond_payload(
         }
         "wait" => {
             if request.method != "GET" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+                );
             }
-            if !access.permissions.iter().any(|permission| permission == "receive") {
+            if !access
+                .permissions
+                .iter()
+                .any(|permission| permission == "receive")
+            {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
             let since = query_u64(request.path_and_query, "since", 0).unwrap_or(0);
@@ -2145,8 +2311,8 @@ async fn respond_payload(
             let timeout = query_f64(request.path_and_query, "timeout", 30.0)
                 .unwrap_or(30.0)
                 .clamp(0.1, 300.0);
-            let include_self = query_bool(request.path_and_query, "include_self", false)
-                .unwrap_or(false);
+            let include_self =
+                query_bool(request.path_and_query, "include_self", false).unwrap_or(false);
             wait_room(
                 context.client,
                 &room_name,
@@ -2160,28 +2326,49 @@ async fn respond_payload(
         }
         "brief" => {
             if request.method != "GET" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+                );
             }
-            if !access.permissions.iter().any(|permission| permission == "receive") {
+            if !access
+                .permissions
+                .iter()
+                .any(|permission| permission == "receive")
+            {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
             response(200, access.brief.clone())
         }
         "state" => {
             if request.method != "GET" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+                );
             }
-            if !access.permissions.iter().any(|permission| permission == "receive") {
+            if !access
+                .permissions
+                .iter()
+                .any(|permission| permission == "receive")
+            {
                 return response(403, json!({"error":"permission 'receive' denied"}));
             }
-            match context.client.room_state(&room_name, &principal, &access).await {
+            match context
+                .client
+                .room_state(&room_name, &principal, &access)
+                .await
+            {
                 Ok(state) => response(200, state),
                 Err(error) => error_response(error),
             }
         }
         "declarations" => {
             if request.method != "POST" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["POST"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["POST"]}),
+                );
             }
             let Some(payload) = payload else {
                 return response(400, json!({"error":"body required"}));
@@ -2206,14 +2393,21 @@ async fn respond_payload(
             let Some(ttl) = object.get("ttl_seconds").and_then(Value::as_i64) else {
                 return response(400, json!({"error":"ttl_seconds must be an integer"}));
             };
-            match context.client.write_declarations(&room_name, &principal, &capabilities, ttl).await {
+            match context
+                .client
+                .write_declarations(&room_name, &principal, &capabilities, ttl)
+                .await
+            {
                 Ok(result) => response(200, result),
                 Err(error) => error_response(error),
             }
         }
         "members" => {
             if request.method != "GET" {
-                return response(405, json!({"error":"Method Not Allowed", "allowed":["GET"]}));
+                return response(
+                    405,
+                    json!({"error":"Method Not Allowed", "allowed":["GET"]}),
+                );
             }
             // `access` has already enforced active membership, so the roster
             // cannot become a room-existence oracle. Deduplicate generations
@@ -2261,7 +2455,9 @@ fn error_response(error: CoordError) -> Outcome<'static> {
         CoordError::NotFound => response(404, json!({"error":"room not found or not accessible"})),
         CoordError::Forbidden => response(403, json!({"error":"coordination permission denied"})),
         CoordError::Invalid => response(400, json!({"error":"invalid coordination request"})),
-        CoordError::Unavailable => response(503, json!({"error":"coordination substrate unavailable"})),
+        CoordError::Unavailable => {
+            response(503, json!({"error":"coordination substrate unavailable"}))
+        }
         CoordError::Data => response(500, json!({"error":"coordination state unavailable"})),
         CoordError::PublishUnknown => response(
             503,
@@ -2371,7 +2567,7 @@ async fn send(
     client: &CoordClient,
     request: Request<'_>,
     room_name: &str,
-    access: RoomAccess,
+    _access: RoomAccess,
     principal: &str,
     agent_name: &str,
     payload: &[u8],
@@ -2389,10 +2585,16 @@ async fn send(
         return response(400, json!({"error":"body required (non-empty string)"}));
     }
     if body.len() > MAX_BODY_BYTES {
-        return response(413, json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}));
+        return response(
+            413,
+            json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}),
+        );
     }
     if body.as_bytes().len() > MAX_BODY_BYTES {
-        return response(413, json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}));
+        return response(
+            413,
+            json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}),
+        );
     }
     let content_type = match object.get("declared_content_type") {
         None => "text/markdown",
@@ -2424,7 +2626,12 @@ async fn send(
             }
             Notification::Agents(agents)
         }
-        Some(_) => return response(400, json!({"error":"notify must be 'none', 'room', or a list of agent names"})),
+        Some(_) => {
+            return response(
+                400,
+                json!({"error":"notify must be 'none', 'room', or a list of agent names"}),
+            );
+        }
     };
     let connection = match client.client().await {
         Ok(connection) => connection,
@@ -2439,7 +2646,11 @@ async fn send(
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
-    if !access.permissions.iter().any(|permission| permission == "send") {
+    if !access
+        .permissions
+        .iter()
+        .any(|permission| permission == "send")
+    {
         return response(403, json!({"error":"permission 'send' denied"}));
     }
     let mut stream = match jetstream.get_stream(room_stream(&access.room_id)).await {
@@ -2455,16 +2666,6 @@ async fn send(
     {
         return error_response(error);
     }
-    let agent_ids = access
-        .members
-        .iter()
-        .filter(|member| {
-            member.principal_kind == "agent"
-                && member.permissions.iter().any(|permission| permission == "receive")
-        })
-        .map(|member| member.principal_id.clone())
-        .collect::<Vec<_>>();
-    let display_names = client.display_names(&agent_ids).await;
     let msg_id = format!("msg-{}", uuid::Uuid::new_v4().simple());
     let sent_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2478,29 +2679,52 @@ async fn send(
             .filter(|member| {
                 member.principal_kind == "agent"
                     && member.principal_id != principal
-                    && member.permissions.iter().any(|permission| permission == "receive")
+                    && member
+                        .permissions
+                        .iter()
+                        .any(|permission| permission == "receive")
             })
             .map(|member| member.principal_id.clone())
             .collect::<Vec<_>>(),
         Notification::Agents(names) => {
+            let resolved_names = match client.resolve_agent_names(&names).await {
+                Ok(resolved_names) => resolved_names,
+                Err(CoordError::Invalid | CoordError::Unavailable) => {
+                    return response(
+                        400,
+                        json!({"error":"notify target is not an active agent in this room"}),
+                    );
+                }
+                Err(error) => return error_response(error),
+            };
             let mut ids = Vec::with_capacity(names.len());
             for name in names {
-                let Some(agent_id) = display_names
-                    .iter()
-                    .find_map(|(agent_id, display_name)| (display_name == &name).then_some(agent_id.clone()))
-                else {
-                    return response(400, json!({"error":"notify target is not an active agent in this room"}));
+                let Some(agent_id) = resolved_names.get(&name) else {
+                    return response(
+                        400,
+                        json!({"error":"notify target is not an active agent in this room"}),
+                    );
                 };
                 let Some(member) = access.members.iter().find(|member| {
-                    member.principal_kind == "agent" && member.principal_id == agent_id
+                    member.principal_kind == "agent" && member.principal_id == *agent_id
                 }) else {
-                    return response(400, json!({"error":"notify target is not an active agent in this room"}));
+                    return response(
+                        400,
+                        json!({"error":"notify target is not an active agent in this room"}),
+                    );
                 };
-                if !member.permissions.iter().any(|permission| permission == "receive") {
-                    return response(403, json!({"error":"notify target cannot receive in this room"}));
+                if !member
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "receive")
+                {
+                    return response(
+                        403,
+                        json!({"error":"notify target cannot receive in this room"}),
+                    );
                 }
-                if !ids.contains(&agent_id) {
-                    ids.push(agent_id);
+                if !ids.contains(agent_id) {
+                    ids.push(agent_id.clone());
                 }
             }
             ids
@@ -2521,11 +2745,13 @@ async fn send(
         .collect::<Vec<_>>();
     let recipients_json = recipients
         .iter()
-        .map(|recipient| json!({
-            "attention_id": recipient.attention_id,
-            "agent_id": recipient.agent_id,
-            "membership_granted_at": recipient.membership_granted_at,
-        }))
+        .map(|recipient| {
+            json!({
+                "attention_id": recipient.attention_id,
+                "agent_id": recipient.agent_id,
+                "membership_granted_at": recipient.membership_granted_at,
+            })
+        })
         .collect::<Vec<_>>();
     let mode = match object.get("notify") {
         Some(Value::String(value)) if value == "none" => "none",
@@ -2543,12 +2769,20 @@ async fn send(
         "content_type":content_type,
         "body":body,
     });
-    let manifest = json!({"version":1,"msg_id":envelope["msg_id"],"mode":mode,"recipients":recipients_json});
+    let manifest =
+        json!({"version":1,"msg_id":envelope["msg_id"],"mode":mode,"recipients":recipients_json});
     let mut headers = async_nats::HeaderMap::new();
-    headers.insert("Nats-Msg-Id", envelope["msg_id"].as_str().unwrap_or_default());
+    headers.insert(
+        "Nats-Msg-Id",
+        envelope["msg_id"].as_str().unwrap_or_default(),
+    );
     headers.insert("SafeYolo-Coord-Attention", manifest.to_string());
     let ack = match jetstream
-        .publish_with_headers(room_subject(&access.room_id), headers, Bytes::from(envelope.to_string()))
+        .publish_with_headers(
+            room_subject(&access.room_id),
+            headers,
+            Bytes::from(envelope.to_string()),
+        )
         .await
     {
         Ok(ack) => ack,
@@ -2682,7 +2916,11 @@ async fn wait_room(
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
-    if !access.permissions.iter().any(|permission| permission == "receive") {
+    if !access
+        .permissions
+        .iter()
+        .any(|permission| permission == "receive")
+    {
         return response(403, json!({"error":"permission 'receive' denied"}));
     }
     read_messages_with_timeout(
@@ -2730,7 +2968,7 @@ async fn read_messages_with_timeout(
         ack_policy: AckPolicy::Explicit,
         ..Default::default()
     };
-    let mut consumer = match stream.create_consumer(config).await {
+    let consumer = match stream.create_consumer(config).await {
         Ok(consumer) => consumer,
         Err(_) => return error_response(CoordError::Unavailable),
     };
@@ -2774,8 +3012,8 @@ async fn read_messages_with_timeout(
                     .info()
                     .map_err(|_| CoordError::Data)?
                     .stream_sequence;
-                let mut value: Value = serde_json::from_slice(&message.payload)
-                    .map_err(|_| CoordError::Data)?;
+                let mut value: Value =
+                    serde_json::from_slice(&message.payload).map_err(|_| CoordError::Data)?;
                 let qualifies = if wake_mode {
                     message_wakes_waiter(
                         message.headers.as_ref(),
@@ -2806,7 +3044,11 @@ async fn read_messages_with_timeout(
         // A revoke can land during the NATS fetch/ack window.  Never return
         // messages after that grant has ceased to authorize receipt.
         let current = client.access(room_name, principal).await?;
-        if !current.permissions.iter().any(|permission| permission == "receive") {
+        if !current
+            .permissions
+            .iter()
+            .any(|permission| permission == "receive")
+        {
             return Err(CoordError::Forbidden);
         }
         Ok::<_, CoordError>((page, state))
@@ -2853,8 +3095,14 @@ mod tests {
             client_ip: None,
             request_id: "req-00000000000000000000000000000000",
         };
-        assert_eq!(route_parts(request), Some(("shared".to_owned(), "messages")));
-        let invalid = Request { path_and_query: "/api/coord/rooms/shared/messages/extra", ..request };
+        assert_eq!(
+            route_parts(request),
+            Some(("shared".to_owned(), "messages"))
+        );
+        let invalid = Request {
+            path_and_query: "/api/coord/rooms/shared/messages/extra",
+            ..request
+        };
         assert_eq!(route_parts(invalid), None);
     }
 
@@ -2921,24 +3169,111 @@ mod tests {
         };
         let mut headers = async_nats::HeaderMap::new();
         headers.insert("SafeYolo-Coord-Attention", header);
-        assert!(message_wakes_waiter(
-            Some(&headers),
-            &value,
-            "ag-alice",
-            &access,
-            false,
-        )
-        .expect("valid manifest"));
+        assert!(
+            message_wakes_waiter(Some(&headers), &value, "ag-alice", &access, false,)
+                .expect("valid manifest")
+        );
         let mut stale = access;
         stale.members[0].granted_at = 8;
-        assert!(!message_wakes_waiter(
-            Some(&headers),
-            &value,
-            "ag-alice",
-            &stale,
-            false,
+        assert!(
+            !message_wakes_waiter(Some(&headers), &value, "ag-alice", &stale, false,)
+                .expect("valid manifest")
+        );
+    }
+
+    #[test]
+    fn legacy_messages_without_stage1_fields_still_scan_as_room_messages() {
+        let access = RoomAccess {
+            room_id: "rm-shared".to_owned(),
+            room_name: "shared".to_owned(),
+            permissions: vec!["receive".to_owned()],
+            members: vec![Membership {
+                principal_kind: "agent".to_owned(),
+                principal_id: "ag-alice".to_owned(),
+                granted_at: 7,
+                permissions: vec!["receive".to_owned()],
+            }],
+            instance_id: "instance".to_owned(),
+            brief: Value::Null,
+        };
+        let legacy = json!({"body": "old client message"});
+        assert!(message_wakes_waiter(None, &legacy, "ag-alice", &access, false).unwrap());
+
+        let self_message = json!({"sender_agent_id": "ag-alice"});
+        assert!(!message_wakes_waiter(None, &self_message, "ag-alice", &access, true,).unwrap());
+    }
+
+    #[test]
+    fn stage1_header_requires_native_message_id() {
+        let header = json!({
+            "version": 1,
+            "msg_id": "msg-1",
+            "mode": "none",
+            "recipients": [],
+        })
+        .to_string();
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("SafeYolo-Coord-Attention", header);
+        let access = RoomAccess {
+            room_id: "rm-shared".to_owned(),
+            room_name: "shared".to_owned(),
+            permissions: vec!["receive".to_owned()],
+            members: Vec::new(),
+            instance_id: "instance".to_owned(),
+            brief: Value::Null,
+        };
+        assert!(matches!(
+            message_wakes_waiter(
+                Some(&headers),
+                &json!({"body": "missing msg_id"}),
+                "ag-alice",
+                &access,
+                false,
+            ),
+            Err(CoordError::Data)
+        ));
+    }
+
+    #[test]
+    fn projection_advances_across_manifestless_messages() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("v0.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=5;
+             CREATE TABLE coord_message_attention_projection(
+                 room_id TEXT PRIMARY KEY,
+                 last_sequence INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             INSERT INTO coord_message_attention_projection
+                 (room_id, last_sequence, updated_at) VALUES ('rm-shared', 0, 0);",
         )
-        .expect("valid manifest"));
+        .unwrap();
+        drop(conn);
+
+        let result = project_attention_prefix(
+            &db,
+            "rm-shared",
+            0,
+            vec![ProjectedMessage {
+                sequence: 1,
+                envelope: json!({"legacy": true}),
+                recipients: Vec::new(),
+                has_attention_manifest: false,
+            }],
+        )
+        .unwrap();
+        assert!(matches!(result, ProjectionCommit::Advanced(1)));
+        let conn = Connection::open(db).unwrap();
+        let frontier: i64 = conn
+            .query_row(
+                "SELECT last_sequence FROM coord_message_attention_projection WHERE room_id='rm-shared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(frontier, 1);
     }
 
     #[test]
