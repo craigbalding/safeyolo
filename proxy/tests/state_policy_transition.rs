@@ -13,6 +13,11 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 
 const COMPARATOR_COMMIT: &str = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a";
+const FIXTURE_SOURCE_PATH: &str = "proxy/tests/state_policy_transition.rs";
+const FIXTURE_SOURCE_BYTES: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/state_policy_transition.rs"
+));
 const INITIAL_POLICY: &str = r#"# state transition fixture
 budget = 1200
 [hosts]
@@ -22,12 +27,16 @@ budget = 1200
 "legacy-agent.example:443" = { egress = "deny", expires = 2099-01-01T00:00:00Z }
 "#;
 
-fn digest_file(path: &Path) -> String {
-    digest(&SHA256, &fs::read(path).unwrap())
+fn digest_bytes(bytes: &[u8]) -> String {
+    digest(&SHA256, bytes)
         .as_ref()
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn digest_file(path: &Path) -> String {
+    digest_bytes(&fs::read(path).unwrap())
 }
 
 fn mode(path: &Path) -> String {
@@ -49,6 +58,48 @@ fn git_output(repository: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn fixture_identity(repository: &Path) -> Value {
+    let source_path = repository.join(FIXTURE_SOURCE_PATH);
+    assert!(source_path.is_file(), "fixture source is missing");
+    let candidate_commit = git_output(repository, &["rev-parse", "HEAD"]);
+    let object_ref = format!("HEAD:{FIXTURE_SOURCE_PATH}");
+    let git_blob_sha1 = git_output(repository, &["rev-parse", &object_ref]);
+    assert_eq!(
+        git_output(repository, &["hash-object", FIXTURE_SOURCE_PATH]),
+        git_blob_sha1,
+        "working-tree fixture must be the candidate's committed source"
+    );
+    let committed = Command::new("git")
+        .args(["cat-file", "blob", &git_blob_sha1])
+        .current_dir(repository)
+        .output()
+        .unwrap();
+    assert!(
+        committed.status.success(),
+        "git cat-file failed for fixture blob {git_blob_sha1}"
+    );
+    assert_eq!(
+        committed.stdout, FIXTURE_SOURCE_BYTES,
+        "compiled fixture, worktree source and committed blob must agree"
+    );
+    let working_tree_sha256 = digest_file(&source_path);
+    let compiled_sha256 = digest_bytes(FIXTURE_SOURCE_BYTES);
+    assert_eq!(working_tree_sha256, compiled_sha256);
+    json!({
+        "repository": repository,
+        "relative_path": FIXTURE_SOURCE_PATH,
+        "absolute_path": source_path,
+        "candidate_commit": candidate_commit,
+        "git_blob_sha1": git_blob_sha1,
+        "working_tree_sha256": working_tree_sha256,
+        "compiled_fixture_sha256": compiled_sha256,
+        "verification": {
+            "blob": format!("git -C {} rev-parse {}:{}", repository.display(), candidate_commit, FIXTURE_SOURCE_PATH),
+            "content": format!("git -C {} cat-file blob {} | sha256sum", repository.display(), git_blob_sha1),
+        },
+    })
 }
 
 fn request<'a>(host: &'a str, agent: Option<&'a str>, port: u16) -> NetworkRequest<'a> {
@@ -379,6 +430,8 @@ fn selected_python_native_python_native_host_policy_transition() {
         Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
         &["rev-parse", "HEAD"],
     );
+    let native_repository = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let fixture = fixture_identity(native_repository);
     let executable = PathBuf::from(std::env::var_os("SAFEYOLO_POLICY_PYTHON").unwrap());
     let source = PathBuf::from(std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE").unwrap());
     let manifest = json!({
@@ -386,10 +439,11 @@ fn selected_python_native_python_native_host_policy_transition() {
         "family": "host-policy-and-network-approvals",
         "comparator": initial["runtime"],
         "native": {
-            "source": native_source,
+            "source": native_source.clone(),
             "package": env!("CARGO_PKG_NAME"),
             "version": env!("CARGO_PKG_VERSION"),
             "test": "selected_python_native_python_native_host_policy_transition",
+            "fixture": fixture,
         },
         "commands": {
             "python": format!("{} -c <embedded-policy-fixture> ROOT OP", executable.display()),
@@ -398,7 +452,7 @@ fn selected_python_native_python_native_host_policy_transition() {
         "source_identity": {
             "comparator_checkout": source,
             "comparator_commit": COMPARATOR_COMMIT,
-            "native_commit": git_output(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(), &["rev-parse", "HEAD"]),
+            "native_commit": native_source,
         },
         "raw_state": [
             initial_policy,
