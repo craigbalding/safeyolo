@@ -31,6 +31,7 @@ pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
     respond_with_body_and_audit_id,
 };
+pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
 pub use explain::ExplainFailure;
 pub use flows::FlowFailure;
 

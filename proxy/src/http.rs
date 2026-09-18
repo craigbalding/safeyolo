@@ -1422,7 +1422,7 @@ where
             .as_ref()
             .map_or(PolicyState::Unavailable, PolicyState::Ready);
         let mut random = rand::random::<f64>;
-        agent_api::respond_with_body_and_audit_id(
+        agent_api::respond_with_body_and_audit_id_with_plumb(
             api_request,
             &token_path,
             policy,
@@ -1461,8 +1461,8 @@ where
                         owner: &runtime.test_context,
                         now: declaration_time,
                     }),
-                plumb: Some(runtime.plumb.as_ref()),
             },
+            Some(runtime.plumb.as_ref()),
             agent_api::RequestBody {
                 body: request.body_mut(),
                 content_encoding: &content_encoding,

@@ -138,6 +138,7 @@ fn config(root: &Path) -> Config {
         ignore_hosts: Vec::new(),
         via_token: Some("contract-test".into()),
         inspection: None,
+        plumb: Default::default(),
     }
 }
 

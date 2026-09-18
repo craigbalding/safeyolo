@@ -17,7 +17,6 @@ pub struct Controls<'a> {
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
-    pub(crate) plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
 }
 
 /// Trace expiry samples wall time only when an authorized lookup is reached.
@@ -88,6 +87,37 @@ pub async fn respond_with_body_and_audit_id<'p, B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
+    respond_with_body_and_audit_id_with_plumb(
+        request,
+        token_path,
+        policy,
+        tasks,
+        now_ms,
+        controls,
+        None,
+        body,
+        source_request_id,
+    )
+    .await
+}
+
+/// Internal production entry point that supplies the process-owned plumb
+/// mailbox without exposing that private owner type through `Controls`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
+    request: Request<'_>,
+    token_path: &Path,
+    policy: PolicyState<'p>,
+    tasks: &crate::tasks::Registry,
+    now_ms: f64,
+    controls: Controls<'_>,
+    plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
+    body: RequestBody<'_, B>,
+    source_request_id: Option<&str>,
+) -> Result<Outcome<'p>, B::Error>
+where
+    B: Body<Data = Bytes> + Unpin,
+{
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
     }
@@ -139,7 +169,7 @@ where
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
     }
     if route(request).starts_with("/plumb") {
-        return plumb::respond(request, body, controls.plumb, controls.audit.cloned()).await;
+        return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
     }
     if route(request) == "/agents" {
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
