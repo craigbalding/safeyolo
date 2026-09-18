@@ -72,6 +72,71 @@ fn malformed_details_and_unrepresentable_snapshot_fail_without_losing_record() {
 }
 
 #[test]
+fn late_owner_assignment_enforces_existing_per_agent_cap() {
+    let store = TraceStore::new(Settings {
+        per_agent_max: 1.into(),
+        ..Settings::default()
+    });
+
+    // Both records are initially ownerless, so neither consumes an agent
+    // slot. Resolving each owner later must apply the existing cap in FIFO
+    // order for that agent.
+    store
+        .append("ownerless-a", None, step(0.0), 0.0)
+        .unwrap();
+    store
+        .append("ownerless-b", None, step(1.0), 1.0)
+        .unwrap();
+    store
+        .append("ownerless-a", Some("alice"), step(2.0), 2.0)
+        .unwrap();
+    store
+        .append("ownerless-b", Some("alice"), step(3.0), 3.0)
+        .unwrap();
+
+    assert!(store
+        .get("ownerless-a", Some("alice"), 3.0)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get("ownerless-b", Some("alice"), 3.0)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn capped_append_keeps_timestamp_age_and_sweeps_stale_reordered_record() {
+    let store = TraceStore::new(Settings {
+        ttl_s: 5.into(),
+        steps_max: 1.into(),
+        ..Settings::default()
+    });
+
+    store
+        .append("stale", Some("alice"), step(0.0), 0.0)
+        .unwrap();
+    store
+        .append("live", Some("alice"), step(1.0), 1.0)
+        .unwrap();
+
+    // This append moves `stale` behind `live`, but its step cap prevents a
+    // new timestamp from being retained. At 5.5 it is stale even though the
+    // first record in insertion order is still live.
+    store
+        .append("stale", Some("alice"), step(2.0), 2.0)
+        .unwrap();
+
+    assert!(store
+        .get("stale", Some("alice"), 5.5)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get("live", Some("alice"), 5.5)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn details_keep_scalar_kinds_and_source_dumps_failure_truncates_only_report() {
     let store = TraceStore::new(Settings {
         details_max_bytes: 10000.into(),
@@ -260,6 +325,18 @@ fn actual_source_store_workflows_preserve_order_reports_and_partial_errors() {
             continue;
         }
         let name = input["name"].as_str().unwrap();
+        // D61 intentionally repairs two source retention defects: late owner
+        // assignment now enforces the per-agent cap, and expiry scans past a
+        // live record after a capped append reorder. Their source rows remain
+        // the finite oracle for documenting the old behavior, while focused
+        // tests above cover the native contract.
+        if matches!(
+            name,
+            "late_owner_fill_omits_cap_until_next_record"
+                | "capped_append_stale_behind_live"
+        ) {
+            continue;
+        }
         let store = TraceStore::new(settings(&input["settings"]));
         let outcomes: Vec<Value> = serde_json::from_str(row.steps.get()).unwrap();
         replayed += 1;
@@ -311,5 +388,5 @@ fn actual_source_store_workflows_preserve_order_reports_and_partial_errors() {
             );
         }
     }
-    assert_eq!(replayed, 15, "source core workflow selection changed");
+    assert_eq!(replayed, 13, "source core workflow selection changed");
 }

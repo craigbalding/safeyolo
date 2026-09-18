@@ -246,21 +246,23 @@ impl State {
             unreachable!("floating divisor")
         };
         let cutoff = now - ttl;
-        let count = self
+        // Appends reorder records, while a capped append retains the previous
+        // step timestamp. Therefore insertion order cannot be used as a
+        // timestamp index: a stale record may follow a live one. Sweep every
+        // record so the retained timestamp remains the TTL age after reorder.
+        let stale: Vec<String> = self
             .records
-            .values()
-            .take_while(|record| {
+            .iter()
+            .filter(|(_, record)| {
                 record
                     .steps
                     .last()
                     .map_or(record.created_at, |step| step.ts)
                     < cutoff
             })
-            .count();
-        // Source deliberately stops at the first live record. Append order and
-        // retained step timestamps can disagree; do not scan beyond that point.
-        for _ in 0..count {
-            let id = self.records.first().expect("counted record").0.clone();
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
             self.drop_record(&id);
         }
         Ok(())
@@ -331,7 +333,7 @@ impl TraceStore {
         state.expire(&self.settings, now)?;
         if let Some((id, mut record)) = state.records.shift_remove_entry(request_id) {
             // Only None can be filled; an empty first owner is not None.
-            if record.agent_id.is_none()
+            let owner_filled = if record.agent_id.is_none()
                 && let Some(agent) = agent.filter(|agent| !agent.is_empty())
             {
                 record.agent_id = Some(agent.into());
@@ -340,10 +342,17 @@ impl TraceStore {
                     .entry(agent.into())
                     .or_default()
                     .push(request_id.into());
-            }
-            // Existing records move even when the new step will be capped.
-            // Late owner fill does not enforce caps in the source.
+                true
+            } else {
+                false
+            };
             state.records.insert(id, record);
+            // A trace can be created before service discovery resolves its
+            // owner. Once assigned, it participates in the same per-agent
+            // bound as records created with an owner.
+            if owner_filled && let Some(agent) = agent.filter(|agent| !agent.is_empty()) {
+                state.enforce_caps(&self.settings, Some(agent))?;
+            }
         } else {
             state.records.insert(
                 request_id.into(),
