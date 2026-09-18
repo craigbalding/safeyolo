@@ -115,12 +115,14 @@ def _admin_client(proxy, token_file) -> AdminAPI:
 
 
 def _compiled_permission(document: dict, *, action: str, resource: str, effect: str | None = None,
-                         agent: str | None = None, port: int | None = None,
-                         credential: str | None = None) -> bool:
+                         budget: int | None = None, agent: str | None = None,
+                         port: int | None = None, credential: str | None = None) -> bool:
     for permission in document["baseline"]["permissions"]:
         if permission.get("action") != action or permission.get("resource") != resource:
             continue
         if effect is not None and permission.get("effect") != effect:
+            continue
+        if budget is not None and permission.get("budget") != budget:
             continue
         condition = permission.get("condition") or {}
         if agent is not None and condition.get("agent") != agent:
@@ -197,7 +199,8 @@ def test_retained_operator_client_approves_exact_native_network_scope(tmp_path):
                     document,
                     action="network:request",
                     resource="127.0.0.1/*",
-                    effect="allow",
+                    effect="budget",
+                    budget=600,
                     agent="alice",
                     port=port,
                 ),
@@ -206,7 +209,8 @@ def test_retained_operator_client_approves_exact_native_network_scope(tmp_path):
                 changed,
                 action="network:request",
                 resource="127.0.0.1/*",
-                effect="allow",
+                effect="budget",
+                budget=600,
                 agent="alice",
                 port=port,
             )
