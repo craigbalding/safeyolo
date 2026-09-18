@@ -161,6 +161,18 @@ async fn stats(directory: &TempDir) -> Value {
     serde_json::from_slice(&bytes[split + 4..]).unwrap()
 }
 
+async fn raw_admin_exchange(directory: &TempDir, request: &[u8]) -> Vec<u8> {
+    let ready: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("ready.json")).unwrap())
+            .unwrap();
+    let port = ready["admin_port"].as_u64().unwrap() as u16;
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    bytes
+}
+
 async fn set_mode(config: &Config, addon: &str, mode: &str) {
     let ready: Value =
         serde_json::from_slice(&std::fs::read(&config.readiness_file).unwrap()).unwrap();
@@ -893,6 +905,9 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
     let _ = bob.collect().await.unwrap();
     assert!(seen.lock().unwrap().is_empty(), "approval reached origin");
 
+    let live_stats = stats(&directory).await;
+    assert_eq!(live_stats["credential-guard"]["violations_total"], 2);
+
     drop(alice_sender);
     drop(bob_sender);
     let _ = alice_connection_task.await;
@@ -1519,6 +1534,13 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
                 "allowed_hosts":["127.0.0.2"],
                 "header_names":["authorization"]
             }],
+            "scan_patterns":[{
+                "name":"h2-observation-failure",
+                "pattern":"body-canary",
+                "scope":["body"],
+                "target":"request",
+                "action":"block"
+            }],
             "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
         })
         .to_string(),
@@ -1598,6 +1620,13 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
             });
         }
     });
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: false,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
     let proxy = Proxy::start(proxy_config.clone()).await.unwrap();
     let mut upstream = UnixStream::connect(&socket).await.unwrap();
     upstream
@@ -1668,6 +1697,72 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     .unwrap();
     assert_eq!(seen.lock().unwrap()[1], b"Bearer key-\xff");
 
+    // H2 request-body decoding fails after the matching credential has
+    // crossed the guard. The failed observation must produce one local 403,
+    // preserve the guard event before its scanner event, and leave no origin
+    // stream or body canary behind.
+    let body = Bytes::from_static(b"body-canary");
+    let failed = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/h2-observation-failure"))
+                .header(
+                    "authorization",
+                    hyper::header::HeaderValue::from_bytes(b"Bearer key-\xff").unwrap(),
+                )
+                .header("content-encoding", "gzip")
+                .header("content-length", body.len())
+                .body(Full::new(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 403);
+    let failed_request_id = response_request_id(&failed);
+    let _ = failed.collect().await.unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // An unauthenticated operator view is still local and cannot disclose the
+    // request's raw credential or observation body.
+    let unauthorized = raw_admin_exchange(
+        &directory,
+        b"GET /stats HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrong-admin-token\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        unauthorized.starts_with(b"HTTP/1.1 401"),
+        "{unauthorized:?}"
+    );
+    assert!(
+        !unauthorized
+            .windows(b"key-\xff".len())
+            .any(|window| { window == b"key-\xff" })
+    );
+    assert!(
+        !unauthorized
+            .windows(b"body-canary".len())
+            .any(|window| window == b"body-canary")
+    );
+    let unauthorized_events = raw_admin_exchange(
+        &directory,
+        b"GET /admin/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer wrong-admin-token\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(
+        unauthorized_events.starts_with(b"HTTP/1.1 401"),
+        "{unauthorized_events:?}"
+    );
+    assert!(
+        !unauthorized_events
+            .windows(b"key-\xff".len())
+            .any(|window| { window == b"key-\xff" })
+    );
+    assert!(
+        !unauthorized_events
+            .windows(b"body-canary".len())
+            .any(|window| window == b"body-canary")
+    );
+
     set_mode(&proxy_config, "credential-guard", "block").await;
     let blocked = sender
         .send_request(
@@ -1728,6 +1823,36 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     let _ = connection_task.await;
     proxy.shutdown().await;
     origin_task.abort();
+
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "proxy.credential_guard" && event["request_id"] == failed_request_id
+        })
+        .expect("H2 credential guard event missing before observation failure");
+    let scanner = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "security.pattern_scanner" && event["request_id"] == failed_request_id
+        })
+        .expect("H2 observation failure event missing");
+    assert!(
+        credential < scanner,
+        "observation ran before credential guard"
+    );
+    assert_eq!(rows[credential]["outcome"], "warned");
+    assert_eq!(rows[scanner]["decision"], "deny");
+    assert_eq!(rows[scanner]["failure"], "content_decode");
+    assert!(!events.contains("key-\\xff"));
+    assert!(!events.contains("body-canary"));
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-\\xff"));
+    assert!(!audit.contains("body-canary"));
 }
 
 #[tokio::test]
@@ -2122,6 +2247,147 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
     forbidden_task.abort();
     proxy.shutdown().await;
     allowed_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"reused-h1-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"reused",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let allowed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let allowed_port = allowed_listener.local_addr().unwrap().port();
+    let allowed_seen = Arc::new(Mutex::new(Vec::new()));
+    let allowed_ready = Arc::new(Notify::new());
+    let allowed_task = tokio::spawn(origin(
+        allowed_listener,
+        allowed_seen.clone(),
+        allowed_ready.clone(),
+    ));
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+    let stream = UnixStream::connect(&socket).await.unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let allowed_uri: Uri = format!("http://127.0.0.1:{allowed_port}/reuse-first")
+        .parse()
+        .unwrap();
+
+    // The first request is admitted on this H1 connection and reaches the
+    // controlled origin. A later denial must not poison its reusable state.
+    let first = send(&mut sender, allowed_uri.clone(), "Bearer key-reuse").await;
+    assert_eq!(first.status(), 200);
+    let first_id = response_request_id(&first);
+    let _ = first.collect().await.unwrap();
+    allowed_ready.notified().await;
+
+    let forbidden_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let forbidden_port = forbidden_listener.local_addr().unwrap().port();
+    let forbidden_seen = Arc::new(Mutex::new(None));
+    let forbidden_ready = Arc::new(Notify::new());
+    let forbidden_task = tokio::spawn(live_receiver(
+        forbidden_listener,
+        forbidden_seen.clone(),
+        forbidden_ready.clone(),
+    ));
+    forbidden_ready.notified().await;
+    let denied = send(
+        &mut sender,
+        format!("http://127.0.0.2:{forbidden_port}/reuse-denied")
+            .parse()
+            .unwrap(),
+        "Bearer key-reuse",
+    )
+    .await;
+    assert_eq!(denied.status(), 428);
+    let denied_id = response_request_id(&denied);
+    let _ = denied.collect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        forbidden_seen.lock().unwrap().is_none(),
+        "reused H1 denial reached the forbidden receiver"
+    );
+
+    // The same sender remains usable after the local denial. This third
+    // decision also gives the reviewer an exact allow/deny/allow sequence.
+    let third = send(&mut sender, allowed_uri, "Bearer key-reuse").await;
+    assert_eq!(third.status(), 200);
+    let third_id = response_request_id(&third);
+    let _ = third.collect().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while allowed_seen.lock().unwrap().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let live_stats = stats(&directory).await;
+    assert_eq!(live_stats["credential-guard"]["violations_total"], 1);
+    drop(sender);
+    let _ = connection_task.await;
+    forbidden_task.abort();
+    proxy.shutdown().await;
+    allowed_task.abort();
+
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let guard_events = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "proxy.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_events.len(), 3);
+    let event = |request_id: &str| {
+        guard_events
+            .iter()
+            .find(|event| event["request_id"] == request_id)
+            .unwrap()
+    };
+    let first_event = event(&first_id);
+    let denied_event = event(&denied_id);
+    let third_event = event(&third_id);
+    assert_eq!(first_event["outcome"], "allowed");
+    assert_eq!(denied_event["outcome"], "blocked");
+    assert_eq!(third_event["outcome"], "allowed");
+    assert_eq!(first_event["agent"], "alice");
+    assert_eq!(denied_event["agent"], "alice");
+    assert_eq!(third_event["agent"], "alice");
+    let connection_id = first_event["connection_id"].as_str().unwrap();
+    assert!(!connection_id.is_empty());
+    assert_eq!(denied_event["connection_id"], connection_id);
+    assert_eq!(third_event["connection_id"], connection_id);
+    assert!(guard_events.iter().all(|event| {
+        event["evaluations"]
+            .as_array()
+            .is_some_and(|evaluations| !evaluations.is_empty())
+    }));
+    assert!(!events.contains("key-reuse"));
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-reuse"));
 }
 
 #[tokio::test]
