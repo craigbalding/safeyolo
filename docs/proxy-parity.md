@@ -249,7 +249,7 @@ checked.
 | PUT `/admin/proxy/ignore-hosts` | Delegated | Passthrough/ignore semantics belong to #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
 | Add/remove listeners through retained operator consumers | Missing | No native listener mutation route; startup configuration remains process-owned. |
-| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events and owned shutdown task. |
+| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`; its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. |
 | GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
 
 ## TLS and WebSocket library risks

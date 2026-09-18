@@ -3,13 +3,14 @@
 //! bound admin TCP listener and the event stream is a real WebSocket upgrade.
 
 use std::{
+    io::Write as _,
     net::Ipv4Addr,
     path::Path,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -21,7 +22,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UnixStream},
+    net::{TcpListener, TcpSocket, TcpStream, UnixStream},
     sync::Notify,
 };
 
@@ -176,23 +177,7 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     assert_eq!(agents.status, 200);
     assert_eq!(agents.json()["agents"].as_array().unwrap().len(), 1);
 
-    let mut events = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
-        .await
-        .unwrap();
-    events
-        .write_all(
-            format!(
-                "GET /admin/events HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n\
-                 Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
-                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-                 Authorization: Bearer {token}\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
-    let handshake = read_headers(&mut events).await;
-    assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    let mut events = connect_events(port, token).await;
 
     let live_event = admin(
         port,
@@ -258,6 +243,7 @@ use_default_credential_rules = false
     let origin_task = tokio::spawn(approval_origin(origin, origin_count.clone(), origin_ready));
     let proxy = Proxy::start(config.clone()).await.unwrap();
     let port = admin_port(&config);
+    let mut events = connect_events(port, token).await;
 
     let stream = UnixStream::connect(directory.path().join("alice.sock"))
         .await
@@ -275,6 +261,20 @@ use_default_credential_rules = false
     let first_response_id = agent_request_id(&first);
     let _ = first.collect().await.unwrap();
     assert_eq!(origin_count.load(Ordering::Acquire), 0);
+
+    let prompt_event = read_event(&mut events).await;
+    assert_eq!(prompt_event["event"], "security.credential_guard");
+    assert_eq!(prompt_event["request_id"], first_response_id);
+    assert_eq!(prompt_event["agent"], "alice");
+    assert_eq!(
+        prompt_event["details"]["attribution"]["evidence_owner"],
+        "alice"
+    );
+    assert_eq!(
+        prompt_event["details"]["attribution"]["trusted_transport_identity"],
+        "alice"
+    );
+    assert_eq!(prompt_event["approval"]["required"], true);
 
     let first_pending = wait_for_pending(port, token, None).await;
     let first_event = first_pending["approvals"]
@@ -302,12 +302,24 @@ use_default_credential_rules = false
         200
     );
 
+    let denial_event = read_event(&mut events).await;
+    assert_eq!(denial_event["event"], "admin.denial");
+    assert_eq!(
+        denial_event["details"]["approval_request_id"],
+        first_prompt_id
+    );
+
     let second = agent_request(&mut sender, uri, "Bearer key-retry").await;
     assert_eq!(second.status(), 428);
     let second_response_id = agent_request_id(&second);
     let _ = second.collect().await.unwrap();
     assert_ne!(first_response_id, second_response_id);
     assert_eq!(origin_count.load(Ordering::Acquire), 0);
+
+    let retry_event = read_event(&mut events).await;
+    assert_eq!(retry_event["event"], "security.credential_guard");
+    assert_eq!(retry_event["request_id"], second_response_id);
+    assert_eq!(retry_event["agent"], "alice");
 
     let second_pending = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -323,10 +335,222 @@ use_default_credential_rules = false
     .unwrap();
     assert!(second_pending["approvals"].as_array().unwrap().is_empty());
 
+    events.shutdown().await.unwrap();
     drop(sender);
     let _ = connection_task.await;
     proxy.shutdown().await;
     origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_operator_event_reconnect_does_not_replay_old_events() {
+    let directory = TempDir::new().unwrap();
+    let token = "operator-controls-synthetic";
+    let config = config(directory.path(), token);
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+
+    let mut first = connect_events(port, token).await;
+    assert_eq!(
+        admin(
+            port,
+            token,
+            "POST",
+            "/admin/policy/baseline/deny",
+            br#"{"destination":"before-reconnect.example","cred_id":"synthetic:old","reason":"fixture"}"#,
+        )
+        .await
+        .status,
+        200
+    );
+    let old_event = read_event(&mut first).await;
+    assert_eq!(
+        old_event["details"]["destination"],
+        "before-reconnect.example"
+    );
+    first.shutdown().await.unwrap();
+
+    let mut reconnect = connect_events(port, token).await;
+    let replay =
+        tokio::time::timeout(Duration::from_millis(250), read_ws_frame(&mut reconnect)).await;
+    assert!(
+        replay.is_err(),
+        "reconnect replayed an event from before its handshake"
+    );
+
+    assert_eq!(
+        admin(
+            port,
+            token,
+            "POST",
+            "/admin/policy/baseline/deny",
+            br#"{"destination":"after-reconnect.example","cred_id":"synthetic:new","reason":"fixture"}"#,
+        )
+        .await
+        .status,
+        200
+    );
+    let live_event = read_event(&mut reconnect).await;
+    assert_eq!(live_event["event"], "admin.denial");
+    assert_eq!(
+        live_event["details"]["destination"],
+        "after-reconnect.example"
+    );
+
+    reconnect.shutdown().await.unwrap();
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn native_operator_stalled_event_subscriber_does_not_block_controls() {
+    let directory = TempDir::new().unwrap();
+    let token = "operator-controls-synthetic";
+    let policy = r#"
+budget = 10
+
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+
+[[permissions]]
+action = "credential:use"
+resource = "*"
+effect = "prompt"
+
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-[a-z]+"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+
+[addons.credential_guard]
+enabled = true
+
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+"#;
+    let config = config_with_policy(directory.path(), token, policy);
+    let origin = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let origin_count = Arc::new(AtomicUsize::new(0));
+    let origin_task = tokio::spawn(approval_origin(
+        origin,
+        origin_count.clone(),
+        Arc::new(Notify::new()),
+    ));
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let port = admin_port(&config);
+    let mut stalled = connect_stalled_events(port, token).await;
+    let mut observer = connect_events(port, token).await;
+
+    // Keep `stalled` connected but never read from it. Each complete selected
+    // event is 256 KiB and the burst is larger than TCP's send buffer. The
+    // second real WebSocket drains the same burst and waits for its final
+    // marker, providing a stream-tail barrier instead of a timer.
+    let summary = "x".repeat(256 * 1024);
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(config.audit_log_path.as_ref().unwrap())
+        .unwrap();
+    for sequence in 0..32 {
+        let line = serde_json::to_vec(&json!({
+            "event":"security.credential_guard",
+            "kind":"security",
+            "severity":"critical",
+            "summary":summary,
+            "details":{"sequence":sequence}
+        }))
+        .unwrap();
+        file.write_all(&line).unwrap();
+        file.write_all(b"\n").unwrap();
+    }
+    file.write_all(
+        serde_json::to_string(&json!({
+            "event":"security.credential_guard",
+            "kind":"security",
+            "severity":"critical",
+            "summary":"event stream backpressure barrier",
+            "details":{"barrier":true}
+        }))
+        .unwrap()
+        .as_bytes(),
+    )
+    .unwrap();
+    file.write_all(b"\n").unwrap();
+    file.flush().unwrap();
+
+    let (barrier, sequences) = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut sequences = Vec::new();
+        loop {
+            let event = read_event(&mut observer).await;
+            if event["details"]["barrier"] == true {
+                break (event, sequences);
+            }
+            sequences.push(event["details"]["sequence"].as_u64().unwrap());
+        }
+    })
+    .await
+    .expect("fast observer did not reach the stream-tail barrier");
+    assert_eq!(barrier["summary"], "event stream backpressure barrier");
+    assert_eq!(sequences, (0..32).collect::<Vec<_>>());
+
+    let mut discarded = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), stalled.read_to_end(&mut discarded))
+        .await
+        .expect("stalled stream did not reach EOF after the bounded server write timeout")
+        .unwrap();
+
+    let stream = UnixStream::connect(directory.path().join("alice.sock"))
+        .await
+        .unwrap();
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let uri: Uri = format!("http://127.0.0.1:{origin_port}/stalled")
+        .parse()
+        .unwrap();
+    let started = Instant::now();
+    let response = agent_request(&mut sender, uri, "Bearer key-stalled").await;
+    assert_eq!(response.status(), 428);
+    let _ = response.collect().await.unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "stalled event subscriber delayed enforcement"
+    );
+    assert_eq!(origin_count.load(Ordering::Acquire), 0);
+
+    drop(sender);
+    let _ = connection_task.await;
+    drop(stalled);
+    drop(observer);
+    proxy.shutdown().await;
+    origin_task.abort();
+}
+
+async fn connect_stalled_events(port: u16, token: &str) -> TcpStream {
+    let socket = TcpSocket::new_v4().unwrap();
+    socket.set_recv_buffer_size(4096).unwrap();
+    let mut events = socket
+        .connect((Ipv4Addr::LOCALHOST, port).into())
+        .await
+        .unwrap();
+    events
+        .write_all(
+            format!(
+                "GET /admin/events HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n\
+                 Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Authorization: Bearer {token}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let handshake = read_headers(&mut events).await;
+    assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    events
 }
 
 fn config(directory: &Path, token: &str) -> Config {
@@ -380,6 +604,33 @@ async fn approval_origin(listener: TcpListener, count: Arc<AtomicUsize>, ready: 
                 .await;
         });
     }
+}
+
+async fn connect_events(port: u16, token: &str) -> TcpStream {
+    let mut events = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+        .await
+        .unwrap();
+    events
+        .write_all(
+            format!(
+                "GET /admin/events HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\n\
+                 Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Authorization: Bearer {token}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let handshake = read_headers(&mut events).await;
+    assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    events
+}
+
+async fn read_event(stream: &mut TcpStream) -> Value {
+    let (header, body) = read_ws_frame(stream).await;
+    assert_eq!(header[0] & 0x0f, 1);
+    serde_json::from_slice(&body).unwrap()
 }
 
 async fn wait_for_pending(port: u16, token: &str, request_id: Option<&str>) -> Value {

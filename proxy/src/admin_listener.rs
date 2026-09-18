@@ -511,23 +511,44 @@ async fn read_event_lines(path: &Path, offset: &mut u64, pending: &mut Vec<u8>) 
     if file.seek(std::io::SeekFrom::Start(*offset)).await.is_err() {
         return Vec::new();
     }
-    let mut chunk = vec![0u8; 16 * 1024];
-    let Ok(read) = file.read(&mut chunk).await else {
-        return Vec::new();
-    };
-    if read == 0 {
-        return Vec::new();
-    }
-    *offset += read as u64;
-    pending.extend_from_slice(&chunk[..read]);
-    // A malformed producer line cannot grow the stream owner without limit.
-    if pending.len() > 1024 * 1024 {
-        if let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
-            pending.drain(..=newline);
-        } else {
+    // Drain a bounded batch so a reconnect or a burst of retained events does
+    // not spend one hundred milliseconds per 16 KiB chunk. The batch bound
+    // keeps this poll independent of the file's total size and leaves the
+    // partial-line limit below as the separate malformed-input guard.
+    let mut remaining = 1024 * 1024;
+    let mut saw_bytes = false;
+    let mut lines = Vec::new();
+    while remaining > 0 {
+        let mut chunk = vec![0u8; remaining.min(16 * 1024)];
+        let Ok(read) = file.read(&mut chunk).await else {
+            return Vec::new();
+        };
+        if read == 0 {
+            break;
+        }
+        saw_bytes = true;
+        *offset += read as u64;
+        remaining -= read;
+        pending.extend_from_slice(&chunk[..read]);
+        let complete = extract_event_lines(pending);
+        lines.extend(complete);
+        // Only an unterminated line is subject to this cap. Complete lines
+        // were extracted above, so a valid batch cannot lose its first event
+        // merely because several lines crossed the aggregate bound.
+        if pending.len() > 1024 * 1024 {
             pending.clear();
         }
+        if read < chunk.len() {
+            break;
+        }
     }
+    if !saw_bytes {
+        return Vec::new();
+    }
+    lines
+}
+
+fn extract_event_lines(pending: &mut Vec<u8>) -> Vec<Vec<u8>> {
     let mut lines = Vec::new();
     while let Some(newline) = pending.iter().position(|byte| *byte == b'\n') {
         let mut line = pending.drain(..=newline).collect::<Vec<_>>();
@@ -632,6 +653,53 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let event: serde_json::Value = serde_json::from_slice(&lines[0]).unwrap();
         assert_eq!(event["event"], "admin.host_allowed");
+    }
+
+    #[tokio::test]
+    async fn complete_lines_survive_the_bounded_batch_when_their_total_exceeds_one_mib() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        let target_len = 262_248;
+        let empty = serde_json::to_vec(&serde_json::json!({
+            "event":"security.credential_guard",
+            "kind":"security",
+            "severity":"critical",
+            "summary":"",
+            "details":{"sequence":0}
+        }))
+        .unwrap();
+        let summary_len = target_len - empty.len();
+        let mut source = Vec::new();
+        for sequence in 0..5 {
+            let line = serde_json::to_vec(&serde_json::json!({
+                "event":"security.credential_guard",
+                "kind":"security",
+                "severity":"critical",
+                "summary":"x".repeat(summary_len),
+                "details":{"sequence":sequence}
+            }))
+            .unwrap();
+            assert_eq!(line.len(), target_len);
+            source.extend_from_slice(&line);
+            source.push(b'\n');
+        }
+        std::fs::write(&path, source).unwrap();
+
+        let mut offset = 0;
+        let mut pending = Vec::new();
+        let mut lines = Vec::new();
+        while lines.len() < 5 {
+            lines.extend(read_event_lines(&path, &mut offset, &mut pending).await);
+        }
+        let sequences = lines
+            .iter()
+            .map(|line| {
+                serde_json::from_slice::<serde_json::Value>(line).unwrap()["details"]["sequence"]
+                    .as_u64()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, (0..5).collect::<Vec<_>>());
     }
 
     #[tokio::test]
