@@ -784,6 +784,30 @@ struct Connected {
     observation: crate::traffic_view::UpstreamConnectionObservation,
 }
 
+#[cfg(test)]
+struct TestDialBarrier {
+    target: String,
+    reached: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+static TEST_DIAL_BARRIER: std::sync::OnceLock<Mutex<Option<Arc<TestDialBarrier>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+async fn wait_test_dial_barrier(host: &str, port: u16) {
+    let barrier = TEST_DIAL_BARRIER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    if let Some(barrier) = barrier.filter(|barrier| barrier.target == format!("{host}:{port}")) {
+        barrier.reached.notify_one();
+        barrier.release.notified().await;
+    }
+}
+
 pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Error> {
     let mut roots = RootCertStore::empty();
     let native = rustls_native_certs::load_native_certs();
@@ -2213,6 +2237,8 @@ where
             host: &destination.host,
             port: destination.port,
         });
+        #[cfg(test)]
+        wait_test_dial_barrier(&destination.host, destination.port).await;
         let connected = open_egress_for_flow(
             &runtime,
             &AllowedRequest {
@@ -3627,6 +3653,11 @@ pub(crate) fn serve_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream, UnixStream},
+    };
 
     async fn held_callsite_timeout<T>(
         operation: impl Future<Output = Result<T, Error>>,
@@ -3647,50 +3678,235 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn passthrough_snapshot_survives_replacement_while_dial_is_pending() {
-        let host = "pending.example.test";
-        let port = 443;
-        let current = Arc::new(std::sync::RwLock::new(
-            crate::tunnels::Passthrough::new(&[format!("{host}:{port}")], "").unwrap(),
-        ));
-        let snapshot = current.read().unwrap().clone();
-        let admitted = snapshot.matches(host, port, None);
-        assert!(admitted);
+    fn race_config(
+        directory: &std::path::Path,
+        token: &str,
+        initial_ignore: &str,
+    ) -> crate::Config {
+        let policy = directory.join("policy.toml");
+        std::fs::write(
+            &policy,
+            "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"allow\"\n",
+        )
+        .unwrap();
+        std::fs::write(directory.join("operator-token"), token).unwrap();
+        serde_json::from_value(json!({
+            "listeners": [{
+                "agent_id": "alice",
+                "socket_path": directory.join("alice.sock")
+            }],
+            "policy_file": policy,
+            "data_dir": directory.join("data"),
+            "agent_api_enabled": false,
+            "admin_port": 0,
+            "admin_api_token_file": directory.join("operator-token"),
+            "readiness_file": directory.join("ready.json"),
+            "flow_store_enabled": false,
+            "audit_log_path": directory.join("audit.jsonl"),
+            "event_log": directory.join("events.jsonl"),
+            "ignore_hosts": [initial_ignore]
+        }))
+        .unwrap()
+    }
 
-        let dial_started = Arc::new(tokio::sync::Notify::new());
-        let release_dial = Arc::new(tokio::sync::Notify::new());
-        let started = dial_started.clone();
-        let release = release_dial.clone();
-        let address = "127.0.0.1:443".parse().unwrap();
-        let pending_dial = tokio::spawn(async move {
-            resolve_and_connect_egress(
-                None,
-                || async move { Ok::<_, Error>(vec![address]) },
-                move |_address| {
-                    started.notify_one();
-                    let release = release.clone();
-                    async move {
-                        release.notified().await;
-                        Ok::<_, Error>(())
-                    }
-                },
-                |_address| true,
-                || Ok(()),
+    fn race_admin_port(config: &crate::Config) -> u16 {
+        let ready: Value =
+            serde_json::from_slice(&std::fs::read(&config.readiness_file).unwrap()).unwrap();
+        ready["admin_port"].as_u64().unwrap().try_into().unwrap()
+    }
+
+    async fn race_admin_update(port: u16, token: &str, hosts: &[String]) -> Value {
+        let body = serde_json::to_vec(&json!({"hosts": hosts})).unwrap();
+        let request = format!(
+            "PUT /admin/proxy/ignore-hosts HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let split = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("admin response headers");
+        assert!(response.starts_with(b"HTTP/1.1 200 "), "{response:?}");
+        serde_json::from_slice(&response[split + 4..]).unwrap()
+    }
+
+    async fn race_connect(socket: std::path::PathBuf, authority: String) -> UnixStream {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
             )
             .await
+            .unwrap();
+        let mut response = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).await.unwrap();
+            response.push(byte[0]);
+            if response.ends_with(b"\r\n\r\n") {
+                break;
+            }
+            assert!(
+                response.len() < 16_384,
+                "CONNECT response headers too large"
+            );
+        }
+        assert!(response.starts_with(b"HTTP/1.1 200 "), "{response:?}");
+        stream
+    }
+
+    fn passthrough_events(path: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|event| {
+                matches!(
+                    event["event"].as_str(),
+                    Some("traffic.passthrough_start") | Some("traffic.passthrough_end")
+                )
+            })
+            .collect()
+    }
+
+    fn install_test_dial_barrier(barrier: Option<Arc<TestDialBarrier>>) {
+        *TEST_DIAL_BARRIER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = barrier;
+    }
+
+    struct TestDialBarrierGuard;
+
+    impl Drop for TestDialBarrierGuard {
+        fn drop(&mut self) {
+            install_test_dial_barrier(None);
+        }
+    }
+
+    #[tokio::test]
+    async fn passthrough_snapshot_controls_real_connect_after_live_update() {
+        let _barrier_guard = TestDialBarrierGuard;
+        let directory = tempfile::tempdir().unwrap();
+        let token = "dial-race-admin";
+        let origin_bytes = b"\x16\x03\x03\x00\x0eopaque-initial";
+        let (origin, origin_addr) = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map(|listener| {
+                let address = listener.local_addr().unwrap();
+                (listener, address)
+            })
+            .unwrap();
+        let first_authority = origin_addr.to_string();
+        let first_received = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut received = vec![0; origin_bytes.len()];
+            stream.read_exact(&mut received).await.unwrap();
+            received
         });
-        dial_started.notified().await;
+        let config = race_config(directory.path(), token, &first_authority);
+        let proxy = crate::Proxy::start(config.clone()).await.unwrap();
+        let admin_port = race_admin_port(&config);
+        let first_barrier = Arc::new(TestDialBarrier {
+            target: first_authority.clone(),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        install_test_dial_barrier(Some(first_barrier.clone()));
+        let first_client = tokio::spawn(race_connect(
+            directory.path().join("alice.sock"),
+            first_authority.clone(),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), first_barrier.reached.notified())
+            .await
+            .expect("CONNECT reaches production matcher barrier");
+        let update = race_admin_update(admin_port, token, &[]).await;
+        assert_eq!(update["operator_entry_count"], 0);
+        first_barrier.release.notify_one();
+        let mut first_client = tokio::time::timeout(Duration::from_secs(2), first_client)
+            .await
+            .expect("CONNECT completes after live removal")
+            .unwrap();
+        first_client.write_all(origin_bytes).await.unwrap();
+        first_client.shutdown().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), first_received)
+                .await
+                .expect("origin receives opaque bytes")
+                .unwrap(),
+            origin_bytes
+        );
 
-        // The live admin set changes while the socket is still in its dial
-        // phase. The pending connection must keep using its earlier snapshot.
-        *current.write().unwrap() = crate::tunnels::Passthrough::new(&[], "").unwrap();
-        release_dial.notify_one();
-        pending_dial.await.unwrap().unwrap();
-
-        let post_resolution = snapshot.matches(host, port, Some("127.0.0.1".parse().unwrap()));
-        assert_eq!(post_resolution, admitted);
-        assert!(!current.read().unwrap().matches(host, port, None));
+        let (origin, origin_addr) = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map(|listener| {
+                let address = listener.local_addr().unwrap();
+                (listener, address)
+            })
+            .unwrap();
+        let second_authority = origin_addr.to_string();
+        let second_received = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut received = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut received))
+                .await
+                .expect("inspected origin closes")
+                .unwrap();
+            received
+        });
+        let second_barrier = Arc::new(TestDialBarrier {
+            target: second_authority.clone(),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        install_test_dial_barrier(Some(second_barrier.clone()));
+        let second_client = tokio::spawn(race_connect(
+            directory.path().join("alice.sock"),
+            second_authority.clone(),
+        ));
+        tokio::time::timeout(Duration::from_secs(2), second_barrier.reached.notified())
+            .await
+            .expect("second CONNECT reaches production matcher barrier");
+        let update =
+            race_admin_update(admin_port, token, std::slice::from_ref(&second_authority)).await;
+        assert_eq!(update["operator_entry_count"], 1);
+        second_barrier.release.notify_one();
+        let mut second_client = tokio::time::timeout(Duration::from_secs(2), second_client)
+            .await
+            .expect("CONNECT completes after live addition")
+            .unwrap();
+        // This TLS prefix selects the inspection classifier. Because the
+        // pre-dial snapshot was empty, the update cannot turn it into opaque
+        // passthrough; with no configured CA the production inspection path
+        // closes before forwarding any client bytes to the origin.
+        second_client.write_all(origin_bytes).await.unwrap();
+        second_client.shutdown().await.unwrap();
+        let received = tokio::time::timeout(Duration::from_secs(2), second_received)
+            .await
+            .expect("inspected origin task completes")
+            .unwrap();
+        assert!(
+            received.is_empty(),
+            "live addition must not admit passthrough"
+        );
+        proxy.shutdown().await;
+        let events = passthrough_events(&directory.path().join("audit.jsonl"));
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event["event"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["traffic.passthrough_start", "traffic.passthrough_end"]
+        );
     }
 
     #[tokio::test(start_paused = true)]
