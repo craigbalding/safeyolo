@@ -21,8 +21,10 @@ use async_nats::jetstream::{
 use bytes::Bytes;
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
+use ring::digest::{Context, SHA256};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Value, json};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{AuditIntent, AuditKind, Outcome, Request, RequestBody, agent, response};
 
@@ -35,6 +37,8 @@ const NATS_USER: &str = "safeyolo";
 const CURRENT_SCHEMA_VERSION: i64 = 5;
 const MAX_DECLARATIONS_PER_AGENT: usize = 32;
 const MAX_DECLARATION_TTL_SECONDS: i64 = 3600;
+const PROJECTION_PAGE: u64 = 200;
+const RECOVERY_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug)]
 enum CoordError {
@@ -46,9 +50,15 @@ enum CoordError {
     PublishUnknown,
 }
 
-/// Process-owned coordination client.  The client object is retained when a
-/// Runtime is reloaded, so all native Agent API requests use the same NATS
-/// connection and durable SQLite/NATS namespace.
+#[derive(Clone, Copy)]
+enum ProjectionOutcome {
+    Projected,
+    Lost,
+}
+
+/// Process-owned coordination state. Runtime reloads replace only the
+/// policy-facing facade, retaining this NATS connection, namespace, and
+/// cleanup owner across accepted Runtime publications.
 struct CoordCleanup {
     pending: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -92,15 +102,14 @@ impl CoordCleanup {
     }
 }
 
-pub struct CoordClient {
+pub(crate) struct CoordOwner {
     data_dir: PathBuf,
-    policy_file: Option<PathBuf>,
     nats: tokio::sync::Mutex<Option<async_nats::Client>>,
     cleanup: Arc<CoordCleanup>,
 }
 
-impl CoordClient {
-    pub(crate) fn new(policy_file: Option<PathBuf>) -> Self {
+impl CoordOwner {
+    fn new() -> Self {
         let data_dir = std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
             .map(PathBuf::from)
             .or_else(|| {
@@ -111,18 +120,42 @@ impl CoordClient {
             .unwrap_or_else(|| PathBuf::from(".safeyolo/data/coord"));
         Self {
             data_dir,
-            policy_file,
             nats: tokio::sync::Mutex::new(None),
             cleanup: Arc::new(CoordCleanup::new()),
         }
     }
+}
+
+/// Runtime-scoped policy facade over process-owned coordination state.
+/// Rejected reload candidates are dropped with this facade and leave the
+/// previously active policy path untouched.
+pub struct CoordClient {
+    owner: Arc<CoordOwner>,
+    policy_file: Option<PathBuf>,
+}
+
+impl CoordClient {
+    pub(crate) fn new(policy_file: Option<PathBuf>) -> Self {
+        Self::with_owner(Arc::new(CoordOwner::new()), policy_file)
+    }
+
+    pub(crate) fn with_owner(owner: Arc<CoordOwner>, policy_file: Option<PathBuf>) -> Self {
+        Self {
+            owner,
+            policy_file,
+        }
+    }
+
+    pub(crate) fn owner(&self) -> Arc<CoordOwner> {
+        self.owner.clone()
+    }
 
     pub(crate) async fn shutdown(&self) {
-        self.cleanup.drain().await;
+        self.owner.cleanup.drain().await;
     }
 
     async fn client(&self) -> Result<async_nats::Client, CoordError> {
-        let mut current = self.nats.lock().await;
+        let mut current = self.owner.nats.lock().await;
         if let Some(client) = current.as_ref()
             && matches!(
                 client.connection_state(),
@@ -132,7 +165,7 @@ impl CoordClient {
             return Ok(client.clone());
         }
         let url = self.nats_url();
-        let password = std::fs::read(self.data_dir.join("nats/creds"))
+        let password = std::fs::read(self.owner.data_dir.join("nats/creds"))
             .map_err(|_| CoordError::Unavailable)?;
         let password = std::str::from_utf8(&password)
             .map_err(|_| CoordError::Unavailable)?
@@ -156,7 +189,7 @@ impl CoordClient {
         if let Some(url) = std::env::var_os("SAFEYOLO_COORD_NATS_URL") {
             return url.to_string_lossy().into_owned();
         }
-        let endpoint = self.data_dir.join("nats/test-endpoints.json");
+        let endpoint = self.owner.data_dir.join("nats/test-endpoints.json");
         if let Ok(bytes) = std::fs::read(endpoint)
             && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
             && let Some(port) = value.get("client_port").and_then(Value::as_u64)
@@ -196,7 +229,7 @@ impl CoordClient {
     }
 
     async fn access(&self, room: &str, principal: &str) -> Result<RoomAccess, CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let room = room.to_owned();
         let principal = principal.to_owned();
         tokio::task::spawn_blocking(move || read_access(&db, &room, &principal))
@@ -247,7 +280,7 @@ impl CoordClient {
         principal: &str,
         _access: &RoomAccess,
     ) -> Result<Value, CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let room = room_name.to_owned();
         let principal = principal.to_owned();
         let data = tokio::task::spawn_blocking(move || {
@@ -345,7 +378,7 @@ impl CoordClient {
         capabilities: &[String],
         ttl_seconds: i64,
     ) -> Result<Value, CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let room = room_name.to_owned();
         let principal = principal.to_owned();
         let capabilities = capabilities.to_vec();
@@ -362,7 +395,7 @@ impl CoordClient {
         since: u64,
         limit: usize,
     ) -> Result<FeedPage, CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let principal = principal.to_owned();
         tokio::task::spawn_blocking(move || read_attention_feed(&db, &principal, since, limit))
             .await
@@ -374,7 +407,7 @@ impl CoordClient {
         principal: &str,
         edge: &AttentionEdge,
     ) -> Result<(), CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let principal = principal.to_owned();
         let attention_id = edge.attention_id.clone();
         let expected = edge.clone();
@@ -397,27 +430,42 @@ impl CoordClient {
             return Ok(page);
         }
         // A definite JetStream acknowledgement can precede a process crash
-        // before the SQLite attention projection.  Recover accepted manifests
-        // from retained messages before entering the bounded wait, so a
-        // pending response remains truthful and eventually resolvable.
-        self.recover_attention(principal).await?;
+        // before the SQLite attention projection. Recover accepted manifests
+        // from retained messages before entering the long poll, and close
+        // every provider failure with one more authoritative ledger read.
+        if let Err(error) = self.recover_attention(principal).await {
+            let ledger = self.attention_feed(principal, since, limit).await;
+            return match ledger {
+                Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                _ => Err(error),
+            };
+        }
         let page = self.attention_feed(principal, since, limit).await?;
         if !page.edges.is_empty() || page.next_cursor != since {
             return Ok(page);
         }
         let connection = self.client().await?;
         let subject = format!("coord.attention.{principal}");
-        let mut subscription = connection
-            .subscribe(subject)
-            .await
-            .map_err(|_| CoordError::Unavailable)?;
-        connection
-            .flush()
-            .await
-            .map_err(|_| CoordError::Unavailable)?;
+        let mut subscription = match connection.subscribe(subject).await {
+            Ok(subscription) => subscription,
+            Err(_) => {
+                let ledger = self.attention_feed(principal, since, limit).await;
+                return match ledger {
+                    Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                    _ => Err(CoordError::Unavailable),
+                };
+            }
+        };
+        if connection.flush().await.is_err() {
+            let _ = subscription.unsubscribe().await;
+            let ledger = self.attention_feed(principal, since, limit).await;
+            return match ledger {
+                Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                _ => Err(CoordError::Unavailable),
+            };
+        }
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs_f64(timeout_seconds.max(0.0));
-        let mut recovery_attempts = 0;
         let mut next_recovery = tokio::time::Instant::now();
         loop {
             let page = self.attention_feed(principal, since, limit).await?;
@@ -427,14 +475,24 @@ impl CoordClient {
             }
             // A publisher can have a confirmed JetStream publish while its
             // SQLite projection is still missing, so no attention hint is
-            // guaranteed.  Re-scan the retained stream a bounded number of
-            // times after subscribing to cover that crash window without
-            // turning a wait into an unbounded recovery loop.
+            // guaranteed. Re-scan the retained stream at each recovery
+            // interval for the entire long-poll deadline.
             let now = tokio::time::Instant::now();
-            if recovery_attempts < 3 && now >= next_recovery {
-                self.recover_attention(principal).await?;
-                recovery_attempts += 1;
-                next_recovery = now + Duration::from_millis(250);
+            if now >= next_recovery {
+                if let Err(error) = self.recover_attention(principal).await {
+                    let ledger = self.attention_feed(principal, since, limit).await;
+                    return match ledger {
+                        Ok(page) if !page.edges.is_empty() || page.next_cursor != since => {
+                            let _ = subscription.unsubscribe().await;
+                            Ok(page)
+                        }
+                        _ => {
+                            let _ = subscription.unsubscribe().await;
+                            Err(error)
+                        }
+                    };
+                }
+                next_recovery = now + RECOVERY_INTERVAL;
                 let recovered = self.attention_feed(principal, since, limit).await?;
                 if !recovered.edges.is_empty() || recovered.next_cursor != since {
                     let _ = subscription.unsubscribe().await;
@@ -450,12 +508,26 @@ impl CoordClient {
                 let _ = subscription.unsubscribe().await;
                 return Ok(page);
             }
-            let _ = tokio::time::timeout(remaining, subscription.next()).await;
+            let until_recovery = next_recovery
+                .checked_duration_since(tokio::time::Instant::now())
+                .unwrap_or_default();
+            let wait_for = remaining.min(until_recovery.max(Duration::from_millis(1)));
+            if matches!(
+                tokio::time::timeout(wait_for, subscription.next()).await,
+                Ok(None)
+            ) {
+                let ledger = self.attention_feed(principal, since, limit).await;
+                let _ = subscription.unsubscribe().await;
+                return match ledger {
+                    Ok(page) if !page.edges.is_empty() || page.next_cursor != since => Ok(page),
+                    _ => Err(CoordError::Unavailable),
+                };
+            }
         }
     }
 
     async fn recover_attention(&self, principal: &str) -> Result<(), CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let principal_owned = principal.to_owned();
         let rooms = tokio::task::spawn_blocking(move || {
             receive_room_generations(&db, &principal_owned)
@@ -477,18 +549,88 @@ impl CoordClient {
                 .await
                 .map(|info| (info.state.first_sequence, info.state.last_sequence))
                 .map_err(|_| CoordError::Unavailable)?;
-            let db = self.data_dir.clone();
-            let room_for_frontier = room_id.clone();
-            let frontier = tokio::task::spawn_blocking(move || {
-                projection_frontier(&db, &room_for_frontier)
-            })
+            let _ = self
+                .project_room_through(&room_id, &mut stream, state.1)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_room_projection(
+        &self,
+        room_id: &str,
+        stream: &mut jetstream::stream::Stream,
+    ) -> Result<(), CoordError> {
+        let last_sequence = stream
+            .info()
             .await
-            .map_err(|_| CoordError::Unavailable)??;
-            let start = state.0.max(frontier.saturating_add(1));
-            if start > state.1 {
+            .map(|info| info.state.last_sequence)
+            .map_err(|_| CoordError::Unavailable)?;
+        let db = self.owner.data_dir.clone();
+        let room_id = room_id.to_owned();
+        tokio::task::spawn_blocking(move || {
+            ensure_projection_baseline(&db, &room_id, last_sequence)
+        })
+        .await
+        .map_err(|_| CoordError::Unavailable)??;
+        Ok(())
+    }
+
+    async fn project_room_through(
+        &self,
+        room_id: &str,
+        stream: &mut jetstream::stream::Stream,
+        through_sequence: u64,
+    ) -> Result<ProjectionOutcome, CoordError> {
+        let db = self.owner.data_dir.clone();
+        let room_for_frontier = room_id.to_owned();
+        let mut frontier = tokio::task::spawn_blocking(move || {
+            ensure_projection_row(&db, &room_for_frontier)
+        })
+        .await
+        .map_err(|_| CoordError::Unavailable)??;
+        loop {
+            if frontier >= through_sequence {
+                return Ok(ProjectionOutcome::Projected);
+            }
+            let state = stream
+                .info()
+                .await
+                .map(|info| (info.state.first_sequence, info.state.last_sequence))
+                .map_err(|_| CoordError::Unavailable)?;
+            let next_sequence = frontier.saturating_add(1);
+            if state.0 > next_sequence {
+                let db = self.owner.data_dir.clone();
+                let room_for_gap = room_id.to_owned();
+                let gap = tokio::task::spawn_blocking(move || {
+                    advance_over_retention_gap(&db, &room_for_gap, frontier, state.0)
+                })
+                .await
+                .map_err(|_| CoordError::Unavailable)??;
+                match gap {
+                    GapAdvance::Advanced {
+                        frontier: advanced,
+                        lost_last,
+                    } => {
+                        frontier = advanced;
+                        if through_sequence <= lost_last {
+                            return Ok(ProjectionOutcome::Lost);
+                        }
+                    }
+                    GapAdvance::Conflict(current) => frontier = current,
+                }
                 continue;
             }
-            for sequence in start..=state.1 {
+            if next_sequence > state.1 {
+                return Err(CoordError::Unavailable);
+            }
+            let end_sequence = through_sequence.min(
+                frontier
+                    .saturating_add(PROJECTION_PAGE)
+                    .min(state.1),
+            );
+            let mut messages = Vec::new();
+            for sequence in next_sequence..=end_sequence {
                 let raw = stream
                     .get_raw_message(sequence)
                     .await
@@ -508,23 +650,24 @@ impl CoordClient {
                     Some(manifest) => manifest.recipients,
                     None => Vec::new(),
                 };
-                let db = self.data_dir.clone();
-                let room_for_materialize = room_id.clone();
-                let envelope_for_materialize = envelope.clone();
-                tokio::task::spawn_blocking(move || {
-                    materialize_attention(
-                        &db,
-                        &room_for_materialize,
-                        &envelope_for_materialize,
-                        &recipients,
-                        sequence,
-                    )
-                })
-                .await
-                .map_err(|_| CoordError::Unavailable)??;
+                messages.push(ProjectedMessage {
+                    sequence,
+                    envelope,
+                    recipients,
+                });
+            }
+            let db = self.owner.data_dir.clone();
+            let room_for_projection = room_id.to_owned();
+            match tokio::task::spawn_blocking(move || {
+                project_attention_prefix(&db, &room_for_projection, frontier, messages)
+            })
+            .await
+            .map_err(|_| CoordError::Unavailable)??
+            {
+                ProjectionCommit::Advanced(sequence) => frontier = sequence,
+                ProjectionCommit::Conflict(sequence) => frontier = sequence,
             }
         }
-        Ok(())
     }
 
     async fn attention_object(
@@ -532,7 +675,7 @@ impl CoordClient {
         principal: &str,
         attention_id: &str,
     ) -> Result<Value, CoordError> {
-        let db = self.data_dir.join("v0.db");
+        let db = self.owner.data_dir.join("v0.db");
         let principal_owned = principal.to_owned();
         let attention_owned = attention_id.to_owned();
         let edge = tokio::task::spawn_blocking(move || {
@@ -541,7 +684,7 @@ impl CoordClient {
         .await
         .map_err(|_| CoordError::Unavailable)??;
         if edge.kind == "brief_changed" {
-            let db = self.data_dir.join("v0.db");
+            let db = self.owner.data_dir.join("v0.db");
             let edge_for_read = edge.clone();
             let object = tokio::task::spawn_blocking(move || {
                 read_brief_revision(&db, &edge_for_read)
@@ -648,6 +791,24 @@ struct AttentionManifest {
     recipients: Vec<Recipient>,
 }
 
+fn valid_attention_id(value: &str) -> bool {
+    value.len() == 37
+        && value.starts_with("attn-")
+        && value[5..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn valid_agent_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("ag-") else {
+        return false;
+    };
+    !suffix.is_empty()
+        && suffix.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+        })
+}
+
 fn parse_attention_manifest(
     header: Option<&str>,
     expected_msg_id: &str,
@@ -692,17 +853,13 @@ fn parse_attention_manifest(
         let attention_id = raw
             .get("attention_id")
             .and_then(Value::as_str)
-            .filter(|id| {
-                id.len() == 37
-                    && id.starts_with("attn-")
-                    && id[5..].bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
+            .filter(|id| valid_attention_id(id))
             .ok_or(CoordError::Data)?
             .to_owned();
         let agent_id = raw
             .get("agent_id")
             .and_then(Value::as_str)
-            .filter(|id| id.starts_with("ag-") && id.len() > 3 && id.len() <= 128)
+            .filter(|id| valid_agent_id(id))
             .ok_or(CoordError::Data)?
             .to_owned();
         let granted_at = raw
@@ -1159,157 +1316,379 @@ fn attention_event_id(attention_id: &str) -> String {
     format!("evt-{suffix}")
 }
 
-fn materialize_attention(
-    db: &Path,
-    room_id: &str,
-    envelope: &Value,
-    recipients: &[Recipient],
+struct ProjectedMessage {
     sequence: u64,
-) -> Result<(), CoordError> {
+    envelope: Value,
+    recipients: Vec<Recipient>,
+}
+
+enum ProjectionCommit {
+    Advanced(u64),
+    Conflict(u64),
+}
+
+enum GapAdvance {
+    Advanced { frontier: u64, lost_last: u64 },
+    Conflict(u64),
+}
+
+fn ensure_projection_row(db: &Path, room_id: &str) -> Result<u64, CoordError> {
     let conn = open_db(db, true)?;
-    let room_id_i = room_id.to_owned();
-    let msg_id = envelope
-        .get("msg_id")
-        .and_then(Value::as_str)
-        .ok_or(CoordError::Data)?;
-    let sent_at = envelope
-        .get("sent_at")
-        .and_then(Value::as_i64)
-        .ok_or(CoordError::Data)?;
-    let sequence_i64 = i64::try_from(sequence).map_err(|_| CoordError::Data)?;
-    conn.execute("BEGIN IMMEDIATE", []).map_err(|_| CoordError::Unavailable)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
     let result = (|| {
-        for recipient in recipients {
-            let existing = conn
-                .query_row(
-                    "SELECT attention_id, room_id, revision_or_sequence,
-                            membership_granted_at
-                     FROM coord_attention_edges
-                     WHERE recipient_agent_id = ?1 AND kind = 'message'
-                       AND object_id = ?2 AND membership_granted_at = ?3",
-                    params![recipient.agent_id, msg_id, recipient.membership_granted_at],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, i64>(2)?,
-                            row.get::<_, i64>(3)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(|_| CoordError::Data)?;
-            if let Some((existing_attention_id, existing_room_id, existing_sequence, existing_generation)) = existing {
-                if existing_attention_id != recipient.attention_id
-                    || existing_room_id != room_id_i
-                    || existing_sequence != sequence_i64
-                    || existing_generation != recipient.membership_granted_at
-                {
-                    return Err(CoordError::Data);
-                }
-                continue;
-            }
-            let attention_conflict = conn
-                .query_row(
-                    "SELECT recipient_agent_id, room_id, object_id,
-                            revision_or_sequence, membership_granted_at
-                     FROM coord_attention_edges WHERE attention_id = ?1",
-                    params![recipient.attention_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, i64>(4)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(|_| CoordError::Data)?;
-            if let Some((existing_recipient, existing_room, existing_object, existing_sequence, existing_generation)) = attention_conflict {
-                if existing_recipient != recipient.agent_id
-                    || existing_room != room_id_i
-                    || existing_object != msg_id
-                    || existing_sequence != sequence_i64
-                    || existing_generation != recipient.membership_granted_at
-                {
-                    return Err(CoordError::Data);
-                }
-                continue;
-            }
-            conn.execute(
-                "INSERT OR IGNORE INTO coord_attention_feeds
-                 (recipient_agent_id, last_sequence) VALUES (?1, 0)",
-                params![recipient.agent_id],
-            )
-            .map_err(|_| CoordError::Data)?;
-            let feed_sequence = conn
-                .query_row(
-                    "SELECT last_sequence + 1 FROM coord_attention_feeds
-                     WHERE recipient_agent_id = ?1",
-                    params![recipient.agent_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map_err(|_| CoordError::Data)?;
-            conn.execute(
-                "UPDATE coord_attention_feeds SET last_sequence = ?1
-                 WHERE recipient_agent_id = ?2",
-                params![feed_sequence, recipient.agent_id],
-            )
-            .map_err(|_| CoordError::Data)?;
-            conn.execute(
-                "INSERT INTO coord_attention_edges
-                 (recipient_agent_id, feed_sequence, attention_id, room_id, kind,
-                  object_id, revision_or_sequence, membership_granted_at, created_at)
-                 VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6, ?7, ?8)",
-                params![
-                    recipient.agent_id,
-                    feed_sequence,
-                    recipient.attention_id,
-                    room_id_i,
-                    msg_id,
-                    sequence_i64,
-                    recipient.membership_granted_at,
-                    sent_at,
-                ],
-            )
-            .map_err(|_| CoordError::Data)?;
-            let payload = json!({
-                "attention_id": recipient.attention_id,
-                "recipient_agent_id": recipient.agent_id,
-                "feed_sequence": feed_sequence,
-            });
-            conn.execute(
-                "INSERT OR IGNORE INTO coord_outbox
-                 (event_id, destination, event_type, payload_json, created_at)
-                 VALUES (?1, 'attention-nats', 'coord.attention_hint', ?2, ?3)",
-                params![
-                    attention_event_id(&recipient.attention_id),
-                    serde_json::to_string(&payload).map_err(|_| CoordError::Data)?,
-                    now_ms(),
-                ],
-            )
-            .map_err(|_| CoordError::Data)?;
-        }
-        // Materialization and the room-wide frontier are one projection
-        // transaction.  A recovery by Alice therefore cannot advance past a
-        // retained Bob edge before Bob's edge has also been materialized.
         conn.execute(
-            "INSERT INTO coord_message_attention_projection
-             (room_id, last_sequence, updated_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(room_id) DO UPDATE SET
-               last_sequence = MAX(last_sequence, excluded.last_sequence),
-               updated_at = excluded.updated_at",
-            params![room_id, sequence_i64, now_ms()],
+            "INSERT OR IGNORE INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
+            params![room_id, now_ms()],
         )
         .map_err(|_| CoordError::Data)?;
-        Ok::<_, CoordError>(())
+        conn.query_row(
+            "SELECT last_sequence FROM coord_message_attention_projection
+             WHERE room_id = ?1",
+            params![room_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|sequence| sequence.max(0) as u64)
+        .map_err(|_| CoordError::Data)
     })();
     match result {
+        Ok(sequence) => {
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
+            Ok(sequence)
+        }
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(error)
+        }
+    }
+}
+
+fn ensure_projection_baseline(
+    db: &Path,
+    room_id: &str,
+    baseline: u64,
+) -> Result<(), CoordError> {
+    let baseline = i64::try_from(baseline).map_err(|_| CoordError::Data)?;
+    let conn = open_db(db, true)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
+    let result = conn
+        .execute(
+            "INSERT OR IGNORE INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, ?2, ?3)",
+            params![room_id, baseline, now_ms()],
+        )
+        .map(|_| ());
+    match result {
         Ok(()) => {
-            conn.execute("COMMIT", []).map_err(|_| CoordError::Unavailable)?;
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
             Ok(())
+        }
+        Err(_) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(CoordError::Data)
+        }
+    }
+}
+
+fn projection_loss_event_id(room_id: &str, first: u64, last: u64) -> String {
+    let mut context = Context::new(&SHA256);
+    context.update(
+        format!("coord.attention_projection_lost\0{room_id}\0{first}\0{last}").as_bytes(),
+    );
+    let digest = context.finish();
+    let suffix = digest
+        .as_ref()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("evt-{suffix}")
+}
+
+fn advance_over_retention_gap(
+    db: &Path,
+    room_id: &str,
+    expected_frontier: u64,
+    retained_floor: u64,
+) -> Result<GapAdvance, CoordError> {
+    if retained_floor <= expected_frontier.saturating_add(1) {
+        return Ok(GapAdvance::Conflict(expected_frontier));
+    }
+    let lost_first = expected_frontier.saturating_add(1);
+    let lost_last = retained_floor.saturating_sub(1);
+    let expected_i64 = i64::try_from(expected_frontier).map_err(|_| CoordError::Data)?;
+    let lost_last_i64 = i64::try_from(lost_last).map_err(|_| CoordError::Data)?;
+    let conn = open_db(db, true)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
+    let result = (|| {
+        conn.execute(
+            "INSERT OR IGNORE INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
+            params![room_id, now_ms()],
+        )
+        .map_err(|_| CoordError::Data)?;
+        let current = conn
+            .query_row(
+                "SELECT last_sequence
+                 FROM coord_message_attention_projection WHERE room_id = ?1",
+                params![room_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| CoordError::Data)?;
+        if current != expected_i64 {
+            return Ok(ProjectionCommit::Conflict(current.max(0) as u64));
+        }
+        let event_id = projection_loss_event_id(room_id, lost_first, lost_last);
+        let timestamp = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .map_err(|_| CoordError::Data)?;
+        let payload = json!({
+            "schema_version": 1,
+            "event_id": event_id.clone(),
+            "ts": timestamp,
+            "event": "coord.attention_projection_lost",
+            "kind": "coord",
+            "severity": "medium",
+            "summary": "Coord attention projection lost to retention",
+            "addon": "coord",
+            "details": {
+                "room_id": room_id,
+                "from_sequence": lost_first,
+                "to_sequence": lost_last,
+            },
+        });
+        conn.execute(
+            "INSERT OR IGNORE INTO coord_outbox
+             (event_id, destination, event_type, payload_json, created_at)
+             VALUES (?1, 'audit-jsonl', 'coord.attention_projection_lost', ?2, ?3)",
+            params![
+                event_id,
+                serde_json::to_string(&payload).map_err(|_| CoordError::Data)?,
+                now_ms(),
+            ],
+        )
+        .map_err(|_| CoordError::Data)?;
+        let changed = conn
+            .execute(
+                "UPDATE coord_message_attention_projection
+                 SET last_sequence = ?1, updated_at = ?2
+                 WHERE room_id = ?3 AND last_sequence = ?4",
+                params![lost_last_i64, now_ms(), room_id, expected_i64],
+            )
+            .map_err(|_| CoordError::Data)?;
+        if changed != 1 {
+            return Err(CoordError::Data);
+        }
+        Ok(ProjectionCommit::Advanced(lost_last))
+    })();
+    match result {
+        Ok(ProjectionCommit::Advanced(frontier)) => {
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
+            Ok(GapAdvance::Advanced { frontier, lost_last })
+        }
+        Ok(ProjectionCommit::Conflict(frontier)) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Ok(GapAdvance::Conflict(frontier))
+        }
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(error)
+        }
+    }
+}
+
+fn project_attention_prefix(
+    db: &Path,
+    room_id: &str,
+    expected_frontier: u64,
+    messages: Vec<ProjectedMessage>,
+) -> Result<ProjectionCommit, CoordError> {
+    let Some(last_message) = messages.last() else {
+        return Ok(ProjectionCommit::Advanced(expected_frontier));
+    };
+    let expected_i64 = i64::try_from(expected_frontier).map_err(|_| CoordError::Data)?;
+    let last_sequence = last_message.sequence;
+    let last_sequence_i64 = i64::try_from(last_sequence).map_err(|_| CoordError::Data)?;
+    let conn = open_db(db, true)?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|_| CoordError::Unavailable)?;
+    let result = (|| {
+        conn.execute(
+            "INSERT OR IGNORE INTO coord_message_attention_projection
+             (room_id, last_sequence, updated_at) VALUES (?1, 0, ?2)",
+            params![room_id, now_ms()],
+        )
+        .map_err(|_| CoordError::Data)?;
+        let current = conn
+            .query_row(
+                "SELECT last_sequence
+                 FROM coord_message_attention_projection WHERE room_id = ?1",
+                params![room_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| CoordError::Data)?;
+        if current != expected_i64 {
+            return Ok(ProjectionCommit::Conflict(current.max(0) as u64));
+        }
+        let mut expected = expected_frontier.saturating_add(1);
+        for message in &messages {
+            if message.sequence != expected {
+                return Err(CoordError::Data);
+            }
+            let sequence_i64 = i64::try_from(message.sequence).map_err(|_| CoordError::Data)?;
+            let msg_id = message
+                .envelope
+                .get("msg_id")
+                .and_then(Value::as_str)
+                .ok_or(CoordError::Data)?;
+            let sent_at = message
+                .envelope
+                .get("sent_at")
+                .and_then(Value::as_i64)
+                .ok_or(CoordError::Data)?;
+            for recipient in &message.recipients {
+                let existing = conn
+                    .query_row(
+                        "SELECT attention_id, room_id, revision_or_sequence,
+                                membership_granted_at
+                         FROM coord_attention_edges
+                         WHERE recipient_agent_id = ?1 AND kind = 'message'
+                           AND object_id = ?2 AND membership_granted_at = ?3",
+                        params![recipient.agent_id, msg_id, recipient.membership_granted_at],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, i64>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|_| CoordError::Data)?;
+                if let Some((existing_attention_id, existing_room_id, existing_sequence, existing_generation)) = existing {
+                    if existing_attention_id != recipient.attention_id
+                        || existing_room_id != room_id
+                        || existing_sequence != sequence_i64
+                        || existing_generation != recipient.membership_granted_at
+                    {
+                        return Err(CoordError::Data);
+                    }
+                    continue;
+                }
+                let attention_conflict = conn
+                    .query_row(
+                        "SELECT recipient_agent_id, room_id, object_id,
+                                revision_or_sequence, membership_granted_at
+                         FROM coord_attention_edges WHERE attention_id = ?1",
+                        params![recipient.attention_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|_| CoordError::Data)?;
+                if let Some((existing_recipient, existing_room, existing_object, existing_sequence, existing_generation)) = attention_conflict {
+                    if existing_recipient != recipient.agent_id
+                        || existing_room != room_id
+                        || existing_object != msg_id
+                        || existing_sequence != sequence_i64
+                        || existing_generation != recipient.membership_granted_at
+                    {
+                        return Err(CoordError::Data);
+                    }
+                    continue;
+                }
+                conn.execute(
+                    "INSERT OR IGNORE INTO coord_attention_feeds
+                     (recipient_agent_id, last_sequence) VALUES (?1, 0)",
+                    params![recipient.agent_id],
+                )
+                .map_err(|_| CoordError::Data)?;
+                let feed_sequence = conn
+                    .query_row(
+                        "SELECT last_sequence + 1 FROM coord_attention_feeds
+                         WHERE recipient_agent_id = ?1",
+                        params![recipient.agent_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|_| CoordError::Data)?;
+                conn.execute(
+                    "UPDATE coord_attention_feeds SET last_sequence = ?1
+                     WHERE recipient_agent_id = ?2",
+                    params![feed_sequence, recipient.agent_id],
+                )
+                .map_err(|_| CoordError::Data)?;
+                conn.execute(
+                    "INSERT INTO coord_attention_edges
+                     (recipient_agent_id, feed_sequence, attention_id, room_id, kind,
+                      object_id, revision_or_sequence, membership_granted_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, 'message', ?5, ?6, ?7, ?8)",
+                    params![
+                        recipient.agent_id,
+                        feed_sequence,
+                        recipient.attention_id,
+                        room_id,
+                        msg_id,
+                        sequence_i64,
+                        recipient.membership_granted_at,
+                        sent_at,
+                    ],
+                )
+                .map_err(|_| CoordError::Data)?;
+                let payload = json!({
+                    "attention_id": recipient.attention_id,
+                    "recipient_agent_id": recipient.agent_id,
+                    "feed_sequence": feed_sequence,
+                });
+                conn.execute(
+                    "INSERT OR IGNORE INTO coord_outbox
+                     (event_id, destination, event_type, payload_json, created_at)
+                     VALUES (?1, 'attention-nats', 'coord.attention_hint', ?2, ?3)",
+                    params![
+                        attention_event_id(&recipient.attention_id),
+                        serde_json::to_string(&payload).map_err(|_| CoordError::Data)?,
+                        now_ms(),
+                    ],
+                )
+                .map_err(|_| CoordError::Data)?;
+            }
+            expected = expected.saturating_add(1);
+        }
+        let changed = conn
+            .execute(
+                "UPDATE coord_message_attention_projection
+                 SET last_sequence = ?1, updated_at = ?2
+                 WHERE room_id = ?3 AND last_sequence = ?4",
+                params![last_sequence_i64, now_ms(), room_id, expected_i64],
+            )
+            .map_err(|_| CoordError::Data)?;
+        if changed != 1 {
+            return Err(CoordError::Data);
+        }
+        Ok(ProjectionCommit::Advanced(last_sequence))
+    })();
+    match result {
+        Ok(ProjectionCommit::Advanced(sequence)) => {
+            conn.execute("COMMIT", [])
+                .map_err(|_| CoordError::Unavailable)?;
+            Ok(ProjectionCommit::Advanced(sequence))
+        }
+        Ok(ProjectionCommit::Conflict(sequence)) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Ok(ProjectionCommit::Conflict(sequence))
         }
         Err(error) => {
             let _ = conn.execute("ROLLBACK", []);
@@ -1345,21 +1724,6 @@ fn receive_room_generations(
         .map_err(|_| CoordError::Data)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CoordError::Data)
-}
-
-fn projection_frontier(db: &Path, room_id: &str) -> Result<u64, CoordError> {
-    let conn = open_db(db, false)?;
-    Ok(conn
-        .query_row(
-            "SELECT last_sequence FROM coord_message_attention_projection
-             WHERE room_id = ?1",
-            params![room_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|_| CoordError::Data)?
-        .unwrap_or(0)
-        .max(0) as u64)
 }
 
 #[derive(Clone)]
@@ -1512,7 +1876,7 @@ fn attention_object_route(request: Request<'_>) -> Option<String> {
         .decode_utf8()
         .ok()?
         .into_owned();
-    decoded.starts_with("attn-").then_some(decoded)
+    valid_attention_id(&decoded).then_some(decoded)
 }
 
 pub(super) fn is_route(request: Request<'_>) -> bool {
@@ -2035,10 +2399,6 @@ async fn send(
         Err(error) => return error_response(error),
     };
     let jetstream = jetstream::new(connection.clone());
-    let _stream = match jetstream.get_stream(room_stream(&access.room_id)).await {
-        Ok(stream) => stream,
-        Err(_) => return error_response(CoordError::Unavailable),
-    };
 
     // The SQLite grant is authoritative at the last provider boundary.  The
     // initial RoomAccess can be stale while stream lookup is in flight, so
@@ -2049,6 +2409,19 @@ async fn send(
     };
     if !access.permissions.iter().any(|permission| permission == "send") {
         return response(403, json!({"error":"permission 'send' denied"}));
+    }
+    let mut stream = match jetstream.get_stream(room_stream(&access.room_id)).await {
+        Ok(stream) => stream,
+        Err(_) => return error_response(CoordError::Unavailable),
+    };
+    // Establish the Stage-1 baseline before this process publishes its first
+    // manifest. Existing retained history is then outside the native
+    // projection contract, while an existing frontier remains untouched.
+    if let Err(error) = client
+        .ensure_room_projection(&access.room_id, &mut stream)
+        .await
+    {
+        return error_response(error);
     }
     let agent_ids = access
         .members
@@ -2153,25 +2526,15 @@ async fn send(
         Ok(ack) => ack.sequence,
         Err(_) => return publish_unknown_response(request),
     };
-    let db = client.data_dir.clone();
-    let room_id = access.room_id.clone();
-    let projection_envelope = envelope.clone();
-    let projection_recipients = recipients.clone();
-    let projected = tokio::task::spawn_blocking(move || {
-        materialize_attention(
-            &db,
-            &room_id,
-            &projection_envelope,
-            &projection_recipients,
-            sequence,
-        )
-    })
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .is_some();
-    let mut attention_ready = projected;
-    if projected {
+    let projection_outcome = client
+        .project_room_through(&access.room_id, &mut stream, sequence)
+        .await;
+    let mut attention_status = match projection_outcome {
+        Ok(ProjectionOutcome::Projected) => "ready",
+        Ok(ProjectionOutcome::Lost) => "lost",
+        Err(_) => "pending",
+    };
+    if attention_status == "ready" {
         for recipient in &recipients {
             let hint = json!({"attention_id":recipient.attention_id}).to_string();
             if connection
@@ -2182,7 +2545,7 @@ async fn send(
                 .await
                 .is_err()
             {
-                attention_ready = false;
+                attention_status = "pending";
                 break;
             }
         }
@@ -2192,7 +2555,7 @@ async fn send(
         json!({
             "envelope": envelope,
             "sequence": sequence,
-            "attention_status":if attention_ready {"ready"} else {"pending"},
+            "attention_status":attention_status,
             "attention_intent":{"mode":mode},
         }),
     )
@@ -2343,7 +2706,7 @@ async fn read_messages_with_timeout(
     let mut cleanup = ConsumerCleanup {
         stream: Some(stream),
         name: cleanup_name,
-        owner: client.cleanup.clone(),
+        owner: client.owner.cleanup.clone(),
     };
     let result = async {
         let deadline = tokio::time::Instant::now() + fetch_timeout;
@@ -2486,6 +2849,15 @@ mod tests {
             parse_attention_manifest(Some(&invalid), "msg-1"),
             Err(CoordError::Data)
         ));
+
+        let uppercase = header.replace("abcdef", "ABCDEF");
+        assert!(matches!(
+            parse_attention_manifest(Some(&uppercase), "msg-1"),
+            Err(CoordError::Data)
+        ));
+        assert!(!valid_agent_id("ag-"));
+        assert!(valid_agent_id("ag-Alice_1"));
+        assert!(!valid_agent_id("ag-Alice!"));
     }
 
     #[test]
@@ -2535,5 +2907,14 @@ mod tests {
             false,
         )
         .expect("valid manifest"));
+    }
+
+    #[test]
+    fn reload_facades_share_only_process_coord_owner() {
+        let owner = Arc::new(CoordOwner::new());
+        let first = CoordClient::with_owner(owner.clone(), Some(PathBuf::from("old.toml")));
+        let replacement = CoordClient::with_owner(owner, Some(PathBuf::from("new.toml")));
+        assert!(Arc::ptr_eq(&first.owner(), &replacement.owner()));
+        assert_ne!(first.policy_file, replacement.policy_file);
     }
 }
