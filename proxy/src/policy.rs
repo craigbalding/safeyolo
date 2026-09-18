@@ -2360,12 +2360,12 @@ fn parsed_integer_literal(literal: &str) -> Option<BigInt> {
     {
         return None;
     }
-    let (negative, unsigned) = if let Some(value) = literal.strip_prefix('-') {
-        (true, value)
+    let (signed, negative, unsigned) = if let Some(value) = literal.strip_prefix('-') {
+        (true, true, value)
     } else if let Some(value) = literal.strip_prefix('+') {
-        (false, value)
+        (true, false, value)
     } else {
-        (false, literal)
+        (false, false, literal)
     };
     let (radix, digits) = if let Some(value) = unsigned.strip_prefix("0x") {
         (16, value)
@@ -2376,7 +2376,7 @@ fn parsed_integer_literal(literal: &str) -> Option<BigInt> {
     } else {
         (10, unsigned)
     };
-    if negative && radix != 10 || !valid_integer_digits(digits, radix) {
+    if signed && radix != 10 || !valid_integer_digits(digits, radix) {
         return None;
     }
     let normalized = digits.replace('_', "");
@@ -3608,6 +3608,34 @@ mod yaml_tests {
         assert!(restored.contains("underscored = +9_223_372_036_854_775_808"));
         assert!(parse_toml_document("number = 09223372036854775808\n").is_err());
         assert!(parse_toml_document("number = 9__223372036854775808\n").is_err());
+        for signed_radix in [
+            "+0x8000000000000000",
+            "+0o1000000000000000000000",
+            "+0b1000000000000000000000000000000000000000000000000000000000000000",
+            "-0x8000000000000000",
+        ] {
+            assert!(
+                parse_toml_document(&format!("number = {signed_radix}\n")).is_err(),
+                "{signed_radix}"
+            );
+        }
+        let radix_source = concat!(
+            "hex = 0x8000000000000000\n",
+            "octal = 0o1000000000000000000000\n",
+            "binary = 0b1000000000000000000000000000000000000000000000000000000000000000\n",
+        );
+        let radix_values = parse_toml_document(radix_source).unwrap();
+        for key in ["hex", "octal", "binary"] {
+            assert_eq!(
+                radix_values[key].as_number().unwrap().to_string(),
+                "9223372036854775808"
+            );
+        }
+        let (radix_document, radix_context) = parse_toml_for_edit(radix_source).unwrap();
+        assert_eq!(
+            restore_large_toml_integers(&radix_document.to_string(), &radix_context),
+            radix_source
+        );
         let table_key = "[9223372036854775808]\nvalue = 1\n";
         assert_eq!(
             parse_toml_document(table_key).unwrap()["9223372036854775808"]["value"],
