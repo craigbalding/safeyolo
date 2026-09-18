@@ -64,19 +64,43 @@ def caller_ancestors() -> set[int]:
     return ancestors
 
 
+def path_is_within(path: Path, directory: Path) -> bool:
+    return path == directory or directory in path.parents
+
+
 def active_owner(target: Path) -> int | None:
     wanted = str(target)
     ignored = caller_ancestors()
     for proc in Path("/proc").iterdir():
         if not proc.name.isdecimal() or int(proc.name) in ignored:
             continue
+        pid = int(proc.name)
         try:
             command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            command = ""
+        try:
             environment = (proc / "environ").read_bytes().replace(b"\0", b"\n").decode(errors="replace")
         except OSError:
-            continue
+            environment = ""
         if wanted in command or f"CARGO_TARGET_DIR={wanted}" in environment:
-            return int(proc.name)
+            return pid
+        try:
+            cwd = (proc / "cwd").resolve()
+        except OSError:
+            cwd = None
+        if cwd is not None and path_is_within(cwd, target):
+            return pid
+        try:
+            for descriptor in (proc / "fd").iterdir():
+                try:
+                    opened = descriptor.resolve()
+                except OSError:
+                    continue
+                if path_is_within(opened, target):
+                    return pid
+        except OSError:
+            continue
     return None
 
 
@@ -91,8 +115,12 @@ def main() -> int:
 
     target = args.target.resolve()
     receipt = args.receipt.resolve()
+    record = args.record.resolve()
     if (target.name != "target" and not target.name.startswith("target-")) or not target.is_dir():
         raise SystemExit("--target must name an existing Cargo target directory (target or target-*)")
+    for option, path in (("receipt", receipt), ("record", record)):
+        if path_is_within(path, target):
+            raise SystemExit(f"--{option} must be outside --target so retirement evidence survives")
     if not receipt.is_file():
         raise SystemExit("--receipt must be an existing acceptance receipt")
     root = source_git_root(target)
@@ -127,8 +155,8 @@ def main() -> int:
     print(json.dumps(event, sort_keys=True))
     if args.dry_run:
         return 0
-    args.record.parent.mkdir(parents=True, exist_ok=True)
-    with args.record.open("a", encoding="utf-8") as handle:
+    record.parent.mkdir(parents=True, exist_ok=True)
+    with record.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")
     shutil.rmtree(target)
     return 0

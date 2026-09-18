@@ -403,7 +403,9 @@ receipt and JSONL record outside the target before removing it.
 The retirement command refuses a live target, verifies the receipt names the
 candidate commit, writes command-independent evidence (receipt/lockfile hashes,
 toolchain, target size and top-level binary hashes), then removes only the Cargo
-target. A rejected candidate keeps its target until it is repaired, superseded,
+target. Receipt and JSONL record paths must remain outside the target. Live-owner
+detection checks command/environment references as well as process cwd and open
+descriptors. A rejected candidate keeps its target until it is repaired, superseded,
 or explicitly retired with its receipt. Source, fixtures, patches and review
 reports remain untouched.
 
