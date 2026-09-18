@@ -131,6 +131,7 @@ fn config(
         ignore_hosts: Vec::new(),
         via_token: Some("credential-http-test".into()),
         inspection: None,
+        plumb: Default::default(),
     }
 }
 
@@ -329,6 +330,13 @@ async fn raw_round_trip(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
     response
 }
 
+fn single_credential_h1_request(port: u16, path: &str, credential: &str) -> Vec<u8> {
+    format!(
+        "GET http://127.0.0.1:{port}/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes()
+}
+
 fn response_request_id(response: &hyper::Response<Incoming>) -> String {
     response
         .headers()
@@ -459,6 +467,164 @@ async fn native_guard_allowed_h1_forwarding_preserves_headers_and_body_bytes() {
 
     proxy.shutdown().await;
     origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_classifies_unknown_entropy_and_keeps_ordinary_headers_uninspected() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-classification-key").unwrap();
+    let initial_policy = json!({
+        "permissions": [
+            {"action":"network:request", "resource":"*", "effect":"allow"},
+            {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+        ],
+        "credential_rules": [{
+            "name":"known",
+            "patterns":["key-[a-z]+"],
+            "allowed_hosts":["127.0.0.1"],
+            "header_names":["authorization"]
+        }],
+        "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+    });
+    std::fs::write(&policy_path, initial_policy.to_string()).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), ready.clone()));
+    let mut proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    // The first request establishes the configured rule and supplies the
+    // keyed value used by the later explicit exception. It is sent over the
+    // real trusted UDS and is observed byte-for-byte by the controlled origin.
+    let known = raw_round_trip(
+        &socket,
+        &single_credential_h1_request(origin_port, "known", "key-known"),
+    )
+    .await;
+    assert!(known.starts_with(b"HTTP/1.1 200"), "{known:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(
+        seen.lock().unwrap()[0]
+            .windows(b"key-known".len())
+            .any(|window| { window == b"key-known" })
+    );
+
+    let first_event = std::fs::read_to_string(directory.path().join("events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["event"] == "proxy.credential_guard")
+        .unwrap();
+    assert_eq!(first_event["evaluations"][0]["finding"]["rule"], "known");
+    assert_eq!(
+        first_event["evaluations"][0]["finding"]["credential_type"],
+        "known"
+    );
+    assert_eq!(first_event["evaluations"][0]["effect"], "allow");
+    let known_hmac = first_event["evaluations"][0]["finding"]["fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Retain only this exact credential by HMAC and prompt for a different
+    // high-entropy value. This exercises the unknown classifier at the actual
+    // parser-to-guard boundary, while proving that the value does not reach
+    // the origin when approval is required.
+    let exception_policy = json!({
+        "permissions": [
+            {"action":"network:request", "resource":"*", "effect":"allow"},
+            {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow", "condition":{"credential":[format!("hmac:{known_hmac}")]}},
+            {"action":"credential:use", "resource":"*", "effect":"prompt"}
+        ],
+        "credential_rules": [{
+            "name":"known",
+            "patterns":["key-[a-z]+"],
+            "allowed_hosts":["127.0.0.1"],
+            "header_names":["authorization"]
+        }],
+        "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+    });
+    std::fs::write(&policy_path, exception_policy.to_string()).unwrap();
+    proxy
+        .reload(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    let unknown_value = "A9f-7kP2-xQ4m-Z8rT-3vN6";
+    let unknown = raw_round_trip(
+        &socket,
+        &single_credential_h1_request(origin_port, "unknown", unknown_value),
+    )
+    .await;
+    assert!(unknown.starts_with(b"HTTP/1.1 428"), "{unknown:?}");
+    assert!(
+        !unknown
+            .windows(unknown_value.len())
+            .any(|window| window == unknown_value.as_bytes())
+    );
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // A short ordinary value is not a credential detection and therefore
+    // remains usable without a policy exception. The origin sees it exactly.
+    let ordinary = raw_round_trip(
+        &socket,
+        &single_credential_h1_request(origin_port, "ordinary", "ordinary"),
+    )
+    .await;
+    assert!(ordinary.starts_with(b"HTTP/1.1 200"), "{ordinary:?}");
+    tokio::time::timeout(Duration::from_secs(2), ready.notified())
+        .await
+        .unwrap();
+    wait_for_seen(&seen, 2).await;
+    assert!(
+        seen.lock().unwrap()[1]
+            .windows(b"ordinary".len())
+            .any(|window| window == b"ordinary")
+    );
+
+    proxy.shutdown().await;
+    origin_task.abort();
+
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let guard_events = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "proxy.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_events.len(), 3);
+    assert_eq!(guard_events[0]["outcome"], "allowed");
+    assert_eq!(guard_events[1]["outcome"], "blocked");
+    assert_eq!(
+        guard_events[1]["evaluations"][0]["finding"]["rule"],
+        "unknown_secret"
+    );
+    assert_eq!(
+        guard_events[1]["evaluations"][0]["finding"]["credential_type"],
+        "unknown"
+    );
+    assert_eq!(
+        guard_events[1]["evaluations"][0]["effect"],
+        "require_approval"
+    );
+    assert_eq!(guard_events[2]["outcome"], "no_detection");
+    assert!(
+        guard_events[2]["evaluations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!events.contains(unknown_value));
 }
 
 #[tokio::test]
