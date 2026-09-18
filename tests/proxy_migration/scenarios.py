@@ -39,7 +39,7 @@ class Origin(ThreadingHTTPServer):
     def get_request(self):
         request, address = super().get_request()
         self.accepts += 1
-        if self.keep_alive:
+        if getattr(self, "keep_alive", False):
             self.connection_ids[id(request)] = f"origin-{uuid.uuid4().hex}"
         return request, address
 
