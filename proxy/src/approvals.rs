@@ -15,7 +15,8 @@ use serde_json::Value as Json;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::policy::{
-    expired_host_entries, expiry_has_offset, parse_expiry, parse_toml_document, split_destination,
+    expired_host_entries, expiry_has_offset, parse_expiry, parse_toml_document,
+    restore_large_toml_integers, split_destination,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -623,11 +624,10 @@ pub(crate) fn update_policy<T>(
         .open(parent.join(".policy.toml.lock"))?;
     lock.lock()?;
     let original = std::fs::read_to_string(path)?;
-    let mut document = original
-        .parse::<DocumentMut>()
+    let mut document = crate::policy::parse_toml_for_edit(&original)
         .map_err(|error| invalid(error.to_string()))?;
     let result = mutate(&mut document)?;
-    let changed = document.to_string();
+    let changed = restore_large_toml_integers(&document.to_string());
     if skip_unchanged && changed == original {
         return Ok(result);
     }

@@ -2042,7 +2042,12 @@ pub(crate) fn parse_toml_document(source: &str) -> Result<Value> {
 }
 
 fn parse_toml_with_timestamps(source: &str) -> Result<(Value, TimestampPaths)> {
-    let syntax = source
+    // toml_edit stores integers as i64.  Keep larger authored integers in a
+    // private string while the syntax tree is edited, then restore the exact
+    // literal before writing the policy.  This is only an in-memory adapter;
+    // policy files continue to contain TOML integers, never strings.
+    let syntax_source = mask_large_toml_integers(source);
+    let syntax = syntax_source
         .parse::<toml_edit::DocumentMut>()
         .map_err(|error| invalid(error.to_string()))?;
     // Build structure from syntax nodes, never serde's private marker transport.
@@ -2092,6 +2097,205 @@ fn parse_toml_with_timestamps(source: &str) -> Result<(Value, TimestampPaths)> {
         collect_toml_timestamps(item, &mut vec![key.to_owned()], &mut timestamps)?;
     }
     Ok((document, timestamps))
+}
+
+/// Parse the editable syntax tree with the same lossless integer adapter used
+/// by policy loading.  Callers must run `restore_large_toml_integers` before
+/// persisting the rendered document.
+pub(crate) fn parse_toml_for_edit(source: &str) -> Result<toml_edit::DocumentMut> {
+    mask_large_toml_integers(source)
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| invalid(error.to_string()))
+}
+
+const LARGE_INTEGER_MARKER: &str = "__safeyolo_large_toml_integer__:";
+
+fn large_integer_marker(literal: &str) -> String {
+    format!("{LARGE_INTEGER_MARKER}{literal}")
+}
+
+pub(crate) fn large_integer_marker_value(literal: &str) -> toml_edit::Value {
+    toml_edit::Value::from(large_integer_marker(literal))
+}
+
+pub(crate) fn large_integer_from_marker(value: &str) -> Option<serde_json::Number> {
+    let literal = value.strip_prefix(LARGE_INTEGER_MARKER)?;
+    let integer = parsed_integer_literal(literal)?;
+    if !is_out_of_range(&integer) {
+        return None;
+    }
+    integer.to_string().parse::<serde_json::Number>().ok()
+}
+
+/// Replace only out-of-range TOML integer value tokens.  Strings, comments,
+/// keys, dates and floating point values remain byte-for-byte untouched.
+fn mask_large_toml_integers(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = String::with_capacity(source.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if let Some(end) = skip_toml_string(bytes, index) {
+            output.push_str(&source[index..end]);
+            index = end;
+            continue;
+        }
+        if bytes[index] == b'#' {
+            let end = source[index..]
+                .find('\n')
+                .map_or(bytes.len(), |offset| index + offset);
+            output.push_str(&source[index..end]);
+            index = end;
+            continue;
+        }
+        if is_integer_start(bytes[index]) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_integer_char(bytes[index]) {
+                index += 1;
+            }
+            let literal = &source[start..index];
+            let next = skip_ascii_whitespace(bytes, index);
+            // A numeric-looking bare key is not a value.  TOML dates and
+            // floats are also excluded by out_of_range_integer_literal.
+            if next >= bytes.len() || bytes[next] != b'=' {
+                if out_of_range_integer_literal(literal) {
+                    output.push('"');
+                    output.push_str(&large_integer_marker(literal));
+                    output.push('"');
+                    continue;
+                }
+            }
+            output.push_str(literal);
+            continue;
+        }
+        let character = source[index..].chars().next().expect("index in source");
+        output.push(character);
+        index += character.len_utf8();
+    }
+    output
+}
+
+/// Undo the transient adapter strings emitted by toml_edit after a mutation.
+/// Marker contents are restricted to the TOML numeric token alphabet, so this
+/// scan cannot consume a quoted string or a following policy token.
+pub(crate) fn restore_large_toml_integers(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut output = String::with_capacity(source.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'"' {
+            let character = source[index..].chars().next().expect("index in source");
+            output.push(character);
+            index += character.len_utf8();
+            continue;
+        }
+        let Some(end) = skip_toml_string(bytes, index) else {
+            output.push('"');
+            index += 1;
+            continue;
+        };
+        let content_start = index + 1;
+        let content_end = end.saturating_sub(1);
+        let content = &source[content_start..content_end];
+        if let Some(literal) = content.strip_prefix(LARGE_INTEGER_MARKER)
+            && out_of_range_integer_literal(literal)
+        {
+            output.push_str(literal);
+        } else {
+            output.push_str(&source[index..end]);
+        }
+        index = end;
+    }
+    output
+}
+
+fn skip_toml_string(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'"') && bytes.get(start) != Some(&b'\'') {
+        return None;
+    }
+    let quote = bytes[start];
+    let triple = bytes.get(start..start + 3) == Some(&[quote, quote, quote]);
+    let mut index = start + if triple { 3 } else { 1 };
+    while index < bytes.len() {
+        if triple {
+            if bytes.get(index..index + 3) == Some(&[quote, quote, quote]) {
+                return Some(index + 3);
+            }
+            index += 1;
+        } else if bytes[index] == quote && (quote == b'\'' || !is_escaped(bytes, index)) {
+            return Some(index + 1);
+        } else {
+            index += 1;
+        }
+    }
+    None
+}
+
+fn is_escaped(bytes: &[u8], index: usize) -> bool {
+    let mut backslashes = 0;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        backslashes += 1;
+        cursor -= 1;
+    }
+    backslashes % 2 == 1
+}
+
+fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && matches!(bytes[index], b' ' | b'\t') {
+        index += 1;
+    }
+    index
+}
+
+fn is_integer_start(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte == b'+' || byte == b'-'
+}
+
+fn is_integer_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'-' | b'.' | b':')
+}
+
+fn out_of_range_integer_literal(literal: &str) -> bool {
+    parsed_integer_literal(literal).is_some_and(|value| is_out_of_range(&value))
+}
+
+fn parsed_integer_literal(literal: &str) -> Option<BigInt> {
+    let normalized = literal.replace('_', "");
+    if normalized.is_empty()
+        || normalized.contains(['.', 'e', 'E', ':'])
+        || (normalized.starts_with('+') && normalized.len() == 1)
+    {
+        return None;
+    }
+    let (negative, unsigned) = if let Some(value) = normalized.strip_prefix('-') {
+        (true, value)
+    } else if let Some(value) = normalized.strip_prefix('+') {
+        (false, value)
+    } else {
+        (false, normalized.as_str())
+    };
+    let (radix, digits) = if let Some(value) = unsigned.strip_prefix("0x") {
+        (16, value)
+    } else if let Some(value) = unsigned.strip_prefix("0o") {
+        (8, value)
+    } else if let Some(value) = unsigned.strip_prefix("0b") {
+        (2, value)
+    } else {
+        (10, unsigned)
+    };
+    if digits.is_empty() || (negative && radix != 10) {
+        return None;
+    }
+    let mut value = BigInt::parse_bytes(digits.as_bytes(), radix)?;
+    if negative {
+        value = -value;
+    }
+    Some(value)
+}
+
+fn is_out_of_range(value: &BigInt) -> bool {
+    value < &BigInt::from(i64::MIN) || value > &BigInt::from(i64::MAX)
 }
 
 fn collect_toml_timestamps(
@@ -2178,7 +2382,13 @@ fn toml_item(item: &toml_edit::Item) -> Result<Value> {
 
 fn toml_value(value: &toml_edit::Value) -> Result<Value> {
     match value {
-        toml_edit::Value::String(value) => Ok(Value::String(value.value().clone())),
+        toml_edit::Value::String(value) => {
+            if let Some(integer) = large_integer_from_marker(value.value()) {
+                Ok(Value::Number(integer))
+            } else {
+                Ok(Value::String(value.value().clone()))
+            }
+        }
         toml_edit::Value::Integer(value) => Ok(Value::from(*value.value())),
         toml_edit::Value::Float(value) => serde_json::Number::from_f64(*value.value())
             .map(Value::Number)
@@ -3227,6 +3437,37 @@ fn character_class(pattern: &[char], index: usize) -> Option<(usize, bool, usize
 #[cfg(test)]
 mod yaml_tests {
     use super::*;
+
+    #[test]
+    fn toml_large_integer_adapter_preserves_exact_values_and_other_scalars() {
+        let source = concat!(
+            "quoted = \"18446744073709551617\"\n",
+            "float = 1.25e2\n",
+            "date = 2024-01-01T00:00:00Z\n",
+            "integer = 18446744073709551617\n",
+            "nested = { value = 9223372036854775808 }\n",
+        );
+        let parsed = parse_toml_document(source).unwrap();
+        assert_eq!(parsed["quoted"], "18446744073709551617");
+        assert_eq!(parsed["float"].as_f64(), Some(125.0));
+        assert_eq!(
+            parsed["date"]["$__toml_private_datetime"],
+            "2024-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            parsed["integer"].as_number().unwrap().to_string(),
+            "18446744073709551617"
+        );
+        assert_eq!(
+            parsed["nested"]["value"].as_number().unwrap().to_string(),
+            "9223372036854775808"
+        );
+        let editable = parse_toml_for_edit(source).unwrap();
+        let restored = restore_large_toml_integers(&editable.to_string());
+        assert!(restored.contains("integer = 18446744073709551617"));
+        assert!(restored.contains("value = 9223372036854775808"));
+        assert!(restored.contains("quoted = \"18446744073709551617\""));
+    }
 
     #[test]
     fn authored_private_number_objects_remain_objects_in_every_format() {
