@@ -37,7 +37,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
 
 
 def _run(
-    target: Path, receipt: Path, record: Path, commit: str
+    target: Path, receipt: Path, record: Path, commit: str, *, cwd: Path | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -55,6 +55,7 @@ def _run(
         text=True,
         capture_output=True,
         check=False,
+        cwd=cwd,
     )
 
 
@@ -94,6 +95,20 @@ def test_evidence_paths_inside_target_are_refused(
     assert target.is_dir()
 
 
+def test_ancestor_cwd_is_live_owner(tmp_path: Path) -> None:
+    target, receipt, record, commit = _fixture(tmp_path)
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(target)
+        result = _run(target, receipt, record, commit, cwd=ROOT)
+    finally:
+        os.chdir(original_cwd)
+
+    assert result.returncode != 0
+    assert f"target is still referenced by live process {os.getpid()}" in result.stderr
+    assert target.is_dir()
+
+
 def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
     environment = os.environ.copy()
     environment.pop("CARGO_TARGET_DIR", None)
@@ -101,6 +116,13 @@ def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
     options: dict[str, object] = {"env": environment, "cwd": "/"}
     if owner_kind == "env":
         environment["CARGO_TARGET_DIR"] = str(target)
+    elif owner_kind == "relative-env":
+        environment["CARGO_TARGET_DIR"] = target.name
+        options["cwd"] = target.parent
+    elif owner_kind == "prefix-env":
+        other = target.with_name(f"{target.name}-other")
+        other.mkdir()
+        environment["CARGO_TARGET_DIR"] = str(other)
     elif owner_kind == "cwd":
         options["cwd"] = target
     else:
@@ -117,8 +139,8 @@ def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
     return owner
 
 
-@pytest.mark.parametrize("owner_kind", ["env", "cwd", "open-fd"])
-def test_external_target_refuses_live_owner_without_path_in_argv_or_env(
+@pytest.mark.parametrize("owner_kind", ["env", "relative-env", "cwd", "open-fd"])
+def test_external_target_refuses_live_owner_from_env_cwd_or_fd(
     tmp_path: Path, owner_kind: str
 ) -> None:
     target, receipt, record, commit = _fixture(tmp_path)
@@ -137,6 +159,18 @@ def test_external_target_refuses_live_owner_without_path_in_argv_or_env(
         assert f"target is still referenced by live process {owner.pid}" in result.stderr
         assert target.is_dir()
         assert not record.exists()
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)
+
+
+def test_prefix_env_does_not_claim_target(tmp_path: Path) -> None:
+    target, receipt, record, commit = _fixture(tmp_path)
+    owner = _start_owner(target, "prefix-env")
+    try:
+        result = _run(target, receipt, record, commit)
+        assert result.returncode == 0, result.stderr
+        assert not target.exists()
     finally:
         owner.terminate()
         owner.wait(timeout=5)

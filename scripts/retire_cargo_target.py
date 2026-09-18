@@ -50,45 +50,83 @@ def source_git_root(target: Path) -> Path:
     )
 
 
-def caller_ancestors() -> set[int]:
-    """Return this helper and its invoker chain, which name --target themselves."""
-    ancestors: set[int] = set()
-    pid = os.getpid()
-    while pid and pid not in ancestors:
-        ancestors.add(pid)
-        try:
-            fields = (Path("/proc") / str(pid) / "stat").read_text().split()
-            pid = int(fields[3])
-        except (OSError, IndexError, ValueError):
-            break
-    return ancestors
-
-
 def path_is_within(path: Path, directory: Path) -> bool:
     return path == directory or directory in path.parents
 
 
+def resolved_process_path(value: str, cwd: Path | None) -> Path | None:
+    value = value.strip()
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        if cwd is None:
+            return None
+        path = cwd / path
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def argv_references_target(argv: list[str], cwd: Path | None, target: Path) -> bool:
+    for index, argument in enumerate(argv):
+        candidates = []
+        if argument == "--target-dir" and index + 1 < len(argv):
+            candidates.append(argv[index + 1])
+        elif argument.startswith("--target-dir="):
+            candidates.append(argument.partition("=")[2])
+        elif argument.startswith("CARGO_TARGET_DIR="):
+            candidates.append(argument.partition("=")[2])
+        else:
+            candidates.append(argument)
+        if any(resolved_process_path(candidate, cwd) == target for candidate in candidates):
+            return True
+    return False
+
+
+def environment_references_target(
+    environment: list[str], cwd: Path | None, target: Path
+) -> bool:
+    for entry in environment:
+        if entry.startswith("CARGO_TARGET_DIR=") and resolved_process_path(
+            entry.partition("=")[2], cwd
+        ) == target:
+            return True
+    return False
+
+
 def active_owner(target: Path) -> int | None:
-    wanted = str(target)
-    ignored = caller_ancestors()
+    self_pid = os.getpid()
     for proc in Path("/proc").iterdir():
-        if not proc.name.isdecimal() or int(proc.name) in ignored:
+        if not proc.name.isdecimal():
             continue
         pid = int(proc.name)
         try:
-            command = (proc / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            argv = [
+                argument.decode(errors="replace")
+                for argument in (proc / "cmdline").read_bytes().split(b"\0")
+                if argument
+            ]
         except OSError:
-            command = ""
+            argv = []
         try:
-            environment = (proc / "environ").read_bytes().replace(b"\0", b"\n").decode(errors="replace")
+            environment = [
+                entry.decode(errors="replace")
+                for entry in (proc / "environ").read_bytes().split(b"\0")
+                if entry
+            ]
         except OSError:
-            environment = ""
-        if wanted in command or f"CARGO_TARGET_DIR={wanted}" in environment:
-            return pid
+            environment = []
         try:
             cwd = (proc / "cwd").resolve()
         except OSError:
             cwd = None
+        if pid != self_pid and (
+            argv_references_target(argv, cwd, target)
+            or environment_references_target(environment, cwd, target)
+        ):
+            return pid
         if cwd is not None and path_is_within(cwd, target):
             return pid
         try:
