@@ -46,6 +46,11 @@ impl Passthrough {
     }
 
     fn parse_host(value: &str) -> Result<(String, Option<u16>), Error> {
+        // Match the existing CLI boundary: surrounding operator whitespace is
+        // discarded and Unicode hostnames are stored in their IDNA2003 ASCII
+        // form.  The wire authority keeps its own spelling; this value is
+        // only the canonical configured matcher key.
+        let value = value.trim();
         let (host, port) = if let Some((host, port)) = value.rsplit_once(':') {
             let port = port.parse::<u16>()?;
             if port == 0 {
@@ -55,6 +60,9 @@ impl Passthrough {
         } else {
             (value, None)
         };
+        let host = crate::host_names::encode_idna2003(host)
+            .map_err(|_| "ignore_hosts requires canonical exact hostname or IPv4 entries")?
+            .to_ascii_lowercase();
         if host.len() > 253
             || host.is_empty()
             || host.split('.').any(|label| {
@@ -519,5 +527,65 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.pattern_count(), 3);
+    }
+
+    #[test]
+    fn passthrough_case_table_matches_source_supported_representations() {
+        // These rows mirror the source logger's candidate dimensions: the
+        // configured address, a connected peer address, and explicit port
+        // scope.  SNI/inner-Host and parent-route selection are deliberately
+        // kept outside this direct matcher; the native CONNECT owner must not
+        // turn a later TLS/HTTP value into a new policy destination.
+        let config = Passthrough::new(
+            &[" Service.Example.Test:443 ".into(), "10.2.9.1".into()],
+            "192.168.1.0/24",
+        )
+        .unwrap();
+
+        // Normalized exact host:port.
+        assert!(config.matches("service.example.test", 443, None));
+        assert!(!config.matches("service.example.test", 8443, None));
+        // Host-only address and constrained CIDR are port agnostic.
+        assert!(config.matches("10.2.9.1", 1, None));
+        assert!(config.matches("named.example", 9443, Some("192.168.1.25".parse().unwrap())));
+        // The same host at a different port and an unrelated logical host do
+        // not inherit an exact configured entry.
+        assert!(!config.matches("service.example.test", 8443, None));
+        assert!(!config.matches("unrelated.example", 443, None));
+        // A resolved peer can select the existing CIDR transport path, while
+        // lifecycle ownership remains pre-dial and is tested separately.
+        assert!(config.matches(
+            "unresolved.example",
+            443,
+            Some("192.168.1.8".parse().unwrap())
+        ));
+        // SNI/inner-Host values are not alternate destinations for this
+        // matcher, and a configured parent disables direct passthrough at the
+        // CONNECT owner (covered by the parent wire control).
+    }
+
+    #[test]
+    fn passthrough_normalization_matches_cli_entry_forms() {
+        let values = vec![
+            " SERVICE.Example.Test:443 ".into(),
+            "service.example.test:443".into(),
+            "bücher.example".into(),
+        ];
+        assert_eq!(
+            Passthrough::normalize_hosts(&values).unwrap(),
+            ["service.example.test:443", "xn--bcher-kva.example"]
+        );
+        for value in [
+            "*.example.test",
+            "example.test.",
+            "https://example.test",
+            "example.test:0",
+            "[::1]",
+        ] {
+            assert!(
+                Passthrough::normalize_hosts(&[value.into()]).is_err(),
+                "{value}"
+            );
+        }
     }
 }

@@ -257,6 +257,9 @@ async fn opaque_connect_preserves_each_tcp_half_close() {
 async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
+    // A configured logical destination still travels through the physical
+    // parent route; parent connections are outside direct passthrough.
+    config.ignore_hosts = vec!["destination.invalid:23456".into()];
     let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     config.parent_proxy = Some(format!("http://{}", listener.local_addr().unwrap()));
@@ -305,6 +308,7 @@ async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
         .unwrap()
         .unwrap();
     assert_eq!(contacts.load(Ordering::SeqCst), 1);
+    assert!(passthrough_events(&config).is_empty());
     proxy.shutdown().await;
 }
 
@@ -574,6 +578,44 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
         .unwrap();
     assert_eq!(passthrough_events(&config), lifecycle);
     proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn host_and_address_passthrough_preserve_bytes_and_canonical_events() {
+    for entry in ["localhost", "127.0.0.1"] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(&directory);
+        config.ignore_hosts = vec![entry.into()];
+        let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let authority = format!("{entry}:{port}");
+        let expected = b"\x16\x03\x03\x00\x0eopaque-initial".to_vec();
+        let origin_expected = expected.clone();
+        let origin = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            socket.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, origin_expected);
+        });
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+        client.write_all(&expected).await.unwrap();
+        client.shutdown().await.unwrap();
+        origin.await.unwrap();
+        drop(client);
+        let lifecycle = wait_passthrough_events(&config, 2).await;
+        assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+        assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+        assert_eq!(lifecycle[0]["host"], entry);
+        assert_eq!(lifecycle[0]["details"]["port"], port);
+        assert_eq!(lifecycle[0]["details"]["transport"], "tcp");
+        assert_eq!(lifecycle[0]["details"]["client"], Value::Null);
+        assert_eq!(lifecycle[1]["host"], entry);
+        assert_eq!(lifecycle[1]["details"]["port"], port);
+        assert!(lifecycle[1]["details"]["duration_ms"].is_u64());
+        proxy.shutdown().await;
+    }
 }
 
 #[tokio::test]
