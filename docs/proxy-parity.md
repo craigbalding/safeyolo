@@ -1388,6 +1388,14 @@ their validating path. Production WebSocket integration, D29's passthrough
 boundary and complete control/evidence integration remain required; this is not
 M4/M5 acceptance.
 
+The native operator listener now accepts the retained consumer's authenticated
+`PUT /admin/proxy/ignore-hosts` request. It validates the canonical exact host
+or host:port list, replaces the live matcher, and reports
+`admin.proxy_ignore_hosts_update`. Existing admitted connections keep their
+match; connections opened after an empty replacement are inspected again. The
+route does not persist configuration or extend matching to aliases, parents,
+SNI, inner Host or resolved-address-only cases.
+
 The native [network policy](../proxy/src/policy.rs) runs without the temporary
 adapter when selected. [Approval persistence](../proxy/src/approvals.rs),
 [service selection](../proxy/src/services.rs) and

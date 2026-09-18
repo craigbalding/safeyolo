@@ -2201,6 +2201,8 @@ where
         let ignored = (runtime.parent.is_none()
             && runtime
                 .passthrough
+                .read()
+                .map_err(|_| "passthrough configuration unavailable")?
                 .matches(&destination.host, destination.port, None))
         .then_some(crate::ignored_host_logger::SelectedDestination {
             host: &destination.host,
@@ -2227,6 +2229,8 @@ where
         } = connected;
         let passthrough = runtime
             .passthrough
+            .read()
+            .map_err(|_| "passthrough configuration unavailable")?
             .matches(&destination.host, destination.port, peer);
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();

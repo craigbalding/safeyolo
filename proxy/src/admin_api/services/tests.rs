@@ -76,6 +76,7 @@ impl Fixture {
                 listeners: &[],
                 audit: None,
                 client_ip: None,
+                passthrough: None,
                 service_audit: Some(crate::admin_api::ServiceAudit {
                     writer: &self.writer,
                     client_ip: "127.0.0.1",
@@ -298,6 +299,7 @@ async fn service_authentication_precedes_body_and_policy_access() {
             listeners: &[],
             audit: None,
             client_ip: None,
+            passthrough: None,
             service_audit: None,
             plumb: None,
             task_state: None,
@@ -372,6 +374,7 @@ async fn service_missing_registry_or_policy_path_never_mutates() {
                 listeners: &[],
                 audit: None,
                 client_ip: None,
+                passthrough: None,
                 service_audit: None,
                 plumb: None,
                 task_state: None,

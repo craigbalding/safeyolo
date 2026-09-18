@@ -286,6 +286,7 @@ async fn serve_connection(
                     listeners: &runtime.config.listeners,
                     audit: Some(&runtime.audit),
                     client_ip: Some(&client_ip),
+                    passthrough: Some(&runtime.passthrough),
                     service_audit: Some(admin_api::ServiceAudit {
                         writer: &runtime.audit,
                         client_ip: &client_ip,

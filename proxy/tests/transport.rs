@@ -576,6 +576,201 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
     proxy.shutdown().await;
 }
 
+#[tokio::test]
+async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let token = "transport-ignore-hosts-admin";
+    let token_path = directory.path().join("admin-token");
+    std::fs::write(&token_path, token).unwrap();
+    config.admin_port = Some(0);
+    config.admin_api_token_file = Some(token_path);
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&std::fs::read(&config.readiness_file).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+
+    // Before the live update, the same origin is inspected and the inner
+    // policy denial reaches the client without bytes reaching the origin.
+    let intercepted_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let intercepted_authority = intercepted_listener.local_addr().unwrap().to_string();
+    let intercepted_origin = tokio::spawn(async move {
+        let (mut stream, _) = intercepted_listener.accept().await.unwrap();
+        let mut byte = [0; 1];
+        match tokio::time::timeout(Duration::from_millis(250), stream.read(&mut byte)).await {
+            Ok(Ok(0)) | Err(_) => {}
+            Ok(Ok(read)) => panic!("inspected denial reached origin: {read} bytes"),
+            Ok(Err(error)) => panic!("origin read failed: {error}"),
+        }
+    });
+    let mut intercepted =
+        connect_raw(&config.listeners[0].socket_path, &intercepted_authority).await;
+    intercepted
+        .write_all(
+            format!(
+                "GET /deny-inner HTTP/1.1\r\nHost: {intercepted_authority}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let denial = read_proxy_headers(&mut intercepted).await;
+    assert!(
+        denial.starts_with(b"HTTP/1.1 403"),
+        "unexpected inspected response: {:?}",
+        String::from_utf8_lossy(&denial)
+    );
+    drop(intercepted);
+    intercepted_origin.await.unwrap();
+
+    // A real authenticated admin request changes the live matcher. An
+    // admitted connection then keeps relaying even after the entry is removed.
+    let (status, _) = admin_transport(
+        admin_port,
+        token,
+        "PUT",
+        "/admin/proxy/ignore-hosts",
+        r#"{"hosts":["*.example.test"]}"#,
+    )
+    .await;
+    assert_eq!(status, 400);
+    let (status, body) = admin_transport(
+        admin_port,
+        token,
+        "PUT",
+        "/admin/proxy/ignore-hosts",
+        &format!(r#"{{"hosts":["{intercepted_authority}"]}}"#),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["hosts"], json!([intercepted_authority]));
+
+    let admitted_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let admitted_authority = admitted_listener.local_addr().unwrap().to_string();
+    let (host, port) = admitted_authority.rsplit_once(':').unwrap();
+    let (admitted_payload, after_removal) = (b"first".as_slice(), b"second".as_slice());
+    let admitted_origin = tokio::spawn(async move {
+        let (mut stream, _) = admitted_listener.accept().await.unwrap();
+        let mut bytes = vec![0; admitted_payload.len() + after_removal.len()];
+        stream.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"firstsecond");
+    });
+    let entry = format!("{host}:{port}");
+    let (status, _) = admin_transport(
+        admin_port,
+        token,
+        "PUT",
+        "/admin/proxy/ignore-hosts",
+        &format!(r#"{{"hosts":["{entry}"]}}"#),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let mut admitted = connect_raw(&config.listeners[0].socket_path, &admitted_authority).await;
+    admitted.write_all(admitted_payload).await.unwrap();
+    tokio::task::yield_now().await;
+    let (status, _) = admin_transport(
+        admin_port,
+        token,
+        "PUT",
+        "/admin/proxy/ignore-hosts",
+        r#"{"hosts":[]}"#,
+    )
+    .await;
+    assert_eq!(status, 200);
+    admitted.write_all(after_removal).await.unwrap();
+    admitted.shutdown().await.unwrap();
+    admitted_origin.await.unwrap();
+
+    // New connections observe the removal and return to inspected handling.
+    let removed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let removed_authority = removed_listener.local_addr().unwrap().to_string();
+    let removed_origin = tokio::spawn(async move {
+        let (mut stream, _) = removed_listener.accept().await.unwrap();
+        let mut byte = [0; 1];
+        match tokio::time::timeout(Duration::from_millis(250), stream.read(&mut byte)).await {
+            Ok(Ok(0)) | Err(_) => {}
+            Ok(Ok(read)) => panic!("removed entry still relayed {read} byte(s)"),
+            Ok(Err(error)) => panic!("origin read failed: {error}"),
+        }
+    });
+    let mut removed = connect_raw(&config.listeners[0].socket_path, &removed_authority).await;
+    removed
+        .write_all(
+            format!(
+                "GET /deny-inner HTTP/1.1\r\nHost: {removed_authority}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let removed_denial = read_proxy_headers(&mut removed).await;
+    assert!(removed_denial.starts_with(b"HTTP/1.1 403"));
+    drop(removed);
+    removed_origin.await.unwrap();
+    assert!(
+        std::fs::read_to_string(&config.audit_log_path.as_ref().unwrap())
+            .unwrap()
+            .contains("admin.proxy_ignore_hosts_update")
+    );
+    assert!(
+        policy
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["path"] == "/deny-inner")
+    );
+    proxy.shutdown().await;
+}
+
+async fn admin_transport(
+    port: u16,
+    token: &str,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> (u16, Value) {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut bytes = Vec::new();
+    stream.read_to_end(&mut bytes).await.unwrap();
+    let split = bytes
+        .windows(4)
+        .position(|value| value == b"\r\n\r\n")
+        .unwrap();
+    let status = std::str::from_utf8(&bytes[..split])
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let body = serde_json::from_slice(&bytes[split + 4..]).unwrap();
+    (status, body)
+}
+
+async fn read_proxy_headers(stream: &mut UnixStream) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        head
+    })
+    .await
+    .unwrap()
+}
+
 fn passthrough_events(config: &Config) -> Vec<Value> {
     let Some(path) = config.audit_log_path.as_ref() else {
         return Vec::new();

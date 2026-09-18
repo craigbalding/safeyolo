@@ -1104,6 +1104,7 @@ pub(crate) struct OperatorContext<'a> {
     pub listeners: &'a [crate::AgentListener],
     pub audit: Option<&'a std::sync::Arc<crate::audit::Writer>>,
     pub client_ip: Option<&'a str>,
+    pub passthrough: Option<&'a std::sync::RwLock<crate::tunnels::Passthrough>>,
     pub service_audit: Option<ServiceAudit<'a>>,
     pub plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
     /// The listener supplies the outer state so task activation can publish a
@@ -1142,6 +1143,7 @@ where
             listeners: &[],
             audit: None,
             client_ip: None,
+            passthrough: None,
             service_audit: None,
             plumb: None,
             task_state: None,
@@ -1169,6 +1171,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         listeners,
         audit,
         client_ip,
+        passthrough,
         service_audit,
         plumb,
         task_state,
@@ -1206,6 +1209,79 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             StatusCode::OK,
             json!({"schema_version":1,"state":"active","instance_id":instance_id}),
         ));
+    }
+    if method == Method::PUT && path == "/admin/proxy/ignore-hosts" {
+        let Some(passthrough) = passthrough else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"native passthrough configuration unavailable"}),
+            ));
+        };
+        let data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"missing request body"}),
+                ));
+            }
+            ParsedBody::Value(data) => data,
+        };
+        let Some(values) = data.0.get("hosts").and_then(Value::as_array) else {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"hosts must be a list of HOST or HOST:PORT strings"}),
+            ));
+        };
+        let mut hosts = Vec::with_capacity(values.len());
+        for value in values {
+            let Some(host) = value.as_str() else {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"hosts must be a list of HOST or HOST:PORT strings"}),
+                ));
+            };
+            hosts.push(host.to_owned());
+        }
+        let normalized = match crate::tunnels::Passthrough::normalize_hosts(&hosts) {
+            Ok(normalized) => normalized,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"invalid passthrough host"}),
+                ));
+            }
+        };
+        let replacement = match crate::tunnels::Passthrough::new(
+            &normalized,
+            &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
+        ) {
+            Ok(replacement) => replacement,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::BAD_REQUEST,
+                    json!({"error":"invalid passthrough host"}),
+                ));
+            }
+        };
+        if passthrough
+            .write()
+            .map(|mut current| *current = replacement)
+            .is_err()
+        {
+            return Err(Error::RegistryUnavailable);
+        }
+        let count = normalized.len();
+        let mut outcome = response(
+            StatusCode::OK,
+            json!({"status":"updated","hosts":normalized.clone(),"pattern_count":count}),
+        );
+        outcome.audit = Some(mutation(
+            "admin.proxy_ignore_hosts_update",
+            format!("Proxy TLS passthrough list replaced ({count} operator entries)"),
+            json!({"hosts":normalized,"pattern_count":count}),
+        ));
+        return Ok(outcome);
     }
     if method == Method::GET && path == "/admin/instance" {
         let Some(instance_id) = instance_id else {

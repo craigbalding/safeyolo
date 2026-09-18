@@ -33,40 +33,55 @@ pub(crate) struct Passthrough {
 }
 
 impl Passthrough {
+    pub(crate) fn normalize_hosts(values: &[String]) -> Result<Vec<String>, Error> {
+        let mut normalized = Vec::with_capacity(values.len());
+        for value in values {
+            let (host, port) = Self::parse_host(value)?;
+            let value = port.map_or(host.clone(), |port| format!("{host}:{port}"));
+            if !normalized.iter().any(|entry| entry == &value) {
+                normalized.push(value);
+            }
+        }
+        Ok(normalized)
+    }
+
+    fn parse_host(value: &str) -> Result<(String, Option<u16>), Error> {
+        let (host, port) = if let Some((host, port)) = value.rsplit_once(':') {
+            let port = port.parse::<u16>()?;
+            if port == 0 {
+                return Err("ignore host port must be between 1 and 65535".into());
+            }
+            (host, Some(port))
+        } else {
+            (value, None)
+        };
+        if host.len() > 253
+            || host.is_empty()
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || !label.starts_with(|c: char| c.is_ascii_alphanumeric())
+                    || !label.ends_with(|c: char| c.is_ascii_alphanumeric())
+                    || !label
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            })
+            || (host.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+                && host.parse::<Ipv4Addr>().is_err())
+        {
+            return Err("ignore_hosts requires canonical exact hostname or IPv4 entries".into());
+        }
+        Ok((host.to_ascii_lowercase(), port))
+    }
+
     pub(crate) fn new(hosts: &[String], cidrs: &str) -> Result<Self, Error> {
         let mut result = Self {
             hosts: vec![("api.asterfold.ai".into(), Some(7000))],
             networks: Vec::new(),
         };
-        for value in hosts {
-            let (host, port) = if let Some((host, port)) = value.rsplit_once(':') {
-                let port = port.parse::<u16>()?;
-                if port == 0 {
-                    return Err("ignore host port must be between 1 and 65535".into());
-                }
-                (host, Some(port))
-            } else {
-                (value.as_str(), None)
-            };
-            if host.len() > 253
-                || host.is_empty()
-                || host.split('.').any(|label| {
-                    label.is_empty()
-                        || label.len() > 63
-                        || !label.starts_with(|c: char| c.is_ascii_alphanumeric())
-                        || !label.ends_with(|c: char| c.is_ascii_alphanumeric())
-                        || !label
-                            .bytes()
-                            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
-                })
-                || (host.bytes().all(|c| c.is_ascii_digit() || c == b'.')
-                    && host.parse::<Ipv4Addr>().is_err())
-            {
-                return Err(
-                    "ignore_hosts requires canonical exact hostname or IPv4 entries".into(),
-                );
-            }
-            result.hosts.push((host.to_ascii_lowercase(), port));
+        for value in Self::normalize_hosts(hosts)? {
+            let (host, port) = Self::parse_host(&value)?;
+            result.hosts.push((host, port));
         }
         for cidr in cidrs
             .split(',')

@@ -318,7 +318,10 @@ pub(crate) struct Runtime {
     parent: Option<config::ParentProxy>,
     tls: Option<Arc<rustls::ClientConfig>>,
     certificate_authority: Option<Arc<tls::CertificateAuthority>>,
-    passthrough: tunnels::Passthrough,
+    /// Live operator updates replace this set without rebuilding listeners.
+    /// A connection copies its match before relaying, so later updates do not
+    /// change an already-admitted session.
+    passthrough: Arc<RwLock<tunnels::Passthrough>>,
     scanner: inspection::Scanner,
     policy: Option<policy::Policy>,
     /// The encrypted credential snapshot is retained across policy reloads;
@@ -607,10 +610,10 @@ impl Runtime {
                 let document = policy::parse_document(&source, format)?;
                 scanner.load_policy_config(&Value::Object(document))?;
             }
-            let passthrough = tunnels::Passthrough::new(
+            let passthrough = Arc::new(RwLock::new(tunnels::Passthrough::new(
                 &config.ignore_hosts,
                 &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
-            )?;
+            )?));
             let parent = config.parent()?;
             let certificate_authority = config
                 .tls_ca_file
