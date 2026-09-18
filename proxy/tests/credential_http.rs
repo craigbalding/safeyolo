@@ -1337,6 +1337,8 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     let failed = raw_round_trip(&socket, &wire).await;
     assert!(failed.starts_with(b"HTTP/1.1 403"), "{failed:?}");
     assert!(!failed.windows(body.len()).any(|window| window == body));
+    let failed_request_id = response_header(&failed, "x-safeyolo-request-id");
+    assert!(!failed_request_id.is_empty(), "failed request ID missing");
     assert!(origin_seen.lock().unwrap().is_empty());
 
     // Reserved Agent API traffic is dispatched locally before ordinary
@@ -1348,6 +1350,9 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     )
     .await;
     assert!(local.starts_with(b"HTTP/1.1 503"), "{local:?}");
+    let local_request_id = response_header(&local, "x-safeyolo-request-id");
+    assert!(!local_request_id.is_empty(), "local request ID missing");
+    assert_ne!(failed_request_id, local_request_id);
     assert!(origin_seen.lock().unwrap().is_empty());
 
     proxy.shutdown().await;
@@ -1358,6 +1363,13 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .collect::<Vec<_>>();
+    let guard_rows = rows
+        .iter()
+        .filter(|event| event["event"] == "proxy.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(guard_rows.len(), 1);
+    assert_eq!(guard_rows[0]["request_id"], failed_request_id);
+    assert_ne!(guard_rows[0]["request_id"], local_request_id);
     let credential = rows
         .iter()
         .position(|event| event["event"] == "proxy.credential_guard")
@@ -1381,6 +1393,18 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     assert!(!events.contains("key-observation"));
     assert!(!events.contains("key-local-only"));
     assert!(!events.contains("proxy.egress"));
+
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-observation"));
+    assert!(!audit.contains("key-local-only"));
+    let audit_guard_rows = audit
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "security.credential_guard")
+        .collect::<Vec<_>>();
+    assert_eq!(audit_guard_rows.len(), 1);
+    assert_eq!(audit_guard_rows[0]["request_id"], failed_request_id);
+    assert_ne!(audit_guard_rows[0]["request_id"], local_request_id);
 }
 
 #[tokio::test]
