@@ -749,6 +749,54 @@ fn multiline_nested_large_binding_round_trips_after_external_reload() {
 }
 
 #[test]
+fn escaped_multiline_string_survives_store_edit_and_reload() {
+    let (_directory, path, store) = setup(SOURCE);
+    let mut input = binding("alice");
+    input.bound_values = json!({"text":"placeholder"}).as_object().unwrap().clone();
+    store.approve_binding(input, now(), |_| Ok(())).unwrap();
+    let persisted = fs::read_to_string(&path).unwrap();
+    let compact = "text = \"placeholder\"";
+    assert!(persisted.contains(compact));
+    let multiline = "text = \"\"\"before \\\"\"\" 18446744073709551617 after\"\"\"";
+    let edited = persisted.replace(compact, multiline);
+    assert_ne!(edited, persisted);
+    fs::write(&path, edited).unwrap();
+
+    store.reload(now(), |_| Ok(())).unwrap();
+    let expected = json!({"text":"before \"\"\" 18446744073709551617 after"})
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        store
+            .binding_for_agent("alice", "gmail", "read_messages")
+            .unwrap()
+            .unwrap()
+            .binding
+            .bound_values,
+        expected
+    );
+
+    // A real unrelated Store edit exercises parse, save and restoration of
+    // the escaped multiline string before the fresh consumer reloads it.
+    store
+        .add_grant(request("alice", GrantScope::Remembered), now(), |_| Ok(()))
+        .unwrap();
+    let saved_after_edit = fs::read_to_string(&path).unwrap();
+    assert!(saved_after_edit.contains(multiline));
+    let reopened = Store::open(&path, now()).unwrap();
+    assert_eq!(
+        reopened
+            .binding_for_agent("alice", "gmail", "read_messages")
+            .unwrap()
+            .unwrap()
+            .binding
+            .bound_values,
+        expected
+    );
+}
+
+#[test]
 fn binding_upsert_revoke_reload_and_comments_remain_scoped() {
     let (_directory, path, store) = setup(SOURCE);
     let first = store
