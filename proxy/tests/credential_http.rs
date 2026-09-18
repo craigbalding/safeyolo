@@ -357,6 +357,61 @@ async fn raw_round_trip(socket: &std::path::Path, request: &[u8]) -> Vec<u8> {
     response
 }
 
+/// Keep a real TCP receiver active while a request is evaluated.  An entry in
+/// `seen` means that the proxy opened the forbidden connection; the captured
+/// bytes distinguish a connection with no application data from one that
+/// received request headers or a body.
+async fn live_receiver(
+    listener: TcpListener,
+    seen: Arc<Mutex<Option<Vec<u8>>>>,
+    ready: Arc<Notify>,
+) {
+    ready.notify_one();
+    let Ok((mut stream, _)) = listener.accept().await else {
+        return;
+    };
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    if let Ok(Ok(size)) =
+        tokio::time::timeout(Duration::from_millis(250), stream.read(&mut buffer)).await
+    {
+        bytes.extend_from_slice(&buffer[..size]);
+    }
+    *seen.lock().unwrap() = Some(bytes);
+}
+
+async fn response_head(stream: &mut UnixStream) -> Vec<u8> {
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let mut buffer = [0_u8; 4096];
+            let size = stream.read(&mut buffer).await.unwrap();
+            if size == 0 {
+                break;
+            }
+            response.extend_from_slice(&buffer[..size]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    response
+}
+
+fn response_header(response: &[u8], name: &str) -> String {
+    String::from_utf8_lossy(response)
+        .lines()
+        .find_map(|line| {
+            let (field, value) = line.split_once(':')?;
+            field
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_owned())
+        })
+        .unwrap()
+}
+
 fn single_credential_h1_request(port: u16, path: &str, credential: &str) -> Vec<u8> {
     format!(
         "GET http://127.0.0.1:{port}/{path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n"
@@ -1699,6 +1754,220 @@ async fn native_guard_allows_origin_bytes_blocks_forbidden_host_and_reuses_h1() 
     assert!(audit.contains("security.credential_guard"));
     assert!(!audit.contains("key-allowed"));
     origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-egress-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"synthetic",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let allowed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let allowed_port = allowed_listener.local_addr().unwrap().port();
+    let allowed_seen = Arc::new(Mutex::new(Vec::new()));
+    let allowed_ready = Arc::new(Notify::new());
+    let allowed_task = tokio::spawn(full_origin(
+        allowed_listener,
+        allowed_seen.clone(),
+        allowed_ready.clone(),
+    ));
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    let allowed_body = b"allowed-body\0with-invalid-ff-\xff";
+    let mut allowed_request = format!(
+        "POST http://127.0.0.1:{allowed_port}/same-credential HTTP/1.1\r\nHost: 127.0.0.1:{allowed_port}\r\nAuthorization: Bearer key-authorized\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        allowed_body.len()
+    )
+    .into_bytes();
+    allowed_request.extend_from_slice(allowed_body);
+    let allowed_response = raw_round_trip(&socket, &allowed_request).await;
+    assert!(
+        allowed_response.starts_with(b"HTTP/1.1 200"),
+        "{allowed_response:?}"
+    );
+    tokio::time::timeout(Duration::from_secs(2), allowed_ready.notified())
+        .await
+        .unwrap();
+    let allowed_wire = allowed_seen.lock().unwrap().first().cloned().unwrap();
+    let allowed_split = allowed_wire
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .unwrap();
+    assert_eq!(&allowed_wire[allowed_split..], allowed_body);
+    let allowed_head = std::str::from_utf8(&allowed_wire[..allowed_split]).unwrap();
+    assert!(allowed_head.contains("POST /same-credential HTTP/1.1\r\n"));
+    assert!(allowed_head.contains("Authorization: Bearer key-authorized\r\n"));
+
+    // The same detected credential is sent to a host outside the rule's
+    // allowed host set.  The receiver is already accepting connections before
+    // this request starts, so an attempted dial or any first byte is visible.
+    let forbidden_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let forbidden_port = forbidden_listener.local_addr().unwrap().port();
+    let forbidden_seen = Arc::new(Mutex::new(None));
+    let forbidden_ready = Arc::new(Notify::new());
+    let forbidden_task = tokio::spawn(live_receiver(
+        forbidden_listener,
+        forbidden_seen.clone(),
+        forbidden_ready.clone(),
+    ));
+    forbidden_ready.notified().await;
+
+    let forbidden_body = b"forbidden-application-canary";
+    let mut forbidden_request = format!(
+        "POST http://127.0.0.2:{forbidden_port}/forbidden HTTP/1.1\r\nHost: 127.0.0.2:{forbidden_port}\r\nAuthorization: Bearer key-authorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        forbidden_body.len()
+    )
+    .into_bytes();
+    forbidden_request.extend_from_slice(forbidden_body);
+    let forbidden_response = raw_round_trip(&socket, &forbidden_request).await;
+    assert!(
+        forbidden_response.starts_with(b"HTTP/1.1 428"),
+        "{forbidden_response:?}"
+    );
+    assert!(
+        !forbidden_response
+            .windows(forbidden_body.len())
+            .any(|window| { window == forbidden_body })
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        forbidden_seen.lock().unwrap().is_none(),
+        "forbidden receiver observed a connection or application bytes"
+    );
+    let request_id = response_header(&forbidden_response, "x-safeyolo-request-id");
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let event = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| {
+            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+        })
+        .unwrap();
+    assert_eq!(event["outcome"], "blocked");
+    assert_eq!(event["body_scope"], "headers_only");
+    assert_eq!(event["query_scope"], "policy_context_only");
+    assert!(!events.contains("key-authorized"));
+
+    forbidden_task.abort();
+    proxy.shutdown().await;
+    allowed_task.abort();
+}
+
+#[tokio::test]
+async fn native_guard_header_match_blocks_streaming_chunked_upload_before_live_receiver() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-stream-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"deny"}
+            ],
+            "credential_rules": [{
+                "name":"streaming",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let receiver_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let receiver_port = receiver_listener.local_addr().unwrap().port();
+    let receiver_seen = Arc::new(Mutex::new(None));
+    let receiver_ready = Arc::new(Notify::new());
+    let receiver_task = tokio::spawn(live_receiver(
+        receiver_listener,
+        receiver_seen.clone(),
+        receiver_ready.clone(),
+    ));
+    receiver_ready.notified().await;
+    let proxy = Proxy::start(config(&directory, &policy_path, &socket, true))
+        .await
+        .unwrap();
+
+    let initial_body = b"streaming-body-canary";
+    let mut peer = UnixStream::connect(&socket).await.unwrap();
+    let head = format!(
+        "POST http://127.0.0.1:{receiver_port}/stream HTTP/1.1\r\nHost: 127.0.0.1:{receiver_port}\r\nAuthorization: Bearer key-streaming\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+    );
+    peer.write_all(head.as_bytes()).await.unwrap();
+    peer.write_all(format!("{:x}\r\n", initial_body.len()).as_bytes())
+        .await
+        .unwrap();
+    peer.write_all(initial_body).await.unwrap();
+    peer.write_all(b"\r\n").await.unwrap();
+
+    // The guard runs after parsed headers and before body preparation.  The
+    // request intentionally has no terminating zero chunk: receiving a local
+    // 403 at this point proves the streamed upload was not needed to decide.
+    let response = response_head(&mut peer).await;
+    assert!(response.starts_with(b"HTTP/1.1 403"), "{response:?}");
+    assert!(
+        !response
+            .windows(initial_body.len())
+            .any(|window| { window == initial_body })
+    );
+    let request_id = response_header(&response, "x-safeyolo-request-id");
+    drop(peer);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        receiver_seen.lock().unwrap().is_none(),
+        "streaming credential denial reached the live receiver"
+    );
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let event = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| {
+            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+        })
+        .unwrap();
+    assert_eq!(event["outcome"], "blocked");
+    assert_eq!(event["body_scope"], "headers_only");
+    assert_eq!(event["query_scope"], "policy_context_only");
+    assert_eq!(event["evaluations"][0]["finding"]["rule"], "streaming");
+    assert!(!events.contains("key-streaming"));
+    assert!(!events.contains("streaming-body-canary"));
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-streaming"));
+    assert!(!audit.contains("streaming-body-canary"));
+
+    receiver_task.abort();
+    proxy.shutdown().await;
 }
 
 #[tokio::test]
