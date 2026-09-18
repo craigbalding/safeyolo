@@ -1633,6 +1633,17 @@ impl Proxy {
             .unwrap_or_else(|error| error.into_inner())
             .service_mutations
             .clone();
+        let plumb = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .plumb
+            .clone();
+        // Close every process-owned admission point before listeners begin
+        // draining. Plumb wakes long polls here; its blocking store calls and
+        // the service mutation owner are joined after accepted connections
+        // have stopped producing work.
+        plumb.stop_admission().await;
         service_mutations.stop_admission().await;
         if let Some(listener) = self.admin.take() {
             self.draining.push(listener.stop());
@@ -1646,6 +1657,7 @@ impl Proxy {
             }
         }
         service_mutations.drain().await;
+        plumb.drain().await;
         let recorder = self
             .runtime
             .read()
