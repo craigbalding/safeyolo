@@ -623,7 +623,8 @@ fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
     input.bound_values = json!({
         "integer":137,"minimum":i64::MIN,"maximum":i64::MAX,
         "float":2.5,"array":[1,2.5,true,{"nested":3}],
-        "authored_object":{"$serde_json::private::Number":"123"}
+        "authored_object":{"$serde_json::private::Number":"123"},
+        "marker_string":"__safeyolo_large_toml_integer__:18446744073709551617"
     })
     .as_object()
     .unwrap()

@@ -15,7 +15,7 @@ use serde_json::Value as Json;
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::policy::{
-    expired_host_entries, expiry_has_offset, parse_expiry, parse_toml_document,
+    LargeIntegerContext, expired_host_entries, expiry_has_offset, parse_expiry,
     restore_large_toml_integers, split_destination,
 };
 
@@ -229,7 +229,7 @@ pub fn allow_host(
     let global = update_policy(
         path,
         false,
-        |document| {
+        |document, _| {
             let global = validate_rate(document, rate)?;
             let mut fields = InlineTable::new();
             fields.insert("egress", Value::from("allow"));
@@ -285,7 +285,7 @@ pub fn deny_host(
     update_policy(
         path,
         false,
-        |document| {
+        |document, _| {
             let mut fields = InlineTable::new();
             fields.insert("egress", Value::from("deny"));
             if let Some(expiry) = expiry {
@@ -332,7 +332,7 @@ pub fn allow_credentials(
     update_policy(
         path,
         false,
-        |document| {
+        |document, _| {
             let hosts = hosts_table(document, &scope)?;
             let item = hosts
                 .entry(&scope.destination())
@@ -379,7 +379,7 @@ pub fn update_host_rate(
     update_policy(
         path,
         false,
-        |document| {
+        |document, _| {
             validate_rate(document, Some(rate))?;
             let hosts = hosts_table(document, scope)?;
             let item = hosts
@@ -418,7 +418,7 @@ pub fn add_host_bypass(
     update_policy(
         path,
         false,
-        |document| {
+        |document, _| {
             let hosts = hosts_table(document, scope)?;
             let item = hosts
                 .entry(&scope.destination())
@@ -462,9 +462,10 @@ pub fn prune_expired(
     update_policy(
         path,
         true,
-        |document| {
-            let value = parse_toml_document(&document.to_string())
-                .map_err(|error| invalid(error.to_string()))?;
+        |document, context| {
+            let value =
+                crate::policy::parse_toml_document_with_context(&document.to_string(), context)
+                    .map_err(|error| invalid(error.to_string()))?;
             let expired =
                 expired_host_entries(&value, now_ms).map_err(|error| invalid(error.to_string()))?;
             for (agent, host) in &expired {
@@ -605,7 +606,7 @@ pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), 
 pub(crate) fn update_policy<T>(
     path: &Path,
     skip_unchanged: bool,
-    mutate: impl FnOnce(&mut DocumentMut) -> Result<T>,
+    mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
     mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<T> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
@@ -624,10 +625,10 @@ pub(crate) fn update_policy<T>(
         .open(parent.join(".policy.toml.lock"))?;
     lock.lock()?;
     let original = std::fs::read_to_string(path)?;
-    let mut document = crate::policy::parse_toml_for_edit(&original)
+    let (mut document, mut context) = crate::policy::parse_toml_for_edit(&original)
         .map_err(|error| invalid(error.to_string()))?;
-    let result = mutate(&mut document)?;
-    let changed = restore_large_toml_integers(&document.to_string());
+    let result = mutate(&mut document, &mut context)?;
+    let changed = restore_large_toml_integers(&document.to_string(), &context);
     if skip_unchanged && changed == original {
         return Ok(result);
     }

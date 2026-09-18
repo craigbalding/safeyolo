@@ -1856,7 +1856,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         let saved = crate::approvals::update_policy(
             path,
             false,
-            |current| {
+            |current, _| {
                 *current = document;
                 Ok(())
             },
