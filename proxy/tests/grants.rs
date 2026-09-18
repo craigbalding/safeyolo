@@ -710,6 +710,45 @@ fn binding_numbers_keep_types_and_large_toml_integers_round_trip_losslessly() {
 }
 
 #[test]
+fn multiline_nested_large_binding_round_trips_after_external_reload() {
+    let (_directory, path, store) = setup(SOURCE);
+    let large: Value = serde_json::from_str("18446744073709551617").unwrap();
+    let mut input = binding("alice");
+    input.bound_values = json!({"values":[[large.clone()]]})
+        .as_object()
+        .unwrap()
+        .clone();
+    store.approve_binding(input, now(), |_| Ok(())).unwrap();
+    let persisted = fs::read_to_string(&path).unwrap();
+    let compact = "values = [[18446744073709551617]]";
+    assert!(persisted.contains(compact));
+    let multiline = persisted.replace(compact, "values = [\n  [18446744073709551617],\n]");
+    fs::write(&path, multiline).unwrap();
+
+    store.reload(now(), |_| Ok(())).unwrap();
+    let expected = json!({"values":[[large]]}).as_object().unwrap().clone();
+    assert_eq!(
+        store
+            .binding_for_agent("alice", "gmail", "read_messages")
+            .unwrap()
+            .unwrap()
+            .binding
+            .bound_values,
+        expected
+    );
+    let reopened = Store::open(&path, now()).unwrap();
+    assert_eq!(
+        reopened
+            .binding_for_agent("alice", "gmail", "read_messages")
+            .unwrap()
+            .unwrap()
+            .binding
+            .bound_values,
+        expected
+    );
+}
+
+#[test]
 fn binding_upsert_revoke_reload_and_comments_remain_scoped() {
     let (_directory, path, store) = setup(SOURCE);
     let first = store

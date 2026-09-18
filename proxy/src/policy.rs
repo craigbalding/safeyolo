@@ -2185,6 +2185,7 @@ fn mask_large_toml_integers(source: &str) -> Result<(String, LargeIntegerContext
     let mut index = 0;
     let mut line_has_content = false;
     let mut table_header = false;
+    let mut array_depth = 0;
     while index < bytes.len() {
         if let Some(end) = skip_toml_string(bytes, index) {
             output.push_str(&source[index..end]);
@@ -2213,9 +2214,30 @@ fn mask_large_toml_integers(source: &str) -> Result<(String, LargeIntegerContext
             continue;
         }
         if !line_has_content && bytes[index] == b'[' {
-            table_header = true;
+            if array_depth == 0 {
+                table_header = true;
+                line_has_content = true;
+                output.push('[');
+                index += 1;
+                continue;
+            }
+        }
+        if table_header {
+            output.push(bytes[index] as char);
+            index += 1;
+            continue;
+        }
+        if bytes[index] == b'[' {
+            array_depth += 1;
             line_has_content = true;
             output.push('[');
+            index += 1;
+            continue;
+        }
+        if bytes[index] == b']' && array_depth > 0 {
+            array_depth -= 1;
+            line_has_content = true;
+            output.push(']');
             index += 1;
             continue;
         }
@@ -3651,6 +3673,15 @@ mod yaml_tests {
         assert_eq!(
             restore_large_toml_integers(&radix_document.to_string(), &radix_context),
             radix_source
+        );
+        let multiline = concat!("values = [\n", "  [18446744073709551617],\n", "]\n",);
+        let multiline_values = parse_toml_document(multiline).unwrap();
+        assert_eq!(
+            multiline_values["values"][0][0]
+                .as_number()
+                .unwrap()
+                .to_string(),
+            "18446744073709551617"
         );
         let table_key = "[9223372036854775808]\nvalue = 1\n";
         assert_eq!(
