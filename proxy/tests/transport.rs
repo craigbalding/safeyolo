@@ -120,6 +120,7 @@ fn config(directory: &TempDir) -> Config {
         admin_port: None,
         admin_api_token_file: None,
         admin_shield_extra_ports: String::new(),
+        plumb: Default::default(),
         readiness_file: directory.path().join("ready.json"),
         reload_id: None,
         audit_log_path: Some(directory.path().join("audit.jsonl")),
@@ -1813,6 +1814,35 @@ async fn adapter_failure_closes_locally_without_outbound_contact() {
             .all(|event| event["event"] != "proxy.egress")
     );
     proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn internal_policy_handler_failure_does_not_redirect_to_origin() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let (authority, contacts, origin) = origin().await;
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+
+    // The existing temporary policy adapter's deliberately inconsistent
+    // response is a disposable internal-handler fault. It is reached through
+    // the real agent HTTP listener, before the proxy opens an origin socket.
+    let reply = request(
+        &config.listeners[0].socket_path,
+        &format!("http://{authority}/inconsistent"),
+        "",
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 502"), "{reply}");
+    assert_eq!(contacts.load(Ordering::SeqCst), 0);
+    assert!(
+        events(&config)
+            .iter()
+            .all(|event| event["event"] != "proxy.egress")
+    );
+
+    proxy.shutdown().await;
+    origin.abort();
 }
 
 #[tokio::test]

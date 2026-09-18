@@ -674,7 +674,13 @@ the normal task response fields and bytes have source comparisons.
 
 The [admin shield](../proxy/src/admin_shield.rs) applies before policy or forwarding
 and again at the sole outbound connection path. D46 records its concrete source
-repairs. `admin_shield_extra_ports` retains the source's comma-separated grammar:
+repairs. The integrated [operator transport tests](../proxy/tests/admin_transport.rs)
+exercise real agent HTTP and CONNECT requests for management aliases and protected
+ports while a separate loopback admin connection remains usable. They also cover
+an occupied startup port, which publishes neither readiness nor agent sockets, and
+an intentionally inconsistent temporary policy response through the real agent
+HTTP listener; a controlled origin observes zero connections for that internal
+handler failure. `admin_shield_extra_ports` retains the source's comma-separated grammar:
 ordinary non-digit entries are ignored, while digit-only entries that Python
 cannot convert reject the native configuration. Existing rules are retained on a
 failed reload. The actual bound listener stays protected even if the configured
