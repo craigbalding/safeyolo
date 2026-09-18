@@ -1271,6 +1271,119 @@ async fn native_http_client_disconnect_cancels_scan_without_late_publication() {
 }
 
 #[tokio::test]
+async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"wire-observation-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"synthetic",
+                "patterns":["key-[a-z]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "scan_patterns": [{
+                "name":"request-body-observation",
+                "pattern":"body-canary",
+                "scope":["body"],
+                "target":"request",
+                "action":"block"
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(origin(
+        origin_listener,
+        origin_seen.clone(),
+        origin_ready,
+    ));
+    let mut proxy_config = config(&directory, &policy_path, &socket, true);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: false,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+
+    // The invalid gzip is an observation failure after the request header has
+    // already crossed the credential guard.  The guard must publish its
+    // allowed decision before the scanner returns its local 403, and the
+    // failure must not turn into an outbound request.
+    let body = b"body-canary";
+    let request = format!(
+        "POST http://127.0.0.1:{origin_port}/observation-failure HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer key-observation\r\nContent-Encoding: gzip\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut wire = request.into_bytes();
+    wire.extend_from_slice(body);
+    let failed = raw_round_trip(&socket, &wire).await;
+    assert!(failed.starts_with(b"HTTP/1.1 403"), "{failed:?}");
+    assert!(!failed.windows(body.len()).any(|window| window == body));
+    assert!(origin_seen.lock().unwrap().is_empty());
+
+    // Reserved Agent API traffic is dispatched locally before ordinary
+    // credential logging or egress.  It must remain local even after the
+    // preceding request's scanner observation failed.
+    let local = raw_exchange(
+        &socket,
+        b"GET http://_safeyolo.proxy.internal/status HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer key-local-only\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(local.starts_with(b"HTTP/1.1 503"), "{local:?}");
+    assert!(origin_seen.lock().unwrap().is_empty());
+
+    proxy.shutdown().await;
+    origin_task.abort();
+
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| event["event"] == "proxy.credential_guard")
+        .expect("credential guard event missing before observation failure");
+    let pattern = rows
+        .iter()
+        .position(|event| event["event"] == "security.pattern_scanner")
+        .expect("pattern observation failure event missing");
+    assert!(
+        credential < pattern,
+        "observation ran before credential guard"
+    );
+    let guard = &rows[credential];
+    assert_eq!(guard["outcome"], "allowed");
+    assert_eq!(guard["agent"], "alice");
+    assert_eq!(guard["evaluations"][0]["effect"], "allow");
+    let scanner = &rows[pattern];
+    assert_eq!(scanner["decision"], "deny");
+    assert_eq!(scanner["direction"], "request");
+    assert_eq!(scanner["failure"], "content_decode");
+    assert!(!events.contains("key-observation"));
+    assert!(!events.contains("key-local-only"));
+    assert!(!events.contains("proxy.egress"));
+}
+
+#[tokio::test]
 async fn native_guard_invalid_utf8_h1_warn_block_and_origin_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
