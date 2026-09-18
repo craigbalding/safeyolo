@@ -115,7 +115,7 @@ launch() {
     printf 'pipe_status=("${PIPESTATUS[@]}")\n'
     printf 'status=${pipe_status[0]:-125}\nraw_status=${pipe_status[1]:-125}\nviewer_status=${pipe_status[2]:-125}\n'
     printf 'if [[ -s %q ]]; then cp -- %q %q; fi\n' "$last" "$last" "$receipt"
-    printf 'disposition=$(grep -E -m1 "^(READY|CHANGES_REQUIRED|BLOCKED)([[:space:]]|$)" %q || true)\n' "$last"
+    printf 'disposition=$(grep -E -m1 "^(READY|CHANGES_REQUIRED|BLOCKED)([[:space:]]|$)" %q | awk "{print \\$1}" || true)\n' "$last"
     printf 'printf "review finished: codex=%%s raw=%%s viewer=%%s disposition=%%s\\n" "$status" "$raw_status" "$viewer_status" "${disposition:-unreported}"\n'
     printf 'if [[ "$status" -ne 0 || "$raw_status" -ne 0 || "$viewer_status" -ne 0 || "${disposition:-}" != READY ]]; then\n'
     printf '  if [[ -n "${TMUX_PANE:-}" ]]; then tmux set-option -p -t "$TMUX_PANE" remain-on-exit on || true; fi\n'
