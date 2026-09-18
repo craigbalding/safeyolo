@@ -8,9 +8,9 @@ set -euo pipefail
 
 repo=${SAFEYOLO_REVIEW_REPO:-/home/agent/safeyolo-rust-620}
 root=${SAFEYOLO_REVIEW_LOG_ROOT:-/home/agent/safeyolo-rust-620-evidence/deepseek-reviews}
-profile=${SAFEYOLO_REVIEW_PROFILE:-ds-review}
-model_provider=openrouter_review
-model=deepseek/deepseek-v4.1-flash
+profile=${SAFEYOLO_REVIEW_PROFILE:-opencode-go-review}
+model_provider=opencode_go_review
+model=deepseek-v4.1-flash
 reasoning=max
 
 usage() {
@@ -64,11 +64,12 @@ base_args=(
   --cd "$repo"
   --sandbox read-only
   --ask-for-approval never
-  -c 'model_provider="openrouter_review"'
-  -c 'model="deepseek/deepseek-v4.1-flash"'
-  -c 'review_model="deepseek/deepseek-v4.1-flash"'
+  -c 'model_provider="opencode_go_review"'
+  -c 'model="deepseek-v4.1-flash"'
+  -c 'review_model="deepseek-v4.1-flash"'
   -c 'model_reasoning_effort="max"'
   -c 'plan_mode_reasoning_effort="max"'
+  -c 'model_supports_reasoning_summaries=true'
 )
 
 launch() {

@@ -8,9 +8,11 @@ does not use the factory supervisor pattern.
 - The coordinator remains Terra medium.
 - Implementation workers remain `gpt-5.6-luna` at `xhigh` reasoning.
 - Routine candidate review runs in the background through
-  `scripts/codex_deepseek_review.sh`, using the existing `ds-review` profile:
-  OpenRouter provider `openrouter_review`, model
-  `deepseek/deepseek-v4.1-flash`, and `max` model and plan reasoning.
+  `scripts/codex_deepseek_review.sh`, using the `opencode-go-review` profile:
+  OpenCode Go provider `opencode_go_review`, model
+  `deepseek-v4.1-flash`, and `max` model reasoning. The previous
+  `openrouter-ds-review` profile remains available as an explicit rollback
+  override through `SAFEYOLO_REVIEW_PROFILE`.
 - Final acceptance remains an independent Sol review at `gpt-5.6-sol` with
   high reasoning. A background review never replaces that acceptance.
 - If the requested provider, model, or reasoning level cannot be proven at
