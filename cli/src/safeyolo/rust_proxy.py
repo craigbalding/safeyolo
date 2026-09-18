@@ -20,6 +20,7 @@ from .agent_command_supervisor import _write_json, _write_text
 from .config import get_agent_map_path, get_bridge_sockets_dir, get_data_dir, get_logs_dir
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
+from .sockets import remove_stale_sockets
 from .traffic_session import (
     capture_session,
     session_process_id,
@@ -86,13 +87,24 @@ def read_process() -> RustProcess | None:
     return process
 
 
-def is_alive(process: RustProcess) -> bool:
+def is_alive(process: RustProcess, *, allow_unobservable_exit: bool = False) -> bool:
+    """Return whether the recorded process is alive and still ours.
+
+    ``allow_unobservable_exit`` is only used after a verified termination
+    request.  Some macOS process states keep ``kill(pid, 0)`` successful for a
+    short window after exit while ``ps`` no longer provides a start token.  At
+    that point the process cannot be live and safely signalable through this
+    receipt, so the stop wait treats the observation as an exit.  Callers that
+    may signal a process keep the strict default and refuse unknown identity.
+    """
     if process.pid is None:
         raise RuntimeError("Cannot identify the launched Rust proxy; its lifetime record and console have been retained")
     if not process_is_alive(process.pid):
         return False
     observed = process_start_token(process.pid)
     if observed is None or process.start_token is None:
+        if allow_unobservable_exit:
+            return False
         raise RuntimeError("Cannot verify Rust proxy process identity; lifetime state has been retained")
     return observed == process.start_token
 
@@ -106,6 +118,19 @@ def clear_process(process: RustProcess) -> None:
     except FileNotFoundError:
         # Native startup may fail before publishing the legacy PID file.
         pass
+    readiness = Path(process.readiness_file)
+    try:
+        marker = json.loads(readiness.read_text())
+    except (OSError, UnicodeError, ValueError):
+        marker = None
+    if not isinstance(marker, dict) or marker.get("pid") == process.pid:
+        readiness.unlink(missing_ok=True)
+    try:
+        remove_stale_sockets()
+    except OSError as exc:
+        # A stale socket is secondary cleanup; retain the successful process
+        # receipt cleanup while making the obstacle visible to diagnostics.
+        log.warning("Could not remove stale Rust proxy sockets: %s", exc)
     state_file().unlink(missing_ok=True)
 
 
@@ -334,7 +359,7 @@ def stop(process: RustProcess) -> None:
         except ProcessLookupError:
             # It exited between the ownership observation and signal delivery.
             pass
-        while is_alive(process):
+        while is_alive(process, allow_unobservable_exit=True):
             time.sleep(0.1)
     # Keep the exited console for diagnostics. start_session reaps a dead pane
     # on the next launch. A failed pane query must never kill a replacement pane.

@@ -283,6 +283,23 @@ def test_graceful_stop_waits_beyond_both_old_deadlines_without_sigkill(launch):
     assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
 
 
+def test_macos_post_signal_unobservable_exit_clears_lifecycle_state(launch, monkeypatch):
+    """A macOS post-SIGTERM ps gap is an exited process, not an identity error."""
+    receipt(launch)
+    launch.ready.write_text(json.dumps(marker()))
+    launch.token.side_effect = [TOKEN, None]
+    remove_stale = create_autospec(rust_proxy.remove_stale_sockets, spec_set=True)
+    monkeypatch.setattr(rust_proxy, "remove_stale_sockets", remove_stale)
+
+    proxy.stop_proxy()
+
+    launch.kill.assert_called_once_with(PID, signal.SIGTERM)
+    remove_stale.assert_called_once_with()
+    assert not launch.ready.exists()
+    assert not rust_proxy.state_file().exists()
+    assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
+
+
 def test_interrupted_stop_keeps_receipt_and_does_not_kill_tmux(launch):
     process = receipt(launch)
     launch.clock.sleep.side_effect = KeyboardInterrupt
