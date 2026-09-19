@@ -518,24 +518,28 @@ def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources
                             "origin did not observe the abandoned CONNECT EOF"
                         )
                         time.sleep(0.01)
-                    after = _process_resources(proxy.process.pid)
-                    after_targets = after["fd_targets"]
-                    new_sockets = sorted(
-                        target
-                        for target in set(after_targets.values()) - set(before_targets.values())
-                        if target.startswith("socket:[")
-                    )
-                    retained_deleted = sorted(
-                        target
-                        for target in set(after_targets.values()) - set(before_targets.values())
-                        if target.endswith(" (deleted)")
-                    )
-                    assert not new_sockets, (
-                        f"CONNECT {index} retained new socket descriptors: {new_sockets}"
-                    )
-                    assert not retained_deleted, (
-                        f"CONNECT {index} retained deleted descriptors: {retained_deleted}"
-                    )
+                    settle_started = time.monotonic()
+                    settle_deadline = settle_started + 5
+                    settle_attempts = 0
+                    while True:
+                        after = _process_resources(proxy.process.pid)
+                        after_targets = after["fd_targets"]
+                        new_targets = set(after_targets.values()) - set(before_targets.values())
+                        new_sockets = sorted(
+                            target for target in new_targets if target.startswith("socket:[")
+                        )
+                        retained_deleted = sorted(
+                            target for target in new_targets if target.endswith(" (deleted)")
+                        )
+                        if not new_sockets and not retained_deleted:
+                            break
+                        assert time.monotonic() < settle_deadline, (
+                            f"CONNECT {index} did not reclaim descriptors within 5s: "
+                            f"sockets={new_sockets}, deleted={retained_deleted}"
+                        )
+                        settle_attempts += 1
+                        time.sleep(0.005)
+                    settle_seconds = time.monotonic() - settle_started
                     assert proxy.process.poll() is None
                     samples.append({
                         "index": index,
@@ -543,6 +547,8 @@ def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources
                         "after": after,
                         "new_socket_targets_after_close": new_sockets,
                         "retained_deleted_targets_after_close": retained_deleted,
+                        "descriptor_settle_seconds": round(settle_seconds, 6),
+                        "descriptor_settle_attempts": settle_attempts,
                     })
 
                 thread.join(timeout=5)
@@ -574,6 +580,10 @@ def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources
                     assert len(events) == sessions
                     assert all(event["agent"] == "alice" for event in events)
                     assert all(event["coverage"] == "opaque" for event in events)
+                    assert [
+                        (event["uploaded_bytes"], event["downloaded_bytes"])
+                        for event in events
+                    ] == [(len(payload), len(greeting)) for payload in payloads]
                 (directory / "connect-cancellation-resources.json").write_text(
                     json.dumps(
                         {
