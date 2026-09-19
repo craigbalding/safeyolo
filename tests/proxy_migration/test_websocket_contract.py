@@ -195,9 +195,11 @@ class Peer:
 class OwnedOrigin(socketserver.ThreadingTCPServer):
     """Thread failures are returned to the controlling test, never suppressed."""
 
-    def __init__(self, script, *, pem=None, compressed=False):
+    def __init__(self, script, *, pem=None, compressed=False, first_frame=None):
         self.script = script
         self.compressed = compressed
+        self.first_frame = first_frame
+        self.preface_writes = 0
         self.accepts = 0
         self.results = queue.Queue()
         self.errors = queue.Queue()
@@ -241,7 +243,14 @@ class OriginHandler(socketserver.BaseRequestHandler):
                 if self.server.compressed:
                     assert "permessage-deflate" in ",".join(headers["sec-websocket-extensions"])
                     response += "Sec-WebSocket-Extensions: permessage-deflate\r\n"
-                stream.sendall((response + "\r\n").encode())
+                preface = (response + "\r\n").encode()
+                if self.server.first_frame is not None:
+                    # Keep the first server message in the same write as the
+                    # 101.  This exercises the upgrade handoff's already-read
+                    # bytes rather than a later ordinary relay write.
+                    preface += frame(1, self.server.first_frame)
+                    self.server.preface_writes += 1
+                stream.sendall(preface)
                 peer = Peer(stream, client=False, compressed=self.server.compressed)
                 self.server.script(peer, self.server.results)
         except Exception as error:
@@ -249,8 +258,8 @@ class OriginHandler(socketserver.BaseRequestHandler):
 
 
 @contextmanager
-def origin_server(script, *, pem=None, compressed=False):
-    origin = OwnedOrigin(script, pem=pem, compressed=compressed)
+def origin_server(script, *, pem=None, compressed=False, first_frame=None):
+    origin = OwnedOrigin(script, pem=pem, compressed=compressed, first_frame=first_frame)
     thread = threading.Thread(target=origin.serve_forever)
     thread.start()
     try:
@@ -375,6 +384,41 @@ def test_complete_fragmented_messages(proxy_backend, tmp_path, request, tls, dir
                 request.node.add_marker(pytest.mark.xfail(
                     strict=True, reason="D32: historical wsproto loses compression state across control frames"))
             assert delivered == (opcode, payload)
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_first_server_message_survives_coalesced_101_handoff(proxy_backend, tmp_path, tls):
+    """Preserve a server frame sent in the same write as the 101 response."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    first = b"first server message before the client sees 101"
+    client_message = b"client message after the coalesced handshake"
+    close_payload = struct.pack("!H", 1000) + b"fixture complete"
+
+    def script(peer, results):
+        results.put(peer.receive())
+        peer.send(1, b"ack")
+        assert peer.receive() == (8, close_payload)
+        peer.close()
+
+    with origin_server(script, pem=pem, first_frame=first) as origin:
+        with connect_peer(origin, ca=public) as direct:
+            assert direct.receive() == (1, first)
+            direct.send(1, client_message)
+            assert direct.receive() == (1, b"ack")
+            direct.close()
+            assert direct.receive() == (8, close_payload)
+        assert origin.results.get(timeout=5) == (1, client_message)
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                           inspection={}) as proxy:
+            with connect_peer(origin, path=proxy.paths["alice"], ca=proxy_ca) as peer:
+                assert peer.receive() == (1, first)
+                peer.send(1, client_message)
+                assert peer.receive() == (1, b"ack")
+                peer.close()
+                assert peer.receive() == (8, close_payload)
+            assert origin.results.get(timeout=5) == (1, client_message)
+        assert origin.preface_writes == 2
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
