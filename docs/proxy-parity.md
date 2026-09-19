@@ -2853,6 +2853,14 @@ sockets, and then verifies that Carol's permitted wait receives a later Alice
 publication. This is an explicit client-disconnect cleanup witness; it does
 not claim restart persistence or a load/concurrency matrix.
 
+The companion running-client control
+`backing_state_failure_is_truthful_and_other_member_recovers` holds the real
+SQLite writer lock while Alice attempts a message. The native route returns
+503 `plumb backing state unavailable`, leaves no message or allowed-message
+audit for the failed write, and then accepts Carol's permitted publication
+after the lock is released. This covers one transient writer-lock failure; it
+does not claim corrupt-file recovery or restart behavior.
+
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation
 errors; arbitrary source JSON values and non-TOML mutation parity are unproved.

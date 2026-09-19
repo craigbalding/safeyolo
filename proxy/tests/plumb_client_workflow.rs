@@ -6,6 +6,7 @@
 //! evidence records the identity and membership decisions made at the real
 //! transport boundary.
 
+use rusqlite::Connection;
 use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
 use std::{
@@ -117,10 +118,14 @@ fn parse_reply(bytes: &[u8]) -> Reply {
 }
 
 async fn exchange_unix(socket: &Path, bytes: &[u8]) -> Reply {
+    exchange_unix_with_timeout(socket, bytes, Duration::from_secs(5)).await
+}
+
+async fn exchange_unix_with_timeout(socket: &Path, bytes: &[u8], timeout: Duration) -> Reply {
     let mut stream = UnixStream::connect(socket).await.unwrap();
     stream.write_all(bytes).await.unwrap();
     let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+    tokio::time::timeout(timeout, stream.read_to_end(&mut response))
         .await
         .expect("Unix client response timeout")
         .unwrap();
@@ -730,6 +735,151 @@ async fn disconnected_clients_release_wait_capacity_for_permitted_peer() {
             "waiter_message":carol_reply.body["messages"][0],
             "state_owner":"native process-owned PlumbOwner",
             "limit":"bounded MAX_WAITERS saturation probe; no load or restart claim"
+        })],
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn backing_state_failure_is_truthful_and_other_member_recovers() {
+    let root = TempDir::new().unwrap();
+    let root_path = root.path();
+    fs::create_dir_all(root_path.join("data")).unwrap();
+    fs::write(root_path.join("data/agent_token"), AGENT_TOKEN).unwrap();
+    fs::write(root_path.join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let proxy = Proxy::start(config(root_path)).await.unwrap();
+    let operator_port = admin_port(root_path);
+    let alice = root_path.join("alice.sock");
+    let carol = root_path.join("carol.sock");
+
+    let requested = exchange_unix(
+        &alice,
+        &request(
+            "POST",
+            "/plumb/request-chat",
+            AGENT_TOKEN,
+            br#"{"requester":"forged","participants":["bob","carol"]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(requested.status, 202);
+    assert_eq!(
+        requested.body["participants"],
+        json!(["alice", "bob", "carol"])
+    );
+    let request_id = requested.body["request_id"].as_str().unwrap();
+    let approved = exchange_admin(
+        operator_port,
+        &admin_request(
+            "POST",
+            "/admin/plumb/approve",
+            serde_json::to_string(&json!({"request_id":request_id,"ttl_seconds":120}))
+                .unwrap()
+                .as_bytes(),
+        ),
+    )
+    .await;
+    assert_eq!(approved.status, 200);
+    let conversation_id = approved.body["conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let baseline = exchange_unix(
+        &alice,
+        &request(
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/messages"),
+            AGENT_TOKEN,
+            br#"{"body":"durable baseline"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(baseline.status, 200);
+    let baseline_id = baseline.body["id"].as_str().unwrap().to_owned();
+
+    // Hold the real SQLite writer lock from a second connection. The native
+    // owner must report its failed write as 503 rather than claiming success.
+    let blocker_path = root_path.join("data/plumb/plumb.db");
+    let blocker = Connection::open(&blocker_path).unwrap();
+    blocker
+        .execute_batch("PRAGMA busy_timeout=0; BEGIN IMMEDIATE;")
+        .unwrap();
+    let failed = exchange_unix_with_timeout(
+        &alice,
+        &request(
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/messages"),
+            AGENT_TOKEN,
+            br#"{"body":"must not be reported as committed"}"#,
+        ),
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(failed.status, 503);
+    assert_eq!(failed.body["error"], "plumb backing state unavailable");
+    blocker.execute_batch("ROLLBACK").unwrap();
+
+    // The failed row is absent, while another permitted listener identity can
+    // publish successfully after the transient backing-state failure.
+    let after_failure = exchange_unix(
+        &carol,
+        &request(
+            "GET",
+            &format!("/plumb/conversations/{conversation_id}/messages?after={baseline_id}"),
+            AGENT_TOKEN,
+            b"",
+        ),
+    )
+    .await;
+    assert_eq!(after_failure.status, 200);
+    assert!(
+        after_failure.body["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let recovered = exchange_unix(
+        &carol,
+        &request(
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/messages"),
+            AGENT_TOKEN,
+            br#"{"body":"Carol remains permitted after store recovery"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(recovered.status, 200);
+    let recovered_id = recovered.body["id"].as_str().unwrap();
+    assert!(!recovered_id.is_empty());
+
+    let events = fs::read_to_string(root_path.join("audit.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let message_allowed = events
+        .iter()
+        .filter(|event| event["event"] == "plumb.message_allowed")
+        .count();
+    assert_eq!(message_allowed, 2, "baseline and Carol recovery only");
+    write_evidence(
+        root_path,
+        &[json!({
+            "step":"backing_state_write_failure_and_recovery",
+            "listener_identity_source":"alice and carol configured Unix listener paths",
+            "conversation_participants":["alice","bob","carol"],
+            "failure_injection":"independent SQLite BEGIN IMMEDIATE writer lock",
+            "failed_status":failed.status,
+            "failed_body":failed.body,
+            "failed_message_audit_present":false,
+            "after_failure_messages":after_failure.body["messages"],
+            "recovery_publisher":"carol",
+            "recovery_status":recovered.status,
+            "recovery_message_id":recovered_id,
+            "message_allowed_audit_count":message_allowed,
+            "state_owner":"native process-owned PlumbOwner",
+            "limit":"transient SQLite writer-lock failure only; no corrupt-file or restart claim"
         })],
     );
     proxy.shutdown().await;
