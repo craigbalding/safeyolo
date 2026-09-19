@@ -2529,6 +2529,14 @@ bytes. This proves the joined native selection/export path for the controlled
 HTTP case; it does not establish WebSocket, multi-row retention, terminal UI or
 full inspector parity.
 
+The companion live native WebSocket witness
+[`live_operator_inspector_browses_native_websocket_transcript`](../proxy/src/traffic_view_runtime_tests.rs)
+reads both retained message bodies through the authenticated operator API and
+exports the same selected flow in all seven retained formats. It checks the
+transcript bytes in raw and HAR/ZHAR output, and the handshake projection in
+the request/response and command formats. This is one live WebSocket flow; it
+does not establish multi-row retention, terminal UI or full inspector parity.
+
 An export snapshots retained HTTP observations and WebSocket payload owners
 under the live-view lock. Decoding and file-backed message reads occur after
 that lock is released. Streaming retains those owners across later view changes

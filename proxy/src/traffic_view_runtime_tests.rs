@@ -644,6 +644,84 @@ async fn live_operator_inspector_browses_native_websocket_transcript() {
             assert_eq!(page["end"], true);
         }
 
+        // Exercise every selected-flow format against this live WebSocket
+        // row, including the retained transcript bytes. The component tests
+        // already cover synthetic rows; this keeps the real upgrade path in
+        // the acceptance evidence.
+        for format in [
+            "raw",
+            "raw_request",
+            "raw_response",
+            "curl",
+            "httpie",
+            "har",
+            "zhar",
+        ] {
+            let (status, headers, body) = operator_http(
+                admin_address,
+                token,
+                Method::GET,
+                &format!("/admin/traffic/flows/{id}/export?format={format}"),
+                b"",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{format}");
+            assert!(
+                headers
+                    .get("content-disposition")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .contains(&format!("traffic.{format}")),
+                "{format}"
+            );
+            match format {
+                "raw" => {
+                    assert!(body.windows(b"client transcript".len()).any(|part| {
+                        part == b"client transcript"
+                    }));
+                    assert!(body.windows(b"server transcript".len()).any(|part| {
+                        part == b"server transcript"
+                    }));
+                }
+                "raw_request" | "curl" | "httpie" => {
+                    assert!(body.windows(b"/socket?inspector=ws".len()).any(|part| {
+                        part == b"/socket?inspector=ws"
+                    }));
+                }
+                "raw_response" => {
+                    assert!(body.windows(b"101 Switching Protocols".len()).any(|part| {
+                        part == b"101 Switching Protocols"
+                    }));
+                }
+                "har" => {
+                    let har: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+                    let messages = har["log"]["entries"][0]["_webSocketMessages"]
+                        .as_array()
+                        .unwrap();
+                    assert_eq!(messages.len(), 2);
+                    assert_eq!(messages[0]["data"], "client transcript");
+                    assert_eq!(messages[1]["data"], "server transcript");
+                }
+                "zhar" => {
+                    let mut decoder = ZlibDecoder::new(body.as_ref());
+                    let mut decompressed = Vec::new();
+                    decoder.read_to_end(&mut decompressed).unwrap();
+                    let har: Value = serde_json::from_slice(&decompressed).unwrap();
+                    assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+                    assert_eq!(
+                        har["log"]["entries"][0]["_webSocketMessages"]
+                            .as_array()
+                            .unwrap()
+                            .len(),
+                        2
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+
         write
             .write_all(&masked_client_frame(
                 OpCode::Control(tungstenite::protocol::frame::coding::Control::Close),
