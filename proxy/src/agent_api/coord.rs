@@ -1032,11 +1032,16 @@ fn message_wakes_waiter(
     let header = headers
         .and_then(|headers| headers.get_last("SafeYolo-Coord-Attention"))
         .map(|value| value.as_str());
-    // Legacy room messages have no Stage-1 header and need only the existing
-    // sender filtering. Do not require native envelope fields while scanning
-    // such nonqualifying messages.
+    // Legacy room messages have no Stage-1 header. Do not require native
+    // envelope fields while scanning them, but still require the current
+    // receive grant before exposing a message.
     let Some(header) = header else {
-        return Ok(!exclude_self || !sender_is_self);
+        // Unannotated messages predate Stage 1 and have no published grant
+        // generation to compare. They still require the waiter's current
+        // receive grant, which is re-read after each pull wakes.
+        return Ok(
+            (!exclude_self || !sender_is_self) && recipient_generation(access, principal).is_some()
+        );
     };
     let msg_id = value
         .get("msg_id")
@@ -1050,13 +1055,12 @@ fn message_wakes_waiter(
             recipient.agent_id == principal
                 && recipient_generation(access, principal) == Some(recipient.membership_granted_at)
         })),
-        "room" => Ok((!exclude_self || !sender_is_self)
+        "legacy_room" | "room" => Ok((!exclude_self || !sender_is_self)
             && manifest.recipients.iter().any(|recipient| {
                 recipient.agent_id == principal
                     && recipient_generation(access, principal)
                         == Some(recipient.membership_granted_at)
             })),
-        "legacy_room" => Ok(!exclude_self || !sender_is_self),
         _ => Err(CoordError::Data),
     }
 }
@@ -3394,7 +3398,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_messages_without_stage1_fields_still_scan_as_room_messages() {
+    fn legacy_unannotated_wait_requires_active_grant_after_revoke() {
         let access = RoomAccess {
             room_id: "rm-shared".to_owned(),
             room_name: "shared".to_owned(),
@@ -3413,6 +3417,49 @@ mod tests {
 
         let self_message = json!({"sender_agent_id": "ag-alice"});
         assert!(!message_wakes_waiter(None, &self_message, "ag-alice", &access, true,).unwrap());
+
+        let annotated = json!({"msg_id": "msg-legacy", "sender_agent_id": "ag-bob"});
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(
+            "SafeYolo-Coord-Attention",
+            json!({
+                "version": 1,
+                "msg_id": "msg-legacy",
+                "mode": "legacy_room",
+                "recipients": [{
+                    "attention_id": "attn-0123456789abcdef0123456789abcdef",
+                    "agent_id": "ag-alice",
+                    "membership_granted_at": 7,
+                }],
+            })
+            .to_string(),
+        );
+        assert!(
+            message_wakes_waiter(Some(&headers), &annotated, "ag-alice", &access, false).unwrap()
+        );
+
+        // A legacy/unannotated pull can wake after a revoke raced the fetch;
+        // the post-fetch grant snapshot must suppress that delivery.
+        let mut revoked = access;
+        revoked.members.clear();
+        assert!(!message_wakes_waiter(None, &legacy, "ag-alice", &revoked, false).unwrap());
+        assert!(
+            !message_wakes_waiter(Some(&headers), &annotated, "ag-alice", &revoked, false,)
+                .unwrap()
+        );
+        assert!(
+            filter_wait_candidates(
+                vec![WaitCandidate {
+                    value: legacy,
+                    headers: None,
+                }],
+                "ag-alice",
+                &revoked,
+                false,
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     #[test]
