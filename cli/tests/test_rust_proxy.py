@@ -184,6 +184,28 @@ def test_unspecified_backend_preserves_python_dispatch(launch):
     launch.version.assert_not_called()
 
 
+def test_binary_prefers_the_packaged_native_artifact(monkeypatch, tmp_path):
+    package = tmp_path / "safeyolo"
+    package.mkdir()
+    (package / "bin").mkdir()
+    binary = package / "bin" / "safeyolo-proxy"
+    binary.write_text("packaged native proxy")
+    binary.chmod(0o700)
+    monkeypatch.delenv("SAFEYOLO_RUST_PROXY", raising=False)
+    monkeypatch.setattr(rust_proxy, "__file__", str(package / "rust_proxy.py"))
+    version = create_autospec(
+        subprocess.run,
+        spec_set=True,
+        return_value=subprocess.CompletedProcess([], 0, stdout="safeyolo-proxy 0.1.0\n", stderr=""),
+    )
+    monkeypatch.setattr(rust_proxy.subprocess, "run", version)
+
+    assert rust_proxy._binary() == binary
+    version.assert_called_once_with(
+        [str(binary), "--version"], capture_output=True, text=True, timeout=5, check=False
+    )
+
+
 @pytest.mark.parametrize(
     "bad",
     [

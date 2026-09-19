@@ -22,6 +22,7 @@ class CustomBuildHook(BuildHookInterface):
         if self.target_name != "wheel":
             return
 
+        project_root = Path(self.root).resolve()
         revision = os.environ.get("SAFEYOLO_BUILD_REVISION", "").strip()
         if revision:
             revision = revision.lower()
@@ -32,7 +33,6 @@ class CustomBuildHook(BuildHookInterface):
                 )
             provenance = "build-environment"
         else:
-            project_root = Path(self.root).resolve()
             try:
                 result = subprocess.run(
                     [
@@ -113,6 +113,15 @@ class CustomBuildHook(BuildHookInterface):
         )
         self._generated = generated
         build_data["force_include"][str(generated)] = "safeyolo/_build_identity.json"
+
+        # The installer builds the native proxy before invoking uv. Include
+        # that exact release artifact in wheel installs so an installed CLI
+        # does not depend on the source checkout or an inherited environment
+        # variable. Development checkouts without a release build retain the
+        # existing Python-only packaging path.
+        native_binary = project_root / "proxy" / "target" / "release" / "safeyolo-proxy"
+        if native_binary.is_file():
+            build_data["force_include"][str(native_binary)] = "safeyolo/bin/safeyolo-proxy"
 
     def finalize(
         self,

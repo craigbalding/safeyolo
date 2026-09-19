@@ -363,6 +363,12 @@ credential inspection and injection, WebMITM, and complete agent management
 remain incomplete. Native listeners include the supplied JSON entries and
 the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
+`./install.sh` builds `proxy/target/release/safeyolo-proxy` through the Cargo
+space guard and installs a wheel containing that exact native executable. The
+installed binary is available to an explicitly configured `proxy.backend: rust`
+launch; the installer does not change the default Python selection while the
+remaining parity and rollback evidence is incomplete.
+
 ### Cargo disk-space guard and target retirement
 
 Use `scripts/cargo_with_space.sh` for Rust builds and tests. It reserves 20 GiB

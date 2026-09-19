@@ -109,6 +109,9 @@ def run_installer(
             "BASH_ENV": "/dev/null",
             "FAKE_UV_LOG": str(log),
             "FAKE_UV_STATE": str(state),
+            # The hermetic installer tests exercise Python/uv selection. The
+            # real installer builds the native proxy before this step.
+            "SAFEYOLO_SKIP_RUST_BUILD": "1",
             **settings,
         }
     )
@@ -158,7 +161,8 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
     tool_lines = [line for line in lines if "[tool] [install]" in line]
     assert len(tool_lines) == 2
     assert all("[--python] [/fake/python-3.13]" in line for line in tool_lines)
-    assert all("[--editable]" in line and "[--overrides]" in line for line in tool_lines)
+    assert all("[--editable]" not in line and "[--overrides]" in line for line in tool_lines)
+    assert all(f"[{REPO_ROOT}]" in line for line in tool_lines)
     assert "[--reinstall]" not in tool_lines[0]
     assert "[--reinstall]" in tool_lines[1]
     assert lines.count("override: h2==4.4.1") == 2
@@ -277,3 +281,14 @@ def test_install_avoids_empty_nounset_array_expansion() -> None:
     assert "reinstall_args=()" not in source
     assert 'local tool_args=(--python)' in source
     assert 'uv tool install "${tool_args[@]}"' in source
+
+
+def test_install_builds_and_packages_the_locked_release_proxy() -> None:
+    """Normal source installs produce the artifact consumed by wheel builds."""
+    source = (REPO_ROOT / "install.sh").read_text()
+
+    assert 'SAFEYOLO_CARGO_RESERVE_GIB=20' in source
+    assert '"$REPO_ROOT/scripts/cargo_with_space.sh"' in source
+    assert 'build --locked --release --manifest-path proxy/Cargo.toml' in source
+    assert 'proxy/target/release/safeyolo-proxy' in source
+    assert 'tool_args+=("$python_interpreter" "$REPO_ROOT")' in source

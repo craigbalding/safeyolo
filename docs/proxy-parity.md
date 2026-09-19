@@ -452,6 +452,13 @@ selects a supplied Rust executable and native JSON configuration through
 the native readiness marker and a separate process lifetime record; no launch
 failure selects Python automatically. Rust shutdown waits for process exit.
 
+The source installer now builds the locked release executable with the Cargo
+space guard and packages it into the installed CLI. This closes the artifact
+availability gap for an explicitly configured native launch while retaining the
+Python default until the complete native lifecycle, ingress, rollback and
+consumer evidence is rerun against one frozen candidate. It does not authorize
+deleting the Python comparator or switching the default.
+
 The shared CLI admin client selects the recorded native IPv4 loopback endpoint
 and credentials. It verifies process identity before requests and follows a
 new verified Rust process after restart. Once a client selects Rust, a missing

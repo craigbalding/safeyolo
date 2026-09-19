@@ -3,10 +3,35 @@
 import typer
 from rich.console import Console
 
-from ..traffic_inspector import inspect_traffic, plain_text
-from ..traffic_session import attach_session, session_exists
-
 console = Console()
+
+
+def plain_text(value: object, *, multiline: bool = False) -> str:
+    """Render traffic text without importing the inspector at CLI startup."""
+    from ..traffic_inspector import plain_text as _plain_text
+
+    return _plain_text(value, multiline=multiline)
+
+
+def inspect_traffic(api) -> None:
+    """Open the native inspector only when the traffic command attaches."""
+    from ..traffic_inspector import inspect_traffic as _inspect_traffic
+
+    return _inspect_traffic(api)
+
+
+def session_exists() -> bool:
+    """Check the Python traffic session only for a Python attach."""
+    from ..traffic_session import session_exists as _session_exists
+
+    return _session_exists()
+
+
+def attach_session() -> int:
+    """Attach to the Python traffic session only for a Python backend."""
+    from ..traffic_session import attach_session as _attach_session
+
+    return _attach_session()
 
 
 def get_api():

@@ -1,8 +1,9 @@
 #!/bin/bash
 # SafeYolo install helper.
 #
-# Wraps `uv tool install --editable .` with security-pin overrides not yet
-# adopted by mitmproxy's dependency metadata (see pyproject `[tool.uv]`).
+# Builds and packages the native Rust proxy, then wraps `uv tool install` with
+# security-pin overrides not yet adopted by mitmproxy's dependency metadata
+# (see pyproject `[tool.uv]`).
 # `uv tool install` does not apply that block, so pass the pins on the CLI.
 #
 # Keeps the "scary" overrides line out of the user's shell history and
@@ -31,6 +32,35 @@ UV_OVERRIDES=(
 )
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+build_native_proxy() {
+  if [[ "${SAFEYOLO_SKIP_RUST_BUILD:-0}" == "1" ]]; then
+    echo "install.sh: skipping native Rust build (SAFEYOLO_SKIP_RUST_BUILD=1)" >&2
+    return 0
+  fi
+  if [[ ! -f "$REPO_ROOT/proxy/Cargo.toml" ]]; then
+    echo "install.sh: native proxy source is missing: $REPO_ROOT/proxy/Cargo.toml" >&2
+    return 1
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "install.sh: cargo is required to build safeyolo-proxy" >&2
+    return 1
+  fi
+  echo "install.sh: building the release Rust proxy" >&2
+  if ! (
+    cd "$REPO_ROOT"
+    SAFEYOLO_CARGO_RESERVE_GIB=20 \
+      "$REPO_ROOT/scripts/cargo_with_space.sh" \
+      build --locked --release --manifest-path proxy/Cargo.toml
+  ); then
+    echo "install.sh: Rust proxy build failed; the Python CLI was not installed" >&2
+    return 1
+  fi
+  if [[ ! -x "$REPO_ROOT/proxy/target/release/safeyolo-proxy" ]]; then
+    echo "install.sh: Cargo completed without proxy/target/release/safeyolo-proxy" >&2
+    return 1
+  fi
+}
 
 read_python_requirement() {
   local requirement
@@ -112,9 +142,10 @@ install_tool() {
   local python_interpreter
   local tool_args=(--python)
 
+  build_native_proxy || return 1
   python_requirement="$(read_python_requirement)" || return 1
   python_interpreter="$(select_supported_python "$python_requirement")" || return 1
-  tool_args+=("$python_interpreter" --editable "$REPO_ROOT")
+  tool_args+=("$python_interpreter" "$REPO_ROOT")
 
   if [[ "$action" == "reinstall" ]]; then
     tool_args+=(--reinstall)

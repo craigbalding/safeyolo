@@ -152,10 +152,16 @@ class RustLaunch:
 
 def _binary() -> Path:
     supplied = os.environ.get("SAFEYOLO_RUST_PROXY")
-    candidate = (
-        Path(supplied).expanduser() if supplied
-        else Path(__file__).resolve().parents[3] / "proxy" / "target" / "debug" / "safeyolo-proxy"
-    ).absolute()
+    if supplied:
+        candidates = [Path(supplied).expanduser()]
+    else:
+        checkout = Path(__file__).resolve().parents[3]
+        candidates = [
+            Path(__file__).with_name("bin") / "safeyolo-proxy",
+            checkout / "proxy" / "target" / "release" / "safeyolo-proxy",
+            checkout / "proxy" / "target" / "debug" / "safeyolo-proxy",
+        ]
+    candidate = next((path.absolute() for path in candidates if path.is_file()), candidates[0].absolute())
     if not candidate.is_file() or not os.access(candidate, os.X_OK):
         raise RuntimeError("Rust proxy executable missing; set SAFEYOLO_RUST_PROXY to a built safeyolo-proxy")
     try:
