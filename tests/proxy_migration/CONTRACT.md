@@ -195,7 +195,11 @@ uv run --frozen python -m tests.proxy_migration.run capture \
 
 The SSE fixture sends 49,152,000 bytes for the requested 60-second pacing
 schedule; scheduling overhead can extend wall time. It records first-chunk
-arrival and samples memory about once per second. The WS fixture sends
+arrival and samples memory about once per second. The `stream-control` workload
+sends one SSE event, holds the origin until the capture releases it after a
+second allowed request completes, then drains the finite response. It records
+the release ordering and control latency; it does not exercise a slow consumer
+or an authenticated admin operation. The WS fixture sends
 five-byte echoes for the requested duration. These sessions do not inspect
 fragmentation, compression, large messages, cancellation or slow readers.
 

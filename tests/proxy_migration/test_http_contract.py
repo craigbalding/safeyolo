@@ -5,6 +5,7 @@ import concurrent.futures
 import pytest
 
 from tests.proxy_migration.harness import connection, launch_proxy, request
+from tests.proxy_migration.run import streamed_control_workload
 from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
 
 
@@ -15,6 +16,14 @@ def test_two_agent_http_policy_and_attribution(proxy_backend, tmp_path, parent):
 
 def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):
     reserved_scenario(proxy_backend, tmp_path / proxy_backend)
+
+
+def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_backend, tmp_path):
+    result = streamed_control_workload(proxy_backend, tmp_path / proxy_backend)
+    assert result["first_event_before_release"] is True
+    assert result["control_completed_before_stream_release"] is True
+    assert result["stream_released_after_control"] is True
+    assert result["origin_observation"]["stream_finished_after_read"] is True
 
 
 def test_concurrent_policy_decisions_keep_agent_scope(proxy_backend, tmp_path):

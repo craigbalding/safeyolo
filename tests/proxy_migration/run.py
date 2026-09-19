@@ -267,6 +267,70 @@ def stream_workload(backend, directory, seconds=2.0):
             client.close()
 
 
+def streamed_control_workload(backend, directory, seconds=2.0):
+    """Hold one streamed response while an independent request completes."""
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend, directory, POLICY, native_policy=backend == "rust"
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-control")
+            response = client.getresponse()
+            assert response.status == 200
+            first = response.read(len(b"data: first-event\n\n"))
+            first_seconds = time.perf_counter() - started
+            assert first == b"data: first-event\n\n"
+            assert origin.stream_initial_sent.is_set()
+            assert not origin.stream_finished.is_set()
+            assert not origin.stream_release.is_set()
+            first_before_release = not origin.stream_release.is_set()
+
+            control_started = time.perf_counter()
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_seconds = time.perf_counter() - control_started
+            assert status == 200 and body == b"hello"
+            assert not origin.stream_finished.is_set()
+
+            origin.stream_release.set()
+            total = len(first)
+            while chunk := response.read(16384):
+                total += len(chunk)
+            elapsed = time.perf_counter() - started
+            expected = len(first) + max(0, origin.stream_chunks - 1) * 16384
+            assert total == expected
+            assert origin.stream_finished.is_set()
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream-control"},
+                {"method": "GET", "target": "/control"},
+            ]
+            return {
+                "workload": "streamed_control",
+                "bytes": total,
+                "elapsed_seconds": elapsed,
+                "first_event_seconds": first_seconds,
+                "first_event_before_release": first_before_release,
+                "control_elapsed_seconds": control_seconds,
+                "control_completed_before_stream_release": True,
+                "stream_released_after_control": origin.stream_release.is_set(),
+                "runtime_memory_after": runtime_memory(proxy),
+                "resource_samples": [runtime_resources(proxy)],
+                "requested_stream_seconds": seconds,
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "stream_finished_after_read": origin.stream_finished.is_set(),
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one held stream and one independent allowed request; no slow consumer or admin API operation",
+            }
+        finally:
+            origin.stream_release.set()
+            client.close()
+
+
 def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
     """Round-trip complete small WS messages over one connection."""
     with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
@@ -395,6 +459,9 @@ def capture(args):
                 workloads.append(short_connections(args.backend, args.evidence / "workload", args.requests))
             elif workload == "sse":
                 workloads.append(stream_workload(args.backend, args.evidence / "stream-workload", args.stream_seconds))
+            elif workload == "stream-control":
+                workloads.append(streamed_control_workload(args.backend, args.evidence / "stream-control-workload",
+                                                            args.stream_seconds))
             elif workload == "websocket":
                 workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
                                                     args.websocket_seconds, args.websocket_interval))
@@ -469,7 +536,8 @@ def main():
     run.add_argument("--fixture-from", type=Path)
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
-    run.add_argument("--workload", action="append", choices=("short", "sse", "websocket", "local-api"),
+    run.add_argument("--workload", action="append",
+                     choices=("short", "sse", "stream-control", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)

@@ -170,9 +170,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
             "event_log": str(directory / "events.jsonl"),
+            # Keep native policy/evidence state inside this fixture. The Rust
+            # default (/safeyolo/data) is unavailable in ordinary runs.
+            "data_dir": str(directory / "data"),
             "flow_store_enabled": False,
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
+        Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
         if agent_map is not None:
             config["agent_map_file"] = str(directory / "data" / "agent_map.json")
         if inspection is not None:

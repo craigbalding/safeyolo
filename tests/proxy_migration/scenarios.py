@@ -33,6 +33,8 @@ class Origin(ThreadingHTTPServer):
         self.keep_alive = False
         self.connection_ids = {}
         self.stream_finished = threading.Event()
+        self.stream_initial_sent = threading.Event()
+        self.stream_release = threading.Event()
         self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
 
@@ -55,13 +57,21 @@ class OriginHandler(BaseHTTPRequestHandler):
         if self.server.keep_alive:
             observation["connection_id"] = self.server.connection_ids[id(self.connection)]
         self.server.requests.append(observation)
-        if self.path == "/stream":
+        if self.path in {"/stream", "/stream-control"}:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
             self.end_headers()
             chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
-            for _ in range(self.server.stream_chunks):
+            if self.path == "/stream-control":
+                self.wfile.write(b"data: first-event\n\n")
+                self.wfile.flush()
+                self.server.stream_initial_sent.set()
+                self.server.stream_release.wait(timeout=30)
+                remaining = max(0, self.server.stream_chunks - 1)
+            else:
+                remaining = self.server.stream_chunks
+            for _ in range(remaining):
                 self.wfile.write(chunk)
                 self.wfile.flush()
                 time.sleep(0.02)
