@@ -147,6 +147,23 @@ class Peer:
     def close(self, code=1000, reason=b"fixture complete"):
         self.stream.sendall(frame(8, struct.pack("!H", code) + reason, masked=self.client))
 
+    def receive_control(self):
+        """Read one idle control frame and answer a Ping like a real peer."""
+        first, second = exact(self.stream, 2)
+        final, opcode = bool(first & 0x80), first & 15
+        assert final and not first & 0x40 and opcode in (8, 9, 10)
+        assert bool(second & 0x80) != self.client
+        length = second & 127
+        assert length <= 125
+        mask = exact(self.stream, 4) if second & 0x80 else None
+        payload = exact(self.stream, length)
+        if mask:
+            payload = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+        self.controls.append((opcode, payload))
+        if opcode == 9:
+            self.stream.sendall(frame(10, payload, masked=self.client))
+        return opcode, payload
+
     def receive(self):
         pieces = bytearray()
         message_opcode = None
@@ -521,6 +538,55 @@ def test_first_server_message_survives_coalesced_101_handoff(proxy_backend, tmp_
                 assert peer.receive() == (8, close_payload)
             assert origin.results.get(timeout=5) == (1, client_message)
         assert origin.preface_writes == 2
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_idle_control_ping_pong_and_close_are_forwarded_exactly(proxy_backend, tmp_path, tls):
+    """Idle WS/WSS peers exchange only exact controls before a clean close."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    client_ping = b"client-idle-ping"
+    origin_ping = b"origin-idle-ping"
+    close_payload = struct.pack("!H", 1000) + b"idle complete"
+
+    def script(peer, results):
+        assert peer.receive_control() == (9, client_ping)
+        peer.stream.sendall(frame(9, origin_ping))
+        assert peer.receive_control() == (10, origin_ping)
+        assert peer.receive_control() == (8, close_payload)
+        peer.stream.sendall(frame(8, close_payload))
+        results.put({
+            "client_ping": peer.controls[0],
+            "origin_pong": peer.controls[1],
+            "client_close": peer.controls[2],
+        })
+
+    with origin_server(script, pem=pem) as origin:
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            with connect_peer(origin, path=proxy.paths["alice"], ca=proxy_ca) as peer:
+                peer.stream.sendall(frame(9, client_ping, masked=True))
+                assert peer.receive_control() == (10, client_ping)
+                assert peer.receive_control() == (9, origin_ping)
+                peer.close(code=1000, reason=b"idle complete")
+                assert peer.receive_control() == (8, close_payload)
+            observed = origin.results.get(timeout=5)
+            assert observed == {
+                "client_ping": (9, client_ping),
+                "origin_pong": (10, origin_ping),
+                "client_close": (8, close_payload),
+            }
+            assert origin.accepts == 1
+            assert origin.errors.empty()
+            if proxy_backend == "rust":
+                provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+                assert provenance == {
+                    "backend": "rust",
+                    "policy_mode": "native",
+                    "policy_file": str(directory / "policy.toml"),
+                    "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
