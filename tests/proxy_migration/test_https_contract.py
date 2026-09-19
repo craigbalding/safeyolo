@@ -1,6 +1,8 @@
 """HTTPS forwarding through real policy with verification enabled at both peers."""
 
 import http.client
+import hashlib
+import json
 import socket
 import ssl
 import threading
@@ -130,3 +132,154 @@ def test_https_origin_verification(proxy_backend, tmp_path, certificate_host, tr
         origin.shutdown()
         origin.server_close()
         thread.join(timeout=5)
+
+
+def test_https_not_yet_valid_origin_certificate_is_rejected(proxy_backend, tmp_path):
+    """A trusted-but-not-yet-valid origin certificate cannot reach HTTP."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(UTC)
+    not_valid_before = now + timedelta(days=1)
+    not_valid_after = now + timedelta(days=2)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    certificate = (x509.CertificateBuilder()
+                   .subject_name(name).issuer_name(name)
+                   .public_key(key.public_key())
+                   .serial_number(x509.random_serial_number())
+                   .not_valid_before(not_valid_before)
+                   .not_valid_after(not_valid_after)
+                   .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+                   .sign(key, hashes.SHA256()))
+    server_pem = directory / "not-yet-valid-origin.pem"
+    server_pem.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                          serialization.NoEncryption())
+        + certificate.public_bytes(serialization.Encoding.PEM)
+    )
+    origin_ca = directory / "not-yet-valid-origin-ca.pem"
+    origin_ca.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    origin_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    origin_context.load_cert_chain(server_pem)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(5)
+    authority = f"localhost:{listener.getsockname()[1]}"
+    observation = {
+        "accepted": False,
+        "peer": None,
+        "handshake": None,
+        "application_bytes": b"",
+        "error": None,
+    }
+
+    def serve_origin():
+        try:
+            raw, peer = listener.accept()
+            observation["accepted"] = True
+            observation["peer"] = list(peer)
+            try:
+                with origin_context.wrap_socket(raw, server_side=True) as stream:
+                    observation["handshake"] = "succeeded"
+                    stream.settimeout(2)
+                    observation["application_bytes"] = stream.recv(4096)
+            except ssl.SSLError as error:
+                observation["handshake"] = "failed"
+                observation["error"] = f"{type(error).__name__}: {error}"
+            finally:
+                raw.close()
+        except BaseException as error:  # report listener failures in the test thread
+            observation["error"] = f"{type(error).__name__}: {error}"
+
+    thread = threading.Thread(target=serve_origin)
+    thread.start()
+    certificate_sha256 = hashlib.sha256(
+        certificate.public_bytes(serialization.Encoding.DER)
+    ).hexdigest()
+    try:
+        with launch_proxy(
+            proxy_backend,
+            directory,
+            POLICY,
+            tls=True,
+            upstream_ca=origin_ca,
+            native_policy=proxy_backend == "rust",
+        ) as proxy:
+            raw = socket.socket(socket.AF_UNIX)
+            raw.settimeout(5)
+            try:
+                raw.connect(proxy.paths["alice"])
+                raw.sendall(
+                    f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode()
+                )
+                tunnel_response = http.client.HTTPResponse(raw)
+                tunnel_response.begin()
+                assert tunnel_response.status == 200
+                tunnel_response.close()
+                client_context = ssl.create_default_context(
+                    cafile=directory / "ca/mitmproxy-ca-cert.pem"
+                )
+                tls = client_context.wrap_socket(raw, server_hostname="localhost")
+                client = http.client.HTTPConnection("localhost", listener.getsockname()[1], timeout=5)
+                client.sock = tls
+                try:
+                    client.request("GET", "/not-yet-valid")
+                    response = client.getresponse()
+                    body = response.read()
+                    assert response.status == 502, body
+                finally:
+                    client.close()
+            finally:
+                raw.close()
+            assert proxy.process.poll() is None
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+            provenance = None
+            if proxy_backend == "rust":
+                provenance = json.loads(
+                    (directory / "native-policy-provenance.json").read_text()
+                )
+                assert provenance == {
+                    "backend": "rust",
+                    "policy_mode": "native",
+                    "policy_file": str(directory / "policy.toml"),
+                    "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }
+            (directory / "not-yet-valid-certificate.json").write_text(
+                json.dumps(
+                    {
+                        "backend": proxy_backend,
+                        "authority": authority,
+                        "certificate_sha256": certificate_sha256,
+                        "not_valid_before": not_valid_before.isoformat(),
+                        "not_valid_after": not_valid_after.isoformat(),
+                        "client_tunnel_status": 200,
+                        "client_http_status": 502,
+                        "origin_observed": {
+                            "accepted": observation["accepted"],
+                            "peer": observation["peer"],
+                            "handshake": observation["handshake"],
+                            "application_bytes_hex": observation["application_bytes"].hex(),
+                            "error": observation["error"],
+                        },
+                        "proxy_egress_events": proxy.events("proxy.egress"),
+                        "native_policy_provenance": provenance,
+                        "limits": [
+                            "This proves one trusted-by-file but not-yet-valid origin certificate rejection.",
+                            "It does not establish mTLS/client-certificate, OCSP/CRL, TLS version, cipher or renegotiation behavior.",
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+    finally:
+        listener.close()
+        thread.join(timeout=6)
+    assert not thread.is_alive()
+    assert observation["accepted"] is True
+    assert observation["handshake"] == "failed", observation
+    assert observation["application_bytes"] == b""

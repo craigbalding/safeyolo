@@ -40,6 +40,10 @@ The shared assertions cover:
 - HTTPS through the real policy engine with verified client and origin TLS,
   including a configured private trust root, wrong-host and untrusted-origin
   failures, denied CONNECT, and exact repeated/encoded query bytes.
+- A trusted-by-file origin certificate whose validity window starts tomorrow is
+  rejected with HTTP 502; the independent origin records the TLS handshake
+  failure and zero application bytes. mTLS, OCSP/CRL and protocol/cipher
+  negotiation remain outside this case.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
 - Concurrent HTTP/2 streams from two agents, independent request identities,

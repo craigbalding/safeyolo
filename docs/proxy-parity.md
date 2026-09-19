@@ -1422,6 +1422,14 @@ Negotiated HTTP/2 streams retain connection identity and independent request IDs
 Native tests cover response cancellation and shutdown drain; paired tests cover
 concurrent agents, protocol negotiation and authority rejection.
 
+The migration control `test_https_not_yet_valid_origin_certificate_is_rejected`
+adds a real certificate-validity negative case. The certificate is supplied in
+the configured upstream CA file but its `not_valid_before` is one day in the
+future. Both proxy backends return HTTP 502; an independent origin accepts the
+TCP connection, rejects the TLS handshake and observes zero application bytes.
+This does not claim mTLS/client-certificate, OCSP/CRL, TLS version, cipher or
+renegotiation coverage.
+
 `ignore_hosts` accepts canonical exact entries produced by the existing CLI
 normalizer. `SAFEYOLO_IGNORE_CIDRS` supplies the existing constrained IPv4 ranges;
 the builtin endpoint remains included. These exemptions select passthrough only
