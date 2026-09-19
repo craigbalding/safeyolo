@@ -124,15 +124,17 @@ secret-free state.
 
 The service authorization/contract/grant row has a bounded live transition in
 `proxy/tests/gateway_contract_workflow.rs`.
-`selected_python_native_python_service_authorization_rollback` writes a native
-contract binding and remembered grant through the authenticated operator
-routes, reloads the policy, and sends a real request through the native gateway
-to a controlled origin with synthetic vault material. After native shutdown,
-the selected Python comparator reads the service authorization and uses its
-`ServiceGateway` consumers to verify and remove the grant and binding under the
-existing policy lock. A fresh native process reads that rollback, mints a new
-process-local token for the retained service authorization, and rejects the
-same request before origin delivery. The manifest records runtime identities,
-state hashes, file mode, token fingerprints, IDs and effective status without
-secret values. OAuth refresh, alternate service catalogs and the documented
-installed-instance rollback command remain open.
+`selected_python_native_python_service_authorization_rollback` starts with a
+catalogued but unauthorized agent, writes the service authorization through
+the native authenticated operator route, then writes a contract binding and a
+remembered grant through the native operator routes. After policy publication,
+a real request injects synthetic vault material at a controlled origin. After
+native shutdown, the selected Python comparator reads the exact native service
+record, binding ID and grant ID. It removes the binding and grant through the
+real `ServiceGateway` consumers and removes the service record through the
+same locked TOML round-trip writer used by the source agent store. A fresh
+native process reads the rollback with no authorized service token and rejects
+the same request before origin delivery. The manifest records runtime
+identities, state hashes, file mode, token fingerprints, IDs, and effective
+status without secret values. OAuth refresh, alternate service catalogs and
+the documented installed-instance rollback command remain open.

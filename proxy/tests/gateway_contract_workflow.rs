@@ -368,6 +368,12 @@ async fn current_gateway_token(socket: &Path) -> String {
     current_service_token(socket, "contract").await
 }
 
+async fn gateway_services(socket: &Path) -> Value {
+    let response = raw(socket, &agent_api("/gateway/services", b"")).await;
+    status(&response, 200);
+    serde_json::from_slice(body(&response)).unwrap()
+}
+
 fn state_sha256(path: &Path) -> String {
     digest(&SHA256, &fs::read(path).unwrap())
         .as_ref()
@@ -429,7 +435,12 @@ import pathlib
 import sys
 
 from safeyolo.mitm_addons.service_gateway import ServiceGateway
-from safeyolo.policy.toml_roundtrip import load_agents, load_roundtrip
+from safeyolo.policy.toml_roundtrip import (
+    load_agents,
+    load_roundtrip,
+    locked_policy_mutate,
+    upsert_agent,
+)
 
 policy = pathlib.Path(sys.argv[1])
 expected_binding = sys.argv[2]
@@ -441,13 +452,13 @@ assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
 def snapshot():
     agents = load_agents(load_roundtrip(policy))
     alice = agents['alice']
-    service = alice['services']['contract']
+    service = alice.get('services', {}).get('contract')
     return {
         'policy': {
             'sha256': hashlib.sha256(policy.read_bytes()).hexdigest(),
             'mode': format(policy.stat().st_mode & 0o777, '04o'),
         },
-        'service_authorization': {
+        'service_authorization': None if service is None else {
             'capability': service['capability'],
             'credential_name': service['token'],
         },
@@ -487,6 +498,20 @@ assert before['service_authorization']['capability'] == 'writer'
 assert before['service_authorization']['credential_name'] == 'contract-secret'
 assert gateway.revoke_grant(expected_grant)
 assert gateway.revoke_contract_binding(expected_binding)
+
+def remove_service_authorization(document):
+    agents = load_agents(document)
+    alice = agents['alice']
+    services = alice.get('services', {})
+    assert services['contract']['capability'] == 'writer'
+    del services['contract']
+    if services:
+        alice['services'] = services
+    else:
+        alice.pop('services', None)
+    upsert_agent(document, 'alice', alice)
+
+locked_policy_mutate(policy, remove_service_authorization, save_if_unchanged=False)
 gateway._grants.clear()
 gateway._contract_bindings.clear()
 gateway._load_grants_from_policy()
@@ -496,6 +521,7 @@ assert gateway.get_contract_binding('alice', 'contract', 'writer') is None
 after = snapshot()
 assert not after['grants']
 assert not after['bindings']
+assert after['service_authorization'] is None
 print(json.dumps({
     'backend': 'python-comparator',
     'operation': 'read-native-state-and-rollback-service-access',
@@ -514,7 +540,7 @@ print(json.dumps({
     'rollback': {
         'grant_id': expected_grant,
         'binding_id': expected_binding,
-        'service_authorization_retained': True,
+        'service_authorization_removed': True,
     },
 }))
 "#;
@@ -1486,7 +1512,14 @@ async fn selected_python_native_python_service_authorization_rollback() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    fs::write(root_path.join("policy.toml"), policy(port)).unwrap();
+    // Start without an authorization record so this fixture exercises the
+    // native service writer itself. The catalog is present, but access is
+    // published only after the operator authorization route commits it.
+    let initial_policy = policy(port).replace(
+        "[agents.alice.services.contract]\ncapability = \"writer\"\ntoken = \"contract-secret\"\n",
+        "",
+    );
+    fs::write(root_path.join("policy.toml"), initial_policy).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let origin_task = tokio::spawn(origin(
         listener,
@@ -1502,7 +1535,22 @@ async fn selected_python_native_python_service_authorization_rollback() {
         serde_json::from_slice(&fs::read(root_path.join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
     let socket = root_path.join("alice.sock");
-    let initial_token = current_gateway_token(&socket).await;
+    let initial_services = gateway_services(&socket).await;
+    assert!(initial_services["authorized"]["contract"].is_null());
+    let authorization = admin(
+        admin_port,
+        &admin_request(
+            "/admin/agents/alice/services",
+            br#"{"service":"contract","capability":"writer","credential":"contract-secret"}"#,
+        ),
+    )
+    .await;
+    status(&authorization, 200);
+    let authorization_body: Value = serde_json::from_slice(body(&authorization)).unwrap();
+    assert_eq!(authorization_body["status"], "authorized");
+    assert_eq!(authorization_body["agent"], "alice");
+    assert_eq!(authorization_body["service"], "contract");
+    assert_eq!(authorization_body["capability"], "writer");
     let binding_response = admin(
         admin_port,
         &admin_request(
@@ -1515,6 +1563,7 @@ async fn selected_python_native_python_service_authorization_rollback() {
     let binding_body: Value = serde_json::from_slice(body(&binding_response)).unwrap();
     let binding_id = binding_body["binding_id"].as_str().unwrap().to_owned();
     assert!(proxy.reload_policy_if_changed().await.unwrap());
+    let initial_token = current_gateway_token(&socket).await;
 
     let grant_response = admin(
         admin_port,
@@ -1570,16 +1619,12 @@ async fn selected_python_native_python_service_authorization_rollback() {
     );
 
     let restarted = Proxy::start(config(root_path)).await.unwrap();
-    let restarted_token = current_gateway_token(&socket).await;
-    assert_ne!(
-        token_sha256(&initial_token),
-        token_sha256(&restarted_token),
-        "a restart must mint a process-local token for the persisted service authorization"
-    );
+    let restarted_services = gateway_services(&socket).await;
+    assert!(restarted_services["authorized"]["contract"].is_null());
     let rolled_back = gateway_call(
         &socket,
         port,
-        &restarted_token,
+        &initial_token,
         "POST",
         "/v1/write?ticket=T-1",
         br#"{"project":"alpha"}"#,
@@ -1587,10 +1632,7 @@ async fn selected_python_native_python_service_authorization_rollback() {
     .await;
     status(&rolled_back, 403);
     assert_eq!(seen.lock().unwrap().len(), origin_count_before_rollback);
-    assert_eq!(
-        python_rollback["after"]["service_authorization"]["capability"],
-        "writer"
-    );
+    assert!(python_rollback["after"]["service_authorization"].is_null());
     assert!(
         python_rollback["after"]["grants"]
             .as_array()
@@ -1633,20 +1675,25 @@ async fn selected_python_native_python_service_authorization_rollback() {
             "final_native_sha256": final_hash,
             "initial_token_sha256": token_sha256(&initial_token),
             "native_token_sha256": token_sha256(&native_token),
-            "restarted_token_sha256": token_sha256(&restarted_token),
+            "restarted_token_sha256": Value::Null,
             "mode": python_rollback["after"]["policy"]["mode"],
         },
         "actions": {
+            "service_authorization_written": authorization_body,
             "binding_written": binding_id,
             "grant_written": grant_id,
             "request_before_rollback": "200 with credential injection and one origin request",
-            "python_rollback": [binding_id, grant_id],
+            "python_rollback": {
+                "service_authorization": "contract",
+                "binding_id": binding_id,
+                "grant_id": grant_id,
+            },
             "request_after_rollback": "403 with zero additional origin requests",
         },
         "stages": [
             {"backend": "rust-native", "operation": "write-reload-request", "status": 200},
             python_rollback,
-            {"backend": "rust-native", "operation": "restart-read-rollback-request", "status": 403},
+            {"backend": "rust-native", "operation": "restart-read-rolled-back-service-request", "status": 403},
         ],
         "secret_free": true,
     });

@@ -2699,15 +2699,17 @@ forwarding workflow.
 
 The bounded #638 state transition
 [`selected_python_native_python_service_authorization_rollback`](../proxy/tests/gateway_contract_workflow.rs)
-adds the cross-runtime state exercise for one service route. Native operator
-requests write a contract binding and remembered grant, a real request injects
-the synthetic vault credential at a controlled origin, and a restarted native
-process confirms the durable state and a newly minted process-local token. The
-selected Python `ServiceGateway` then reads the native IDs and removes both
-records through its existing locked policy writers; native reload rejects the
-request with no additional origin contact. This is bounded to one service and
-route; OAuth refresh, alternate catalog cases and installed rollback remain
-separate gaps.
+adds the cross-runtime state exercise for one service route. The fixture
+starts with no authorization, then native operator requests write the service
+authorization, a contract binding, and a remembered grant. A real request
+injects the synthetic vault credential at a controlled origin. The selected
+Python comparator reads the native service record and IDs, removes the grant
+and binding through its `ServiceGateway` writers, and removes the service
+record through the locked TOML round-trip writer used by the source agent
+store. A fresh native process reads that rollback with no authorized service
+token and rejects the request with no additional origin contact. This is
+bounded to one service and route; OAuth refresh, alternate catalog cases and
+installed rollback remain separate gaps.
 
 The native plumb owner applies the same process-lifetime rule to its blocking
 SQLite calls, memory projections and conversation long polls. Agent request-chat,
