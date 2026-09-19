@@ -63,10 +63,17 @@ jobs:
           uv python install 3.12
           uv sync --frozen --group dev --python 3.12
 
-      - name: Run shared HTTP contracts against each proxy
+      - name: Run shared HTTP contracts against the historical Python comparator
         run: |
           uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
-          uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+
+      - name: Run shared HTTP contracts against native Rust without the temporary adapter
+        env:
+          SAFEYOLO_RUST_NATIVE_ONLY: "1"
+        run: uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+
+      - name: Verify the retained temporary policy adapter separately
+        run: |
           uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 
       - name: Compare native behavior with the historical implementation

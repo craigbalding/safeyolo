@@ -111,3 +111,30 @@ def test_ledger_is_only_a_plan_until_replacement_evidence_exists() -> None:
     text = LEDGER.read_text(encoding="utf-8")
     assert "every row is currently **retained**" in text
     assert "default switch does not authorize" in text
+
+
+def test_native_migration_lane_does_not_start_the_retained_policy_adapter() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "proxy-rust.yml").read_text(
+        encoding="utf-8"
+    )
+    docs = (REPO_ROOT / "docs" / "proxy-parity.md").read_text(encoding="utf-8")
+
+    # The release-facing Rust contract command must select policy_file through
+    # the existing harness switch. Keep the Python comparator and adapter
+    # checks as separately named commands so a later deletion cannot silently
+    # remove their evidence.
+    assert 'SAFEYOLO_RUST_NATIVE_ONLY: "1"' in workflow
+    assert "--proxy-backend rust" in workflow
+    assert "tests/test_rust_temporary_policy.py" in workflow
+    assert (
+        "SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q "
+        "tests/proxy_migration --proxy-backend rust"
+    ) in docs
+
+    # The source-backed adapter remains intentionally retained until the
+    # ledger's replacement and rollback gates are complete.
+    adapter = REPO_ROOT / "tools" / "proxy_migration" / "temporary_policy.py"
+    assert adapter.exists()
+    assert "temporary_policy_socket" in (
+        REPO_ROOT / "proxy" / "src" / "config.rs"
+    ).read_text(encoding="utf-8")

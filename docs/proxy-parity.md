@@ -609,7 +609,7 @@ cargo build --locked
 cargo test --locked
 cd ..
 uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
-uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 ```
 
@@ -629,6 +629,14 @@ The adapter receives header names and request metadata, never header values or
 body bytes. It uses the existing Python policy decision point in blocking mode.
 It does not supply credential inspection, service operations or the complete
 NetworkGuard response and approval workflow.
+
+The shared Rust migration lane sets `SAFEYOLO_RUST_NATIVE_ONLY=1`, so its
+proxy fixtures select `policy_file` and do not start the temporary Python
+policy process. The separately named `tests/test_rust_temporary_policy.py`
+check and explicit adapter fixture remain because the historical comparator
+and rollback evidence still use them. This removes the adapter from the
+normal native contract path without deleting its retained test or comparator
+consumer.
 
 Native policy uses the existing Rust policy matcher and network guard once per
 request. The source options `network_guard_enabled`, `network_guard_block` and

@@ -105,6 +105,14 @@ Python dependency deletion or comparator-job change. A future deletion commit
 must update this ledger and its guard test in the same candidate, retaining a
 readable rollback entry for every removed owner.
 
+The normal Rust migration lane now has an explicit native-policy boundary:
+`.github/workflows/proxy-rust.yml` runs the shared Rust contracts with
+`SAFEYOLO_RUST_NATIVE_ONLY=1`, and runs the retained temporary-policy check as
+its own step. The adapter remains available to the historical comparator and
+focused transport tests; this lane change does not authorize deleting
+`tools/proxy_migration/temporary_policy.py`, `Config::temporary_policy_socket`,
+or any Python rollback owner.
+
 ## Bounded native import audit
 
 The native CLI registration path is import-clean with respect to the retained
