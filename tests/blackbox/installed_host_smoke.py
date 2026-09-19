@@ -305,6 +305,41 @@ def _configured_rust_config(config: dict[str, Any], cwd: Path) -> Path:
     return _absolute_path(value, cwd)
 
 
+def _select_backend(config_dir: Path, backend: str) -> bytes:
+    """Atomically select one backend in the disposable installed config.
+
+    This helper intentionally changes only ``proxy.backend``. The smoke lane
+    uses a caller-created disposable directory, so preserving the original
+    bytes lets a failed rollback be diagnosed without rewriting unrelated
+    policy, listener, or service state.
+    """
+    if backend not in {"python", "rust"}:
+        raise ValueError(f"unsupported proxy backend: {backend}")
+    path = config_dir / "config.yaml"
+    original = path.read_bytes()
+    try:
+        import yaml
+    except ImportError as exc:
+        raise SmokeError("PyYAML is required to select an installed proxy backend") from exc
+    try:
+        config = yaml.safe_load(original.decode("utf-8")) or {}
+    except (UnicodeError, OSError, yaml.YAMLError) as exc:
+        raise SmokeError(f"installed CLI config is missing or malformed: {path}") from exc
+    if not isinstance(config, dict) or not isinstance(config.get("proxy"), dict):
+        raise SmokeError("installed CLI config has no proxy mapping")
+    config["proxy"]["backend"] = backend
+    temporary = path.with_name(f".{path.name}.rollback.tmp")
+    mode = path.stat().st_mode & 0o777
+    try:
+        temporary.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise SmokeError(f"unable to select proxy.backend: {backend}") from exc
+    return original
+
+
 def _pid_alive(pid: int) -> bool:
     """Return whether a process exists without selecting or killing it."""
     try:
@@ -740,7 +775,7 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
 
 
 def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
-    """Start and stop one explicitly marked disposable instance through the CLI."""
+    """Exercise one disposable native instance and optional Python rollback."""
     config_dir = _config_dir(args.config_dir)
     _require_disposable(config_dir)
     cwd = Path(args.working_directory).expanduser().resolve()
@@ -865,6 +900,57 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         report["status"] = "shutdown_failure"
         report["error"] = "Rust process or readiness marker remained after selected CLI stop"
         return report, 2
+
+    if args.rollback_python:
+        rollback_env = dict(env)
+        rollback_env.pop("SAFEYOLO_RUST_PROXY", None)
+        try:
+            _select_backend(config_dir, "python")
+            rollback_start = _run([str(cli_path), "start", "--wait"], env=rollback_env, cwd=cwd)
+            report["commands"]["rollback_python_start"] = {
+                "argv": [str(cli_path), "start", "--wait"],
+                "exit": rollback_start.returncode,
+                "stdout_tail": rollback_start.stdout,
+                "stderr_tail": rollback_start.stderr,
+            }
+            if rollback_start.returncode != 0:
+                raise SmokeError("installed Python rollback start failed")
+            python_pid_file = config_dir / "data" / "proxy.pid"
+            try:
+                python_pid = int(python_pid_file.read_text(encoding="utf-8").strip())
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                raise SmokeError("installed Python rollback did not publish proxy.pid") from exc
+            if not _pid_alive(python_pid):
+                raise SmokeError("installed Python rollback process is not alive")
+            report["rollback"] = {
+                "backend": "python",
+                "pid": python_pid,
+                "pid_alive_before_stop": True,
+                "rust_receipt_exists": receipt.exists(),
+            }
+            rollback_stop = _run([str(cli_path), "stop"], env=rollback_env, cwd=cwd)
+            report["commands"]["rollback_python_stop"] = {
+                "argv": [str(cli_path), "stop"],
+                "exit": rollback_stop.returncode,
+                "stdout_tail": rollback_stop.stdout,
+                "stderr_tail": rollback_stop.stderr,
+            }
+            if rollback_stop.returncode != 0:
+                raise SmokeError("installed Python rollback stop failed")
+            if python_pid_file.exists() or _pid_alive(python_pid):
+                raise SmokeError("installed Python rollback left a running process or pid file")
+            report["rollback"].update(
+                {"pid_alive_after_stop": _pid_alive(python_pid), "pid_file_exists": python_pid_file.exists()}
+            )
+        except SmokeError as exc:
+            report["status"] = "rollback_failure"
+            report["error"] = str(exc)
+            try:
+                _run([str(cli_path), "stop"], env=rollback_env, cwd=cwd)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            return report, 2
+
     report["status"] = PARTIAL_STATUS
     report["acceptance_a"] = {
         "status": "unexecuted",
@@ -886,6 +972,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-dir", help="SafeYolo config directory (required and disposable for --mode smoke)")
     parser.add_argument("--working-directory", default=os.getcwd(), help="working directory used for relative native paths")
     parser.add_argument("--agent", help="agent name for the UDS health probe")
+    parser.add_argument(
+        "--rollback-python",
+        action="store_true",
+        help="after native stop, select Python in the same installed instance and start/stop it",
+    )
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence output outside the checkout")
     args = parser.parse_args(argv)
     try:

@@ -136,5 +136,16 @@ same locked TOML round-trip writer used by the source agent store. A fresh
 native process reads the rollback with no authorized service token and rejects
 the same request before origin delivery. The manifest records runtime
 identities, state hashes, file mode, token fingerprints, IDs, and effective
-status without secret values. OAuth refresh, alternate service catalogs and
-the documented installed-instance rollback command remain open.
+status without secret values. OAuth refresh and alternate service catalogs
+remain separate writer-owner gaps.
+
+The installed-instance rollback command is now available in the disposable
+host smoke lane. Run `tests/blackbox/installed_host_smoke.py --mode smoke
+--rollback-python` against an installed CLI and a caller-created disposable
+configuration to exercise Rust start/stop, an explicit `proxy.backend:
+python` selection in the same installation, Python start/stop, and cleanup of
+both backend process records. The lane changes only `proxy.backend` in the
+disposable `config.yaml`, removes `SAFEYOLO_RUST_PROXY` for the rollback
+start, and reports a rollback failure if Python does not publish and clean its
+`proxy.pid`. This is an executable installed-path control; it does not claim
+that the Python comparator, guest isolation, or a platform lane has passed.

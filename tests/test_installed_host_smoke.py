@@ -264,6 +264,25 @@ def test_missing_required_substrate_is_not_a_discovery_pass(smoke_module) -> Non
         smoke_module._require_substrate({"status": "unavailable", "reason": "runsc missing"})
 
 
+def test_backend_selection_changes_only_disposable_config_selector(tmp_path: Path, smoke_module) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config = config_dir / "config.yaml"
+    original = "proxy:\n  backend: rust\n  rust_config: native.json\nother:\n  keep: true\n"
+    config.write_text(original)
+    config.chmod(0o640)
+
+    returned = smoke_module._select_backend(config_dir, "python")
+
+    assert returned == original.encode()
+    assert config.stat().st_mode & 0o777 == 0o640
+    assert smoke_module._read_cli_yaml(config_dir) == {
+        "proxy": {"backend": "python", "rust_config": "native.json"},
+        "other": {"keep": True},
+    }
+    assert not list(config_dir.glob("*.rollback.tmp"))
+
+
 def test_darwin_process_identity_is_observed_or_unavailable(tmp_path: Path, smoke_module, monkeypatch) -> None:
     candidate = tmp_path / "safeyolo-proxy"
     candidate.write_text("native")
