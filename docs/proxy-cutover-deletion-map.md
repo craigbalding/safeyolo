@@ -118,3 +118,18 @@ candidate test is
 This is replacement evidence for the import boundary associated with M8-01
 and M8-30 only; those rows remain retained until their full runtime and
 packaging gates pass.
+
+## Bounded native package manifest audit
+
+The post-build check `scripts/verify_native_package.py WHEEL` inspects the
+actual wheel rather than only checking build configuration. It requires the
+`safeyolo/bin/safeyolo-proxy` executable, the retained `pdp` package, and the
+native launch/CLI modules; it records the wheel and binary SHA-256 values and
+the packaged executable mode. It then extracts that same wheel and imports
+`safeyolo.cli` with an import hook that fails if `mitmproxy`,
+`safeyolo.mitm_addons`, or `safeyolo.traffic_master` is needed for native
+registration. The explicit Python comparator and rollback paths remain in the
+wheel and are not exercised by this native-only probe. This is bounded
+packaging/import evidence for M8-30; it does not authorize deleting the
+retained Python runtime or close the installed, guest, platform, rollback, or
+final-release gates.
