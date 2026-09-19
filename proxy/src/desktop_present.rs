@@ -12,7 +12,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -25,12 +25,16 @@ pub(crate) enum Error {
 }
 
 struct PresenterOwner {
-    child: Child,
+    child: Arc<Mutex<Child>>,
+    io: Mutex<PresenterIo>,
+}
+
+struct PresenterIo {
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
 }
 
-static PRESENTER: Mutex<Option<PresenterOwner>> = Mutex::new(None);
+static PRESENTER: Mutex<Option<Arc<PresenterOwner>>> = Mutex::new(None);
 
 pub(crate) fn valid_agent_id(agent_id: &str) -> bool {
     !agent_id.is_empty()
@@ -66,15 +70,22 @@ fn spawn_presenter(python: &Path) -> Result<PresenterOwner, Error> {
         return Err(Error::Unavailable);
     };
     Ok(PresenterOwner {
-        child,
-        input: BufWriter::new(input),
-        output: BufReader::new(output),
+        child: Arc::new(Mutex::new(child)),
+        io: Mutex::new(PresenterIo {
+            input: BufWriter::new(input),
+            output: BufReader::new(output),
+        }),
     })
 }
 
-fn terminate_presenter(mut owner: PresenterOwner) {
-    let _ = owner.child.kill();
-    let _ = owner.child.wait();
+fn terminate_presenter(owner: Arc<PresenterOwner>) {
+    let Ok(mut child) = owner.child.lock() else {
+        return;
+    };
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 fn decode_response(value: Value) -> Result<Value, Error> {
@@ -98,18 +109,16 @@ fn decode_response(value: Value) -> Result<Value, Error> {
     Ok(value)
 }
 
-fn request(owner: &mut PresenterOwner, agent_id: &str) -> Result<Value, Error> {
-    serde_json::to_writer(&mut owner.input, &json!({"agent_id": agent_id}))
+fn request(owner: &PresenterOwner, agent_id: &str) -> Result<Value, Error> {
+    let Ok(mut io) = owner.io.lock() else {
+        return Err(Error::Failed);
+    };
+    serde_json::to_writer(&mut io.input, &json!({"agent_id": agent_id}))
         .map_err(|_| Error::Failed)?;
-    owner.input.write_all(b"\n").map_err(|_| Error::Failed)?;
-    owner.input.flush().map_err(|_| Error::Failed)?;
+    io.input.write_all(b"\n").map_err(|_| Error::Failed)?;
+    io.input.flush().map_err(|_| Error::Failed)?;
     let mut line = String::new();
-    if owner
-        .output
-        .read_line(&mut line)
-        .map_err(|_| Error::Failed)?
-        == 0
-    {
+    if io.output.read_line(&mut line).map_err(|_| Error::Failed)? == 0 {
         return Err(Error::Failed);
     }
     let value: Value = serde_json::from_str(&line).map_err(|_| Error::Protocol)?;
@@ -135,17 +144,22 @@ pub(crate) async fn present(agent_id: String) -> Result<Value, Error> {
         }
         let mut presenter = PRESENTER.lock().map_err(|_| Error::Failed)?;
         if presenter.is_none() {
-            *presenter = Some(spawn_presenter(python)?);
+            *presenter = Some(Arc::new(spawn_presenter(python)?));
         }
-        let result = request(
-            presenter.as_mut().expect("presenter initialized"),
-            &agent_id,
-        );
+        let owner = presenter.as_ref().expect("presenter initialized").clone();
+        drop(presenter);
+        let result = request(&owner, &agent_id);
         if matches!(
             result,
             Err(Error::Failed | Error::Protocol | Error::Unavailable)
-        ) && let Some(owner) = presenter.take()
-        {
+        ) {
+            if let Ok(mut presenter) = PRESENTER.lock()
+                && presenter
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &owner))
+            {
+                presenter.take();
+            }
             terminate_presenter(owner);
         }
         result
@@ -159,32 +173,54 @@ pub(crate) fn shutdown() {
     let Ok(mut presenter) = PRESENTER.lock() else {
         return;
     };
-    let Some(mut owner) = presenter.take() else {
+    let Some(owner) = presenter.take() else {
         return;
     };
-    let shutdown_sent = serde_json::to_writer(&mut owner.input, &json!({"shutdown": true})).is_ok()
-        && owner.input.write_all(b"\n").is_ok()
-        && owner.input.flush().is_ok();
+    drop(presenter);
+    // A request may own the protocol lock while blocked waiting for the
+    // helper's response.  In that case the shutdown message cannot be sent;
+    // killing the independently owned child is the only bounded way to
+    // release the request and reclaim the helper.
+    let shutdown_sent = owner
+        .io
+        .try_lock()
+        .ok()
+        .and_then(|mut io| {
+            (serde_json::to_writer(&mut io.input, &json!({"shutdown": true})).is_ok()
+                && io.input.write_all(b"\n").is_ok()
+                && io.input.flush().is_ok())
+            .then_some(())
+        })
+        .is_some();
     if shutdown_sent {
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            match owner.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(_) => break,
+            let exited = owner
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut child| child.try_wait().ok())
+                .flatten();
+            match exited {
+                Some(_) => break,
+                None => std::thread::sleep(Duration::from_millis(20)),
             }
         }
     }
-    if owner.child.try_wait().ok().flatten().is_none() {
-        let _ = owner.child.kill();
-    }
-    let _ = owner.child.wait();
+    terminate_presenter(owner);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, os::unix::fs::PermissionsExt};
+    use std::{fs, os::unix::fs::PermissionsExt, sync::OnceLock};
+
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("desktop test lock")
+    }
 
     fn fixture_script(response: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let directory = tempfile::tempdir().expect("fixture directory");
@@ -204,10 +240,11 @@ mod tests {
 
     #[test]
     fn helper_invocation_is_fixed_and_response_target_is_authorized() {
+        let _lock = test_lock();
         let response = r#"{"agent_id":"ag-durable","agent":"alice","url":"http://127.0.0.1:1/vnc.html","unlock_code":"fixture","reused":false}"#;
         let (_directory, script) = fixture_script(response);
-        let mut owner = spawn_presenter(&script).expect("fixture helper starts");
-        let result = request(&mut owner, "alice").expect("authorized target");
+        let owner = Arc::new(spawn_presenter(&script).expect("fixture helper starts"));
+        let result = request(&owner, "alice").expect("authorized target");
         assert_eq!(result["agent"], "alice");
         assert_eq!(result["agent_id"], "ag-durable");
         terminate_presenter(owner);
@@ -219,10 +256,51 @@ mod tests {
 
     #[test]
     fn helper_cannot_redirect_presentation_to_another_agent() {
+        let _lock = test_lock();
         let response = r#"{"agent_id":"ag-other","agent":"bob","url":"http://127.0.0.1:1/vnc.html","unlock_code":"fixture","reused":false}"#;
         let (_directory, script) = fixture_script(response);
-        let mut owner = spawn_presenter(&script).expect("fixture helper starts");
-        assert!(matches!(request(&mut owner, "alice"), Err(Error::Protocol)));
+        let owner = Arc::new(spawn_presenter(&script).expect("fixture helper starts"));
+        assert!(matches!(request(&owner, "alice"), Err(Error::Protocol)));
         terminate_presenter(owner);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_reclaims_helper_after_canceled_blocked_request() {
+        let _lock = test_lock();
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let script = directory.path().join("desktop-presenter-blocked");
+        fs::write(
+            &script,
+            "#!/bin/sh\nIFS= read -r request\nprintf started > \"$0.started\"\nIFS= read -r never\n",
+        )
+        .expect("fixture script");
+        let mut permissions = fs::metadata(&script)
+            .expect("fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("fixture executable");
+        // The test lock prevents other desktop tests from observing this
+        // process-wide fixture override.
+        unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &script) };
+
+        let request = tokio::spawn(present("alice".to_owned()));
+        let marker = script.with_extension("started");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !marker.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(marker.exists(), "helper must receive the request");
+        request.abort();
+        let _ = request.await;
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            tokio::task::spawn_blocking(shutdown),
+        )
+        .await
+        .expect("shutdown must not wait on the canceled helper response")
+        .expect("shutdown worker must join");
+        assert!(PRESENTER.lock().expect("presenter lock").is_none());
+        unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
     }
 }
