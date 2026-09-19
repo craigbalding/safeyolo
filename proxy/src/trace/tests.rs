@@ -137,6 +137,79 @@ fn capped_append_keeps_timestamp_age_and_sweeps_stale_reordered_record() {
 }
 
 #[test]
+fn controlled_clock_enforces_all_retention_boundaries_after_owner_fill() {
+    let store = TraceStore::new(Settings {
+        ttl_s: 5.into(),
+        global_max: 3.into(),
+        per_agent_max: 2.into(),
+        steps_max: 2.into(),
+        ..Settings::default()
+    });
+
+    // The first record is unresolved when it is created. Once it is assigned
+    // to Alice, it consumes one of Alice's two slots. A third Alice record
+    // evicts Alice's oldest record, while Bob's records remain independent.
+    store.append("ownerless", None, step(0.0), 0.0).unwrap();
+    store
+        .append("bob-old", Some("bob"), step(1.0), 1.0)
+        .unwrap();
+    store
+        .append("alice-old", Some("alice"), step(2.0), 2.0)
+        .unwrap();
+    store
+        .append("ownerless", Some("alice"), step(3.0), 3.0)
+        .unwrap();
+    store
+        .append("alice-new", Some("alice"), step(4.0), 4.0)
+        .unwrap();
+
+    assert!(store
+        .get("alice-old", Some("alice"), 4.0)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get("ownerless", Some("alice"), 4.0)
+        .unwrap()
+        .is_some());
+    assert!(store.get("bob-old", Some("bob"), 4.0).unwrap().is_some());
+
+    // A capped append moves Bob's record to the end but retains its previous
+    // step timestamp. The next new record reaches the global cap and evicts
+    // the oldest remaining record, independent of agent ownership.
+    store
+        .append("bob-old", Some("bob"), step(5.0), 5.0)
+        .unwrap();
+    store
+        .append("bob-old", Some("bob"), step(5.1), 5.1)
+        .unwrap();
+    store
+        .append("bob-new", Some("bob"), step(5.2), 5.2)
+        .unwrap();
+
+    assert!(store
+        .get("ownerless", Some("alice"), 5.2)
+        .unwrap()
+        .is_none());
+    let bob = store.get("bob-old", Some("bob"), 5.2).unwrap().unwrap();
+    assert_eq!(bob["steps"].as_array().unwrap().len(), 2);
+    assert!(bob["truncated"].as_bool().unwrap());
+
+    // At exactly the five-second boundary Alice's retained step is still
+    // present. One tick later it is expired; the boundary is based on the
+    // retained step timestamp, not the append that was rejected by the step
+    // cap.
+    assert!(store
+        .get("alice-new", Some("alice"), 9.0)
+        .unwrap()
+        .is_some());
+    assert!(store
+        .get("alice-new", Some("alice"), 9.001)
+        .unwrap()
+        .is_none());
+    assert!(store.get("bob-new", Some("bob"), 9.001).unwrap().is_some());
+}
+
+#[test]
 fn details_keep_scalar_kinds_and_source_dumps_failure_truncates_only_report() {
     let store = TraceStore::new(Settings {
         details_max_bytes: 10000.into(),
