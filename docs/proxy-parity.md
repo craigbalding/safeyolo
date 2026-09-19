@@ -1429,6 +1429,18 @@ existing adapter turns the valid client's later half-close into a full close;
 With `tls_ca_file`, detected TLS receives an interception endpoint using the
 existing CA. Upstream TLS verifies names and trust chains, including through a
 configured parent's CONNECT tunnel. TLS failure never selects an opaque fallback.
+The current upstream TLS client has no client-certificate configuration. The
+black-box mTLS control proves the boundary with a disposable direct client
+certificate success, then a proxy request that receives `502` after one or more
+origin TLS handshake failures and no second origin HTTP request. This records
+the unsupported client-certificate case; it does not add mTLS support. TLS
+version, cipher, OCSP/CRL and renegotiation matrices remain separate gaps.
+The current upstream TLS client has no client-certificate configuration. The
+black-box mTLS control proves the boundary with a disposable direct client
+certificate success, then a proxy request that receives `502` after one or more
+origin TLS handshake failures and no second origin HTTP request. This records
+the unsupported client-certificate case; it does not add mTLS support. TLS
+version, cipher, OCSP/CRL and renegotiation matrices remain separate gaps.
 Negotiated HTTP/2 streams retain connection identity and independent request IDs.
 Native tests cover response cancellation and shutdown drain; paired tests cover
 concurrent agents, protocol negotiation and authority rejection.

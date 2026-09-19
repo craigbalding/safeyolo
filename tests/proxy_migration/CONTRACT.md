@@ -44,6 +44,10 @@ The shared assertions cover:
   rejected with HTTP 502; the independent origin records the TLS handshake
   failure and zero application bytes. mTLS, OCSP/CRL and protocol/cipher
   negotiation remain outside this case.
+- A mutual-TLS origin control accepts a disposable client certificate directly,
+  then rejects the proxy upstream connection without client-certificate
+  configuration before any HTTP request. This records unsupported mTLS as a
+  clear TLS failure; it does not add client-certificate configuration.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
 - Concurrent HTTP/2 streams from two agents, independent request identities,

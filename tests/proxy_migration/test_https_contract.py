@@ -12,7 +12,7 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from mitmproxy.certs import CertStore
 
 from tests.proxy_migration.harness import launch_proxy, request
@@ -283,3 +283,220 @@ def test_https_not_yet_valid_origin_certificate_is_rejected(proxy_backend, tmp_p
     assert observation["accepted"] is True
     assert observation["handshake"] == "failed", observation
     assert observation["application_bytes"] == b""
+
+
+def _write_mtls_material(directory):
+    """Create disposable CA, server and client certificates for one fixture."""
+    now = datetime.now(UTC)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "owned-mtls-ca")])
+    ca_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    def leaf(common_name, usage):
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)]))
+            .issuer_name(ca_name)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=1))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName(common_name)]),
+                critical=False,
+            )
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([usage]), critical=False)
+            .sign(ca_key, hashes.SHA256())
+        )
+        return key, certificate
+
+    server_key, server_certificate = leaf("localhost", ExtendedKeyUsageOID.SERVER_AUTH)
+    client_key, client_certificate = leaf("owned-client", ExtendedKeyUsageOID.CLIENT_AUTH)
+
+    def private_key_pem(key):
+        return key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+
+    ca_file = directory / "mtls-ca.pem"
+    server_file = directory / "mtls-server.pem"
+    client_file = directory / "mtls-client.pem"
+    ca_file.write_bytes(ca_certificate.public_bytes(serialization.Encoding.PEM))
+    server_file.write_bytes(
+        private_key_pem(server_key)
+        + server_certificate.public_bytes(serialization.Encoding.PEM)
+    )
+    client_file.write_bytes(
+        private_key_pem(client_key)
+        + client_certificate.public_bytes(serialization.Encoding.PEM)
+    )
+    return ca_file, server_file, client_file
+
+
+class MtlsOrigin(Origin):
+    """Origin that records TLS handshakes before handing HTTP to OriginHandler."""
+
+    def __init__(self, context):
+        self.mtls_context = context
+        self.tls_successes = 0
+        self.tls_failures = []
+        super().__init__()
+
+    def get_request(self):
+        raw, address = super().get_request()
+        try:
+            stream = self.mtls_context.wrap_socket(raw, server_side=True)
+        except ssl.SSLError as error:
+            self.tls_failures.append(type(error).__name__)
+            raw.close()
+            raise
+        self.tls_successes += 1
+        return stream, address
+
+
+def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp_path):
+    """A mutual-TLS origin rejects the proxy before it can send HTTP bytes."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    ca_file, server_file, client_file = _write_mtls_material(directory)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(server_file)
+    context.load_verify_locations(cafile=ca_file)
+    context.verify_mode = ssl.CERT_REQUIRED
+    origin = MtlsOrigin(context)
+    thread = threading.Thread(target=origin.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = origin.server_address[1]
+
+        # This direct control proves that the origin really requires and accepts
+        # a valid client certificate. The proxy path below receives no client
+        # certificate configuration.
+        direct_context = ssl.create_default_context(cafile=ca_file)
+        direct_context.load_cert_chain(client_file)
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+            with direct_context.wrap_socket(raw, server_hostname="localhost") as tls:
+                direct = http.client.HTTPConnection("localhost", port, timeout=5)
+                direct.sock = tls
+                direct.request("GET", "/direct-mtls")
+                direct_response = direct.getresponse()
+                assert direct_response.status == 200
+                assert direct_response.read() == b"hello"
+                direct.close()
+
+        with launch_proxy(
+            proxy_backend,
+            directory,
+            POLICY,
+            tls=True,
+            upstream_ca=ca_file,
+            eager_connect=True,
+            native_policy=True,
+        ) as proxy:
+            raw = socket.socket(socket.AF_UNIX)
+            raw.settimeout(5)
+            try:
+                raw.connect(proxy.paths["alice"])
+                raw.sendall(
+                    f"CONNECT localhost:{port} HTTP/1.1\r\n"
+                    f"Host: localhost:{port}\r\n\r\n".encode()
+                )
+                head = bytearray()
+                while not head.endswith(b"\r\n\r\n"):
+                    data = raw.recv(1)
+                    assert data, bytes(head)
+                    head.extend(data)
+                assert head.startswith(b"HTTP/1.1 200"), bytes(head)
+                client_context = ssl.create_default_context(
+                    cafile=directory / "ca/mitmproxy-ca-cert.pem"
+                )
+                with client_context.wrap_socket(raw, server_hostname="localhost") as tls:
+                    client = http.client.HTTPConnection("localhost", port, timeout=5)
+                    client.sock = tls
+                    client.request("GET", "/missing-client-certificate")
+                    response = client.getresponse()
+                    body = response.read()
+                    assert response.status == 502, body
+                    client.close()
+            finally:
+                raw.close()
+
+            assert origin.tls_successes == 1
+            # A backend may make more than one failed TLS attempt while
+            # completing the one CONNECT request. Every attempt must fail before
+            # HTTP application data reaches the origin.
+            assert len(origin.tls_failures) >= 1
+            assert origin.accepts == 1 + len(origin.tls_failures)
+            assert origin.requests == [{"method": "GET", "target": "/direct-mtls"}]
+            events = proxy.events("proxy.request")
+            if proxy_backend == "rust":
+                provenance = json.loads(
+                    (directory / "native-policy-provenance.json").read_text()
+                )
+                assert provenance == {
+                    "backend": "rust",
+                    "policy_mode": "native",
+                    "policy_file": str(directory / "policy.toml"),
+                    "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }
+                error_events = [event for event in events if event["status"] == 502]
+                assert len(error_events) == 1
+                assert error_events[0]["agent"] == "alice"
+                assert error_events[0]["decision"] == "error"
+            (directory / "mtls-negative-observation.json").write_text(
+                json.dumps(
+                    {
+                        "backend": proxy_backend,
+                        "authority": f"localhost:{port}",
+                        "direct_positive_control": {
+                            "client_certificate_sha256": hashlib.sha256(
+                                client_file.read_bytes()
+                            ).hexdigest(),
+                            "status": direct_response.status,
+                            "body": "hello",
+                        },
+                        "proxied_without_client_certificate": {
+                            "status": response.status,
+                            "body_sha256": hashlib.sha256(body).hexdigest(),
+                        },
+                        "origin": {
+                            "tcp_accepts": origin.accepts,
+                            "tls_successes": origin.tls_successes,
+                            "tls_failures": origin.tls_failures,
+                            "http_requests": origin.requests,
+                        },
+                        "proxy_request_events": events if proxy_backend == "rust" else [],
+                        "native_policy_provenance": (
+                            provenance if proxy_backend == "rust" else None
+                        ),
+                        "limits": [
+                            "One direct client-certificate success and one proxy connection without a client certificate.",
+                            "This proves the current proxy path fails closed at the origin TLS handshake; it does not implement or test proxy client-certificate configuration.",
+                            "TLS version, cipher, OCSP/CRL and renegotiation matrices remain outside this control.",
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+    finally:
+        origin.shutdown()
+        origin.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
