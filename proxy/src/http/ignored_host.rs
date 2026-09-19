@@ -123,11 +123,15 @@ fn report(result: crate::ignored_host_logger::Result<()>) {
 }
 
 struct ObservedSocket {
-    socket: Option<TcpStream>,
+    socket: Option<BoxStream>,
     _audit: ConnectionAudit,
 }
 
 pub(super) fn observe(socket: TcpStream, audit: ConnectionAudit) -> BoxStream {
+    observe_stream(Box::new(socket), audit)
+}
+
+pub(super) fn observe_stream(socket: BoxStream, audit: ConnectionAudit) -> BoxStream {
     Box::new(ObservedSocket {
         socket: Some(socket),
         _audit: audit,

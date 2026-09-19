@@ -1438,10 +1438,13 @@ The native operator listener now accepts the retained consumer's authenticated
 or host:port list, replaces the live matcher, and reports
 `admin.proxy_ignore_hosts_update`. Existing admitted connections keep their
 match; connections opened after an empty replacement are inspected again. The
-route does not persist configuration or extend matching to aliases, parents,
-SNI or inner Host. Direct IPv4 range matches discovered from the connected peer
-retain the same lifecycle owner; parent-route addresses remain outside this
-direct passthrough path.
+route does not persist configuration or extend matching to inner Host or parent
+routes. A configured exact `SNI:port` alias is selected only after a complete
+TLS ClientHello is buffered; the CONNECT authority remains the egress
+destination while the passthrough lifecycle event records the matched SNI.
+Direct IPv4 range matches discovered from the connected peer retain the same
+lifecycle owner; parent-route addresses remain outside this direct passthrough
+path.
 
 The native [network policy](../proxy/src/policy.rs) runs without the temporary
 adapter when selected. [Approval persistence](../proxy/src/approvals.rs),
@@ -2414,8 +2417,11 @@ separate from these canonical events.
 Abrupt task teardown has no final-event drain guarantee.
 
 The initial runtime scope excludes parent routes, ordinary HTTP connections and
-SNI/Host aliases. Parent-address exemption semantics, the remaining lifecycle
-matrix and full D29 acceptance remain unresolved. Earlier native reserved/admin containment can also
+inner-Host aliases. The native [SNI alias transport control](../proxy/tests/transport.rs)
+now covers one exact configured `SNI:port` alias with origin certificate and
+initial-record evidence plus an intercepted neighboring SNI. Parent-address
+exemption semantics, the remaining lifecycle matrix and full D29 acceptance
+remain unresolved. Earlier native reserved/admin containment can also
 omit source connection observations; enforcement order remains unchanged.
 Native connection-error wording and cancellation reasons can differ from the
 Python stack. A canceled pending native attempt uses `connection cancelled`;

@@ -581,6 +581,204 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
 }
 
 #[tokio::test]
+async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighbor() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["sni.alias.invalid".into()]).unwrap();
+    let origin_ca = cert.der().clone();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let authority = format!("localhost:{port}");
+    let alias = format!("sni.alias.invalid:{port}");
+    config.ignore_hosts = vec![alias.clone()];
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_ca.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let expected_request =
+        format!("GET /sni-alias HTTP/1.1\r\nHost: {alias}\r\nConnection: close\r\n\r\n");
+    let origin_expected_request = expected_request.clone();
+    let origin = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut record_header = [0_u8; 5];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if socket.peek(&mut record_header).await.unwrap() == record_header.len() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(record_header[0], 0x16, "SNI control did not send TLS");
+        let record_length = u16::from_be_bytes([record_header[3], record_header[4]]) as usize;
+        let mut initial_record = vec![0_u8; record_header.len() + record_length];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if socket.peek(&mut initial_record).await.unwrap() == initial_record.len() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        assert_eq!(request, origin_expected_request.as_bytes());
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nalias")
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        match tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes)).await {
+            Ok(Ok(_)) | Err(_) => {}
+            Ok(Err(error)) => panic!("intercepted neighbor origin read failed: {error}"),
+        }
+        assert!(
+            bytes.is_empty(),
+            "intercepted neighbor leaked bytes: {bytes:?}"
+        );
+        (initial_record, request)
+    });
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+
+    let mut passthrough = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "sni.alias.invalid",
+        origin_ca.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        passthrough
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref(),
+        "configured SNI alias must receive the origin certificate"
+    );
+    passthrough
+        .write_all(expected_request.as_bytes())
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    passthrough.read_to_end(&mut received).await.unwrap();
+    assert!(received.ends_with(b"alias"));
+    drop(passthrough);
+
+    let mut intercepted = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        proxy_ca.clone(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        intercepted
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref(),
+        "neighboring unconfigured SNI must receive the proxy certificate"
+    );
+    intercepted
+        .write_all(
+            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut denied = Vec::new();
+    intercepted.read_to_end(&mut denied).await.unwrap();
+    assert!(denied.starts_with(b"HTTP/1.1 403"));
+    drop(intercepted);
+
+    let (initial_record, request) = tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert_eq!(lifecycle[0]["host"], "sni.alias.invalid");
+    assert_eq!(lifecycle[0]["details"]["port"], port);
+    assert!(passthrough_events(&config).iter().all(|event| {
+        event["host"] == "sni.alias.invalid" && event["addon"] == "ignored-host-logger"
+    }));
+    let policy_requests = policy.requests.lock().unwrap().clone();
+    assert!(
+        policy_requests
+            .iter()
+            .any(|request| request["method"] == "CONNECT")
+    );
+
+    if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(
+            path.join("sni-alias.json"),
+            serde_json::to_vec_pretty(&json!({
+                "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT")
+                    .unwrap_or_else(|_| "unrecorded-test-binary".into()),
+                "configured_alias": alias,
+                "connect_authority": authority,
+                "sni": "sni.alias.invalid",
+                "initial_tls_record_hex": hex_bytes(&initial_record),
+                "origin_request": String::from_utf8_lossy(&request),
+                "origin_certificate_matches": true,
+                "intercepted_neighbor": {
+                    "sni": "localhost",
+                    "certificate_is_origin": false,
+                    "status": String::from_utf8_lossy(&denied[..denied.iter().position(|byte| *byte == b'\r').unwrap_or(0)]),
+                    "origin_bytes": 0,
+                },
+                "passthrough_events": passthrough_events(&config),
+                "policy_requests": policy_requests,
+                "limits": [
+                    "One direct native TLS connection matched by configured SNI alias and one neighboring intercepted connection.",
+                    "The protected-admin and parent-route controls remain inherited from accepted #631 evidence; this slice does not broaden either scope.",
+                    "No IPv6, parent, invalid-interception or long-duration claim is made."
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
 async fn host_and_address_passthrough_preserve_bytes_and_canonical_events() {
     for entry in ["localhost", "127.0.0.1"] {
         let directory = tempfile::tempdir().unwrap();

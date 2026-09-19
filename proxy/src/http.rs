@@ -2320,10 +2320,49 @@ where
                     _ = stop.changed() => return Ok(()),
                     result = upgrade => Box::new(TokioIo::new(result?)),
                 };
-                let (protocol, client, server) = if passthrough {
-                    (Protocol::Opaque, client, stream)
+                let classification = if passthrough {
+                    tunnels::Classification {
+                        protocol: Protocol::Opaque,
+                        client,
+                        server: stream,
+                        tls_server_name: None,
+                    }
                 } else {
                     tunnels::classify(client, stream, &mut stop).await?
+                };
+                let tunnels::Classification {
+                    protocol: classified_protocol,
+                    client,
+                    mut server,
+                    tls_server_name,
+                } = classification;
+                let protocol = classified_protocol;
+                let sni_passthrough = !passthrough
+                    && runtime.parent.is_none()
+                    && protocol == Protocol::Tls
+                    && tls_server_name.as_deref().is_some_and(|name| {
+                        passthrough_matcher.matches(name, destination.port, None)
+                    });
+                if sni_passthrough {
+                    let name = tls_server_name
+                        .as_deref()
+                        .expect("SNI passthrough requires a captured name");
+                    let mut audit = ignored_host::ConnectionAudit::new(
+                        runtime.audit.clone(),
+                        &identity,
+                        crate::ignored_host_logger::SelectedDestination {
+                            host: name,
+                            port: destination.port,
+                        },
+                    );
+                    audit.connected();
+                    server = ignored_host::observe_stream(server, audit);
+                }
+                let passthrough = passthrough || sni_passthrough;
+                let protocol = if sni_passthrough {
+                    Protocol::Opaque
+                } else {
+                    protocol
                 };
                 if protocol == Protocol::Opaque {
                     let started = std::time::Instant::now();

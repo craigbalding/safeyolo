@@ -233,6 +233,16 @@ pub(crate) struct Prefixed {
     prefix: Vec<u8>,
     offset: usize,
 }
+
+/// Classification preserves the buffered bytes and the SNI observed in a
+/// complete ClientHello. The caller still receives prefixed streams, so no
+/// handshake bytes are consumed by the matcher.
+pub(crate) struct Classification {
+    pub(crate) protocol: Protocol,
+    pub(crate) client: BoxStream,
+    pub(crate) server: BoxStream,
+    pub(crate) tls_server_name: Option<String>,
+}
 impl Prefixed {
     pub(crate) fn new(stream: BoxStream, prefix: Vec<u8>) -> Self {
         Self {
@@ -283,7 +293,7 @@ pub(crate) async fn classify(
     mut client: BoxStream,
     mut server: BoxStream,
     stop: &mut watch::Receiver<bool>,
-) -> Result<(Protocol, BoxStream, BoxStream), Error> {
+) -> Result<Classification, Error> {
     let mut prefix = Vec::new();
     let mut client_bytes = [0; 8192];
     let mut server_bytes = [0; 8192];
@@ -293,18 +303,29 @@ pub(crate) async fn classify(
         if let Some(protocol) =
             protocol(&prefix).or_else(|| (prefix.len() >= PREFIX_LIMIT).then_some(Protocol::Http))
         {
-            return Ok((
+            let tls_server_name = if protocol == Protocol::Tls {
+                match client_hello_server_name(&prefix) {
+                    ClientHelloName::Incomplete if prefix.len() < PREFIX_LIMIT => continue,
+                    ClientHelloName::Incomplete | ClientHelloName::Complete(None) => None,
+                    ClientHelloName::Complete(name) => name,
+                }
+            } else {
+                None
+            };
+            return Ok(Classification {
                 protocol,
-                Box::new(Prefixed::new(client, prefix)),
-                Box::new(Prefixed::new(server, server_prefix)),
-            ));
+                client: Box::new(Prefixed::new(client, prefix)),
+                server: Box::new(Prefixed::new(server, server_prefix)),
+                tls_server_name,
+            });
         }
         if !server_prefix.is_empty() && prefix.is_empty() {
-            return Ok((
-                Protocol::Opaque,
+            return Ok(Classification {
+                protocol: Protocol::Opaque,
                 client,
-                Box::new(Prefixed::new(server, server_prefix)),
-            ));
+                server: Box::new(Prefixed::new(server, server_prefix)),
+                tls_server_name: None,
+            });
         }
         if *stop.borrow() {
             return Err("proxy shutdown during CONNECT classification".into());
@@ -332,6 +353,100 @@ pub(crate) async fn classify(
             }
         }
     }
+}
+
+enum ClientHelloName {
+    Incomplete,
+    Complete(Option<String>),
+}
+
+/// Read a DNS SNI from a buffered ClientHello without terminating TLS.
+/// Malformed or non-ClientHello records stay on the normal inspected path.
+fn client_hello_server_name(prefix: &[u8]) -> ClientHelloName {
+    let mut offset = 0;
+    let mut handshake = Vec::new();
+    while offset + 5 <= prefix.len() {
+        let content_type = prefix[offset];
+        let length = u16::from_be_bytes([prefix[offset + 3], prefix[offset + 4]]) as usize;
+        let end = offset + 5 + length;
+        if end > prefix.len() {
+            return ClientHelloName::Incomplete;
+        }
+        if content_type != 22 {
+            return ClientHelloName::Complete(None);
+        }
+        handshake.extend_from_slice(&prefix[offset + 5..end]);
+        offset = end;
+        if handshake.len() < 4 {
+            continue;
+        }
+        let message_length = ((handshake[1] as usize) << 16)
+            | ((handshake[2] as usize) << 8)
+            | handshake[3] as usize;
+        if handshake.len() < 4 + message_length {
+            continue;
+        }
+        if handshake[0] != 1 {
+            return ClientHelloName::Complete(None);
+        }
+        let body = &handshake[4..4 + message_length];
+        if body.len() < 34 {
+            return ClientHelloName::Complete(None);
+        }
+        let mut cursor = 34;
+        let session_length = body[cursor] as usize;
+        cursor = cursor.saturating_add(1 + session_length);
+        if cursor + 2 > body.len() {
+            return ClientHelloName::Complete(None);
+        }
+        let cipher_length = u16::from_be_bytes([body[cursor], body[cursor + 1]]) as usize;
+        cursor = cursor.saturating_add(2 + cipher_length);
+        if cursor >= body.len() {
+            return ClientHelloName::Complete(None);
+        }
+        let compression_length = body[cursor] as usize;
+        cursor = cursor.saturating_add(1 + compression_length);
+        if cursor + 2 > body.len() {
+            return ClientHelloName::Complete(None);
+        }
+        let extensions_length = u16::from_be_bytes([body[cursor], body[cursor + 1]]) as usize;
+        cursor += 2;
+        let extensions_end = cursor.saturating_add(extensions_length);
+        if extensions_end > body.len() {
+            return ClientHelloName::Complete(None);
+        }
+        while cursor + 4 <= extensions_end {
+            let extension_type = u16::from_be_bytes([body[cursor], body[cursor + 1]]);
+            let extension_length =
+                u16::from_be_bytes([body[cursor + 2], body[cursor + 3]]) as usize;
+            cursor += 4;
+            let extension_end = cursor.saturating_add(extension_length);
+            if extension_end > extensions_end {
+                return ClientHelloName::Complete(None);
+            }
+            if extension_type == 0 {
+                let extension = &body[cursor..extension_end];
+                if extension.len() < 5 {
+                    return ClientHelloName::Complete(None);
+                }
+                let list_length = u16::from_be_bytes([extension[0], extension[1]]) as usize;
+                if list_length + 2 > extension.len() || extension[2] != 0 {
+                    return ClientHelloName::Complete(None);
+                }
+                let name_length = u16::from_be_bytes([extension[3], extension[4]]) as usize;
+                if 5 + name_length > extension.len() {
+                    return ClientHelloName::Complete(None);
+                }
+                let name = &extension[5..5 + name_length];
+                return ClientHelloName::Complete(
+                    std::str::from_utf8(name).ok().map(str::to_owned),
+                );
+            }
+            cursor = extension_end;
+        }
+        return ClientHelloName::Complete(None);
+    }
+    ClientHelloName::Incomplete
 }
 
 pub(crate) struct RelayResult {
@@ -410,6 +525,59 @@ async fn copy_half(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn client_hello_with_sni(name: &[u8]) -> Vec<u8> {
+        let mut body = vec![3, 3];
+        body.extend_from_slice(&[0; 32]);
+        body.push(0); // session ID length
+        body.extend_from_slice(&2_u16.to_be_bytes());
+        body.extend_from_slice(&[0x13, 0x01]);
+        body.extend_from_slice(&[1, 0]); // one null compression method
+
+        let mut server_name = Vec::with_capacity(name.len() + 5);
+        server_name.extend_from_slice(&((name.len() + 3) as u16).to_be_bytes());
+        server_name.push(0);
+        server_name.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        server_name.extend_from_slice(name);
+        let mut extensions = Vec::with_capacity(server_name.len() + 4);
+        extensions.extend_from_slice(&0_u16.to_be_bytes());
+        extensions.extend_from_slice(&(server_name.len() as u16).to_be_bytes());
+        extensions.extend_from_slice(&server_name);
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(&extensions);
+
+        let mut handshake = vec![
+            1,
+            (body.len() >> 16) as u8,
+            (body.len() >> 8) as u8,
+            body.len() as u8,
+        ];
+        handshake.extend_from_slice(&body);
+        let mut record = vec![
+            22,
+            3,
+            3,
+            (handshake.len() >> 8) as u8,
+            handshake.len() as u8,
+        ];
+        record.extend_from_slice(&handshake);
+        record
+    }
+
+    #[test]
+    fn client_hello_sni_requires_complete_record_and_preserves_name() {
+        let hello = client_hello_with_sni(b"SNI.ALIAS.INVALID");
+        for split in [0, 1, 4, 20, hello.len() - 1] {
+            assert!(matches!(
+                client_hello_server_name(&hello[..split]),
+                ClientHelloName::Incomplete
+            ));
+        }
+        assert!(matches!(
+            client_hello_server_name(&hello),
+            ClientHelloName::Complete(Some(name)) if name == "SNI.ALIAS.INVALID"
+        ));
+    }
 
     #[test]
     fn fragmented_http_tls_and_extension_methods_never_select_opaque() {
