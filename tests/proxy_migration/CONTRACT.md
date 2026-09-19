@@ -49,7 +49,9 @@ The shared assertions cover:
 - Configured opaque CONNECT uses a positive parent route control and a refused
   parent route control. The refused parent returns 502 while an independently
   listening direct-origin canary records zero accepts; the Python comparator's
-  missing opaque-parent route remains a named strict expected failure.
+  different ordering (its own 200 precedes opening the parent, so the
+  parent server-first marker cannot precede client data) remains a named strict
+  expected failure.
 - Fragmented TLS prefixes retain the inner request decision. Two old short-prefix
   cases remain strict expected failures.
 - SSH-prefixed HTTP methods retain inner policy. HTTP whitespace variants stay

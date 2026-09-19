@@ -167,7 +167,10 @@ def test_parent_connect_failure_never_falls_back_to_direct_origin(
     if proxy_backend == "python":
         request.node.add_marker(pytest.mark.xfail(
             strict=True,
-            reason="Python comparator does not route opaque CONNECT through its configured parent",
+            reason=(
+                "Python comparator opens the configured parent after its own CONNECT 200, "
+                "so it cannot provide the parent server-first marker before client data"
+            ),
         ))
     positive_authority = "parent-control.invalid:23456"
     parent, observations, failure, thread = _parent_connect_control_fixture()

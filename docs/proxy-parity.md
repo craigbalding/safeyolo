@@ -2488,8 +2488,9 @@ successful raw CONNECT through the configured parent, then has that same
 independent parent return 502 for a second CONNECT. The native proxy returns
 502 to the client, records the exact parent CONNECT requests, and an
 independently listening target origin records zero accepts. The paired Python
-proxy cannot route opaque CONNECT through its configured parent, so this
-comparison remains a named strict expected failure.
+comparator opens the configured parent only after sending its own client-facing
+200, so it cannot provide the parent server-first marker before client data;
+this comparison remains a named strict expected failure.
 
 ### Live operator HTTP and WebSocket inspection
 
