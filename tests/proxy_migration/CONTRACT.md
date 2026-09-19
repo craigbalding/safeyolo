@@ -50,6 +50,11 @@ The shared assertions cover:
   exact encoded queries, protocol negotiation and rejected inner authorities.
 - Opaque CONNECT, server-first traffic and both TCP half-close directions.
   The old half-close defects remain two strict expected failures.
+- A client EOF before the terminating CONNECT header line is a canceled request:
+  the native fixture observes no origin accept for that incomplete request, then
+  completes a separate valid CONNECT control. The Python comparator remains a
+  strict expected failure because its existing CONNECT adapter drops the final
+  response after the valid control's client half-close.
 - Configured opaque CONNECT uses a positive parent route control and a refused
   parent route control. The refused parent returns 502 while an independently
   listening direct-origin canary records zero accepts; the Python comparator's

@@ -1334,6 +1334,140 @@ def test_denied_connect_does_not_contact_raw_origin(proxy_backend, tmp_path):
                 assert provenance["temporary_policy_adapter"] is False
 
 
+def test_incomplete_connect_client_half_close_does_not_dial_origin(
+    proxy_backend, tmp_path, request
+):
+    """An EOF before CONNECT headers complete cannot create an origin leg."""
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Existing CONNECT adapter turns a client half-close into a full close",
+        ))
+    greeting = b"complete-connect-control\x00v1\n"
+    final_response = b"complete-connect-final\x00v1\n"
+    payload = b"complete-connect-payload\x00" * 128
+    observations = []
+    origin_error = []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(0.25)
+        authority = f"127.0.0.1:{listener.getsockname()[1]}"
+
+        def origin():
+            try:
+                while len(observations) < 1:
+                    stream, peer = listener.accept()
+                    with stream:
+                        stream.settimeout(5)
+                        stream.sendall(greeting)
+                        body = bytearray()
+                        while data := stream.recv(65536):
+                            body.extend(data)
+                        observations.append({
+                            "peer": list(peer),
+                            "payload": bytes(body),
+                        })
+                        if body == payload:
+                            stream.sendall(final_response)
+                            stream.shutdown(socket.SHUT_WR)
+            except BaseException as error:  # surface thread failures in the test
+                origin_error.append(f"{type(error).__name__}: {error}")
+
+        thread = None
+        try:
+            with launch_proxy(
+                proxy_backend,
+                tmp_path / proxy_backend,
+                DIRECT_CONNECT_HALF_CLOSE_POLICY,
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                with socket.socket(socket.AF_UNIX) as incomplete:
+                    incomplete.settimeout(5)
+                    incomplete.connect(proxy.paths["alice"])
+                    incomplete.sendall(
+                        f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n".encode()
+                    )
+                    incomplete.shutdown(socket.SHUT_WR)
+                    # Closing immediately after the request-side EOF models a
+                    # canceled client; it must not cause a speculative origin
+                    # dial before a complete request exists.
+
+                with pytest.raises(socket.timeout):
+                    listener.accept()
+
+                listener.settimeout(5)
+                thread = threading.Thread(target=origin)
+                thread.start()
+                with tunnel(proxy.paths["alice"], authority) as complete:
+                    assert read_exact(complete, len(greeting)) == greeting
+                    complete.sendall(payload)
+                    complete.shutdown(socket.SHUT_WR)
+                    assert read_all(complete) == final_response
+
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+                assert not origin_error, origin_error
+                assert len(observations) == 1
+                assert observations[0]["payload"] == payload
+                events = proxy.events("proxy.tunnel")
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (tmp_path / proxy_backend / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(tmp_path / proxy_backend / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                    assert len(events) == 1
+                    assert events[0]["agent"] == "alice"
+                    assert events[0]["coverage"] == "opaque"
+                    assert events[0]["uploaded_bytes"] == len(payload)
+                    assert events[0]["downloaded_bytes"] == len(greeting) + len(final_response)
+                    assert events[0]["outcome"] == "completed"
+                (tmp_path / proxy_backend / "incomplete-connect-half-close.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "authority": authority,
+                            "incomplete_request": (
+                                f"CONNECT {authority} HTTP/1.1\\r\\n"
+                                f"Host: {authority}\\r\\n"
+                            ),
+                            "client_write_eof_before_headers_terminator": True,
+                            "origin_accepts": len(observations),
+                            "origin_payload_sha256": hashlib.sha256(
+                                observations[0]["payload"]
+                            ).hexdigest(),
+                            "completed_control": {
+                                "greeting_hex": greeting.hex(),
+                                "payload_length": len(payload),
+                                "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                                "final_response_hex": final_response.hex(),
+                            },
+                            "proxy_tunnel_events": events if proxy_backend == "rust" else [],
+                            "native_policy_provenance": (
+                                provenance if proxy_backend == "rust" else None
+                            ),
+                            "limits": [
+                                "One incomplete CONNECT request followed by one valid direct CONNECT control.",
+                                "This proves no origin dial for the incomplete request; it does not establish a duration, concurrency, or resource-growth bound.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+        finally:
+            if thread is not None:
+                thread.join(timeout=6)
+                assert not thread.is_alive()
+
+
 @pytest.mark.skipif(os.environ.get("SAFEYOLO_RUN_SSH_CONTRACT") != "1", reason="Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd")
 @pytest.mark.parametrize("passthrough", [False, True])
 def test_real_openssh_preserves_server_first_output_and_client_input(proxy_backend, tmp_path, passthrough):

@@ -1415,6 +1415,17 @@ The first allowed inner request reuses that connection. Its policy check
 precedes delivery of application bytes. Changed inner authorities cannot select
 another destination.
 
+The native black-box CONNECT fixture also covers the request-side cancellation
+boundary: if the client reaches EOF after `Host` but before the terminating
+header line, the proxy must not dial the origin speculatively. The fixture then
+opens a separate complete CONNECT and checks the server-first greeting, exact
+payload, final response and native tunnel counters, so a canceled parse cannot
+poison the listener. This is one bounded incomplete-request control; it does
+not establish a repeated resource-growth or long-duration limit. The Python
+comparator keeps a strict expected failure for the complete control because its
+existing adapter turns the valid client's later half-close into a full close;
+`--runxfail` reproduces that missing final response.
+
 With `tls_ca_file`, detected TLS receives an interception endpoint using the
 existing CA. Upstream TLS verifies names and trust chains, including through a
 configured parent's CONNECT tunnel. TLS failure never selects an opaque fallback.
