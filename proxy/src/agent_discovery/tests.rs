@@ -1,6 +1,12 @@
 use super::*;
 use crate::audit::Settings;
-use std::{cell::Cell, fs::FileTimes, path::PathBuf, time::Duration};
+use std::{
+    cell::Cell,
+    fs::{FileTimes, Permissions},
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    time::Duration,
+};
 
 struct Owned {
     directory: tempfile::TempDir,
@@ -681,6 +687,77 @@ fn identity_reconciliation_preserves_source_unreadable_and_malformed_map_outcome
         .unwrap();
     assert_eq!(unavailable["event"], "security.agent_identity_unavailable");
     assert_eq!(unavailable["details"]["reason"], "lookup_error");
+}
+
+#[test]
+fn stat_permission_denied_keeps_listener_authority_and_quarantines_map_fallback() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let restricted = owned.path("restricted");
+    fs::create_dir(&restricted).unwrap();
+    let path = restricted.join("map.json");
+    put(&path, br#"{"alice":{"ip":"10.0.0.1"}}"#, 1.0);
+    owner
+        .configure(path.to_str().unwrap(), &owned.writer)
+        .unwrap();
+
+    // A stat failure is distinct from a missing map. The source catches this
+    // at the request boundary; it must never turn the unreadable map into a
+    // new owner or make a listener carry the stale mapping as current.
+    fs::set_permissions(&restricted, Permissions::from_mode(0o000)).unwrap();
+    let with_listener = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-stat-permission-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 700.0,
+        )
+        .unwrap();
+    assert_eq!(with_listener.status, IdentityStatus::Resolved);
+    assert_eq!(with_listener.agent.as_deref(), Some("alice"));
+    assert_eq!(with_listener.source, Some("uds"));
+    assert!(with_listener.mapped_agent.is_none());
+    assert_eq!(owner.lock().unwrap().last_seen["alice"], 700.0);
+
+    let without_listener = owner
+        .reconcile(
+            IdentitySources {
+                client_ip: Some("10.0.0.1"),
+                request_id: Some("req-stat-permission-no-uds"),
+                ..Default::default()
+            },
+            &owned.writer,
+            || 701.0,
+        )
+        .unwrap();
+    assert_eq!(without_listener.status, IdentityStatus::Unavailable);
+    assert_eq!(without_listener.reason, Some("lookup_error"));
+    assert!(without_listener.agent.is_none());
+    assert!(!owner.lock().unwrap().last_seen.contains_key("10.0.0.1"));
+    assert_eq!(
+        owner
+            .get_agents(&owned.writer, || 702.0)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Permission
+    );
+
+    fs::set_permissions(&restricted, Permissions::from_mode(0o755)).unwrap();
+    let records = owned.records();
+    let unavailable = records
+        .iter()
+        .find(|event| event["request_id"] == "req-stat-permission-no-uds")
+        .unwrap();
+    assert_eq!(unavailable["event"], "security.agent_identity_unavailable");
+    assert_eq!(unavailable["details"]["reason"], "lookup_error");
+    assert!(!records.iter().any(|event| {
+        event["request_id"] == "req-stat-permission-uds"
+            && event["event"] == "security.agent_identity_conflict"
+    }));
 }
 
 #[test]
