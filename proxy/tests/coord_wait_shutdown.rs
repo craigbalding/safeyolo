@@ -581,9 +581,11 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
         )
         .unwrap();
     assert_eq!(Some(room_id.as_str()), fixture["room_id"].as_str());
-    assert!(permissions
-        .split(',')
-        .any(|permission| permission == "receive"));
+    assert!(
+        permissions
+            .split(',')
+            .any(|permission| permission == "receive")
+    );
     let stream_name = format!("ROOM_{room_id}");
 
     let root = TempDir::new().unwrap();
@@ -741,9 +743,11 @@ async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
     .expect("restarted shutdown must close the held room wait connection")
     .unwrap();
     assert!(restarted_wait_bytes.is_empty());
-    assert!(TcpStream::connect(("127.0.0.1", restarted_admin_port))
-        .await
-        .is_err());
+    assert!(
+        TcpStream::connect(("127.0.0.1", restarted_admin_port))
+            .await
+            .is_err()
+    );
     assert_eq!(
         file_lines(&config.audit_log_path.clone().unwrap()),
         restarted_audit_before
