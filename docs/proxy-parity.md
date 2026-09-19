@@ -1685,6 +1685,16 @@ stops admission and waits up to five seconds for draining; a timeout reports
 failure and keeps the live store owned by the worker. Startup failures retain
 the source's assigned or partly initialized store without installing a writer.
 
+The live [`live_storage_write_failure_keeps_transport_success_separate_from_reopen`](../proxy/src/flow_runtime_tests.rs)
+witness sends two native HTTP requests through an owned Unix listener. The
+`/durable-success` canary returns 200 and is present after the SQLite store is
+reopened. A SQLite trigger then rejects only the `/storage-failure` canary;
+the origin still returns 200, recorder statistics report `recorded: 2` and
+`write_errors: 1`, and the failed row and tags are absent after reopen. This
+keeps application transport success, queue admission and durable evidence
+separate. It is a focused storage-failure control; it does not establish
+terminal UI, multi-row retention or full inspector acceptance.
+
 Authenticated [flow routes](../proxy/src/agent_api/flows.rs) share that
 process-owned store. Search, endpoints, facets, both body searches, metadata and
 request/response body reads, tags and diffs use the trusted ingress owner. SQLite queries and

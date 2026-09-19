@@ -581,6 +581,181 @@ fn live_agent_flow_api_reads_the_runtime_store_with_ingress_ownership() {
     );
 }
 
+#[tokio::test]
+async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(directory.path(), true);
+    std::fs::write(
+        config.policy_file.as_ref().unwrap(),
+        json!({
+            "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
+            "addons":{"test_context":{"target_hosts":["127.0.0.2"]}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    config.listeners = vec![AgentListener {
+        agent_id: "alice".into(),
+        socket_path: directory.path().join("alice.sock"),
+        source_id: None,
+    }];
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let recorder = proxy.runtime.read().unwrap().flow_recorder.clone();
+    let store = recorder.store().unwrap().clone();
+
+    // Positive control: a real native request reaches the origin and is
+    // durably visible before the failure trigger is installed.
+    record_wire_flow_case(
+        directory.path(),
+        "/durable-success",
+        b"635-persisted-request",
+        b"635-persisted-response",
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if store.get_flow(1).unwrap().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Negative control: only the exact synthetic path fails at the SQLite
+    // row boundary. The trigger preserves earlier rows and makes the failure
+    // independent of filesystem fullness or process timing.
+    let db = rusqlite::Connection::open(&config.flow_store_db_path).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER fail_635_storage BEFORE INSERT ON flows WHEN NEW.path = '/storage-failure' BEGIN SELECT RAISE(ABORT, 'synthetic 635 storage failure'); END;",
+    )
+    .unwrap();
+    drop(db);
+    record_wire_flow_case(
+        directory.path(),
+        "/storage-failure",
+        b"635-discarded-request",
+        b"635-discarded-response",
+    )
+    .await;
+
+    // The origin completed both requests with HTTP 200. The recorder's
+    // asynchronous stats expose that the second row was only queued, while
+    // the worker reports the durable write failure separately.
+    proxy.shutdown().await;
+    assert_eq!(
+        recorder.stats(),
+        json!({"recorded":2,"errors":0,"skipped":0,"queue_dropped":0,"write_errors":1})
+    );
+
+    // Remove only the synthetic trigger, then use the real reopen path. The
+    // successful row remains; the failed row and its tags are absent.
+    let db = rusqlite::Connection::open(&config.flow_store_db_path).unwrap();
+    db.execute_batch("DROP TRIGGER fail_635_storage;").unwrap();
+    drop(db);
+    drop(store);
+    drop(recorder);
+    let reopened =
+        flow_store::FlowStore::open(&config.flow_store_db_path, Default::default()).unwrap();
+    assert_eq!(
+        reopened.get_flow(1).unwrap().unwrap()["path"],
+        "/durable-success"
+    );
+    assert_eq!(
+        reopened
+            .body(1, flow_store::Side::Response)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"635-persisted-response"
+    );
+    assert!(reopened.get_flow(2).unwrap().is_none());
+    assert_eq!(reopened.get_flow_tags(2).unwrap(), json!([]));
+}
+
+async fn record_wire_flow_case(
+    directory: &Path,
+    route: &str,
+    request_body: &[u8],
+    response_body: &[u8],
+) {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, UnixStream},
+    };
+    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let route = route.to_owned();
+    let request_body = request_body.to_vec();
+    let response_body = response_body.to_vec();
+    let origin_route = route.clone();
+    let origin_request_body = request_body.clone();
+    let origin_response_body = response_body.clone();
+    let origin = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(
+            !String::from_utf8_lossy(&head)
+                .to_ascii_lowercase()
+                .contains("x-safeyolo-test-context")
+        );
+        assert!(String::from_utf8_lossy(&head).contains(&format!("POST {origin_route} HTTP/1.1")));
+        let content_length = String::from_utf8_lossy(&head)
+            .lines()
+            .find_map(|line| {
+                line.split_once(':')
+                    .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+            })
+            .unwrap();
+        let mut body = vec![0; content_length];
+        socket.read_exact(&mut body).await.unwrap();
+        assert_eq!(body, origin_request_body);
+        let response_head = format!(
+            "HTTP/1.1 200 Owned\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            origin_response_body.len()
+        );
+        socket.write_all(response_head.as_bytes()).await.unwrap();
+        socket.write_all(&origin_response_body).await.unwrap();
+        socket.shutdown().await.unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut socket = UnixStream::connect(directory.join("alice.sock")).await.unwrap();
+        socket
+            .write_all(
+                format!(
+                    "POST http://127.0.0.2:{port}{route} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nX-SafeYolo-Test-Context: run=wire-run;agent=declared-tool;test=wire;role=tester\r\nConnection: close\r\n\r\n",
+                    request_body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        socket.write_all(&request_body).await.unwrap();
+        let mut response = Vec::new();
+        socket.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200"));
+        assert!(response.ends_with(&response_body));
+        assert!(!response
+            .windows(b"x-safeyolo-evidence-error: true".len())
+            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true")));
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), origin)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 async fn record_wire_flow(directory: &Path) {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
