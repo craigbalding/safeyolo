@@ -195,6 +195,14 @@ fn write_fixture(root: &Path) {
     .unwrap();
 }
 
+fn file_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     assert!(
@@ -282,6 +290,11 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     assert_eq!(admin_identity.status, 200);
     assert_eq!(admin_identity.body["instance_id"], instance_id);
 
+    // Capture both sinks before the owner drain. A wait with no attention
+    // result must not create a late audit or event after its owner terminates.
+    let audit_before_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
+    let events_before_first_shutdown = file_lines(&config.event_log);
+
     let started = tokio::time::Instant::now();
     proxy.shutdown().await;
     let shutdown_elapsed_ms = started.elapsed().as_millis();
@@ -321,9 +334,98 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         TcpStream::connect(("127.0.0.1", admin_port)).await.is_err(),
         "admin listener must close at shutdown"
     );
+    let audit_after_first_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
+    let events_after_first_shutdown = file_lines(&config.event_log);
+    assert_eq!(
+        audit_after_first_shutdown, audit_before_first_shutdown,
+        "first owner drain must not append a late audit event"
+    );
+    assert_eq!(
+        events_after_first_shutdown, events_before_first_shutdown,
+        "first owner drain must not append a late event"
+    );
+
+    // Reopen the exact same state and socket paths. The new process must have
+    // a fresh identity and must be able to admit the same real wait again.
+    let restarted = Proxy::start(config.clone()).await.unwrap();
+    wait_for_path(&config.listeners[0].socket_path).await;
+    wait_for_path(&config.readiness_file).await;
+    let restarted_readiness: Value =
+        serde_json::from_slice(&fs::read(&config.readiness_file).unwrap()).unwrap();
+    let restarted_admin_port = restarted_readiness["admin_port"].as_u64().unwrap() as u16;
+    let restarted_instance_id = restarted_readiness["instance_id"].as_str().unwrap();
+    assert_ne!(restarted_instance_id, instance_id);
+    let restarted_stats = exchange_admin(restarted_admin_port, &admin_request("/stats")).await;
+    assert_eq!(restarted_stats.status, 200);
+
+    let mut restarted_wait_socket = UnixStream::connect(&config.listeners[0].socket_path)
+        .await
+        .unwrap();
+    restarted_wait_socket
+        .write_all(&request(
+            "GET",
+            "/api/coord/attention/wait?since=0&limit=1&timeout=300",
+            AGENT_TOKEN,
+        ))
+        .await
+        .unwrap();
+    let mut restarted_subscriptions_before = 0;
+    for _ in 0..50 {
+        restarted_subscriptions_before =
+            connection_subscription_count(&nats_connz().await, nats_subscription_subject);
+        if restarted_subscriptions_before >= 1 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        restarted_subscriptions_before >= 1,
+        "restarted attention wait must create a live NATS subscription"
+    );
+    let audit_before_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
+    let events_before_second_shutdown = file_lines(&config.event_log);
+    restarted.shutdown().await;
+
+    let mut restarted_subscriptions_after = usize::MAX;
+    for _ in 0..50 {
+        restarted_subscriptions_after =
+            connection_subscription_count(&nats_connz().await, nats_subscription_subject);
+        if restarted_subscriptions_after == 0 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(restarted_subscriptions_after, 0);
+    assert!(!config.readiness_file.exists());
+    assert!(!config.listeners[0].socket_path.exists());
+    let mut restarted_wait_bytes = Vec::new();
+    timeout(
+        Duration::from_secs(2),
+        restarted_wait_socket.read_to_end(&mut restarted_wait_bytes),
+    )
+    .await
+    .expect("restarted shutdown must close the held wait connection")
+    .unwrap();
+    assert!(restarted_wait_bytes.is_empty());
+    assert!(
+        TcpStream::connect(("127.0.0.1", restarted_admin_port))
+            .await
+            .is_err(),
+        "restarted admin listener must close at shutdown"
+    );
+    let audit_after_second_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
+    let events_after_second_shutdown = file_lines(&config.event_log);
+    assert_eq!(
+        audit_after_second_shutdown, audit_before_second_shutdown,
+        "restarted owner drain must not append a late audit event"
+    );
+    assert_eq!(
+        events_after_second_shutdown, events_before_second_shutdown,
+        "restarted owner drain must not append a late event"
+    );
 
     let evidence = json!({
-        "workflow": "native-coordination-attention-wait-shutdown",
+        "workflow": "native-coordination-attention-wait-shutdown-restart",
         "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT").unwrap_or_else(|_| "unknown".into()),
         "room_id": fixture["room_id"],
         "backing_membership": {"principal_id":"ag-alice", "permissions":permissions},
@@ -337,6 +439,22 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
         "shutdown_elapsed_ms": shutdown_elapsed_ms,
         "readiness_removed": !config.readiness_file.exists(),
         "agent_socket_removed": !config.listeners[0].socket_path.exists(),
+        "restart": {
+            "same_state_and_socket_paths": true,
+            "instance_id_distinct": restarted_instance_id != instance_id,
+            "instance_id": restarted_instance_id,
+            "admin_status": restarted_stats.status,
+            "subscriptions_before": restarted_subscriptions_before,
+            "subscriptions_after": restarted_subscriptions_after,
+            "readiness_removed": !config.readiness_file.exists(),
+            "agent_socket_removed": !config.listeners[0].socket_path.exists(),
+            "audit_lines_unchanged": audit_after_second_shutdown == audit_before_second_shutdown,
+            "event_lines_unchanged": events_after_second_shutdown == events_before_second_shutdown,
+        },
+        "first_shutdown": {
+            "audit_lines_unchanged": audit_after_first_shutdown == audit_before_first_shutdown,
+            "event_lines_unchanged": events_after_first_shutdown == events_before_first_shutdown,
+        },
         "remaining_scope": [
             "other #626/#628/#629 standalone workers",
             "full producer/protocol matrix",
