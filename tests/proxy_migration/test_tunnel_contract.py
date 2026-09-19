@@ -44,6 +44,19 @@ effect = "deny"
 condition = { agent = "bob", method = "CONNECT" }
 '''
 
+PASSTHROUGH_LIFECYCLE_POLICY = '''budget = 12000
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { agent = "alice", method = "CONNECT" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+condition = { agent = "bob", method = "CONNECT" }
+'''
+
 
 def tunnel(path, authority):
     stream = socket.socket(socket.AF_UNIX)
@@ -86,6 +99,28 @@ def read_all(stream):
     while part := stream.recv(65536):
         received.extend(part)
     return bytes(received)
+
+
+def passthrough_audit(directory):
+    audit = directory / "audit.jsonl"
+    if not audit.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in audit.read_text().splitlines()
+        if line and json.loads(line).get("addon") == "ignored-host-logger"
+    ]
+
+
+def wait_for_passthrough_audit(directory, count):
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        rows = passthrough_audit(directory)
+        if len(rows) == count:
+            return rows
+        assert len(rows) < count, f"duplicate passthrough events: {rows!r}"
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {count} passthrough events: {rows!r}")
 
 
 def fragmented_tls_request(stream, authority, ca, first):
@@ -367,6 +402,154 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
         finally:
             thread.join(timeout=6)
             assert not thread.is_alive()
+
+
+def test_configured_passthrough_server_first_half_close_keeps_canonical_lifecycle(proxy_backend, tmp_path):
+    """A configured tunnel records one lifecycle pair over the physical socket lifetime."""
+    if proxy_backend != "rust":
+        pytest.skip("native policy provenance and canonical passthrough ownership are Rust evidence")
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    greeting = b"configured-server-first\x00v1\n"
+    payload = bytes(range(256)) * 512 + b"client-final-byte"
+    final_response = b"configured-final-response\x00after-client-eof\n"
+    observation = {}
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        # The hostname is retained as the logical authority while the origin
+        # observes the resolved loopback peer address.
+        authority = f"localhost:{listener.getsockname()[1]}"
+
+        def origin():
+            try:
+                stream, peer = listener.accept()
+                observation["peer"] = peer
+                with stream:
+                    stream.settimeout(5)
+                    stream.sendall(greeting)
+                    body = bytearray()
+                    while data := stream.recv(65536):
+                        body.extend(data)
+                    observation["payload"] = bytes(body)
+                    observation["client_eof"] = True
+                    stream.sendall(final_response)
+                    stream.shutdown(socket.SHUT_WR)
+                    observation["server_eof"] = True
+            except BaseException as error:
+                observation["error"] = f"{type(error).__name__}: {error}"
+
+        thread = threading.Thread(target=origin)
+        thread.start()
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                PASSTHROUGH_LIFECYCLE_POLICY,
+                eager_connect=True,
+                ignore_hosts=[authority],
+                native_policy=True,
+            ) as proxy:
+                with tunnel(proxy.paths["alice"], authority) as stream:
+                    assert read_exact(stream, len(greeting)) == greeting
+                    stream.sendall(payload)
+                    stream.shutdown(socket.SHUT_WR)
+                    observed_final = read_all(stream)
+                    assert observed_final == final_response
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+                assert "error" not in observation, observation
+                assert observation["peer"][0] == "127.0.0.1"
+                assert observation["payload"] == payload
+                assert observation["client_eof"] is True
+                assert observation["server_eof"] is True
+
+                provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+                assert provenance["backend"] == "rust"
+                assert provenance["policy_mode"] == "native"
+                assert provenance["temporary_policy_adapter"] is False
+                rows = wait_for_passthrough_audit(directory, 2)
+                assert [row["event"] for row in rows] == [
+                    "traffic.passthrough_start",
+                    "traffic.passthrough_end",
+                ]
+                assert rows[0]["host"] == "localhost"
+                assert rows[1]["host"] == "localhost"
+                assert rows[0]["details"] == {
+                    "port": listener.getsockname()[1],
+                    "transport": "tcp",
+                    "client": "10.0.0.2",
+                }
+                assert rows[1]["details"]["port"] == listener.getsockname()[1]
+                assert rows[1]["details"]["transport"] == "tcp"
+                assert rows[1]["details"]["client"] == "10.0.0.2"
+                assert isinstance(rows[1]["details"]["duration_ms"], int)
+                (directory / "passthrough-lifecycle.json").write_text(json.dumps({
+                    "backend": proxy_backend,
+                    "logical_authority": authority,
+                    "physical_peer": list(observation["peer"]),
+                    "upstream": {
+                        "greeting_hex": greeting.hex(),
+                        "payload_length": len(payload),
+                        "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                        "final_response_hex": final_response.hex(),
+                    },
+                    "client_observed": {
+                        "greeting_hex": greeting.hex(),
+                        "final_response_hex": observed_final.hex(),
+                    },
+                    "passthrough_events": rows,
+                    "native_policy_provenance": provenance,
+                }, indent=2) + "\n")
+        finally:
+            thread.join(timeout=6)
+            assert not thread.is_alive()
+
+
+def test_configured_passthrough_denied_agent_has_no_origin_contact(proxy_backend, tmp_path):
+    """A policy denial remains before passthrough dialing, even when matched."""
+    if proxy_backend != "rust":
+        pytest.skip("native policy provenance and canonical passthrough ownership are Rust evidence")
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(0.25)
+        authority = f"localhost:{listener.getsockname()[1]}"
+        with launch_proxy(
+            proxy_backend,
+            directory,
+            PASSTHROUGH_LIFECYCLE_POLICY,
+            eager_connect=True,
+            ignore_hosts=[authority],
+            native_policy=True,
+        ) as proxy:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(5)
+                client.connect(proxy.paths["bob"])
+                client.sendall(
+                    f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+                    "X-Denied-Canary: must-not-egress\r\nConnection: close\r\n\r\n".encode()
+                )
+                response = read_until(client, b"\r\n\r\n")
+            assert response.startswith(b"HTTP/1.1 403"), response
+            with pytest.raises(socket.timeout):
+                listener.accept()
+            assert passthrough_audit(directory) == []
+            assert proxy.events("proxy.egress") == []
+            provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+            assert provenance["policy_mode"] == "native"
+            (directory / "passthrough-denial.json").write_text(json.dumps({
+                "backend": proxy_backend,
+                "logical_authority": authority,
+                "origin_accepts": 0,
+                "response_head_hex": response.hex(),
+                "passthrough_events": [],
+                "proxy_egress_events": [],
+                "native_policy_provenance": provenance,
+            }, indent=2) + "\n")
 
 
 def test_denied_connect_does_not_contact_raw_origin(proxy_backend, tmp_path):

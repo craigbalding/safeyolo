@@ -2430,6 +2430,20 @@ control, not a live cancellation equivalence test. The joined selection passes
 implementation checks; full addon parity and independent acceptance remain
 pending.
 
+The native-policy migration wire case
+`test_configured_passthrough_server_first_half_close_keeps_canonical_lifecycle`
+adds one real configured passthrough session to that component evidence. An
+origin bound to `127.0.0.1` sends bytes before receiving client data; the client
+then half-closes its write side, the origin observes the complete payload and
+returns final bytes before its own EOF. The recorded authority remains
+`localhost:<port>` while the accepted origin peer is `127.0.0.1`, and the
+audit contains exactly one canonical start/end pair for agent `alice` with
+the trusted listener client identity. The paired denied-agent control returns
+403, observes zero origin accepts, zero egress events and no passthrough
+event. This is one native server-first/client-half-close wire order; the
+opposite half-close order, refusal, pending cancellation and graceful-shutdown
+wire cases remain separate evidence.
+
 ### Live operator HTTP and WebSocket inspection
 
 The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP
