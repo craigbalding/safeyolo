@@ -10,6 +10,7 @@ use crate::{
 use std::{
     collections::BTreeSet,
     ffi::CString,
+    fs,
     io::Read,
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
 };
@@ -17,13 +18,18 @@ use std::{
 /// The child owns its environment and all audit destinations. In particular,
 /// ambient rotation/queue settings cannot make this lifecycle proof flaky.
 fn isolated(name: &str, test: impl FnOnce(&Path)) {
+    isolated_with_queue(name, None, test);
+}
+
+fn isolated_with_queue(name: &str, queue: Option<&str>, test: impl FnOnce(&Path)) {
     const CHILD: &str = "SAFEYOLO_AUDIT_RUNTIME_TEST_DIRECTORY";
     if let Some(directory) = std::env::var_os(CHILD) {
         test(Path::new(&directory));
         return;
     }
     let directory = tempfile::tempdir().unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
         .args([
             "--exact",
             &format!("audit_runtime_tests::{name}"),
@@ -34,8 +40,13 @@ fn isolated(name: &str, test: impl FnOnce(&Path)) {
         .env(
             "SAFEYOLO_LOG_PATH",
             directory.path().join("unused-fallback.jsonl"),
-        )
-        .env_remove("SAFEYOLO_AUDIT_QUEUE_MAX")
+        );
+    if let Some(queue) = queue {
+        command.env("SAFEYOLO_AUDIT_QUEUE_MAX", queue);
+    } else {
+        command.env_remove("SAFEYOLO_AUDIT_QUEUE_MAX");
+    }
+    let output = command
         .env_remove("SAFEYOLO_LOG_MAX_MB")
         .env_remove("SAFEYOLO_LOG_BACKUPS")
         .output()
@@ -90,6 +101,109 @@ fn assert_policy_reload(row: &Value) {
             "severity":"medium","summary":"Baseline policy reloaded: 0 permissions",
             "addon":"policy-loader","details":{"policy_type":"baseline","permissions_count":0}
         })
+    );
+}
+
+#[test]
+fn process_shutdown_reconciles_held_full_audit_queue_and_failed_sink() {
+    isolated_with_queue(
+        "process_shutdown_reconciles_held_full_audit_queue_and_failed_sink",
+        Some("1"),
+        |directory| {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            executor.block_on(async {
+                let sink = directory.join("owned-fifo");
+                let name = CString::new(sink.as_os_str().as_bytes()).unwrap();
+                assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+                // Proxy::start creates the same process-owned writer used by
+                // production.  Its first flush is held by the FIFO, so later
+                // submissions can fill the configured one-entry queue.
+                let proxy = Proxy::start(config(directory, &sink)).await.unwrap();
+                let runtime = proxy.runtime.read().unwrap().clone();
+                let writer = runtime.audit.clone();
+                let mut queue_full = false;
+                for index in 0..32 {
+                    match writer.emit(event(index)).unwrap() {
+                        Submission::Queued => {}
+                        Submission::QueueFull => {
+                            queue_full = true;
+                            break;
+                        }
+                        Submission::Stopped => panic!("writer stopped before shutdown"),
+                    }
+                }
+                assert!(
+                    writer.pending_count().unwrap() >= 1,
+                    "the held writer must retain an admitted event"
+                );
+                assert!(queue_full, "the one-entry audit queue must become full");
+                assert!(writer.dropped_count().unwrap() >= 1.into());
+                assert!(!writer.wait_for_drain(Duration::from_millis(20)).unwrap());
+
+                let mut shutdown = tokio::spawn(proxy.shutdown());
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(40), &mut shutdown)
+                        .await
+                        .is_err(),
+                    "shutdown must wait for the held audit writer"
+                );
+                let mut reader = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK)
+                    .open(&sink)
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(2), &mut shutdown)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(writer.pending_count().unwrap(), 0);
+                assert!(writer.wait_for_drain(Duration::ZERO).unwrap());
+                assert!(writer.shutdown(Duration::ZERO).unwrap());
+
+                let mut bytes = Vec::new();
+                let mut buffer = [0; 4096];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("held FIFO read failed: {error}"),
+                    }
+                }
+                let rows: Vec<Value> = std::str::from_utf8(&bytes)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert!(!rows.is_empty(), "the admitted batch must reach the FIFO");
+                assert!(writer.dropped_count().unwrap() >= 1.into());
+
+                // A directory is a deterministic write failure.  The writer
+                // may emit its documented stderr fallback, but it must finish
+                // every reservation and leave no durable audit file at this
+                // destination.
+                let failed_sink = directory.join("failed-sink");
+                fs::create_dir(&failed_sink).unwrap();
+                let failed_proxy = Proxy::start(config(directory, &failed_sink)).await.unwrap();
+                let failed_runtime = failed_proxy.runtime.read().unwrap().clone();
+                let failed_writer = failed_runtime.audit.clone();
+                assert!(matches!(
+                    failed_writer.emit(event(99)).unwrap(),
+                    Submission::Queued | Submission::QueueFull
+                ));
+                failed_proxy.shutdown().await;
+                assert_eq!(failed_writer.pending_count().unwrap(), 0);
+                assert!(failed_writer.wait_for_drain(Duration::ZERO).unwrap());
+                assert!(failed_writer.shutdown(Duration::ZERO).unwrap());
+                assert!(failed_sink.is_dir());
+                assert!(fs::read_dir(&failed_sink).unwrap().next().is_none());
+            });
+        },
     );
 }
 
