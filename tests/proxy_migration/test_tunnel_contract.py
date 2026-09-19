@@ -160,6 +160,53 @@ def _parent_connect_control_fixture(phases=("positive", "failure")):
     return listener, observations, failure, thread
 
 
+def _parent_connect_single_failure_fixture():
+    """Record one refused CONNECT and detect a same-request retry."""
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(5)
+    observations = []
+    failure = []
+
+    def serve():
+        try:
+            stream, peer = listener.accept()
+            with stream:
+                stream.settimeout(5)
+                request = read_until(stream, b"\r\n\r\n")
+                observations.append({
+                    "phase": "failure",
+                    "peer": list(peer),
+                    "request": request,
+                })
+                stream.sendall(
+                    b"HTTP/1.1 502 Bad Gateway\r\n"
+                    b"Connection: close\r\n"
+                    b"Content-Length: 0\r\n\r\n"
+                )
+            # A retry for the same request would create another parent
+            # connection after the refusal. Keep this wait bounded so the
+            # control also proves completion when no retry arrives.
+            listener.settimeout(1)
+            try:
+                retry, retry_peer = listener.accept()
+            except TimeoutError:
+                return
+            with retry:
+                observations.append({
+                    "phase": "unexpected-retry",
+                    "peer": list(retry_peer),
+                })
+        except BaseException as error:  # report fixture failures in the test thread
+            failure.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    return listener, observations, failure, thread
+
+
 def test_parent_connect_failure_never_falls_back_to_direct_origin(
     proxy_backend, tmp_path, request
 ):
@@ -281,6 +328,108 @@ def test_parent_connect_failure_never_falls_back_to_direct_origin(
         f"CONNECT {refused_authority} HTTP/1.1\r\n".encode()
     )
     assert b"X-Direct-Egress-Canary" not in observations[1]["request"]
+
+
+def test_parent_connect_failure_does_not_retry_same_request(
+    proxy_backend, tmp_path, request
+):
+    """A refusal completes this request without a second parent CONNECT."""
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason=(
+                "Python comparator opens the configured parent after its own CONNECT 200, "
+                "so it cannot provide the refused parent response on the client request"
+            ),
+        ))
+    parent, observations, failure, thread = _parent_connect_single_failure_fixture()
+    parent_url = f"http://127.0.0.1:{parent.getsockname()[1]}"
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    refused_authority = None
+    try:
+        with socket.socket() as origin:
+            origin.bind(("127.0.0.1", 0))
+            origin.listen()
+            origin.settimeout(0.25)
+            refused_authority = f"127.0.0.1:{origin.getsockname()[1]}"
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                PARENT_CONNECT_POLICY,
+                parent_proxy=parent_url,
+                ignore_hosts=[refused_authority],
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(proxy.paths["alice"])
+                    client.sendall(
+                        f"CONNECT {refused_authority} HTTP/1.1\r\n"
+                        f"Host: {refused_authority}\r\n"
+                        "X-Direct-Egress-Canary: must-not-reach-origin\r\n"
+                        "Connection: close\r\n\r\n".encode()
+                    )
+                    refused_response = read_until(client, b"\r\n\r\n")
+                assert refused_response.startswith(b"HTTP/1.1 502"), refused_response
+                with pytest.raises(socket.timeout):
+                    origin.accept()
+                assert proxy.process.poll() is None
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                (directory / "parent-connect-no-same-request-retry.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "parent_url": parent_url,
+                            "refused_authority": refused_authority,
+                            "refused_client_response_head_hex": refused_response.hex(),
+                            "parent_observations": [
+                                {
+                                    "phase": item["phase"],
+                                    "peer": item["peer"],
+                                    "request_hex": item.get("request", b"").hex(),
+                                }
+                                for item in observations
+                            ],
+                            "direct_origin_accepts": 0,
+                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "native_policy_provenance": (
+                                provenance if proxy_backend == "rust" else None
+                            ),
+                            "limits": [
+                                "This is a bounded control of the current single-parent behavior, not acceptance of retry semantics.",
+                                "The one parent_proxy URL supplies no alternate parent; no alternate-parent behavior can be exercised.",
+                                "A retry count, backoff and replay contract would require an explicit product configuration and policy decision.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+    finally:
+        thread.join(timeout=6)
+        parent.close()
+        if thread.is_alive():
+            thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert not failure, failure
+    assert len(observations) == 1, observations
+    assert observations[0]["phase"] == "failure"
+    assert observations[0]["request"].startswith(
+        f"CONNECT {refused_authority} HTTP/1.1\r\n".encode()
+    )
+    assert b"X-Direct-Egress-Canary" not in observations[0]["request"]
 
 
 def test_parent_connect_failure_recovers_on_later_parent_request(

@@ -2552,7 +2552,13 @@ through the same configured parent receives the parent server-first marker and
 payload. The direct-origin canary records zero accepts throughout. This is
 per-request recovery after an isolated parent failure; the single
 `parent_proxy` setting does not define same-request retry or alternate-parent
-selection, so those remain unproven.
+selection, so those remain unproven. The focused control
+`test_parent_connect_failure_does_not_retry_same_request` records the one
+refused parent CONNECT, waits for a bounded interval for a second connection,
+and records zero direct-origin accepts. It documents the current boundary; it
+does not claim that retry is an available feature. A retry count, backoff and
+request replay contract, or an alternate-parent list, would need explicit
+configuration and policy before implementation.
 
 ### Live operator HTTP and WebSocket inspection
 

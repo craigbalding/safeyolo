@@ -73,6 +73,12 @@ The shared assertions cover:
   the same configured parent while the direct-origin canary remains untouched.
   This proves per-request recovery; the single-parent setting does not claim
   same-request retry or alternate-parent selection.
+- The focused same-request control records the refusal and waits for a bounded
+  second-connection window. It proves the current single-parent path makes no
+  same-request retry and leaves the direct-origin canary untouched. This is a
+  boundary control, not a retry feature: an explicit retry/replay contract or
+  alternate-parent configuration is still required before either behavior can
+  be accepted.
 - Fragmented TLS prefixes retain the inner request decision. Two old short-prefix
   cases remain strict expected failures.
 - SSH-prefixed HTTP methods retain inner policy. HTTP whitespace variants stay
