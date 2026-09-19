@@ -1068,7 +1068,10 @@ fn monitor_agent_disconnect(
         }
         let _stop_monitor = StopMonitor(stopped);
         let _ = tokio::task::spawn_blocking(move || {
-            let close_events = libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+            // Move the guard itself into the blocking closure. Capturing only
+            // its raw field would drop the duplicate before poll starts.
+            let descriptor = descriptor;
+            let close_events = libc::POLLHUP | libc::POLLERR;
             let mut descriptor_poll = libc::pollfd {
                 fd: descriptor.0,
                 events: 0,
