@@ -49,13 +49,13 @@ async fn accept(listener: &TcpListener) -> TcpStream {
     timeout(LIMIT, listener.accept()).await.unwrap().unwrap().0
 }
 
-async fn request(directory: &Path, port: u16) -> (UnixStream, Vec<u8>) {
+async fn request_to(directory: &Path, host: &str, port: u16) -> (UnixStream, Vec<u8>) {
     let mut client = UnixStream::connect(directory.join("alice.sock"))
         .await
         .unwrap();
     client
         .write_all(
-            format!("CONNECT {HOST}:{port} HTTP/1.1\r\nHost: {HOST}:{port}\r\n\r\n").as_bytes(),
+            format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n").as_bytes(),
         )
         .await
         .unwrap();
@@ -71,8 +71,22 @@ async fn request(directory: &Path, port: u16) -> (UnixStream, Vec<u8>) {
     (client, head)
 }
 
+async fn request(directory: &Path, port: u16) -> (UnixStream, Vec<u8>) {
+    request_to(directory, HOST, port).await
+}
+
 async fn connect(directory: &Path, port: u16) -> UnixStream {
     let (client, head) = request(directory, port).await;
+    assert!(
+        head.starts_with(b"HTTP/1.1 200"),
+        "{}",
+        String::from_utf8_lossy(&head)
+    );
+    client
+}
+
+async fn connect_to(directory: &Path, host: &str, port: u16) -> UnixStream {
+    let (client, head) = request_to(directory, host, port).await;
     assert!(
         head.starts_with(b"HTTP/1.1 200"),
         "{}",
@@ -404,6 +418,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
                     request_id: "req-11111111111111111111111111111111",
                 },
                 true,
+                None,
                 Some(SelectedDestination { host: HOST, port }),
                 None,
                 None,
@@ -467,6 +482,53 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         proxy.shutdown().await;
         clean(directory.path());
     }
+}
+
+#[tokio::test]
+async fn resolved_peer_match_creates_lifecycle_owner_after_tcp_connect() {
+    // `127.1` is accepted by the system resolver as 127.0.0.1 but is not
+    // parsed as an IPv4 literal by the native matcher.  The configured
+    // 127.0.0.0/8 range therefore selects this connection only from its
+    // resolved physical peer, not from the logical CONNECT authority.
+    use crate::tunnels::Passthrough;
+
+    let directory = tempfile::tempdir().unwrap();
+    let origin = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = origin.local_addr().unwrap().port();
+    let proxy = Proxy::start(config(directory.path(), port, false, true))
+        .await
+        .unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let matcher = Passthrough::new(&[], "127.0.0.0/8").unwrap();
+    *runtime.passthrough.write().unwrap() = matcher;
+    let mut client = connect_to(directory.path(), "127.1", port).await;
+
+    let start = wait_lifecycle(&runtime, directory.path(), 1).await;
+    assert_eq!(start[0]["event"], "traffic.passthrough_start");
+    assert_eq!(start[0]["host"], "127.1");
+    assert_eq!(start[0]["details"]["port"], port);
+    assert_eq!(start[0]["details"]["transport"], "tcp");
+    assert_eq!(start[0]["details"]["client"], SOURCE);
+
+    let mut peer = accept(&origin).await;
+    peer.write_all(b"resolved-opaque").await.unwrap();
+    peer.shutdown().await.unwrap();
+    assert_eq!(remaining(&mut client).await, b"resolved-opaque");
+    client.write_all(b"reply-after-resolution").await.unwrap();
+    client.shutdown().await.unwrap();
+    assert_eq!(remaining(&mut peer).await, b"reply-after-resolution");
+    drop(client);
+    drop(peer);
+    let rows = wait_lifecycle(&runtime, directory.path(), 2).await;
+    assert_eq!(rows[1]["event"], "traffic.passthrough_end");
+    assert_eq!(rows[1]["host"], "127.1");
+    assert_eq!(rows[1]["details"]["port"], port);
+    assert_eq!(rows[1]["details"]["transport"], "tcp");
+    assert_eq!(rows[1]["details"]["client"], SOURCE);
+    proxy.shutdown().await;
+    clean(directory.path());
 }
 
 #[test]

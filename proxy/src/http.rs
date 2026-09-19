@@ -861,6 +861,7 @@ async fn open_egress_for_flow(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
     tunnel: bool,
+    passthrough_matcher: Option<&crate::tunnels::Passthrough>,
     ignored: Option<crate::ignored_host_logger::SelectedDestination<'_>>,
     live: Option<&crate::traffic_view::Exchange>,
     phase_timeout: Option<Duration>,
@@ -956,9 +957,6 @@ async fn open_egress_for_flow(
             return Err(error);
         }
     };
-    if let Some(observation) = &mut connection_audit {
-        observation.connected();
-    }
     let peer = if direct {
         let setup = crate::circuit_runtime::now();
         observation.tcp_setup = Some(setup);
@@ -974,6 +972,29 @@ async fn open_egress_for_flow(
     } else {
         None
     };
+    // A configured IPv4 range can match only after DNS has selected the
+    // physical peer.  Create the lifecycle owner at that point, after the
+    // successful TCP connect, while retaining the logical destination in the
+    // canonical event.  Parent routes never receive this matcher, and a
+    // logical host/port match still creates its owner before dialing so
+    // refusal/cancellation retains the existing error event.
+    if connection_audit.is_none()
+        && direct
+        && passthrough_matcher
+            .is_some_and(|matcher| matcher.matches(&destination.host, destination.port, peer))
+    {
+        connection_audit = Some(ignored_host::ConnectionAudit::new(
+            runtime.audit.clone(),
+            allowed.identity,
+            crate::ignored_host_logger::SelectedDestination {
+                host: &destination.host,
+                port: destination.port,
+            },
+        ));
+    }
+    if let Some(observation) = &mut connection_audit {
+        observation.connected();
+    }
     let socket: BoxStream = match connection_audit {
         Some(observation) => ignored_host::observe(socket, observation),
         None => Box::new(socket),
@@ -1062,6 +1083,7 @@ async fn open_outbound(
                 runtime,
                 allowed,
                 tunnel.is_some() || destination.scheme == "https",
+                None,
                 None,
                 live,
                 phase_timeout,
@@ -2262,6 +2284,7 @@ where
                 request_id,
             },
             true,
+            Some(&passthrough_matcher),
             ignored,
             live.as_deref(),
             None,
