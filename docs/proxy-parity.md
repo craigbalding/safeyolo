@@ -1443,6 +1443,12 @@ certificate success, then a proxy request that receives `502` after one or more
 origin TLS handshake failures and no second origin HTTP request. This records
 the unsupported client-certificate case; it does not add mTLS support. TLS
 version, cipher, OCSP/CRL and renegotiation matrices remain separate gaps.
+The bounded `test_https_tls12_origin_records_version_and_cipher` control adds
+one independent TLS 1.2-only origin and one named cipher. A direct client
+control and one proxied request both reach HTTP 200, while the origin records
+`TLSv1.2` and `ECDHE-RSA-AES128-GCM-SHA256` for each handshake. This proves one
+real version/cipher negotiation path; it does not establish TLS matrices,
+OCSP/CRL, renegotiation or long-duration behavior.
 The current upstream TLS client has no client-certificate configuration. The
 black-box mTLS control proves the boundary with a disposable direct client
 certificate success, then a proxy request that receives `502` after one or more
@@ -1458,8 +1464,9 @@ adds a real certificate-validity negative case. The certificate is supplied in
 the configured upstream CA file but its `not_valid_before` is one day in the
 future. Both proxy backends return HTTP 502; an independent origin accepts the
 TCP connection, rejects the TLS handshake and observes zero application bytes.
-This does not claim mTLS/client-certificate, OCSP/CRL, TLS version, cipher or
-renegotiation coverage.
+This does not claim mTLS/client-certificate, OCSP/CRL, TLS 1.3, cipher-matrix
+or renegotiation coverage; the separate TLS 1.2/cipher control records that
+single supported negotiation path.
 
 `ignore_hosts` accepts canonical exact entries produced by the existing CLI
 normalizer. `SAFEYOLO_IGNORE_CIDRS` supplies the existing constrained IPv4 ranges;

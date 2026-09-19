@@ -48,6 +48,10 @@ The shared assertions cover:
   then rejects the proxy upstream connection without client-certificate
   configuration before any HTTP request. This records unsupported mTLS as a
   clear TLS failure; it does not add client-certificate configuration.
+- A TLS 1.2-only origin restricted to `ECDHE-RSA-AES128-GCM-SHA256` accepts one
+  direct control and one proxied request, with the independent origin recording
+  the negotiated version and cipher for both. This is one bounded version/cipher
+  witness; it does not claim TLS matrices, OCSP/CRL or renegotiation coverage.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
 - Concurrent HTTP/2 streams from two agents, independent request identities,

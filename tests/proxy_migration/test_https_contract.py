@@ -17,6 +17,7 @@ from mitmproxy.certs import CertStore
 
 from tests.proxy_migration.harness import launch_proxy, request
 from tests.proxy_migration.scenarios import POLICY, Origin
+from tests.proxy_migration.test_http2_contract import origin_certificate
 
 
 @pytest.mark.parametrize("effect,default_effect,status", [("deny", "allow", 200), ("allow", "deny", 403)])
@@ -368,6 +369,28 @@ class MtlsOrigin(Origin):
         return stream, address
 
 
+class TlsNegotiationOrigin(Origin):
+    """Origin that records the negotiated upstream TLS version and cipher."""
+
+    def __init__(self, context):
+        self.tls_context = context
+        self.negotiations = []
+        super().__init__()
+
+    def get_request(self):
+        raw, address = super().get_request()
+        try:
+            stream = self.tls_context.wrap_socket(raw, server_side=True)
+        except BaseException:
+            raw.close()
+            raise
+        self.negotiations.append({
+            "version": stream.version(),
+            "cipher": list(stream.cipher()),
+        })
+        return stream, address
+
+
 def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp_path):
     """A mutual-TLS origin rejects the proxy before it can send HTTP bytes."""
     directory = tmp_path / proxy_backend
@@ -500,3 +523,134 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
         origin.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
+
+
+def test_https_tls12_origin_records_version_and_cipher(proxy_backend, tmp_path):
+    """An allowed request reaches an origin restricted to TLS 1.2 and one cipher."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    server_pem, origin_ca = origin_certificate(directory)
+    cipher_name = "ECDHE-RSA-AES128-GCM-SHA256"
+    origin_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    origin_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    origin_context.maximum_version = ssl.TLSVersion.TLSv1_2
+    origin_context.set_ciphers(cipher_name)
+    origin_context.load_cert_chain(server_pem)
+    origin = TlsNegotiationOrigin(origin_context)
+    thread = threading.Thread(target=origin.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = origin.server_address[1]
+        authority = f"localhost:{port}"
+
+        # A direct TLS 1.2 client control proves the origin restriction and
+        # certificate trust independently of either proxy implementation.
+        direct_context = ssl.create_default_context(cafile=origin_ca)
+        direct_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        direct_context.maximum_version = ssl.TLSVersion.TLSv1_2
+        direct_context.set_ciphers(cipher_name)
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+            with direct_context.wrap_socket(raw, server_hostname="localhost") as tls:
+                direct = http.client.HTTPConnection("localhost", port, timeout=5)
+                direct.sock = tls
+                direct.request("GET", "/direct-tls12")
+                response = direct.getresponse()
+                assert response.status == 200
+                assert response.read() == b"hello"
+                direct.close()
+
+        with launch_proxy(
+            proxy_backend,
+            directory,
+            POLICY,
+            tls=True,
+            upstream_ca=origin_ca,
+            eager_connect=True,
+            native_policy=proxy_backend == "rust",
+        ) as proxy:
+            raw = socket.socket(socket.AF_UNIX)
+            raw.settimeout(5)
+            try:
+                raw.connect(proxy.paths["alice"])
+                raw.sendall(
+                    f"CONNECT {authority} HTTP/1.1\r\n"
+                    f"Host: {authority}\r\n\r\n".encode()
+                )
+                head = bytearray()
+                while not head.endswith(b"\r\n\r\n"):
+                    data = raw.recv(1)
+                    assert data, bytes(head)
+                    head.extend(data)
+                assert head.startswith(b"HTTP/1.1 200"), bytes(head)
+                client_context = ssl.create_default_context(
+                    cafile=directory / "ca/mitmproxy-ca-cert.pem"
+                )
+                with client_context.wrap_socket(raw, server_hostname="localhost") as tls:
+                    client = http.client.HTTPConnection("localhost", port, timeout=5)
+                    client.sock = tls
+                    client.request("GET", "/proxied-tls12")
+                    response = client.getresponse()
+                    assert response.status == 200
+                    assert response.read() == b"hello"
+                    client.close()
+            finally:
+                raw.close()
+
+            provenance = None
+            if proxy_backend == "rust":
+                provenance = json.loads(
+                    (directory / "native-policy-provenance.json").read_text()
+                )
+                assert provenance == {
+                    "backend": "rust",
+                    "policy_mode": "native",
+                    "policy_file": str(directory / "policy.toml"),
+                    "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }
+            (directory / "tls12-negotiation-observation.json").write_text(
+                json.dumps(
+                    {
+                        "backend": proxy_backend,
+                        "authority": authority,
+                        "certificate_sha256": hashlib.sha256(
+                            origin_ca.read_bytes()
+                        ).hexdigest(),
+                        "required_tls_version": "TLSv1.2",
+                        "required_cipher": cipher_name,
+                        "direct_request": {"target": "/direct-tls12", "status": 200},
+                        "proxied_request": {"target": "/proxied-tls12", "status": 200},
+                        "origin": {
+                            "tcp_accepts": origin.accepts,
+                            "negotiations": origin.negotiations,
+                            "http_requests": origin.requests,
+                        },
+                        "proxy_request_events": (
+                            proxy.events("proxy.request") if proxy_backend == "rust" else []
+                        ),
+                        "native_policy_provenance": provenance,
+                        "limits": [
+                            "One direct control and one proxied request against a TLS 1.2-only origin.",
+                            "The origin records the negotiated TLS version and cipher; this does not configure a proxy TLS policy.",
+                            "It does not establish TLS 1.3, cipher matrices, OCSP/CRL, renegotiation, or long-duration behavior.",
+                        ],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+    finally:
+        origin.shutdown()
+        origin.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+    assert origin.accepts == 2
+    assert origin.negotiations == [
+        {"version": "TLSv1.2", "cipher": [cipher_name, "TLSv1.2", 128]},
+        {"version": "TLSv1.2", "cipher": [cipher_name, "TLSv1.2", 128]},
+    ]
+    assert origin.requests == [
+        {"method": "GET", "target": "/direct-tls12"},
+        {"method": "GET", "target": "/proxied-tls12"},
+    ]
