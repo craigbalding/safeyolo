@@ -303,21 +303,27 @@ pub(crate) async fn classify(
         if let Some(protocol) =
             protocol(&prefix).or_else(|| (prefix.len() >= PREFIX_LIMIT).then_some(Protocol::Http))
         {
-            let tls_server_name = if protocol == Protocol::Tls {
-                match client_hello_server_name(&prefix) {
-                    ClientHelloName::Incomplete if prefix.len() < PREFIX_LIMIT => continue,
-                    ClientHelloName::Incomplete | ClientHelloName::Complete(None) => None,
-                    ClientHelloName::Complete(name) => name,
-                }
+            let tls_name = if protocol == Protocol::Tls {
+                Some(client_hello_server_name(&prefix))
             } else {
                 None
             };
-            return Ok(Classification {
-                protocol,
-                client: Box::new(Prefixed::new(client, prefix)),
-                server: Box::new(Prefixed::new(server, server_prefix)),
-                tls_server_name,
-            });
+            let tls_incomplete = matches!(tls_name.as_ref(), Some(&ClientHelloName::Incomplete))
+                && prefix.len() < PREFIX_LIMIT;
+            if !tls_incomplete {
+                let tls_server_name = match tls_name {
+                    Some(ClientHelloName::Incomplete | ClientHelloName::Complete(None)) | None => {
+                        None
+                    }
+                    Some(ClientHelloName::Complete(name)) => name,
+                };
+                return Ok(Classification {
+                    protocol,
+                    client: Box::new(Prefixed::new(client, prefix)),
+                    server: Box::new(Prefixed::new(server, server_prefix)),
+                    tls_server_name,
+                });
+            }
         }
         if !server_prefix.is_empty() && prefix.is_empty() {
             return Ok(Classification {
