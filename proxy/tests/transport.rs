@@ -779,6 +779,80 @@ async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighb
 }
 
 #[tokio::test]
+async fn configured_inner_host_alias_cannot_expand_admitted_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let authority = format!("localhost:{port}");
+    let inner_alias = format!("inner.alias.invalid:{port}");
+    config.ignore_hosts = vec![inner_alias.clone()];
+    let expected_request = format!(
+        "GET /inner-host-alias HTTP/1.1\r\nHost: {inner_alias}\r\nConnection: close\r\n\r\n"
+    );
+    let origin = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        socket.read_to_end(&mut bytes).await.unwrap();
+        assert!(
+            bytes.is_empty(),
+            "mismatched inner Host must not send application bytes to origin"
+        );
+        bytes
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut client = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        proxy_ca,
+    )
+    .await
+    .unwrap();
+    client.write_all(expected_request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 400"));
+    drop(client);
+    let origin_bytes = origin.await.unwrap();
+
+    let passthrough = passthrough_events(&config);
+    assert!(
+        passthrough.is_empty(),
+        "inner Host must not create an opaque passthrough lifecycle: {passthrough:?}"
+    );
+    if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(
+            path.join("inner-host-alias.json"),
+            serde_json::to_vec_pretty(&json!({
+                "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT")
+                    .unwrap_or_else(|_| "unrecorded-test-binary".into()),
+                "configured_alias": inner_alias,
+                "connect_authority": authority,
+                "client_sni": "localhost",
+                "origin_request": String::from_utf8_lossy(expected_request.as_bytes()),
+                "origin_application_bytes": origin_bytes.len(),
+                "response": String::from_utf8_lossy(&response),
+                "passthrough_events": passthrough,
+                "limits": [
+                    "This proves one direct HTTPS request remains inspected when only its inner Host matches a configured entry.",
+                    "It does not implement inner-Host alias passthrough or claim parent-route parity.",
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
 async fn host_and_address_passthrough_preserve_bytes_and_canonical_events() {
     for entry in ["localhost", "127.0.0.1"] {
         let directory = tempfile::tempdir().unwrap();

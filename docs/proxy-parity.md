@@ -1490,7 +1490,14 @@ TLS ClientHello is buffered; the CONNECT authority remains the egress
 destination while the passthrough lifecycle event records the matched SNI.
 Direct IPv4 range matches discovered from the connected peer retain the same
 lifecycle owner; parent-route addresses remain outside this direct passthrough
-path.
+path. The native [inner-Host control](../proxy/tests/transport.rs) keeps a
+request whose decrypted Host matches a configured alias on the inspected TLS
+path: it rejects the changed authority before application bytes reach the
+origin and emits no passthrough event. The opaque decision is made before
+TLS/HTTP parsing, so a later inner Host cannot safely switch the already-
+established connection while preserving the original TLS bytes, destination
+and containment. This is a bounded limitation, not inner-Host alias
+passthrough acceptance.
 
 The native [network policy](../proxy/src/policy.rs) runs without the temporary
 adapter when selected. [Approval persistence](../proxy/src/approvals.rs),
