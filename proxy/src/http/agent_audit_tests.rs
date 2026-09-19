@@ -638,6 +638,13 @@ async fn discovery_child(directory: &Path) {
             .matches_path(&broken.agent_map_file)
             .unwrap()
     );
+    // Request-boundary reconciliation contains the malformed top-level map
+    // error and keeps the accepted listener owner authoritative. The direct
+    // /agents report below retains its source-visible AttributeError, while
+    // an ordinary reserved request still reaches its local response and
+    // advances only alice's last-seen value.
+    let health_with_malformed_map = send(directory, "GET", "/health", Some(TOKEN), b"").await;
+    assert!(health_with_malformed_map.starts_with(b"HTTP/1.1 200"));
     let invalid_report = send(directory, "GET", "/agents", Some(TOKEN), b"").await;
     assert!(invalid_report.starts_with(b"HTTP/1.1 500"));
     assert_eq!(
@@ -650,6 +657,10 @@ async fn discovery_child(directory: &Path) {
             .agent_discovery
             .matches_path(&configuration.agent_map_file)
             .unwrap()
+    );
+    assert!(
+        discovery_document(&runtime)["agents"]["alice"]["last_seen"]
+            .is_number()
     );
 
     // A later listener-bind failure keeps the published config but can occur

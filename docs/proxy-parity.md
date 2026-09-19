@@ -2261,6 +2261,16 @@ The D60 source calls and native dispositions are:
 | UDS `alice`, map `bob` for the same peer | Trusted sources disagree; owner is removed and conflict event is logged | `reconcile` returns `conflict` with no agent | Suppresses last-seen and emits `security.agent_identity_conflict` |
 | Map changes after a flow starts | `flow_attribution` keeps the request snapshot; `detect_late_attribution_change` quarantines | The shared request-context snapshot is retained through completion and consumers cannot replace it with the later map result | No retroactive owner change; a late-change event records the quarantine |
 
+The request snapshot has one projection for each existing consumer. This keeps
+the accepted listener identity available as transport provenance while preventing
+the map or a stale request field from becoming an evidence owner:
+
+| Reconciled status | Network/credential guards | Reserved Agent API and gateway | Trace, traffic and recording |
+| --- | --- | --- | --- |
+| `resolved` | Receives the reconciled owner | Uses the same owner for scoped authorization and service selection | Carries the owner and attribution snapshot |
+| `conflict` | Network guard fails closed when enabled; credential guard blocks | Scoped routes return `403`; reserved health/report routes stay local | Emits conflict attribution without an evidence owner; flow recording quarantines |
+| `unavailable` | Receives no agent identity | Scoped routes return `403`; global/report routes retain their existing behavior | Emits unavailable attribution and never creates an owner-bearing flow row |
+
 The [source oracle](../proxy/tests/agent_discovery_source.py) uses owned maps,
 synthetic identities and explicit clocks. The [API tests](../proxy/tests/agent_api_discovery.rs)
 cover authentication, global reporting and unread bodies. The
