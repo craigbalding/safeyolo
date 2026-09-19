@@ -1,8 +1,10 @@
 """HTTP/2 through trusted UDS and TLS, using an independent Python h2 peer."""
 
 import concurrent.futures
+import hashlib
 import http.client
 import ipaddress
+import json
 import socket
 import socketserver
 import ssl
@@ -12,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import h2.config
 import h2.connection
+import h2.errors
 import h2.events
 import pytest
 from cryptography import x509
@@ -20,7 +23,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from mitmproxy.certs import CertStore
 
-from tests.proxy_migration.harness import launch_proxy
+from tests.proxy_migration.harness import launch_proxy, read_events
+from tests.proxy_migration.run import proxy_identity, runtime_resources
 
 POLICY = '''budget = 12000
 [[permissions]]
@@ -121,6 +125,137 @@ class OriginHandler(socketserver.BaseRequestHandler):
 @contextmanager
 def origin_server(pem, protocols=("h2",)):
     server = Origin(pem, list(protocols))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+class H2CancellationOrigin(socketserver.ThreadingTCPServer):
+    """A TLS HTTP/2 peer that holds one response until another is reset."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, pem):
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(pem)
+        self.context.set_alpn_protocols(["h2"])
+        self.requests = []
+        self.alpn = []
+        self.cancel_started = threading.Event()
+        self.reset_seen = threading.Event()
+        self.keep_completed = threading.Event()
+        self.handler_finished = threading.Event()
+        self.handler_errors = []
+        self.active_handlers = 0
+        self.cancel_reset_code = None
+        self.cancel_response_bytes = 0
+        self.keep_response_bytes = 0
+        self.next_connection_id = 0
+        self.lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), H2CancellationOriginHandler)
+
+    @property
+    def authority(self):
+        return f"127.0.0.1:{self.server_address[1]}"
+
+
+class H2CancellationOriginHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        server = self.server
+        with server.lock:
+            if server.active_handlers == 0:
+                server.handler_finished.clear()
+            server.active_handlers += 1
+            server.next_connection_id += 1
+            connection_id = server.next_connection_id
+        try:
+            with server.context.wrap_socket(self.request, server_side=True) as stream:
+                stream.settimeout(5)
+                with server.lock:
+                    server.alpn.append(stream.selected_alpn_protocol())
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=False, header_encoding="utf-8"))
+                connection.initiate_connection()
+                stream.sendall(connection.data_to_send())
+                keep_stream_id = None
+                while data := stream.recv(65536):
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.RequestReceived):
+                            headers = dict(event.headers)
+                            record = {
+                                "stream_id": event.stream_id,
+                                "connection_id": connection_id,
+                                ":method": headers.get(":method"),
+                                ":path": headers.get(":path"),
+                                "request_body_bytes": 0,
+                            }
+                            with server.lock:
+                                server.requests.append(record)
+                            if record[":path"] == "/h2-cancel":
+                                connection.send_headers(event.stream_id, [(":status", "200")])
+                                partial = b"cancel-partial"
+                                connection.send_data(event.stream_id, partial)
+                                with server.lock:
+                                    server.cancel_response_bytes += len(partial)
+                                server.cancel_started.set()
+                            elif record[":path"] == "/h2-keep":
+                                connection.send_headers(event.stream_id, [(":status", "200")])
+                                keep_stream_id = event.stream_id
+                        elif isinstance(event, h2.events.DataReceived):
+                            for record in server.requests:
+                                if (record["connection_id"] == connection_id
+                                        and record["stream_id"] == event.stream_id):
+                                    record["request_body_bytes"] += len(event.data)
+                                    break
+                            connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                        elif isinstance(event, h2.events.StreamReset):
+                            if any(record["connection_id"] == connection_id and record[":path"] == "/h2-cancel"
+                                   for record in server.requests):
+                                server.cancel_reset_code = int(event.error_code)
+                                server.reset_seen.set()
+                    if output := connection.data_to_send():
+                        stream.sendall(output)
+                    if keep_stream_id is not None:
+                        if not server.reset_seen.wait(timeout=5):
+                            raise TimeoutError("cancel stream reset was not observed")
+                        self._finish_keep(connection, keep_stream_id)
+                        keep_stream_id = None
+        except (ConnectionError, OSError, ssl.SSLError, TimeoutError) as error:
+            # A downstream reset and subsequent TLS close are expected. Preserve
+            # any unexpected error for the test to report after the handler exits.
+            if not server.reset_seen.is_set() and not isinstance(error, (ConnectionError, ssl.SSLError)):
+                with server.lock:
+                    server.handler_errors.append(repr(error))
+        except Exception as error:  # pragma: no cover - asserted through state
+            with server.lock:
+                server.handler_errors.append(repr(error))
+        finally:
+            with server.lock:
+                server.active_handlers -= 1
+                if server.active_handlers == 0:
+                    server.handler_finished.set()
+
+    def _finish_keep(self, connection, stream_id):
+        server = self.server
+        if server.keep_completed.is_set():
+            return
+        body = b"keep-complete"
+        connection.send_data(stream_id, body, end_stream=True)
+        with server.lock:
+            server.keep_response_bytes += len(body)
+        server.keep_completed.set()
+
+
+@contextmanager
+def h2_cancellation_origin(pem):
+    server = H2CancellationOrigin(pem)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     try:
@@ -272,6 +407,140 @@ def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend,
             assert len({events[row["headers"]["x-safeyolo-request-id"]]["connection_id"] for row in responses}) == 1
             for row in responses:
                 assert events[row["headers"]["x-safeyolo-request-id"]]["agent"] == agent
+
+
+def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend, tmp_path, request):
+    """Reset one response after partial data while a sibling stream completes."""
+    if proxy_backend == "python":
+        # Keep the comparator's known cancellation gap visible; --runxfail
+        # must fail this test instead of hiding it behind an xfail.
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Python comparator does not satisfy the H2 cancellation/reset witness",
+        ))
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    pem, public = origin_certificate(directory)
+    with h2_cancellation_origin(pem) as origin, launch_proxy(
+        proxy_backend,
+        directory,
+        POLICY,
+        tls=True,
+        upstream_ca=public,
+        native_policy=proxy_backend == "rust",
+    ) as proxy:
+        with tls_tunnel(
+            proxy.paths["alice"],
+            origin.authority,
+            directory / "ca/mitmproxy-ca-cert.pem",
+            offers=("h2",),
+        ) as stream:
+            client_alpn = stream.selected_alpn_protocol()
+            assert client_alpn == "h2"
+            connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                client_side=True, header_encoding="utf-8"))
+            connection.initiate_connection()
+            connection.send_headers(1, headers(origin.authority, "/h2-cancel"), end_stream=True)
+            connection.send_headers(3, headers(origin.authority, "/h2-keep"), end_stream=True)
+            stream.sendall(connection.data_to_send())
+            results = {
+                1: {"path": "/h2-cancel", "status": None, "body": bytearray(), "reset_sent": False},
+                3: {"path": "/h2-keep", "status": None, "body": bytearray(), "ended": False},
+            }
+            before_reset = runtime_resources(proxy)
+            while not results[3]["ended"]:
+                data = stream.recv(65536)
+                assert data, results
+                for event in connection.receive_data(data):
+                    if isinstance(event, h2.events.ResponseReceived):
+                        results[event.stream_id]["status"] = dict(event.headers)[":status"]
+                    elif isinstance(event, h2.events.DataReceived):
+                        results[event.stream_id]["body"].extend(event.data)
+                        connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                        if event.stream_id == 1 and not results[1]["reset_sent"]:
+                            assert bytes(event.data) == b"cancel-partial"
+                            connection.reset_stream(1, error_code=h2.errors.ErrorCodes.CANCEL)
+                            results[1]["reset_sent"] = True
+                    elif isinstance(event, h2.events.StreamEnded):
+                        assert event.stream_id == 3, event
+                        results[3]["ended"] = True
+                    elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                        pytest.fail(
+                            f"unexpected H2 termination while sibling stream was live: {event}; "
+                            f"origin_requests={origin.requests!r} reset_seen={origin.reset_seen.is_set()} "
+                            f"keep_completed={origin.keep_completed.is_set()} origin_errors={origin.handler_errors!r}"
+                        )
+                if output := connection.data_to_send():
+                    stream.sendall(output)
+            after_reset = runtime_resources(proxy)
+            assert results[1]["status"] == "200"
+            assert bytes(results[1]["body"]) == b"cancel-partial"
+            assert results[1]["reset_sent"] is True
+            assert results[3]["status"] == "200"
+            assert bytes(results[3]["body"]) == b"keep-complete"
+        after_close = runtime_resources(proxy)
+        assert origin.reset_seen.wait(timeout=5)
+        assert origin.cancel_started.is_set()
+        assert origin.keep_completed.is_set()
+        assert origin.handler_finished.wait(timeout=5)
+        assert origin.active_handlers == 0, {
+            "active_handlers": origin.active_handlers,
+            "alpn": origin.alpn,
+            "requests": origin.requests,
+            "handler_errors": origin.handler_errors,
+        }
+        assert origin.handler_errors == [], origin.handler_errors
+        assert len(origin.alpn) == 2
+        assert set(origin.alpn) == {"h2"}
+        assert origin.cancel_reset_code == int(h2.errors.ErrorCodes.CANCEL)
+        assert origin.cancel_response_bytes == len(b"cancel-partial")
+        assert origin.keep_response_bytes == len(b"keep-complete")
+        assert len(origin.requests) == 2
+        assert {row[":path"] for row in origin.requests} == {"/h2-cancel", "/h2-keep"}
+        assert {row[":method"] for row in origin.requests} == {"GET"}
+        assert {row["request_body_bytes"] for row in origin.requests} == {0}
+        assert len({row["connection_id"] for row in origin.requests}) == 2
+        assert {row["stream_id"] for row in origin.requests} == {1}
+        events = [event for event in read_events(proxy.event_log) if event.get("event") == "proxy.request"]
+        assert len(events) == 3  # CONNECT plus the two independently proxied streams.
+        inner_events = [event for event in events
+                        if event.get("coverage") == "native_network_guard_circuits_and_test_context"]
+        assert len(inner_events) == 2
+        assert {int(event.get("status", 0)) for event in events} == {200}
+        evidence = {
+            "backend": proxy_backend,
+            "alpn": {"client_to_origin": client_alpn, "origin": origin.alpn},
+            "outcomes": {
+                "cancel": {
+                    "downstream_stream_id": 1,
+                    "status": results[1]["status"],
+                    "body_sha256": hashlib.sha256(results[1]["body"]).hexdigest(),
+                    "reset_code": int(h2.errors.ErrorCodes.CANCEL),
+                },
+                "keep": {
+                    "downstream_stream_id": 3,
+                    "status": results[3]["status"],
+                    "body_sha256": hashlib.sha256(results[3]["body"]).hexdigest(),
+                    "completed": results[3]["ended"],
+                },
+            },
+            "origin": {
+                "requests": origin.requests,
+                "cancel_reset_code": origin.cancel_reset_code,
+                "cancel_response_bytes": origin.cancel_response_bytes,
+                "keep_response_bytes": origin.keep_response_bytes,
+                "active_handlers_after_close": origin.active_handlers,
+            },
+            "proxy_events": events,
+            "runtime_resources": {
+                "before_reset": before_reset,
+                "after_reset": after_reset,
+                "after_close": after_close,
+            },
+            "proxy_identity": proxy_identity(proxy),
+        }
+        (directory / "h2-cancel-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
 
 
 @pytest.mark.parametrize("protocols", [("h2",), ("http/1.1",)])
