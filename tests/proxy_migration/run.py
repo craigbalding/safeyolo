@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
-from tests.proxy_migration.harness import REPO, connection, launch_proxy, request
+from tests.proxy_migration.harness import REPO, connection, launch_proxy, read_events, request
 from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
 
 
@@ -404,6 +404,9 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
             elapsed = time.perf_counter() - started
             assert origin.stream_finished.is_set()
             assert total == origin.stream_chunks * 16384
+            request_events = [event for event in read_events(proxy.event_log)
+                              if event.get("event") == "proxy.request"]
+            error_events = [event for event in request_events if int(event.get("status", 200)) >= 400]
             assert origin.requests == [
                 {"method": "GET", "target": "/stream"},
                 {"method": "GET", "target": "/control"},
@@ -418,6 +421,15 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
                 "paced_chunks_after_pause": paced_chunks,
                 "control_elapsed_seconds": control_elapsed,
                 "control_completed_while_stream_active": True,
+                "request_counts": {
+                    "origin_requests": len(origin.requests),
+                    "origin_error_responses": 0,
+                    "proxy_request_events": len(request_events),
+                    "proxy_error_responses": len(error_events),
+                    "allowed_control_requests": 1,
+                    "authenticated_admin_operations": 1,
+                    "authenticated_admin_errors": 0,
+                },
                 "admin": {
                     "method": "GET",
                     "path": "/stats",

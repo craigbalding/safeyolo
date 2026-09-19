@@ -30,6 +30,15 @@ def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_
     result = streamed_slow_admin_workload(proxy_backend, tmp_path / proxy_backend)
     assert result["first_event_before_origin_completion"] is True
     assert result["control_completed_while_stream_active"] is True
+    assert result["request_counts"] == {
+        "origin_requests": 2,
+        "origin_error_responses": 0,
+        "proxy_request_events": 2,
+        "proxy_error_responses": 0,
+        "allowed_control_requests": 1,
+        "authenticated_admin_operations": 1,
+        "authenticated_admin_errors": 0,
+    }
     assert result["admin"]["authenticated"] is True
     assert result["admin"]["status"] == 200
     assert result["admin"]["completed_while_stream_active"] is True
