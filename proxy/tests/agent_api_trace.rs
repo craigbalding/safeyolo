@@ -359,3 +359,69 @@ async fn absent_owner_and_store_checks_follow_method_auth_and_request_id_validat
     assert_eq!(foreign.response.status, missing.response.status);
     assert_eq!(foreign.response.body_bytes(), missing.response.body_bytes());
 }
+
+#[tokio::test]
+async fn trace_reads_use_exact_owner_and_quarantine_ownerless_records() {
+    let directory = tempfile::tempdir().unwrap();
+    let token = directory.path().join("agent_token");
+    std::fs::write(&token, TOKEN).unwrap();
+    let store = TraceStore::new(Settings::default());
+    let alice_id = "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let bob_id = "req-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let ownerless_id = "req-cccccccccccccccccccccccccccccccc";
+    for (request_id, owner, addon) in [
+        (alice_id, Some("alice"), "network-guard"),
+        (bob_id, Some("bob"), "credential-guard"),
+        (ownerless_id, None, "pattern-scanner"),
+    ] {
+        store
+            .append(
+                request_id,
+                owner,
+                Step::new(addon, "request", "evaluated", 1000.0),
+                1000.0,
+            )
+            .unwrap();
+    }
+
+    for (identity, request_id, status) in [
+        (Identity::Resolved("alice"), alice_id, 200),
+        (Identity::Resolved("alice"), bob_id, 404),
+        (Identity::Resolved("alice"), ownerless_id, 404),
+        (Identity::Resolved("bob"), bob_id, 200),
+        (Identity::Resolved("bob"), alice_id, 404),
+        (Identity::Resolved("bob"), ownerless_id, 404),
+    ] {
+        let path = format!("/trace?request_id={request_id}");
+        let outcome = call(
+            Request {
+                identity,
+                ..request(&path)
+            },
+            &token,
+            Some(&store),
+            1000.0,
+        )
+        .await;
+        assert_eq!(outcome.response.status, status, "{identity:?} {request_id}");
+        if status == 200 {
+            assert_eq!(body_json(&outcome)["request_id"], request_id);
+        }
+    }
+
+    let absent = call(
+        Request {
+            identity: Identity::Unavailable,
+            ..request(&format!("/trace?request_id={ownerless_id}"))
+        },
+        &token,
+        Some(&store),
+        1000.0,
+    )
+    .await;
+    assert_eq!(absent.response.status, 403);
+}
+
+fn body_json(outcome: &Outcome<'_>) -> Value {
+    serde_json::from_slice(&outcome.response.body_bytes()).unwrap()
+}

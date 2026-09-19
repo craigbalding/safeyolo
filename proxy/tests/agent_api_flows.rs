@@ -85,7 +85,7 @@ impl Fixture {
                 flows: available.then_some(&self.store),
                 circuits: None,
                 declarations: None,
-            coord: None,
+                coord: None,
             },
             RequestBody {
                 body,
@@ -95,6 +95,32 @@ impl Fixture {
             },
         )
         .await
+    }
+
+    async fn call_json(
+        &self,
+        identity: Identity<'_>,
+        method: &str,
+        path: &str,
+        input: &str,
+    ) -> agent_api::Outcome<'static> {
+        let mut content = Full::new(Bytes::copy_from_slice(input.as_bytes()));
+        self.call(
+            Request {
+                method,
+                path_and_query: path,
+                identity,
+                authorization: Some(AUTH),
+                client_ip: Some("127.0.0.1"),
+                request_id: "synthetic-flow-read",
+            },
+            true,
+            &mut content,
+            b"",
+            None,
+        )
+        .await
+        .unwrap()
     }
 }
 fn request(path: &str) -> Request<'_> {
@@ -345,6 +371,132 @@ async fn exact_owner_precedes_body_decompression_and_malformed_storage_errors_ar
         );
         assert!(!format!("{:?}", outcome.failure).contains("owned"));
     }
+}
+
+#[tokio::test]
+async fn evidence_owner_is_the_single_scope_for_search_detail_body_and_tags() {
+    let fixture = Fixture::new();
+
+    // Collection reads inject the trusted ingress owner. A caller cannot widen
+    // this scope by supplying evidence_owner in its query or body.
+    for (identity, expected_ids) in [
+        (Identity::Resolved("alice"), vec![1_i64, 4, 5]),
+        (Identity::Resolved("bob"), vec![2_i64]),
+    ] {
+        let outcome = fixture
+            .call_json(identity, "GET", "/api/flows/search?evidence_owner=bob", "")
+            .await;
+        assert_eq!(outcome.response.status, 200);
+        let value = body(&outcome);
+        let mut actual = value["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_i64().unwrap())
+            .collect::<Vec<_>>();
+        actual.sort_unstable();
+        assert_eq!(actual, expected_ids);
+    }
+    let absent = fixture
+        .call_json(Identity::Unavailable, "GET", "/api/flows/search", "")
+        .await;
+    assert_eq!(absent.response.status, 403);
+
+    // Direct details use the same exact owner field. Record 3 retains a
+    // legacy agent_id of alice but has no authoritative evidence_owner.
+    for (identity, id, status) in [
+        (Identity::Resolved("alice"), 1, 200),
+        (Identity::Resolved("bob"), 1, 404),
+        (Identity::Resolved("bob"), 2, 200),
+        (Identity::Resolved("alice"), 2, 404),
+        (Identity::Resolved("alice"), 3, 404),
+        (Identity::Resolved("bob"), 3, 404),
+    ] {
+        let path = format!("/api/flows/{id}");
+        let outcome = fixture.call_json(identity, "GET", &path, "").await;
+        assert_eq!(outcome.response.status, status, "{identity:?} {path}");
+    }
+
+    // Valid owners can read their own bodies. Make every stored response body
+    // malformed afterwards: a wrong owner and a quarantined row must still
+    // return the indistinguishable 404 before decompression is attempted.
+    for (identity, id) in [
+        (Identity::Resolved("alice"), 1),
+        (Identity::Resolved("bob"), 2),
+    ] {
+        let path = format!("/api/flows/{id}/response-body");
+        let outcome = fixture.call_json(identity, "GET", &path, "").await;
+        assert_eq!(outcome.response.status, 200, "{identity:?} {path}");
+    }
+    rusqlite::Connection::open(fixture.directory.path().join("flows.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE flows SET response_body_blob=x'0000',response_body_encoding='gzip' WHERE id IN(1,2,3)",
+            [],
+        )
+        .unwrap();
+    for (identity, id, status, message) in [
+        (
+            Identity::Resolved("alice"),
+            1,
+            500,
+            "Internal error: BadGzipFile",
+        ),
+        (Identity::Resolved("bob"), 1, 404, "Flow not found"),
+        (
+            Identity::Resolved("bob"),
+            2,
+            500,
+            "Internal error: BadGzipFile",
+        ),
+        (Identity::Resolved("alice"), 2, 404, "Flow not found"),
+        (Identity::Resolved("alice"), 3, 404, "Flow not found"),
+        (Identity::Resolved("bob"), 3, 404, "Flow not found"),
+    ] {
+        let path = format!("/api/flows/{id}/response-body");
+        let outcome = fixture.call_json(identity, "GET", &path, "").await;
+        assert_eq!(outcome.response.status, status, "{identity:?} {path}");
+        assert_eq!(body(&outcome), json!({"error":message}));
+    }
+
+    // Tag mutations use the same owner preflight and never recover owner-null
+    // evidence from legacy agent_id.
+    for (identity, id, status) in [
+        (Identity::Resolved("alice"), 1, 200),
+        (Identity::Resolved("bob"), 1, 404),
+        (Identity::Resolved("bob"), 2, 200),
+        (Identity::Resolved("alice"), 2, 404),
+        (Identity::Resolved("alice"), 3, 404),
+        (Identity::Resolved("bob"), 3, 404),
+    ] {
+        let path = format!("/api/flows/{id}/tag");
+        let outcome = fixture
+            .call_json(
+                identity,
+                "POST",
+                &path,
+                r#"{"tag":"scope-proof","value":"ok"}"#,
+            )
+            .await;
+        assert_eq!(outcome.response.status, status, "{identity:?} {path}");
+    }
+    assert_eq!(
+        fixture.store.get_flow_tags(1).unwrap()[0]["tag"],
+        "scope-proof"
+    );
+    assert_eq!(
+        fixture.store.get_flow_tags(2).unwrap()[0]["tag"],
+        "scope-proof"
+    );
+    assert!(
+        fixture
+            .store
+            .get_flow_tags(3)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

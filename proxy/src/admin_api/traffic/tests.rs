@@ -232,6 +232,62 @@ async fn live_reads_preserve_ordered_headers_and_empty_versus_absent_body() {
     assert_eq!(view.detail("owned/id").unwrap()["state"], "complete");
 }
 
+#[tokio::test]
+async fn authorized_operator_scope_can_view_each_owner_and_unattributed_record() {
+    let view = Arc::new(TrafficView::new(5000, 1024));
+    for (id, agent) in [
+        ("alice-flow", Some("alice")),
+        ("bob-flow", Some("bob")),
+        ("quarantined-flow", None),
+    ] {
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "ownership-scope".into(),
+            agent: agent.map(str::to_owned),
+            method: "GET".into(),
+            url: "http://owned.invalid/scope".into(),
+            headers: vec![],
+            started: 1.,
+        });
+        exchange.response_head(200, vec![]);
+        exchange.finish(None);
+    }
+
+    // The bearer-authenticated operator route is the authority for this
+    // shared view: it can browse all three owner states, then narrow display
+    // scope without turning scope into an agent-read authorization boundary.
+    let all = document(call(Some(&view), "GET", "/admin/traffic/flows", "", true).await).await;
+    assert_eq!(all["flows"].as_array().unwrap().len(), 3);
+    for (scope, expected) in [
+        (r#"{"agent":"alice"}"#, "alice-flow"),
+        (r#"{"agent":"bob"}"#, "bob-flow"),
+        (r#"{"unattributed":true}"#, "quarantined-flow"),
+    ] {
+        assert_eq!(
+            call(Some(&view), "PUT", "/admin/traffic/scope", scope, true)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let listed =
+            document(call(Some(&view), "GET", "/admin/traffic/flows", "", true).await).await;
+        assert_eq!(listed["flows"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["flows"][0]["id"], expected);
+    }
+    assert_eq!(
+        call(
+            Some(&view),
+            "GET",
+            "/admin/traffic/flows/bob-flow/body?side=response",
+            "",
+            true,
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+}
+
 async fn export_bytes(outcome: Outcome) -> Result<Bytes, Error> {
     outcome
         .into_response()
