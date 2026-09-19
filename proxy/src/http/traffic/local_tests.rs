@@ -269,11 +269,11 @@ async fn owned_local_child() {
         .filter(|row| row["event"] == "security.test_context_declared")
         .collect();
     assert_eq!(declarations.len(), 2);
-    assert!(
-        declarations
-            .iter()
-            .all(|row| row.get("request_id").is_none())
-    );
+    assert!(declarations.iter().all(|row| {
+        row["request_id"]
+            .as_str()
+            .is_some_and(|request_id| request_id.starts_with("req-"))
+    }));
     let rows: Vec<_> = rows.iter().filter(|row| row["kind"] == "traffic").collect();
     assert_eq!(rows.len(), 14);
     for (index, (request_size, response_size, host, path)) in sizes.into_iter().enumerate() {

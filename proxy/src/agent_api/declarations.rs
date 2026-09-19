@@ -122,13 +122,13 @@ where
     if let Err(outcome) = authorize(request, token_path).await {
         return Ok(outcome);
     }
-    // Reconciliation is the single request-boundary owner decision. Scoped
-    // routes reject a quarantined snapshot before reading a body or invoking
+    // Reconciliation is the single request-boundary owner decision. A true
+    // source conflict rejects scoped routes before reading a body or invoking
     // a provider, so a stale legacy agent field cannot re-open ownership.
-    // Trace and explain validate their request ID before checking ownership;
-    // keep that source-visible input error ordering while still rejecting a
-    // valid ownerless read before loading evidence.
-    if matches!(request.identity, Identity::Conflict | Identity::Unavailable)
+    // An unavailable identity remains with each route handler: source flow
+    // handlers parse caller bodies and IDs before their own 403/404 result.
+    // Trace and explain likewise validate their request ID before ownership.
+    if matches!(request.identity, Identity::Conflict)
         && (matches!(
             route(request),
             "/gateway/services"

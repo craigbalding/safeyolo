@@ -1563,7 +1563,8 @@ existing expiry or refreshing target hosts. A POST held across reload uses the
 new maximum TTL. Reached integer-to-float overflow returns the source's 500 and
 preserves the previous record. Mutation audits retain the trusted agent field
 and have no decision or attribution object. Their source-stage request ID is
-optional; normal local dispatch runs before RequestId and omits it. A synchronous
+the existing request-context ID when local dispatch has one, and remains
+optional for direct API callers. A synchronous
 submission failure returns the handler's 500 after the declaration mutation,
 without rollback. [Body ownership tests](../proxy/tests/agent_api_declarations.rs),
 [core tests](../proxy/tests/test_context.rs), and
@@ -2269,7 +2270,7 @@ the map or a stale request field from becoming an evidence owner:
 | --- | --- | --- | --- |
 | `resolved` | Receives the reconciled owner | Uses the same owner for scoped authorization and service selection | Carries the owner and attribution snapshot |
 | `conflict` | Network guard fails closed when enabled; credential guard blocks | Scoped routes return `403`; reserved health/report routes stay local | Emits conflict attribution without an evidence owner; flow recording quarantines |
-| `unavailable` | Receives no agent identity | Scoped routes return `403`; global/report routes retain their existing behavior | Emits unavailable attribution and never creates an owner-bearing flow row |
+| `unavailable` | Receives no agent identity | Route handlers preserve source ordering: valid scoped operations return `403`, while caller-body/ID validation and direct evidence ownership retain their `400`/`404` outcomes; global/report routes remain local | Emits unavailable attribution and never creates an owner-bearing flow row |
 
 The [source oracle](../proxy/tests/agent_discovery_source.py) uses owned maps,
 synthetic identities and explicit clocks. The [API tests](../proxy/tests/agent_api_discovery.rs)

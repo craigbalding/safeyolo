@@ -658,10 +658,7 @@ async fn discovery_child(directory: &Path) {
             .matches_path(&configuration.agent_map_file)
             .unwrap()
     );
-    assert!(
-        discovery_document(&runtime)["agents"]["alice"]["last_seen"]
-            .is_number()
-    );
+    assert!(discovery_document(&runtime)["agents"]["alice"]["last_seen"].is_number());
 
     // A later listener-bind failure keeps the published config but can occur
     // after discovery configured its shared path. Restoring the old config
