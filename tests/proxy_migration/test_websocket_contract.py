@@ -874,6 +874,43 @@ def anonymous_files(pid):
     return result
 
 
+def process_resources(pid):
+    """Capture external Linux process resources without attaching to the process."""
+    status = Path(f"/proc/{pid}/status")
+    if not status.exists():
+        pytest.skip("WS resource workload requires Linux /proc process measurements")
+    values = {}
+    for line in status.read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in {"VmRSS", "VmHWM", "Threads"}:
+            values[key] = int(value.strip().split()[0])
+    try:
+        fd_count = len(list(Path(f"/proc/{pid}/fd").iterdir()))
+        task_count = len(list(Path(f"/proc/{pid}/task").iterdir()))
+        executable = str(Path(f"/proc/{pid}/exe").resolve())
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace").strip()
+    except FileNotFoundError:
+        fd_count = task_count = None
+        executable = command = None
+    spools = anonymous_files(pid)
+    return {
+        "pid": pid,
+        "rss_kib": values.get("VmRSS"),
+        "hwm_kib": values.get("VmHWM"),
+        "threads": values.get("Threads", task_count),
+        "task_count": task_count,
+        "fd_count": fd_count,
+        "executable": executable,
+        "command": command,
+        "anonymous_spool_count": len(spools),
+        "anonymous_spool_bytes": sum(spools.values()),
+        "anonymous_spools": [
+            {"device": inode[0], "inode": inode[1], "bytes": size}
+            for inode, size in sorted(spools.items())
+        ],
+    }
+
+
 def thread_cpu_seconds(pid):
     """Read cumulative user+system CPU from Linux task stat, without attaching."""
     ticks_per_second = os.sysconf("SC_CLK_TCK")
@@ -952,6 +989,163 @@ def test_native_pending_fragment_disconnect(native_development_proxy, tmp_path, 
                 "origin_data_frames": frames,
                 "complete_message_events": len(proxy.events("proxy.websocket.message")),
                 "end": ended,
+            }, indent=2) + "\n")
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_repeated_compressed_fragment_cancellation_records_process_resources(proxy_backend, tmp_path, tls):
+    """Bounded WS/WSS cancellation repeats compressed fragments and records external resources."""
+    sessions = 3
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    payload = b"".join(
+        hashlib.sha256(b"cancelled-fragment" + index.to_bytes(4, "big")).digest()
+        for index in range(8192)
+    )
+    encoder = zlib.compressobj(wbits=-15)
+    encoded = (encoder.compress(payload) + encoder.flush(zlib.Z_SYNC_FLUSH))[:-4]
+    first_fragment = encoded[: len(encoded) // 2]
+    ping_payload = b"cancel-ping"
+    close_payload = struct.pack("!H", 1000) + b"cancelled incomplete"
+    observations = []
+
+    def script(peer, results):
+        observed = peer.receive()
+        assert observed[0] == 8
+        results.put({
+            "close_payload_hex": observed[1].hex(),
+            "data_frames": peer.data_frames,
+            "controls": [
+                {"opcode": opcode, "payload_hex": control.hex()}
+                for opcode, control in peer.controls
+            ],
+        })
+        try:
+            peer.stream.sendall(frame(8, observed[1]))
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+            # A promptly cancelled downstream can close the origin leg after
+            # forwarding the client's Close; retain the received bytes even
+            # when the origin's reciprocal Close has no live writer.
+            pass
+
+    with origin_server(script, pem=pem, compressed=True) as origin:
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            batch_before = process_resources(proxy.process.pid)
+            for session in range(sessions):
+                with connect_peer(origin, path=proxy.paths["alice"], ca=proxy_ca, compressed=True) as peer:
+                    before = process_resources(proxy.process.pid)
+                    before_spools = set(anonymous_files(proxy.process.pid))
+                    peer.stream.sendall(
+                        frame(2, first_fragment, final=False, compressed=True, masked=True)
+                        + frame(9, ping_payload, masked=True)
+                    )
+                    spool_threshold = 64 * 1024 + 1
+                    spool_started = time.monotonic()
+                    pending = {}
+                    deadline = spool_started + 5
+                    while time.monotonic() < deadline:
+                        current = anonymous_files(proxy.process.pid)
+                        pending = {inode: size for inode, size in current.items()
+                                   if inode not in before_spools}
+                        if pending and max(pending.values()) >= spool_threshold:
+                            break
+                        if proxy_backend == "python" and time.monotonic() - spool_started >= 0.5:
+                            break
+                        time.sleep(0.01)
+                    if proxy_backend == "rust":
+                        assert pending and max(pending.values()) >= spool_threshold, (
+                            "compressed fragment never reached the native anonymous spool"
+                        )
+                    assert proxy.events("proxy.websocket.message") == []
+                    during = process_resources(proxy.process.pid)
+                    assert peer.receive_control() == (10, ping_payload)
+                    peer.close(code=1000, reason=b"cancelled incomplete")
+                    origin_result = origin.results.get(timeout=5)
+                    client_close = peer.receive()
+                    assert client_close == (8, close_payload)
+                    assert origin_result["close_payload_hex"] == close_payload.hex()
+                    assert origin_result["data_frames"] == 0
+                    assert {item["opcode"] for item in origin_result["controls"]} == {9}
+                    assert origin_result["controls"][0]["payload_hex"] == ping_payload.hex()
+                    assert peer.controls == [(10, ping_payload)]
+                    pending_keys = set(pending)
+                    deadline = time.monotonic() + 3
+                    while pending_keys & set(anonymous_files(proxy.process.pid)):
+                        assert time.monotonic() < deadline, "cancelled compressed spool was retained"
+                        time.sleep(0.01)
+                    after = process_resources(proxy.process.pid)
+                    observations.append({
+                        "session": session + 1,
+                        "origin": origin_result,
+                        "client_close_payload_hex": client_close[1].hex(),
+                        "client_controls": [
+                            {"opcode": opcode, "payload_hex": payload.hex()}
+                            for opcode, payload in peer.controls
+                        ],
+                        "pending_spool_count": len(pending),
+                        "pending_spool_bytes": sum(pending.values()),
+                        "pending_spool_retained_after_close": len(
+                            pending_keys & set(anonymous_files(proxy.process.pid))
+                        ),
+                        "spool_wait_seconds": round(time.monotonic() - spool_started, 6),
+                        "resources_before": before,
+                        "resources_during": during,
+                        "resources_after": after,
+                    })
+                    assert proxy.process.poll() is None
+
+            batch_after = process_resources(proxy.process.pid)
+            assert origin.accepts == sessions
+            assert len(observations) == sessions
+            assert all(item["origin"]["data_frames"] == 0 for item in observations)
+            assert all(item["pending_spool_retained_after_close"] == 0 for item in observations)
+            assert proxy.events("proxy.websocket.message") == []
+            ended = proxy.events("proxy.websocket.end")
+            if proxy_backend == "rust":
+                assert len(ended) == sessions
+                assert all(event["closed_by_client"] is True and event["drained"] is True for event in ended)
+                provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+                assert provenance == {
+                    "backend": "rust",
+                    "policy_mode": "native",
+                    "policy_file": str(directory / "policy.toml"),
+                    "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }
+            samples = [batch_before, batch_after]
+            for item in observations:
+                samples.extend(item[key] for key in ("resources_before", "resources_during", "resources_after"))
+            (directory / "resource-cancellation.json").write_text(json.dumps({
+                "backend": proxy_backend,
+                "tls": tls,
+                "sessions": sessions,
+                "payload_bytes": len(payload),
+                "payload_sha256": hashlib.sha256(payload).hexdigest(),
+                "compressed_wire_bytes": len(encoded),
+                "first_fragment_wire_bytes": len(first_fragment),
+                "first_fragment_sha256": hashlib.sha256(first_fragment).hexdigest(),
+                "ping_payload_hex": ping_payload.hex(),
+                "close_payload_hex": close_payload.hex(),
+                "origin_accepts": origin.accepts,
+                "origin_data_frames": [item["origin"]["data_frames"] for item in observations],
+                "complete_message_events": len(proxy.events("proxy.websocket.message")),
+                "websocket_end_events": ended,
+                "resources": {
+                    "batch_before": batch_before,
+                    "batch_after": batch_after,
+                    "max_rss_kib": max(sample["rss_kib"] for sample in samples),
+                    "max_hwm_kib": max(sample["hwm_kib"] for sample in samples),
+                    "max_threads": max(sample["threads"] for sample in samples),
+                    "max_fd_count": max(sample["fd_count"] for sample in samples),
+                    "max_anonymous_spool_bytes": max(sample["anonymous_spool_bytes"] for sample in samples),
+                },
+                "observations": observations,
+                "limits": [
+                    "Three sequential sessions with one incomplete compressed message per session; no OOM or concurrency claim.",
+                    "No completed compressed message is sent by this workload; complete-message correctness remains covered by the contract matrix.",
+                    "This short Linux /proc capture does not establish long-duration RSS/HWM stability or a resource ceiling.",
+                ],
             }, indent=2) + "\n")
 
 
