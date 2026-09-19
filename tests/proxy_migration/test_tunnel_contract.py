@@ -59,6 +59,18 @@ effect = "deny"
 condition = { agent = "bob", method = "CONNECT" }
 '''
 
+PARENT_CONNECT_POLICY = '''[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { agent = "alice", method = "CONNECT" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+condition = { agent = "bob" }
+'''
+
 
 def tunnel(path, authority):
     stream = socket.socket(socket.AF_UNIX)
@@ -101,6 +113,171 @@ def read_all(stream):
     while part := stream.recv(65536):
         received.extend(part)
     return bytes(received)
+
+
+def _parent_connect_control_fixture():
+    """Serve one successful and one refused CONNECT with raw observations."""
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(5)
+    observations = []
+    failure = []
+
+    def serve():
+        try:
+            for phase in ("positive", "failure"):
+                stream, peer = listener.accept()
+                with stream:
+                    stream.settimeout(5)
+                    request = read_until(stream, b"\r\n\r\n")
+                    if phase == "positive":
+                        stream.sendall(
+                            b"HTTP/1.1 200 Connection Established\r\n"
+                            b"Connection: keep-alive\r\n\r\n"
+                            b"parent-control-server-first"
+                        )
+                        payload = read_all(stream)
+                    else:
+                        stream.sendall(
+                            b"HTTP/1.1 502 Bad Gateway\r\n"
+                            b"Connection: close\r\n"
+                            b"Content-Length: 0\r\n\r\n"
+                        )
+                        payload = b""
+                    observations.append({
+                        "phase": phase,
+                        "peer": list(peer),
+                        "request": request,
+                        "payload": payload,
+                    })
+        except BaseException as error:  # report fixture failures in the test thread
+            failure.append(error)
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    return listener, observations, failure, thread
+
+
+def test_parent_connect_failure_never_falls_back_to_direct_origin(
+    proxy_backend, tmp_path, request
+):
+    """A parent CONNECT refusal is returned; the target origin stays untouched."""
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Python comparator does not route opaque CONNECT through its configured parent",
+        ))
+    positive_authority = "parent-control.invalid:23456"
+    parent, observations, failure, thread = _parent_connect_control_fixture()
+    parent_url = f"http://127.0.0.1:{parent.getsockname()[1]}"
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    with socket.socket() as origin:
+        origin.bind(("127.0.0.1", 0))
+        origin.listen()
+        origin.settimeout(0.25)
+        refused_authority = f"127.0.0.1:{origin.getsockname()[1]}"
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                PARENT_CONNECT_POLICY,
+                parent_proxy=parent_url,
+                ignore_hosts=[positive_authority, refused_authority],
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(proxy.paths["alice"])
+                    client.sendall(
+                        f"CONNECT {positive_authority} HTTP/1.1\r\n"
+                        f"Host: {positive_authority}\r\nConnection: close\r\n\r\n".encode()
+                    )
+                    positive_head = read_until(client, b"\r\n\r\n")
+                    assert positive_head.startswith(b"HTTP/1.1 200"), positive_head
+                    assert client.recv(len(b"parent-control-server-first")) == (
+                        b"parent-control-server-first"
+                    )
+                    client.sendall(b"parent-control-payload")
+                    client.shutdown(socket.SHUT_WR)
+                    assert read_all(client) == b""
+
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(proxy.paths["alice"])
+                    client.sendall(
+                        f"CONNECT {refused_authority} HTTP/1.1\r\n"
+                        f"Host: {refused_authority}\r\n"
+                        "X-Direct-Egress-Canary: must-not-reach-origin\r\n"
+                        "Connection: close\r\n\r\n".encode()
+                    )
+                    refused_response = read_until(client, b"\r\n\r\n")
+                assert refused_response.startswith(b"HTTP/1.1 502"), refused_response
+
+                with pytest.raises(socket.timeout):
+                    origin.accept()
+                assert proxy.process.poll() is None
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                (directory / "parent-connect-failure.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "parent_url": parent_url,
+                            "positive_authority": positive_authority,
+                            "refused_authority": refused_authority,
+                            "positive_client_response_head_hex": positive_head.hex(),
+                            "refused_client_response_head_hex": refused_response.hex(),
+                            "parent_observations": [
+                                {
+                                    "phase": item["phase"],
+                                    "peer": item["peer"],
+                                    "request_hex": item["request"].hex(),
+                                    "payload_hex": item["payload"].hex(),
+                                }
+                                for item in observations
+                            ],
+                            "direct_origin_accepts": 0,
+                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "native_policy_provenance": (
+                                provenance if proxy_backend == "rust" else None
+                            ),
+                            "limits": [
+                                "The parent observer handles one successful and one refused CONNECT sequentially.",
+                                "The direct-origin canary records acceptance only; no origin application bytes are expected after zero accepts.",
+                                "This does not establish parent retry, alternate-parent selection or long-duration failure recovery.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+        finally:
+            parent.close()
+            thread.join(timeout=6)
+    assert not thread.is_alive()
+    assert not failure, failure
+    assert [item["phase"] for item in observations] == ["positive", "failure"]
+    assert observations[0]["request"].startswith(
+        f"CONNECT {positive_authority} HTTP/1.1\r\n".encode()
+    )
+    assert observations[0]["payload"] == b"parent-control-payload"
+    assert observations[1]["request"].startswith(
+        f"CONNECT {refused_authority} HTTP/1.1\r\n".encode()
+    )
+    assert b"X-Direct-Egress-Canary" not in observations[1]["request"]
 
 
 def _process_fd_targets(pid):

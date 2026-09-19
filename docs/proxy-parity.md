@@ -2482,6 +2482,15 @@ graceful SIGTERM, both client and origin observe EOF, and the end event follows
 socket release. All three use native policy provenance and exact event/byte
 observations. Pending-dial cancellation equivalence remains unproven.
 
+The parent-route failure control in
+`test_parent_connect_failure_never_falls_back_to_direct_origin` first proves a
+successful raw CONNECT through the configured parent, then has that same
+independent parent return 502 for a second CONNECT. The native proxy returns
+502 to the client, records the exact parent CONNECT requests, and an
+independently listening target origin records zero accepts. The paired Python
+proxy cannot route opaque CONNECT through its configured parent, so this
+comparison remains a named strict expected failure.
+
 ### Live operator HTTP and WebSocket inspection
 
 The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP
