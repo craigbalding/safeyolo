@@ -907,6 +907,21 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
 
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 2);
+    assert_eq!(
+        live_stats["policy-engine"]["engine_stats"]["evaluations"],
+        4,
+        "concurrent Alice/Bob requests must charge one network and one credential evaluation each: {live_stats}"
+    );
+    assert_eq!(
+        live_stats["policy-engine"]["engine_stats"]["budget_stats"],
+        json!({"tracked_keys": 0, "keys": []}),
+        "prompted credentials must not create budget state: {live_stats}"
+    );
+    assert_eq!(
+        live_stats["network-guard"],
+        json!({"enabled": true, "checks": 2, "allowed": 2, "blocked": 0, "warned": 0, "rate_limited": 0}),
+        "each concurrent request must have one network admission: {live_stats}"
+    );
 
     drop(alice_sender);
     drop(bob_sender);
@@ -931,7 +946,15 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
                 .as_str()
                 .is_some_and(|id| !id.is_empty())
         );
+        assert_eq!(event["evaluations"].as_array().unwrap().len(), 1);
         assert_eq!(event["evaluations"][0]["effect"], "require_approval");
+        assert_eq!(
+            event["evaluations"][0]["required_checks"],
+            json!(["rate_limit", "credential_detection", "credential_validation"])
+        );
+        assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
+        assert_eq!(event["audit"][0]["approval"]["approval_type"], "credential");
+        assert_eq!(event["audit"][0]["approval"]["target"], "127.0.0.1");
         assert_eq!(event["audit"][0]["agent"], agent);
         assert_eq!(
             event["audit"][0]["approval"]["scope_hint"]["expected_hosts"],
@@ -2348,6 +2371,21 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
 
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 1);
+    assert_eq!(
+        live_stats["policy-engine"]["engine_stats"]["evaluations"],
+        8,
+        "reused allow/deny/allow must charge network admission plus guard evaluation for every request: {live_stats}"
+    );
+    assert_eq!(
+        live_stats["policy-engine"]["engine_stats"]["budget_stats"],
+        json!({"tracked_keys": 0, "keys": []}),
+        "the reusable sequence has no configured budget: {live_stats}"
+    );
+    assert_eq!(
+        live_stats["network-guard"],
+        json!({"enabled": true, "checks": 3, "allowed": 3, "blocked": 0, "warned": 0, "rate_limited": 0}),
+        "each reused request must have one network admission: {live_stats}"
+    );
     drop(sender);
     let _ = connection_task.await;
     forbidden_task.abort();
@@ -2373,6 +2411,14 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     assert_eq!(first_event["outcome"], "allowed");
     assert_eq!(denied_event["outcome"], "blocked");
     assert_eq!(third_event["outcome"], "allowed");
+    for event in [first_event, denied_event, third_event] {
+        assert_eq!(event["evaluations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            event["evaluations"][0]["required_checks"],
+            json!(["rate_limit", "credential_detection", "credential_validation"])
+        );
+        assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
+    }
     assert_eq!(first_event["agent"], "alice");
     assert_eq!(denied_event["agent"], "alice");
     assert_eq!(third_event["agent"], "alice");
