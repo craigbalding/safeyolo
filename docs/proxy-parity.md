@@ -494,6 +494,13 @@ This development launcher does not complete M7 or authorize cutover.
 
 ## Deletion map and evidence still required
 
+The path-level #640 review ledger is maintained in
+[proxy-cutover-deletion-map.md](proxy-cutover-deletion-map.md). It keeps every
+current Python runtime owner retained, names its affected checks and replacement
+gate, and records the explicit Python rollback while comparator jobs remain
+active. The ledger is a plan and testable inventory; it does not authorize a
+default switch or deletion by itself.
+
 Deletion is conditional on replacement, not movement behind an adapter.
 
 | Milestone | Candidate removal after proof | Retained dependencies and boundaries |
