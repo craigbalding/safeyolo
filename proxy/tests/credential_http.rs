@@ -1397,6 +1397,147 @@ async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
 }
 
 #[tokio::test]
+async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_credential_guard() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"unsupported-response-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"unsupported-response-credential",
+                "patterns":["key-[a-z-]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "scan_patterns": [{
+                "name":"unsupported-response-body",
+                "pattern":"response-secret-canary",
+                "scope":["body"],
+                "target":"response",
+                "action":"block"
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_seen_task = origin_seen.clone();
+    let response_body = b"response-secret-canary".to_vec();
+    let origin_response_body = response_body.clone();
+    let origin_task = tokio::spawn(async move {
+        let (mut stream, _) = origin_listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let size = stream.read(&mut buffer).await.unwrap();
+            assert!(size > 0, "origin ended before request headers");
+            request.extend_from_slice(&buffer[..size]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        origin_seen_task.lock().unwrap().push(request);
+        let response_head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: rot13\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            origin_response_body.len()
+        );
+        stream.write_all(response_head.as_bytes()).await.unwrap();
+        stream.write_all(&origin_response_body).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let mut proxy_config = config(&directory, &policy_path, &socket, true);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: true,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+
+    let request = format!(
+        "GET http://127.0.0.1:{origin_port}/unsupported-response HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer key-unsupported\r\nConnection: close\r\n\r\n"
+    );
+    let response = raw_exchange(&socket, request.as_bytes()).await;
+    assert!(response.starts_with(b"HTTP/1.1 502"), "{response:?}");
+    assert!(
+        response
+            .windows(b"x-blocked-by: pattern-scanner".len())
+            .any(|window| { window.eq_ignore_ascii_case(b"x-blocked-by: pattern-scanner") }),
+        "unsupported encoding did not produce the local scanner error: {response:?}"
+    );
+    assert!(
+        response
+            .windows(b"content_decode".len())
+            .any(|window| window == b"content_decode")
+    );
+    assert!(
+        !response
+            .windows(response_body.len())
+            .any(|window| window == response_body.as_slice())
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), origin_task)
+        .await
+        .unwrap()
+        .unwrap();
+    let origin_request = origin_seen.lock().unwrap().first().cloned().unwrap();
+    assert!(
+        origin_request
+            .windows(b"GET /unsupported-response HTTP/1.1".len())
+            .any(|window| window == b"GET /unsupported-response HTTP/1.1")
+    );
+
+    proxy.shutdown().await;
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| event["event"] == "proxy.credential_guard")
+        .expect("credential guard event missing");
+    let scanner = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "security.pattern_scanner" && event["direction"] == "response"
+        })
+        .expect("unsupported response scanner event missing");
+    assert!(
+        credential < scanner,
+        "later response hook did not run after credential guard"
+    );
+    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[scanner]["decision"], "deny");
+    assert_eq!(rows[scanner]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert!(!events.contains("key-unsupported"));
+    assert!(!events.contains("response-secret-canary"));
+
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-unsupported"));
+    assert!(!audit.contains("response-secret-canary"));
+    eprintln!(
+        "unsupported response observer: status=502 origin_requests={} credential_before_response_scanner=true scanner_failure=content_decode scanner_error_type=ContentDecode raw_canary_retained=false",
+        origin_seen.lock().unwrap().len()
+    );
+}
+
+#[tokio::test]
 async fn native_http_client_disconnect_cancels_scan_without_late_publication() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
