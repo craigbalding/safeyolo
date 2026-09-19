@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -331,6 +332,121 @@ def streamed_control_workload(backend, directory, seconds=2.0):
             client.close()
 
 
+def streamed_slow_admin_workload(backend, directory, seconds=2.0):
+    """Keep a paced response unread while independent traffic and /stats run.
+
+    The reader deliberately pauses after the first event and between later
+    chunks.  The second request uses Alice's separate trusted listener, while
+    /stats uses the proxy's authenticated operator listener.  Both operations
+    must complete while the origin stream is still active; this records
+    responsiveness under a slow consumer without adding a product limit.
+    """
+    token = "stream-slow-admin-fixture-token"
+    token_file = directory / "operator-token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n")
+    token_file.chmod(0o600)
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        native_policy=backend == "rust",
+        admin_port=0,
+        admin_api_token_file=token_file,
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream")
+            response = client.getresponse()
+            assert response.status == 200
+            first = response.read(16384)
+            first_seconds = time.perf_counter() - started
+            assert first and not origin.stream_finished.is_set()
+
+            # Do not consume the stream while its origin is still producing
+            # data.  This is the controlled slow-consumer interval.
+            time.sleep(max(0.05, seconds / 4))
+            assert not origin.stream_finished.is_set()
+            held_resources = runtime_resources(proxy)
+
+            control_started = time.perf_counter()
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_elapsed = time.perf_counter() - control_started
+            assert status == 200 and body == b"hello"
+            assert not origin.stream_finished.is_set()
+
+            marker = json.loads(proxy.readiness_file.read_text())
+            admin_port = marker["admin_port"]
+            admin_started = time.perf_counter()
+            admin = http.client.HTTPConnection("127.0.0.1", admin_port, timeout=5)
+            try:
+                admin.request("GET", "/stats", headers={"Authorization": f"Bearer {token}"})
+                admin_response = admin.getresponse()
+                admin_body = admin_response.read()
+                admin_status = admin_response.status
+                admin_headers = dict(admin_response.getheaders())
+            finally:
+                admin.close()
+            admin_elapsed = time.perf_counter() - admin_started
+            assert admin_status == 200 and admin_body
+            assert not origin.stream_finished.is_set()
+            during_resources = runtime_resources(proxy)
+
+            total = len(first)
+            paced_chunks = 0
+            while chunk := response.read(16384):
+                total += len(chunk)
+                paced_chunks += 1
+                time.sleep(0.02)
+            elapsed = time.perf_counter() - started
+            assert origin.stream_finished.is_set()
+            assert total == origin.stream_chunks * 16384
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream"},
+                {"method": "GET", "target": "/control"},
+            ]
+            return {
+                "workload": "streamed_slow_consumer_admin",
+                "bytes": total,
+                "elapsed_seconds": elapsed,
+                "first_event_seconds": first_seconds,
+                "first_event_before_origin_completion": True,
+                "slow_consumer_pause_seconds": max(0.05, seconds / 4),
+                "paced_chunks_after_pause": paced_chunks,
+                "control_elapsed_seconds": control_elapsed,
+                "control_completed_while_stream_active": True,
+                "admin": {
+                    "method": "GET",
+                    "path": "/stats",
+                    "authenticated": True,
+                    "status": admin_status,
+                    "elapsed_seconds": admin_elapsed,
+                    "body_bytes": len(admin_body),
+                    "body_sha256": hashlib.sha256(admin_body).hexdigest(),
+                    "content_type": admin_headers.get("Content-Type"),
+                    "completed_while_stream_active": True,
+                },
+                "runtime_resources": {
+                    "before_controls": held_resources,
+                    "after_controls": during_resources,
+                    "after_drain": runtime_resources(proxy),
+                },
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "stream_active_during_controls": True,
+                    "stream_finished_after_read": origin.stream_finished.is_set(),
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one paced slow consumer and one control/admin pair; no long-duration or repeated growth claim",
+            }
+        finally:
+            client.close()
+
+
 def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
     """Round-trip complete small WS messages over one connection."""
     with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
@@ -462,6 +578,10 @@ def capture(args):
             elif workload == "stream-control":
                 workloads.append(streamed_control_workload(args.backend, args.evidence / "stream-control-workload",
                                                             args.stream_seconds))
+            elif workload == "stream-slow-admin":
+                workloads.append(streamed_slow_admin_workload(
+                    args.backend, args.evidence / "stream-slow-admin-workload", args.stream_seconds
+                ))
             elif workload == "websocket":
                 workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
                                                     args.websocket_seconds, args.websocket_interval))
@@ -537,7 +657,7 @@ def main():
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
     run.add_argument("--workload", action="append",
-                     choices=("short", "sse", "stream-control", "websocket", "local-api"),
+                     choices=("short", "sse", "stream-control", "stream-slow-admin", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)

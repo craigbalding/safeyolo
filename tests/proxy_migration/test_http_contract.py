@@ -5,7 +5,7 @@ import concurrent.futures
 import pytest
 
 from tests.proxy_migration.harness import connection, launch_proxy, request
-from tests.proxy_migration.run import streamed_control_workload
+from tests.proxy_migration.run import streamed_control_workload, streamed_slow_admin_workload
 from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
 
 
@@ -23,6 +23,16 @@ def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_
     assert result["first_event_before_release"] is True
     assert result["control_completed_before_stream_release"] is True
     assert result["stream_released_after_control"] is True
+    assert result["origin_observation"]["stream_finished_after_read"] is True
+
+
+def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_backend, tmp_path):
+    result = streamed_slow_admin_workload(proxy_backend, tmp_path / proxy_backend)
+    assert result["first_event_before_origin_completion"] is True
+    assert result["control_completed_while_stream_active"] is True
+    assert result["admin"]["authenticated"] is True
+    assert result["admin"]["status"] == 200
+    assert result["admin"]["completed_while_stream_active"] is True
     assert result["origin_observation"]["stream_finished_after_read"] is True
 
 
