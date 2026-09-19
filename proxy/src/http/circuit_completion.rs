@@ -1103,6 +1103,123 @@ mod tests {
         }
     }
 
+    async fn drive_h2_gateway_lease(
+        fixture: &Fixture,
+        store: crate::grants::Store,
+        lease: crate::grants::GrantLease,
+        terminal: &str,
+    ) -> StatusCode {
+        let (client, peer) = tokio::io::duplex(4096);
+        let (mut sender, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(client))
+                .await
+                .unwrap();
+        let mut request = Request::builder()
+            .uri("http://owned.invalid/")
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        let completion = Completion::register(
+            &mut request,
+            true,
+            fixture.state.clone(),
+            ConnectionIdentity {
+                agent_id: "alice".into(),
+                connection_id: "owned-connection".into(),
+                source_id: None,
+                reconciled: None,
+            },
+            "owned-request".into(),
+            "owned.invalid".into(),
+            None,
+            Some(lease),
+            Some(store),
+        );
+        let driver = Task(tokio::spawn(completion.clone().drive(connection)));
+        let response = sender.send_request(request);
+        let (_peer, barrier) = h2_peer(peer, terminal);
+        tokio::time::timeout(LIMIT, barrier).await.unwrap().unwrap();
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        let status = response.status();
+        if terminal == "partial" {
+            // A response without END_STREAM is completed by downstream body
+            // cancellation. The cancellation is an aborted result, even
+            // though the peer already delivered a valid response head.
+            drop(response);
+        } else {
+            let body = tokio::time::timeout(LIMIT, response.into_body().collect())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(body.to_bytes(), Bytes::from_static(b"body"), "{terminal}");
+        }
+        assert_eq!(
+            wait_for_completion(&completion).await,
+            Some(false),
+            "{terminal}"
+        );
+        drop(driver);
+        status
+    }
+
+    #[tokio::test]
+    async fn actual_h2_terminal_outcomes_release_once_grants_once_and_count_only_complete() {
+        for terminal in ["complete", "partial_reset", "partial"] {
+            let fixture = Fixture::new(false);
+            let directory = tempfile::tempdir().unwrap();
+            let policy = directory.path().join("policy.toml");
+            std::fs::write(&policy, "[agents.alice]\n").unwrap();
+            let store =
+                crate::grants::Store::open(&policy, time::OffsetDateTime::now_utc()).unwrap();
+            store
+                .add_grant(
+                    crate::grants::GrantRequest {
+                        agent: "alice".into(),
+                        service: "mail".into(),
+                        method: "GET".into(),
+                        path: "/v1/send".into(),
+                        scope: crate::grants::GrantScope::Once,
+                    },
+                    time::OffsetDateTime::now_utc(),
+                    |_| Ok(()),
+                )
+                .unwrap();
+            let lease = store
+                .check_grant(
+                    crate::grants::RequestScope {
+                        agent: "alice",
+                        service: "mail",
+                        method: "GET",
+                        path: "/v1/send",
+                    },
+                    time::OffsetDateTime::now_utc(),
+                    |_| Ok(()),
+                )
+                .unwrap()
+                .unwrap();
+
+            let status = drive_h2_gateway_lease(&fixture, store.clone(), lease, terminal).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{terminal}");
+            assert_eq!(
+                store
+                    .list_grants(time::OffsetDateTime::now_utc())
+                    .unwrap()
+                    .len(),
+                1,
+                "an H2 503, reset, or cancellation releases the once grant"
+            );
+            let complete = terminal == "complete";
+            assert_eq!(fixture.failures(), complete.then(|| json!(1)), "{terminal}");
+            assert_eq!(fixture.events().len(), usize::from(complete), "{terminal}");
+            let gateway =
+                std::fs::read_to_string(fixture.directory.path().join("events.jsonl")).unwrap();
+            assert_eq!(gateway.matches("\"event\":\"proxy.gateway\"").count(), 1);
+            assert!(gateway.contains("\"outcome\":\"grant_retained\""));
+        }
+    }
+
     /// Non-normative D54 observation: bare Hyper maps a partial response's
     /// RST_STREAM(NO_ERROR) to clean StreamEnded. The full proxy gate requires
     /// an explicit downstream failure for this unresolved behavior.
