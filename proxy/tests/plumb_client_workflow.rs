@@ -597,3 +597,140 @@ async fn real_clients_share_operator_approval_membership_and_messages() {
     write_evidence(root_path, &observations);
     proxy.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disconnected_clients_release_wait_capacity_for_permitted_peer() {
+    let root = TempDir::new().unwrap();
+    let root_path = root.path();
+    fs::create_dir_all(root_path.join("data")).unwrap();
+    fs::write(root_path.join("data/agent_token"), AGENT_TOKEN).unwrap();
+    fs::write(root_path.join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let proxy = Proxy::start(config(root_path)).await.unwrap();
+    let operator_port = admin_port(root_path);
+    let alice = root_path.join("alice.sock");
+    let bob = root_path.join("bob.sock");
+    let carol = root_path.join("carol.sock");
+
+    let requested = exchange_unix(
+        &alice,
+        &request(
+            "POST",
+            "/plumb/request-chat",
+            AGENT_TOKEN,
+            br#"{"requester":"forged","participants":["bob","carol"]}"#,
+        ),
+    )
+    .await;
+    assert_eq!(requested.status, 202);
+    assert_eq!(
+        requested.body["participants"],
+        json!(["alice", "bob", "carol"])
+    );
+    let request_id = requested.body["request_id"].as_str().unwrap();
+    let approved = exchange_admin(
+        operator_port,
+        &admin_request(
+            "POST",
+            "/admin/plumb/approve",
+            serde_json::to_string(&json!({"request_id":request_id,"ttl_seconds":120}))
+                .unwrap()
+                .as_bytes(),
+        ),
+    )
+    .await;
+    assert_eq!(approved.status, 200);
+    let conversation_id = approved.body["conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let first_message = exchange_unix(
+        &alice,
+        &request(
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/messages"),
+            AGENT_TOKEN,
+            br#"{"body":"baseline before client disconnects"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(first_message.status, 200);
+    let first_id = first_message.body["id"].as_str().unwrap().to_owned();
+    let wait_request = request(
+        "GET",
+        &format!("/plumb/conversations/{conversation_id}/messages?after={first_id}&wait=30"),
+        AGENT_TOKEN,
+        b"",
+    );
+
+    // MAX_WAITERS is 64 in the native owner. Keep these clients open until
+    // their requests have had time to enter the real listener and long-poll
+    // path, then close every client before a message is published.
+    let mut disconnected_clients = Vec::new();
+    for _ in 0..64 {
+        let mut stream = UnixStream::connect(&bob).await.unwrap();
+        stream.write_all(&wait_request).await.unwrap();
+        disconnected_clients.push(stream);
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    drop(disconnected_clients);
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // If the dropped requests retained all 64 waiter slots, this request
+    // returns an empty page immediately instead of waiting for the next
+    // permitted publication. Its successful message proves both cleanup and
+    // that another member's operation remains usable.
+    let carol_wait_socket = carol.clone();
+    let carol_wait_path =
+        format!("/plumb/conversations/{conversation_id}/messages?after={first_id}&wait=5");
+    let carol_waiter = tokio::spawn(async move {
+        exchange_unix(
+            &carol_wait_socket,
+            &request("GET", &carol_wait_path, AGENT_TOKEN, b""),
+        )
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let published = exchange_unix(
+        &alice,
+        &request(
+            "POST",
+            &format!("/plumb/conversations/{conversation_id}/messages"),
+            AGENT_TOKEN,
+            br#"{"body":"permitted peer remains usable after disconnect cleanup"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(published.status, 200);
+    let carol_reply = tokio::time::timeout(Duration::from_secs(5), carol_waiter)
+        .await
+        .expect("permitted waiter response timeout")
+        .unwrap();
+    assert_eq!(carol_reply.status, 200);
+    assert_eq!(carol_reply.body["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        carol_reply.body["messages"][0]["body"],
+        "permitted peer remains usable after disconnect cleanup"
+    );
+
+    write_evidence(
+        root_path,
+        &[json!({
+            "step":"client_disconnect_waiter_cleanup",
+            "listener_identity_source":"bob and carol configured Unix listener paths",
+            "conversation_participants":["alice","bob","carol"],
+            "initial_waiters":64,
+            "initial_wait_after_seconds":30,
+            "disconnected_waiters":64,
+            "cleanup_observation":"all client streams dropped before publication",
+            "permitted_publisher":"alice",
+            "permitted_waiter":"carol",
+            "published_status":published.status,
+            "waiter_status":carol_reply.status,
+            "waiter_message":carol_reply.body["messages"][0],
+            "state_owner":"native process-owned PlumbOwner",
+            "limit":"bounded MAX_WAITERS saturation probe; no load or restart claim"
+        })],
+    );
+    proxy.shutdown().await;
+}

@@ -2846,6 +2846,13 @@ slice, not the complete #626/#628/#629 standalone-worker matrix. Blocking
 SQLite work can still extend graceful shutdown, and abrupt termination or
 ordinary `Drop` do not claim this drain.
 
+The running-client control
+`disconnected_clients_release_wait_capacity_for_permitted_peer` fills the
+native 64-waiter bound through Bob's accepted listener, drops those client
+sockets, and then verifies that Carol's permitted wait receives a later Alice
+publication. This is an explicit client-disconnect cleanup witness; it does
+not claim restart persistence or a load/concurrency matrix.
+
 Persistence uses the existing TOML transaction helper and its durability-failure
 rollback behavior. Truthy non-string request fields remain native representation
 errors; arbitrary source JSON values and non-TOML mutation parity are unproved.
