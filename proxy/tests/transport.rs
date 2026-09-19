@@ -1707,6 +1707,243 @@ async fn full_proxy_h2_partial_reset_fails_while_same_prefix_end_stream_is_clean
     full_proxy_h2_response_outcome(true).await;
 }
 
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = directory.path().join("policy.toml");
+    std::fs::write(
+        &policy,
+        "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"allow\"\n[addons.circuit_breaker]\nenabled = true\nfailure_threshold = 1\nexcluded_domains = []\n",
+    )
+    .unwrap();
+    config.temporary_policy_socket = None;
+    config.policy_file = Some(policy.clone());
+    config.data_dir = Some(directory.path().join("data"));
+    config.circuit_state_file = Some(directory.path().join("circuit-state.json"));
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+    let origin_cert = cert.der().clone();
+    let ca_path = directory.path().join("upstream.pem");
+    std::fs::write(&ca_path, cert.pem()).unwrap();
+    config.upstream_ca_file = Some(ca_path);
+    let listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let authority = format!("127.0.0.2:{}", listener.local_addr().unwrap().port());
+    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_cert],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    tls.alpn_protocols = vec![b"h2".to_vec()];
+    let (release, release_received) = oneshot::channel();
+    let origin = tokio::spawn(raw_h2_origin(
+        listener,
+        tls,
+        partial_reset,
+        release_received,
+    ));
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let socket = connect_tls_with_alpn(
+        &config.listeners[0].socket_path,
+        &authority,
+        "127.0.0.2",
+        proxy_ca,
+        &[b"h2"],
+    )
+    .await
+    .unwrap();
+    assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(socket))
+            .await
+            .unwrap();
+    let client = tokio::spawn(connection);
+    let mut response = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/d54-correlated"))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let request_id = response
+        .headers()
+        .get("x-safeyolo-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let first = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .into_data()
+        .unwrap();
+    assert_eq!(first, Bytes::from_static(b"body"));
+    let _ = release.send(());
+    let terminal = tokio::time::timeout(Duration::from_secs(2), response.body_mut().frame())
+        .await
+        .unwrap();
+    let terminal_kind = if partial_reset {
+        assert!(
+            matches!(terminal, Some(Err(_))),
+            "reset must fail downstream"
+        );
+        "reset_error"
+    } else {
+        assert!(terminal.is_none(), "END_STREAM must remain clean");
+        "end_stream"
+    };
+    drop(response);
+    drop(sender);
+    client.abort();
+    proxy.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), origin)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let recorded = events(&config);
+    let request_events: Vec<_> = recorded
+        .iter()
+        .filter(|event| event["event"] == "proxy.request")
+        .cloned()
+        .collect();
+    let terminal_requests: Vec<_> = request_events
+        .iter()
+        .filter(|event| event["request_id"] == request_id)
+        .cloned()
+        .collect();
+    assert_eq!(terminal_requests.len(), 1);
+    assert_eq!(terminal_requests[0]["status"], 503);
+    assert_eq!(
+        terminal_requests[0]["coverage"],
+        "native_network_guard_circuits_and_test_context"
+    );
+    let circuit_events: Vec<_> = recorded
+        .iter()
+        .filter(|event| event["event"] == "proxy.circuit")
+        .cloned()
+        .collect();
+    if partial_reset {
+        assert!(
+            circuit_events.is_empty(),
+            "reset must not count: {circuit_events:?}"
+        );
+    } else {
+        assert_eq!(circuit_events.len(), 1, "complete 503 must count once");
+        assert_eq!(circuit_events[0]["host"], "127.0.0.2");
+    }
+    let state = config
+        .circuit_state_file
+        .as_ref()
+        .filter(|path| path.exists())
+        .map(|path| {
+            serde_json::from_str::<Value>(&std::fs::read_to_string(path).unwrap()).unwrap()
+        });
+    let domain_state = state
+        .as_ref()
+        .and_then(|value| value["states"].get("127.0.0.2"));
+    if partial_reset {
+        assert!(
+            domain_state.is_none(),
+            "reset created circuit state: {domain_state:?}"
+        );
+    } else {
+        assert_eq!(domain_state.unwrap()["failure_count"], 1);
+    }
+    let mut upstream_frames = vec![
+        json!({
+            "kind": "SETTINGS",
+            "frame_hex": hex_bytes(&h2_wire_frame(4, 0, 0, &[])),
+        }),
+        json!({
+            "kind": "SETTINGS_ACK",
+            "frame_hex": hex_bytes(&h2_wire_frame(4, 1, 0, &[])),
+        }),
+        json!({
+            "kind": "HEADERS",
+            "flags": 4,
+            "stream_id": 1,
+            "payload_hex": hex_bytes(b"\x08\x03\x35\x30\x33"),
+            "frame_hex": hex_bytes(&h2_wire_frame(1, 4, 1, b"\x08\x03\x35\x30\x33")),
+        }),
+        json!({
+            "kind": "DATA",
+            "flags": u8::from(!partial_reset),
+            "stream_id": 1,
+            "payload_hex": hex_bytes(b"body"),
+            "frame_hex": hex_bytes(&h2_wire_frame(0, u8::from(!partial_reset), 1, b"body")),
+        }),
+    ];
+    if partial_reset {
+        upstream_frames.push(json!({
+            "kind": "RST_STREAM",
+            "flags": 0,
+            "stream_id": 1,
+            "error_code": 0,
+            "frame_hex": hex_bytes(&h2_wire_frame(3, 0, 1, &0_u32.to_be_bytes())),
+        }));
+    }
+    let evidence = json!({
+        "backend": "rust",
+        "authority": authority,
+        "partial_reset": partial_reset,
+        "downstream": {
+            "status": 503,
+            "body_prefix_hex": hex_bytes(b"body"),
+            "terminal": terminal_kind,
+            "request_id": request_id,
+        },
+        "upstream_frames": upstream_frames,
+        "proxy_request_events": terminal_requests,
+        "proxy_circuit_events": circuit_events,
+        "circuit_state": state,
+        "limits": [
+            "One native TLS/ALPN h2 request per control, with the same 503 head and body prefix.",
+            "This proves the reset-versus-END_STREAM terminal and circuit consequence in the full proxy; it does not compare a frozen pre-fix executable or cover concurrent/long-duration H2 traffic.",
+        ],
+    });
+    if let Some(root) = std::env::var_os("SAFEYOLO_633_EVIDENCE_DIR") {
+        let root = Path::new(&root);
+        std::fs::create_dir_all(root).unwrap();
+        let name = if partial_reset {
+            "partial-reset"
+        } else {
+            "same-prefix-end-stream"
+        };
+        std::fs::write(
+            root.join(format!("{name}.json")),
+            format!("{}\n", serde_json::to_string_pretty(&evidence).unwrap()),
+        )
+        .unwrap();
+    }
+    evidence
+}
+
+#[tokio::test]
+async fn full_proxy_h2_terminal_outcome_correlates_wire_terminal_and_circuit_state() {
+    let clean = full_proxy_h2_terminal_evidence_case(false).await;
+    let reset = full_proxy_h2_terminal_evidence_case(true).await;
+    assert_eq!(clean["downstream"]["terminal"], "end_stream");
+    assert_eq!(reset["downstream"]["terminal"], "reset_error");
+    assert!(clean["proxy_circuit_events"].as_array().unwrap().len() == 1);
+    assert!(reset["proxy_circuit_events"].as_array().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn intercepted_https_pins_authority_and_checks_inner_policy_before_delivery() {
     let directory = tempfile::tempdir().unwrap();
