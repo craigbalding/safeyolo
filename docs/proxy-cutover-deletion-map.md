@@ -113,6 +113,26 @@ focused transport tests; this lane change does not authorize deleting
 `tools/proxy_migration/temporary_policy.py`, `Config::temporary_policy_socket`,
 or any Python rollback owner.
 
+### Fresh installed-Linux lifecycle witness
+
+The bounded installed-Linux check for source commit
+`731d268c38ed9bacdac93eacd6e51f1c9957cdc2` built and installed the locked
+release wheel, then selected the packaged native executable. The installed
+instance generated native JSON with `policy_file` and no
+`temporary_policy_socket`; it published `ready=true` with `backend=rust-m2`,
+served authenticated `/health` over the agent UDS, and handled one real
+allowed origin request and one denied request without sending the denied one
+to the origin. Two start/stop runs removed the readiness and lifetime records,
+and a deliberately failing selected native executable produced a startup
+failure without selecting Python.
+
+The evidence is retained at
+`safeyolo-rust-620-evidence/640-installed-linux-next-evidence/`, including the
+wheel and native binary hashes, reports, generated configuration, and exact
+commands. This is Linux host evidence for the M7-01/M7-02 replacement gates;
+guest isolation, macOS, rollback, and the remaining M7/M8 deletion gates are
+still open. All Python runtime owners and comparator checks remain retained.
+
 ## Bounded native import audit
 
 The native CLI registration path is import-clean with respect to the retained
