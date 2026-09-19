@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 from textwrap import dedent
 
@@ -292,3 +293,11 @@ def test_install_builds_and_packages_the_locked_release_proxy() -> None:
     assert 'build --locked --release --manifest-path proxy/Cargo.toml' in source
     assert 'proxy/target/release/safeyolo-proxy' in source
     assert 'tool_args+=("$python_interpreter" "$REPO_ROOT")' in source
+
+
+def test_wheel_declares_the_retained_python_policy_package() -> None:
+    """A wheel install must keep the Python comparator's pdp imports usable."""
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    packages = project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+
+    assert "pdp" in packages

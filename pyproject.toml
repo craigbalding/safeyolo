@@ -116,7 +116,7 @@ members = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["cli/src/safeyolo"]
+packages = ["cli/src/safeyolo", "pdp"]
 
 # Bundle the curated host scripts + their shared helpers as package data,
 # so `--host-script @claude` (etc.) resolves from a wheel install without
