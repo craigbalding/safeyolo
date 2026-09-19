@@ -1,7 +1,7 @@
 """HTTPS forwarding through real policy with verification enabled at both peers."""
 
-import http.client
 import hashlib
+import http.client
 import json
 import socket
 import ssl
