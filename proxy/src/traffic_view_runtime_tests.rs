@@ -710,13 +710,12 @@ async fn live_operator_inspector_browses_native_websocket_transcript() {
                     decoder.read_to_end(&mut decompressed).unwrap();
                     let har: Value = serde_json::from_slice(&decompressed).unwrap();
                     assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
-                    assert_eq!(
-                        har["log"]["entries"][0]["_webSocketMessages"]
-                            .as_array()
-                            .unwrap()
-                            .len(),
-                        2
-                    );
+                    let messages = har["log"]["entries"][0]["_webSocketMessages"]
+                        .as_array()
+                        .unwrap();
+                    assert_eq!(messages.len(), 2);
+                    assert_eq!(messages[0]["data"], "client transcript");
+                    assert_eq!(messages[1]["data"], "server transcript");
                 }
                 _ => unreachable!(),
             }
