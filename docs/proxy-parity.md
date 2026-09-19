@@ -171,7 +171,7 @@ Paths below are relative to `cli/src/safeyolo/` unless prefixed otherwise.
 | TLS passthrough: `ignore_hosts.py`, `commands/proxy.py` | Operator exact hostname/IPv4 endpoint entries and live sync; built-in `api.asterfold.ai:7000`; configured IPv4 CIDR environment exceptions. Current exact-host surface rejects regex/wildcards, IPv6 literals and trailing dots. Preserve existing validation; do not infer a ban on private destinations. | Explicit authorized passthrough route; delete mitmproxy regex compilation after matching/evidence tests. | `cli/tests/test_ignore_hosts.py`, `test_ignored_host_logger.py`, `test_connect_matrix_live.py`. |
 | Opaque CONNECT and Secure Shell (SSH) | Destination/port admission precedes bytes; configured raw routes carry opaque traffic. A port or banner does not authenticate SSH. The issue requires server-first bytes, full duplex, half-close and real SSH through supported ingress. | Rust duplex tunnel and lifecycle evidence; delete framework tunnel hooks after real-client proof. | `test_connect_live.py` tests a client-first raw exchange; `test_connect_matrix_live.py` tests CONNECT combinations. These are not real SSH/half-close acceptance. |
 | Policy: `policy/{toml_normalize,compiler,loader,engine,models,budget_tracker}.py`, `pdp/{client,core,schemas}.py`, `core/config_cache.py` | Preserve TOML/YAML vocabulary, baseline/task merging, lists, agent-scoped precedence before global rules, exact ports, credential and network approvals, expiry, generic cell rate algorithm (GCRA) budgets, config caches and reload transactions. Read-only policy lookups must not consume request budgets. | One Rust policy representation and explicit state effects. Delete duplicate Python policy request/decision representations only after proxy and remaining CLI consumers are accounted for. | `test_toml_policy_engine.py`, `test_toml_policy_loader.py`, `test_policy_compiler.py`, `test_policy_chaos.py`, `test_budget_tracker.py`, `test_policy_transaction_regressions.py`, `test_agent_egress_posture.py`. |
-| Credential/service state: `core/{vault,service_loader,service_paths}.py`, `services/`, `policy/compiler.py`, `commands/vault.py` | Retain service-source precedence, authoritative registry snapshots, active token/binding/grant behavior and vault material; do not require credential re-entry. Vault is 16-byte salt followed by Fernet-encrypted YAML, using PBKDF2-HMAC-SHA256 with 480,000 iterations. | Rust-compatible vault and registry/state access. Remove proxy dependence on Python crypto/YAML only after round-trip/rollback tests; CLI may retain libraries. | `test_vault.py`, `test_service_loader.py`, `test_contract_enforcement.py`, `cli/tests/test_vault_cli.py`, `cli/tests/test_service_sources.py`; cross-runtime encrypted round-trip required. |
+| Credential/service state: `core/{vault,service_loader,service_paths}.py`, `services/`, `policy/compiler.py`, `commands/vault.py` | Retain service-source precedence, authoritative registry snapshots, active token/binding/grant behavior and vault material; do not require credential re-entry. Vault is 16-byte salt followed by Fernet-encrypted YAML, using PBKDF2-HMAC-SHA256 with 480,000 iterations. | Rust-compatible vault and registry/state access. Remove proxy dependence on Python crypto/YAML only after round-trip/rollback tests; CLI may retain libraries. | `test_vault.py`, `test_service_loader.py`, `test_contract_enforcement.py`, `cli/tests/test_vault_cli.py`, `cli/tests/test_service_sources.py`; cross-runtime encrypted round-trip required. The bounded #638 service authorization transition is `proxy/tests/gateway_contract_workflow.rs::selected_python_native_python_service_authorization_rollback`. |
 | Audit/trace/evidence: `core/{audit_schema,audit_writer,audit_stream,trace,flow_writer}.py`, `storage/flow_store.py` | Preserve request/connection relationships, evidence owner, transport identity, initiator, status/provenance, decision/approval/service details, body truncation and write failures. Existing SQLite stores remain readable. | Rust event and storage writers with existing consumers; remove proxy writers after schema/access/failure tests. | `test_audit_schema.py`, `test_trace.py`, `test_flow_store.py`, `test_flow_writer.py`, `test_trace_manifest.py`, `cli/tests/test_audit_stream.py`. |
 | Interactive traffic: `traffic_master.py`, `traffic_session.py`, `commands/traffic.py`, `websocket_console.py`, `websocket_body_filter.py` | One persistent shared console/web view; attach/detach without stopping proxy; filtering, facets, request/response/WS detail, load/save/export, duplicate/edit/replay/intercept/resume/kill/revert. Web authentication and optional Tailnet publication remain operator workflows. | Retained inspection/operation interface, without requiring mitmweb internals. Delete ConsoleMaster/web glue and renderer patches only after equivalent outcomes are demonstrated. | `cli/tests/test_traffic_master.py`, `cli/tests/test_traffic_session.py`, `cli/tests/test_proxy_web.py`, `test_operator_provenance.py`; interactive export/replay and access-control acceptance required. |
 | Lifecycle/configuration: `proxy.py`, `traffic_master.py`, `traffic_session.py`, `runtime_identity.py`, `config.py`, `commands/doctor.py` | Start/stop/restart, source identity, readiness, failure diagnostics, existing data/config paths, policy/list/service/vault refresh and listener synchronization remain usable. Python source reload requires restart. | Binary launcher and compatible lifecycle surfaces. Remove traffic-session process coupling only after CLI workflows and rollback pass. | `cli/tests/test_proxy.py`, `cli/tests/test_runtime_identity.py`, `cli/tests/test_start_safeyolo.py`, `cli/tests/test_doctor.py`; macOS and Linux cutover/rollback required. |
@@ -1412,7 +1412,11 @@ SNI, inner Host or resolved-address-only cases.
 The native [network policy](../proxy/src/policy.rs) runs without the temporary
 adapter when selected. [Approval persistence](../proxy/src/approvals.rs),
 [service selection](../proxy/src/services.rs) and
-[contract enforcement](../proxy/src/contracts.rs) still need runtime integration.
+[contract enforcement](../proxy/src/contracts.rs) still need complete runtime
+integration. The bounded gateway route now exercises one authenticated
+contract binding, remembered grant and synthetic credential injection through
+the native request path; the cross-runtime state and rollback witness is
+described in the operator service-authorization section below.
 Their differential tests cover authored precedence, scoped
 mutations and rollback, reload budgets, service/capability routes and contract
 request constraints. Local baseline host lists, IAM task overlays and network
@@ -1425,10 +1429,11 @@ policy matcher now evaluates credential use, risky routes and service calls;
 9,870 additional Python comparisons cover the existing contexts and effects.
 The native [encrypted vault](../proxy/src/credentials.rs) reads and writes the
 existing format without credential re-entry. Its secret type requires explicit
-access and cannot be serialized into routine metadata. The approval, service and credential modules remain
-inactive in transport. Transport injection, OAuth refresh execution, complete control
-integration, TOML's large-integer gap, and JSON body compatibility beyond the
-tested UTF-8 encodings still require work.
+access and cannot be serialized into routine metadata. Remaining approval,
+service and credential workflows are only partially integrated in transport.
+OAuth refresh execution, complete control integration, TOML's large-integer
+gap, and JSON body compatibility beyond the tested UTF-8 encodings still
+require work.
 Declared state and response-validator tiers are not promoted to implemented
 enforcement.
 
@@ -2672,6 +2677,18 @@ closes admission, joins that canceled worker before stopping the writer, and
 rejects later work. A later loader invocation checks the saved binding; this
 does not prove a running watcher or the complete service authorization and
 forwarding workflow.
+
+The bounded #638 state transition
+[`selected_python_native_python_service_authorization_rollback`](../proxy/tests/gateway_contract_workflow.rs)
+adds the cross-runtime state exercise for one service route. Native operator
+requests write a contract binding and remembered grant, a real request injects
+the synthetic vault credential at a controlled origin, and a restarted native
+process confirms the durable state and a newly minted process-local token. The
+selected Python `ServiceGateway` then reads the native IDs and removes both
+records through its existing locked policy writers; native reload rejects the
+request with no additional origin contact. This is bounded to one service and
+route; OAuth refresh, alternate catalog cases and installed rollback remain
+separate gaps.
 
 The native plumb owner applies the same process-lifetime rule to its blocking
 SQLite calls, memory projections and conversation long polls. Agent request-chat,

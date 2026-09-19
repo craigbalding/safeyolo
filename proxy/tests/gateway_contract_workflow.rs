@@ -1,10 +1,13 @@
+use ring::digest::{SHA256, digest};
 use safeyolo_proxy::{
     AgentListener, Config, Proxy,
     credentials::{Credential, Secret, Vault},
 };
 use serde_json::Value;
 use std::{
-    path::Path,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -18,6 +21,7 @@ use tokio::{
 };
 
 const PASS: &str = "contract-workflow-pass";
+const COMPARATOR_COMMIT: &str = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a";
 const SERVICE: &str = r#"
 schema_version: 1
 name: contract
@@ -362,6 +366,185 @@ async fn current_service_token(socket: &Path, service: &str) -> String {
 
 async fn current_gateway_token(socket: &Path) -> String {
     current_service_token(socket, "contract").await
+}
+
+fn state_sha256(path: &Path) -> String {
+    digest(&SHA256, &fs::read(path).unwrap())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn token_sha256(token: &str) -> String {
+    digest(&SHA256, token.as_bytes())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn git_output(directory: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn python_service_rollback(policy: &Path, binding_id: &str, grant_id: &str) -> Value {
+    let source = Path::new(
+        &std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+            .expect("SAFEYOLO_STATE_PYTHON_SOURCE must name the comparator checkout"),
+    )
+    .to_owned();
+    let executable = Path::new(
+        &std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+            .expect("SAFEYOLO_POLICY_PYTHON must name the comparator interpreter"),
+    )
+    .to_owned();
+    assert_eq!(
+        git_output(&source, &["rev-parse", "HEAD"]),
+        COMPARATOR_COMMIT
+    );
+    assert!(
+        git_output(&source, &["status", "--porcelain"]).is_empty(),
+        "selected Python comparator must be clean"
+    );
+    assert!(
+        executable.is_file(),
+        "selected Python comparator is missing"
+    );
+    let script = r#"
+import hashlib
+import importlib.metadata
+import json
+import pathlib
+import sys
+
+from safeyolo.mitm_addons.service_gateway import ServiceGateway
+from safeyolo.policy.toml_roundtrip import load_agents, load_roundtrip
+
+policy = pathlib.Path(sys.argv[1])
+expected_binding = sys.argv[2]
+expected_grant = sys.argv[3]
+expected_executable = pathlib.Path(sys.argv[4])
+source = pathlib.Path(sys.argv[5])
+assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
+
+def snapshot():
+    agents = load_agents(load_roundtrip(policy))
+    alice = agents['alice']
+    service = alice['services']['contract']
+    return {
+        'policy': {
+            'sha256': hashlib.sha256(policy.read_bytes()).hexdigest(),
+            'mode': format(policy.stat().st_mode & 0o777, '04o'),
+        },
+        'service_authorization': {
+            'capability': service['capability'],
+            'credential_name': service['token'],
+        },
+        'bindings': [
+            {
+                'binding_id': item.get('binding_id'),
+                'service': item.get('service'),
+                'capability': item.get('capability'),
+                'template': item.get('template'),
+                'bound_values': item.get('bound_values', {}),
+                'grantable_operations': item.get('grantable_operations', []),
+            }
+            for item in alice.get('contract_bindings', [])
+        ],
+        'grants': [
+            {
+                'grant_id': item.get('grant_id'),
+                'service': item.get('service'),
+                'method': item.get('method'),
+                'path': item.get('path'),
+                'scope': item.get('scope'),
+            }
+            for item in alice.get('grants', [])
+        ],
+    }
+
+gateway = ServiceGateway()
+gateway._get_policy_path = lambda: policy
+gateway._load_grants_from_policy()
+gateway._load_contract_bindings_from_policy()
+binding = gateway.get_contract_binding('alice', 'contract', 'writer')
+assert binding is not None and binding.binding_id == expected_binding
+grant = gateway._check_grant('alice', 'contract', 'POST', '/v1/write')
+assert grant is not None and grant.grant_id == expected_grant
+before = snapshot()
+assert before['service_authorization']['capability'] == 'writer'
+assert before['service_authorization']['credential_name'] == 'contract-secret'
+assert gateway.revoke_grant(expected_grant)
+assert gateway.revoke_contract_binding(expected_binding)
+gateway._grants.clear()
+gateway._contract_bindings.clear()
+gateway._load_grants_from_policy()
+gateway._load_contract_bindings_from_policy()
+assert gateway._check_grant('alice', 'contract', 'POST', '/v1/write') is None
+assert gateway.get_contract_binding('alice', 'contract', 'writer') is None
+after = snapshot()
+assert not after['grants']
+assert not after['bindings']
+print(json.dumps({
+    'backend': 'python-comparator',
+    'operation': 'read-native-state-and-rollback-service-access',
+    'runtime': {
+        'source': str(source),
+        'commit': '7e934a5470f1aa9b74052fea08c6bae9b5f32e8a',
+        'launcher': str(expected_executable),
+        'program': sys.executable,
+        'python_version': '.'.join(map(str, sys.version_info[:3])),
+        'safeyolo': importlib.metadata.version('safeyolo'),
+        'mitmproxy': importlib.metadata.version('mitmproxy'),
+        'tomlkit': importlib.metadata.version('tomlkit'),
+    },
+    'before': before,
+    'after': after,
+    'rollback': {
+        'grant_id': expected_grant,
+        'binding_id': expected_binding,
+        'service_authorization_retained': True,
+    },
+}))
+"#;
+    let output = Command::new(&executable)
+        .args([
+            "-c",
+            script,
+            policy.to_str().unwrap(),
+            binding_id,
+            grant_id,
+            executable.to_str().unwrap(),
+            source.to_str().unwrap(),
+        ])
+        .env(
+            "PYTHONPATH",
+            format!("{}:{}", source.join("cli/src").display(), source.display()),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Python service rollback failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "Python service rollback returned invalid JSON: {error}; stdout={}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    })
 }
 
 #[tokio::test]
@@ -1278,4 +1461,204 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     watcher.await.unwrap();
     origin_task.abort();
     other_origin_task.abort();
+}
+
+#[tokio::test]
+#[ignore = "selected Python→Rust→Python service authorization and gateway rollback"]
+async fn selected_python_native_python_service_authorization_rollback() {
+    let root = tempfile::tempdir().unwrap();
+    let root_path = root.path();
+    for directory in ["data", "builtin", "services"] {
+        fs::create_dir_all(root_path.join(directory)).unwrap();
+    }
+    fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
+    fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
+    fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
+    fs::write(root_path.join("data/vault.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    vault
+        .store(Credential::new(
+            "contract-secret",
+            "bearer",
+            Secret::new("exact-contract-origin-secret"),
+        ))
+        .unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    fs::write(root_path.join("policy.toml"), policy(port)).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(
+        listener,
+        seen.clone(),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    ));
+
+    let mut proxy = Proxy::start(config(root_path)).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root_path.join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let socket = root_path.join("alice.sock");
+    let initial_token = current_gateway_token(&socket).await;
+    let binding_response = admin(
+        admin_port,
+        &admin_request(
+            "/admin/gateway/contract-binding",
+            br#"{"agent":"alice","service":"contract","capability":"writer","template":"contract.write.v1","bindings":{"project":"alpha","ticket":"T-1"},"grantable_operations":["write"]}"#,
+        ),
+    )
+    .await;
+    status(&binding_response, 200);
+    let binding_body: Value = serde_json::from_slice(body(&binding_response)).unwrap();
+    let binding_id = binding_body["binding_id"].as_str().unwrap().to_owned();
+    assert!(proxy.reload_policy_if_changed().await.unwrap());
+
+    let grant_response = admin(
+        admin_port,
+        &admin_request(
+            "/admin/gateway/grant",
+            br#"{"agent":"alice","service":"contract","method":"POST","path":"/v1/write","lifetime":"remembered"}"#,
+        ),
+    )
+    .await;
+    status(&grant_response, 200);
+    let grant_body: Value = serde_json::from_slice(body(&grant_response)).unwrap();
+    let grant_id = grant_body["grant_id"].as_str().unwrap().to_owned();
+    let _ = proxy.reload_policy_if_changed().await.unwrap();
+
+    let native_token = current_gateway_token(&socket).await;
+    let allowed = gateway_call(
+        &socket,
+        port,
+        &native_token,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&allowed, 200);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        String::from_utf8_lossy(&seen.lock().unwrap()[0]).contains("exact-contract-origin-secret")
+    );
+    let native_written_hash = state_sha256(&root_path.join("policy.toml"));
+    let origin_count_before_rollback = seen.lock().unwrap().len();
+
+    // Stop the native consumer before the selected prior release reads the
+    // records it just wrote. The Python ServiceGateway performs the real
+    // grant/binding lookup and durable removal under its existing policy lock.
+    proxy.shutdown().await;
+    let python_rollback =
+        python_service_rollback(&root_path.join("policy.toml"), &binding_id, &grant_id);
+    assert_eq!(
+        python_rollback["rollback"]["binding_id"],
+        binding_id.as_str()
+    );
+    assert_eq!(python_rollback["rollback"]["grant_id"], grant_id.as_str());
+    assert_eq!(
+        python_rollback["before"]["policy"]["sha256"],
+        native_written_hash
+    );
+
+    let restarted = Proxy::start(config(root_path)).await.unwrap();
+    let restarted_token = current_gateway_token(&socket).await;
+    assert_ne!(
+        token_sha256(&initial_token),
+        token_sha256(&restarted_token),
+        "a restart must mint a process-local token for the persisted service authorization"
+    );
+    let rolled_back = gateway_call(
+        &socket,
+        port,
+        &restarted_token,
+        "POST",
+        "/v1/write?ticket=T-1",
+        br#"{"project":"alpha"}"#,
+    )
+    .await;
+    status(&rolled_back, 403);
+    assert_eq!(seen.lock().unwrap().len(), origin_count_before_rollback);
+    assert_eq!(
+        python_rollback["after"]["service_authorization"]["capability"],
+        "writer"
+    );
+    assert!(
+        python_rollback["after"]["grants"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        python_rollback["after"]["bindings"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let evidence_dir = PathBuf::from(
+        std::env::var_os("SAFEYOLO_STATE_EVIDENCE_DIR")
+            .expect("SAFEYOLO_STATE_EVIDENCE_DIR must retain evidence"),
+    );
+    fs::create_dir_all(&evidence_dir).unwrap();
+    let final_hash = state_sha256(&root_path.join("policy.toml"));
+    let manifest = serde_json::json!({
+        "schema": 1,
+        "family": "service-authorization-contract-binding-grant-token",
+        "comparator": python_rollback["runtime"],
+        "native": {
+            "source": git_output(
+                Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(),
+                &["rev-parse", "HEAD"],
+            ),
+            "package": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "test": "selected_python_native_python_service_authorization_rollback",
+        },
+        "commands": {
+            "python": "selected Python ServiceGateway comparator script embedded in the Rust fixture",
+            "native": "cargo test --test gateway_contract_workflow selected_python_native_python_service_authorization_rollback -- --ignored --exact --nocapture",
+        },
+        "state": {
+            "native_written_sha256": native_written_hash,
+            "python_rollback_sha256": python_rollback["after"]["policy"]["sha256"],
+            "final_native_sha256": final_hash,
+            "initial_token_sha256": token_sha256(&initial_token),
+            "native_token_sha256": token_sha256(&native_token),
+            "restarted_token_sha256": token_sha256(&restarted_token),
+            "mode": python_rollback["after"]["policy"]["mode"],
+        },
+        "actions": {
+            "binding_written": binding_id,
+            "grant_written": grant_id,
+            "request_before_rollback": "200 with credential injection and one origin request",
+            "python_rollback": [binding_id, grant_id],
+            "request_after_rollback": "403 with zero additional origin requests",
+        },
+        "stages": [
+            {"backend": "rust-native", "operation": "write-reload-request", "status": 200},
+            python_rollback,
+            {"backend": "rust-native", "operation": "restart-read-rollback-request", "status": 403},
+        ],
+        "secret_free": true,
+    });
+    fs::write(
+        evidence_dir.join("service-authorization-python-rust-python-rust.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    println!(
+        "service authorization rollback manifest: {}",
+        serde_json::to_string_pretty(&manifest).unwrap()
+    );
+    restarted.shutdown().await;
+    origin_task.abort();
 }
