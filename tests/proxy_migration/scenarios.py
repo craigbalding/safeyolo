@@ -35,6 +35,9 @@ class Origin(ThreadingHTTPServer):
         self.stream_finished = threading.Event()
         self.stream_initial_sent = threading.Event()
         self.stream_release = threading.Event()
+        self.stream_cancelled = threading.Event()
+        self.stream_write_error = None
+        self.stream_bytes_sent = 0
         self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
 
@@ -57,23 +60,32 @@ class OriginHandler(BaseHTTPRequestHandler):
         if self.server.keep_alive:
             observation["connection_id"] = self.server.connection_ids[id(self.connection)]
         self.server.requests.append(observation)
-        if self.path in {"/stream", "/stream-control"}:
+        if self.path in {"/stream", "/stream-control", "/stream-cancel"}:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
             self.end_headers()
             chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
-            if self.path == "/stream-control":
-                self.wfile.write(b"data: first-event\n\n")
+            if self.path in {"/stream-control", "/stream-cancel"}:
+                first = b"data: first-event\n\n"
+                self.wfile.write(first)
                 self.wfile.flush()
                 self.server.stream_initial_sent.set()
                 self.server.stream_release.wait(timeout=30)
-                remaining = max(0, self.server.stream_chunks - 1)
+                remaining = self.server.stream_chunks
+                if self.path == "/stream-control":
+                    remaining = max(0, remaining - 1)
             else:
                 remaining = self.server.stream_chunks
             for _ in range(remaining):
-                self.wfile.write(chunk)
-                self.wfile.flush()
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    self.server.stream_bytes_sent += len(chunk)
+                except (BrokenPipeError, ConnectionResetError, OSError) as error:
+                    self.server.stream_write_error = type(error).__name__
+                    self.server.stream_cancelled.set()
+                    break
                 time.sleep(0.02)
             self.server.stream_finished.set()
             return

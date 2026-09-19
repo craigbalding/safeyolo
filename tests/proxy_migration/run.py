@@ -459,6 +459,97 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
             client.close()
 
 
+def cancelled_sse_workload(backend, directory, seconds=4.0):
+    """Cancel a held SSE response and verify independent work still completes.
+
+    The origin flushes one event and then waits for the test to release it.  The
+    client closes its downstream socket before release; after an unrelated
+    request succeeds, the origin is released and must observe the proxy's
+    cancellation before producing the complete paced body.  Resource samples
+    come from ``/proc`` and the origin, not proxy counters.
+    """
+    first_event = b"data: first-event\n\n"
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend, directory, POLICY, native_policy=backend == "rust"
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-cancel")
+            response = client.getresponse()
+            assert response.status == 200
+            received = response.read(len(first_event))
+            assert received == first_event
+            assert origin.stream_initial_sent.is_set()
+            assert not origin.stream_release.is_set()
+            first_before_release = not origin.stream_release.is_set()
+            before_close = runtime_resources(proxy)
+
+            # Closing the downstream connection is the cancellation action.
+            # Keep the origin held so a successful follow-up proves the proxy
+            # remains responsive while cancellation is being propagated.
+            client.close()
+            close_elapsed = time.perf_counter() - started
+            after_close = runtime_resources(proxy)
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_elapsed = time.perf_counter() - started - close_elapsed
+            assert status == 200 and body == b"hello"
+            assert not origin.stream_release.is_set()
+            during_control = runtime_resources(proxy)
+
+            origin.stream_release.set()
+            cancellation_observed = origin.stream_cancelled.wait(timeout=5)
+            finished_observed = origin.stream_finished.wait(timeout=5)
+            after_cancel = runtime_resources(proxy)
+            assert proxy.process.poll() is None
+            event_deadline = time.monotonic() + 5
+            request_events = []
+            while time.monotonic() < event_deadline:
+                request_events = [event for event in read_events(proxy.event_log)
+                                  if event.get("event") == "proxy.request"]
+                if len(request_events) >= 2:
+                    break
+                time.sleep(0.02)
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream-cancel"},
+                {"method": "GET", "target": "/control"},
+            ]
+            return {
+                "workload": "cancelled_sse_with_independent_request",
+                "requested_stream_seconds": seconds,
+                "first_event_bytes": len(received),
+                "first_event_before_release": first_before_release,
+                "downstream_closed_before_release": True,
+                "control_status": status,
+                "control_completed_while_stream_held": True,
+                "control_elapsed_seconds": control_elapsed,
+                "cancellation_elapsed_seconds": time.perf_counter() - started,
+                "request_events_observed_before_shutdown": len(request_events),
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "write_error": origin.stream_write_error,
+                    "stream_cancelled": cancellation_observed,
+                    "stream_bytes_sent_after_release": origin.stream_bytes_sent,
+                    "stream_chunks_available": origin.stream_chunks,
+                    "stream_finished_after_cancel": finished_observed,
+                },
+                "runtime_resources": {
+                    "before_close": before_close,
+                    "after_close": after_close,
+                    "during_control": during_control,
+                    "after_cancel": after_cancel,
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one held SSE cancellation and one independent request; no repeated-batch leak threshold",
+            }
+        finally:
+            origin.stream_release.set()
+            client.close()
+
+
 def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
     """Round-trip complete small WS messages over one connection."""
     with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
@@ -594,6 +685,10 @@ def capture(args):
                 workloads.append(streamed_slow_admin_workload(
                     args.backend, args.evidence / "stream-slow-admin-workload", args.stream_seconds
                 ))
+            elif workload == "sse-cancel":
+                workloads.append(cancelled_sse_workload(
+                    args.backend, args.evidence / "sse-cancel-workload", args.stream_seconds
+                ))
             elif workload == "websocket":
                 workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
                                                     args.websocket_seconds, args.websocket_interval))
@@ -669,7 +764,7 @@ def main():
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
     run.add_argument("--workload", action="append",
-                     choices=("short", "sse", "stream-control", "stream-slow-admin", "websocket", "local-api"),
+                     choices=("short", "sse", "stream-control", "stream-slow-admin", "sse-cancel", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)

@@ -4,8 +4,12 @@ import concurrent.futures
 
 import pytest
 
-from tests.proxy_migration.harness import connection, launch_proxy, request
-from tests.proxy_migration.run import streamed_control_workload, streamed_slow_admin_workload
+from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
+from tests.proxy_migration.run import (
+    cancelled_sse_workload,
+    streamed_control_workload,
+    streamed_slow_admin_workload,
+)
 from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
 
 
@@ -43,6 +47,36 @@ def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_
     assert result["admin"]["status"] == 200
     assert result["admin"]["completed_while_stream_active"] is True
     assert result["origin_observation"]["stream_finished_after_read"] is True
+
+
+def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_backend, tmp_path, request):
+    if proxy_backend == "python":
+        # The comparator currently drains this response after the downstream
+        # close.  Keep that concrete known defect visible as a strict xfail;
+        # native Rust must still execute and pass the same assertions.
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Python comparator does not cancel the held upstream SSE after downstream close",
+        ))
+    result = cancelled_sse_workload(proxy_backend, tmp_path / proxy_backend)
+    assert result["first_event_before_release"] is True
+    assert result["downstream_closed_before_release"] is True
+    assert result["control_status"] == 200
+    assert result["control_completed_while_stream_held"] is True
+    assert result["origin_observation"]["stream_cancelled"] is True
+    assert result["origin_observation"]["write_error"] in {
+        "BrokenPipeError",
+        "ConnectionResetError",
+        "OSError",
+    }
+    assert result["origin_observation"]["stream_bytes_sent_after_release"] < (
+        result["origin_observation"]["stream_chunks_available"] * 16384
+    )
+    assert result["origin_observation"]["stream_finished_after_cancel"] is True
+    events = [event for event in read_events(tmp_path / proxy_backend / "events.jsonl")
+              if event.get("event") == "proxy.request"]
+    assert len(events) == 2
+    assert all(int(event.get("status", 500)) == 200 for event in events)
 
 
 def test_concurrent_policy_decisions_keep_agent_scope(proxy_backend, tmp_path):
