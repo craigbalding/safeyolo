@@ -2406,6 +2406,13 @@ A failure in the native pre-dial diagnostic write is reported as an attempt
 error while retaining its existing transport failure; the source has no
 identical diagnostic stage.
 
+The direct matcher remains below local containment: a broad `127.0.0.0/8`
+CIDR installed in the live runtime cannot select the protected operator port.
+The owned CONNECT control receives the existing admin-shield 403, emits no
+passthrough lifecycle event, and performs no egress dial. This proves the
+protected-port boundary for one permissive address exception; reserved-name,
+parent-route and the remaining D29 containment cases remain separate.
+
 The [source oracle](../proxy/tests/ignored_host_source.py) passes eighteen
 workflows. Four component tests include replay of all 71 lifecycle callbacks
 from sixteen applicable workflows and comparison of 26 accepted canonical

@@ -266,6 +266,30 @@ async fn refused_owned_endpoint_emits_only_connect_error() {
 }
 
 #[tokio::test]
+async fn admin_port_remains_contained_with_broad_cidr_passthrough() {
+    // Install the same broad IPv4 matcher used by SAFEYOLO_IGNORE_CIDRS on
+    // the live runtime.  AdminShield must still reject the protected local
+    // port before the direct passthrough owner can dial or emit lifecycle
+    // events.  This keeps the configured exception scoped to egress and does
+    // not turn a CIDR entry into access to the operator API.
+    let directory = tempfile::tempdir().unwrap();
+    let proxy = Proxy::start(config(directory.path(), 9090, false, true))
+        .await
+        .unwrap();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    *runtime.passthrough.write().unwrap() =
+        crate::tunnels::Passthrough::new(&[], "127.0.0.0/8").unwrap();
+
+    let (client, head) = request_to(directory.path(), "127.0.0.1", 9090).await;
+    assert!(head.starts_with(b"HTTP/1.1 403"), "{head:?}");
+    drop(client);
+    assert!(lifecycle(&runtime, directory.path()).is_empty());
+    proxy.shutdown().await;
+    assert!(lifecycle(&runtime, directory.path()).is_empty());
+    clean(directory.path());
+}
+
+#[tokio::test]
 async fn unmatched_opaque_and_policy_denial_do_not_create_logger_sessions() {
     for allowed in [true, false] {
         let directory = tempfile::tempdir().unwrap();
