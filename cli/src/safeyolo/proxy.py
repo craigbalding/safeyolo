@@ -11,7 +11,6 @@ import sys
 import time
 from pathlib import Path
 
-from . import mitm_addons as _mitm_addons
 from . import rust_proxy
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
 from .ignore_hosts import (
@@ -22,19 +21,50 @@ from .runtime_identity import DEV_MODE_ENV, DEV_SOURCE_ROOTS_ENV
 from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
 from .timing import child_environment as _profile_child_environment
 from .timing import enter as _profile_enter
-from .traffic_session import (
-    capture_session,
-    session_process_alive,
-    start_session,
-    stop_session,
-)
 
 log = logging.getLogger("safeyolo.proxy")
 
-ADDON_CHAIN = _mitm_addons.ADDON_CHAIN
 DEFAULT_FLOW_CACHE = 5_000
 DEFAULT_FLOW_CACHE_BYTES = 1024**3
 _VIA_TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+def __getattr__(name: str):
+    """Load the retained Python addon chain only when explicitly inspected."""
+    if name == "ADDON_CHAIN":
+        from .mitm_addons import ADDON_CHAIN
+
+        globals()[name] = ADDON_CHAIN
+        return ADDON_CHAIN
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def capture_session(*args, **kwargs):
+    """Delegate diagnostics to the retained Python session on demand."""
+    from .traffic_session import capture_session as _capture_session
+
+    return _capture_session(*args, **kwargs)
+
+
+def session_process_alive(*args, **kwargs):
+    """Check the retained Python session only when that path is selected."""
+    from .traffic_session import session_process_alive as _session_process_alive
+
+    return _session_process_alive(*args, **kwargs)
+
+
+def start_session(*args, **kwargs):
+    """Start the retained Python session only when that path is selected."""
+    from .traffic_session import start_session as _start_session
+
+    return _start_session(*args, **kwargs)
+
+
+def stop_session(*args, **kwargs):
+    """Stop the retained Python session only when that path is selected."""
+    from .traffic_session import stop_session as _stop_session
+
+    return _stop_session(*args, **kwargs)
 
 
 def _pid_file() -> Path:

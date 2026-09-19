@@ -104,3 +104,17 @@ concrete path and affected test set. The default switch does not authorize a
 Python dependency deletion or comparator-job change. A future deletion commit
 must update this ledger and its guard test in the same candidate, retaining a
 readable rollback entry for every removed owner.
+
+## Bounded native import audit
+
+The native CLI registration path is import-clean with respect to the retained
+Python proxy runtime: `safeyolo.cli` can be imported while an executable probe
+blocks `mitmproxy`, `safeyolo.mitm_addons`, and `safeyolo.traffic_master`, and
+the default selection remains `proxy.backend: rust`. The old `ADDON_CHAIN` and
+private terminal-session helpers remain available through explicit Python-path
+lookups, so this audit does not remove a rollback or comparator consumer. The
+candidate test is
+`cli/tests/test_cli_imports.py::test_native_cli_registration_does_not_import_python_proxy_runtime`.
+This is replacement evidence for the import boundary associated with M8-01
+and M8-30 only; those rows remain retained until their full runtime and
+packaging gates pass.
