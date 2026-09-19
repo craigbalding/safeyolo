@@ -115,7 +115,7 @@ def read_all(stream):
     return bytes(received)
 
 
-def _parent_connect_control_fixture():
+def _parent_connect_control_fixture(phases=("positive", "failure")):
     """Serve one successful and one refused CONNECT with raw observations."""
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -127,7 +127,7 @@ def _parent_connect_control_fixture():
 
     def serve():
         try:
-            for phase in ("positive", "failure"):
+            for phase in phases:
                 stream, peer = listener.accept()
                 with stream:
                     stream.settimeout(5)
@@ -281,6 +281,132 @@ def test_parent_connect_failure_never_falls_back_to_direct_origin(
         f"CONNECT {refused_authority} HTTP/1.1\r\n".encode()
     )
     assert b"X-Direct-Egress-Canary" not in observations[1]["request"]
+
+
+def test_parent_connect_failure_recovers_on_later_parent_request(
+    proxy_backend, tmp_path, request
+):
+    """A refused parent request does not poison the next parent-routed request."""
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason=(
+                "Python comparator opens the configured parent after its own CONNECT 200, "
+                "so it cannot provide the parent server-first marker before client data"
+            ),
+        ))
+    positive_authority = "parent-recovery.invalid:23457"
+    parent, observations, failure, thread = _parent_connect_control_fixture(
+        phases=("failure", "positive")
+    )
+    parent_url = f"http://127.0.0.1:{parent.getsockname()[1]}"
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    with socket.socket() as origin:
+        origin.bind(("127.0.0.1", 0))
+        origin.listen()
+        origin.settimeout(0.25)
+        refused_authority = f"127.0.0.1:{origin.getsockname()[1]}"
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                PARENT_CONNECT_POLICY,
+                parent_proxy=parent_url,
+                ignore_hosts=[positive_authority, refused_authority],
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(proxy.paths["alice"])
+                    client.sendall(
+                        f"CONNECT {refused_authority} HTTP/1.1\r\n"
+                        f"Host: {refused_authority}\r\n"
+                        "X-Direct-Egress-Canary: must-not-reach-origin\r\n"
+                        "Connection: close\r\n\r\n".encode()
+                    )
+                    refused_response = read_until(client, b"\r\n\r\n")
+                assert refused_response.startswith(b"HTTP/1.1 502"), refused_response
+                with pytest.raises(socket.timeout):
+                    origin.accept()
+
+                with socket.socket(socket.AF_UNIX) as client:
+                    client.settimeout(5)
+                    client.connect(proxy.paths["alice"])
+                    client.sendall(
+                        f"CONNECT {positive_authority} HTTP/1.1\r\n"
+                        f"Host: {positive_authority}\r\nConnection: close\r\n\r\n".encode()
+                    )
+                    positive_head = read_until(client, b"\r\n\r\n")
+                    assert positive_head.startswith(b"HTTP/1.1 200"), positive_head
+                    assert client.recv(len(b"parent-control-server-first")) == (
+                        b"parent-control-server-first"
+                    )
+                    client.sendall(b"parent-recovery-payload")
+                    client.shutdown(socket.SHUT_WR)
+                    assert read_all(client) == b""
+
+                assert proxy.process.poll() is None
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                (directory / "parent-connect-recovery.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "parent_url": parent_url,
+                            "sequence": ["failure", "positive"],
+                            "refused_authority": refused_authority,
+                            "positive_authority": positive_authority,
+                            "refused_client_response_head_hex": refused_response.hex(),
+                            "positive_client_response_head_hex": positive_head.hex(),
+                            "parent_observations": [
+                                {
+                                    "phase": item["phase"],
+                                    "peer": item["peer"],
+                                    "request_hex": item["request"].hex(),
+                                    "payload_hex": item["payload"].hex(),
+                                }
+                                for item in observations
+                            ],
+                            "direct_origin_accepts": 0,
+                            "proxy_egress_events": proxy.events("proxy.egress"),
+                            "native_policy_provenance": (
+                                provenance if proxy_backend == "rust" else None
+                            ),
+                            "limits": [
+                                "The recovery is a later independent request through the same configured parent after one refused CONNECT.",
+                                "The direct-origin canary records acceptance only; no origin application bytes are expected after zero accepts.",
+                                "The single parent_proxy setting supplies no alternate-parent or same-request retry contract; those remain unproven.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+        finally:
+            parent.close()
+            thread.join(timeout=6)
+    assert not thread.is_alive()
+    assert not failure, failure
+    assert [item["phase"] for item in observations] == ["failure", "positive"]
+    assert observations[0]["request"].startswith(
+        f"CONNECT {refused_authority} HTTP/1.1\r\n".encode()
+    )
+    assert b"X-Direct-Egress-Canary" not in observations[0]["request"]
+    assert observations[1]["request"].startswith(
+        f"CONNECT {positive_authority} HTTP/1.1\r\n".encode()
+    )
+    assert observations[1]["payload"] == b"parent-recovery-payload"
 
 
 def _process_fd_targets(pid):

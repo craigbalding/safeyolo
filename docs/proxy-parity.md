@@ -2492,6 +2492,15 @@ comparator opens the configured parent only after sending its own client-facing
 200, so it cannot provide the parent server-first marker before client data;
 this comparison remains a named strict expected failure.
 
+The follow-up control
+`test_parent_connect_failure_recovers_on_later_parent_request` reverses the
+sequence: the first parent CONNECT returns 502 and a later independent CONNECT
+through the same configured parent receives the parent server-first marker and
+payload. The direct-origin canary records zero accepts throughout. This is
+per-request recovery after an isolated parent failure; the single
+`parent_proxy` setting does not define same-request retry or alternate-parent
+selection, so those remain unproven.
+
 ### Live operator HTTP and WebSocket inspection
 
 The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP

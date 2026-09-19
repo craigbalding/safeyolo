@@ -52,6 +52,10 @@ The shared assertions cover:
   different ordering (its own 200 precedes opening the parent, so the
   parent server-first marker cannot precede client data) remains a named strict
   expected failure.
+- After one parent CONNECT refusal, a later independent CONNECT recovers through
+  the same configured parent while the direct-origin canary remains untouched.
+  This proves per-request recovery; the single-parent setting does not claim
+  same-request retry or alternate-parent selection.
 - Fragmented TLS prefixes retain the inner request decision. Two old short-prefix
   cases remain strict expected failures.
 - SSH-prefixed HTTP methods retain inner policy. HTTP whitespace variants stay
