@@ -386,6 +386,108 @@ def test_complete_fragmented_messages(proxy_backend, tmp_path, request, tls, dir
             assert delivered == (opcode, payload)
 
 
+def _test_scan_pattern_split_across_fragments_with_interleaved_control(
+        proxy_backend, tmp_path, tls, direction, mode):
+    """Inspect one logical message across fragments without losing a control frame."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    before = b"safe-prefix-PROJ-"
+    after = b"12345-safe-suffix"
+    forbidden = (1, before + after)
+    safe = (1, b"safe-follow-up")
+    control = (9, b"control")
+    expected_proxy = [safe] if mode == "block" else [forbidden, safe]
+    policy = POLICY + PATTERN
+    inspection = {
+        "block_websocket_request": direction == "request" and mode == "block",
+        "block_websocket_response": direction == "response" and mode == "block",
+    }
+
+    def fragmented_wire(masked):
+        return (
+            frame(1, before, final=False, masked=masked)
+            + frame(control[0], control[1], masked=masked)
+            + frame(0, after, masked=masked)
+        )
+
+    def script(peer, results):
+        if direction == "response":
+            # The forbidden pattern is split at the protocol boundary. The
+            # control frame must still be answered while the data message is
+            # assembled and inspected.
+            peer.stream.sendall(fragmented_wire(False) + frame(safe[0], safe[1]))
+            observed = peer.receive()
+            assert observed == (1, b"ack")
+            results.put(([forbidden, safe], list(peer.controls)))
+            assert peer.receive()[0] == 8
+        else:
+            received = []
+            while not received or received[-1] != safe:
+                observed = peer.receive()
+                if observed[0] == 8:
+                    break
+                received.append(observed)
+            results.put((received, list(peer.controls)))
+            if received:
+                peer.send(1, b"ack")
+            assert peer.receive()[0] == 8
+        peer.close()
+
+    def run_case(origin, *, path=None, ca=None):
+        with connect_peer(origin, path=path, ca=ca) as peer:
+            if direction == "request":
+                peer.stream.sendall(fragmented_wire(True) + frame(safe[0], safe[1], masked=True))
+                received = []
+                while not received or received[-1] != (1, b"ack"):
+                    observed = peer.receive()
+                    if observed[0] == 8:
+                        break
+                    received.append(observed)
+            else:
+                received = []
+                while not received or received[-1] != safe:
+                    observed = peer.receive()
+                    if observed[0] == 8:
+                        break
+                    received.append(observed)
+            if direction == "response":
+                peer.send(1, b"ack")
+            peer.close()
+            assert peer.receive()[0] == 8
+            client_controls = list(peer.controls)
+        origin_received, origin_controls = origin.results.get(timeout=5)
+        if direction == "response":
+            return received, origin_controls, client_controls
+        return origin_received, origin_controls, client_controls
+
+    with origin_server(script, pem=pem) as origin:
+        direct = run_case(origin, ca=public if tls else None)
+        assert direct[0] == [forbidden, safe]
+        if direction == "request":
+            assert (control[0], control[1]) in direct[1]
+        else:
+            assert control in direct[2]
+
+        with launch_proxy(proxy_backend, directory, policy, tls=tls, upstream_ca=public,
+                          inspection=inspection) as proxy:
+            proxied = run_case(origin, path=proxy.paths["alice"], ca=proxy_ca if tls else None)
+            assert proxied[0] == expected_proxy
+            if direction == "request":
+                assert control in proxied[1]
+            else:
+                assert control in proxied[2]
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+@pytest.mark.parametrize("direction", ["request", "response"])
+@pytest.mark.parametrize("mode", ["block", "log"])
+def test_scan_pattern_split_across_fragments_with_interleaved_control(
+        proxy_backend, tmp_path, tls, direction, mode):
+    """A split finding is blocked or logged while ping/pong remains live."""
+    return _test_scan_pattern_split_across_fragments_with_interleaved_control(
+        proxy_backend, tmp_path, tls, direction, mode)
+
+
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
 def test_first_server_message_survives_coalesced_101_handoff(proxy_backend, tmp_path, tls):
     """Preserve a server frame sent in the same write as the 101 response."""
