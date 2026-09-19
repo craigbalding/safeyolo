@@ -167,6 +167,92 @@ async fn nats_connz() -> Value {
     serde_json::from_str(&body).expect("NATS connz JSON")
 }
 
+fn monitor_body(response: &[u8]) -> Vec<u8> {
+    let marker = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .expect("monitor response head");
+    let head = String::from_utf8_lossy(&response[..marker]);
+    let body = &response[marker + 4..];
+    if !head.lines().any(|line| {
+        line.split_once(':')
+            .map(|(name, value)| {
+                name.eq_ignore_ascii_case("transfer-encoding")
+                    && value.trim().eq_ignore_ascii_case("chunked")
+            })
+            .unwrap_or(false)
+    }) {
+        return body.to_vec();
+    }
+
+    let mut remaining = body;
+    let mut decoded = Vec::new();
+    loop {
+        let line_end = remaining
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .expect("chunk length line");
+        let length_text = std::str::from_utf8(&remaining[..line_end])
+            .expect("chunk length encoding")
+            .split(';')
+            .next()
+            .expect("chunk length value")
+            .trim();
+        let length = usize::from_str_radix(length_text, 16).expect("chunk length");
+        remaining = &remaining[line_end + 2..];
+        if length == 0 {
+            return decoded;
+        }
+        assert!(remaining.len() >= length + 2, "complete monitor chunk");
+        decoded.extend_from_slice(&remaining[..length]);
+        assert_eq!(&remaining[length..length + 2], b"\r\n");
+        remaining = &remaining[length + 2..];
+    }
+}
+
+async fn nats_jsz() -> Value {
+    let port = monitor_port();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream
+        .write_all(b"GET /jsz?accounts=true&streams=true&consumers=true HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+        .await
+        .expect("NATS jsz response timeout")
+        .unwrap();
+    serde_json::from_slice(&monitor_body(&response))
+        .unwrap_or_else(|error| panic!("NATS jsz JSON: {error}; response={response:?}"))
+}
+
+fn stream_consumer_count(jsz: &Value, stream_name: &str) -> Option<usize> {
+    if let Some(object) = jsz.as_object() {
+        if object.get("name").and_then(Value::as_str) == Some(stream_name) {
+            return object
+                .get("consumer_detail")
+                .or_else(|| object.get("consumers"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .or_else(|| {
+                    object
+                        .get("state")
+                        .and_then(|state| state.get("consumer_count"))
+                        .and_then(Value::as_u64)
+                        .map(|count| count as usize)
+                });
+        }
+        return object
+            .values()
+            .find_map(|value| stream_consumer_count(value, stream_name));
+    }
+    jsz.as_array().and_then(|values| {
+        values
+            .iter()
+            .find_map(|value| stream_consumer_count(value, stream_name))
+    })
+}
+
 fn connection_subscription_count(connz: &Value, subject: &str) -> usize {
     connz["connections"]
         .as_array()
@@ -463,6 +549,241 @@ async fn native_attention_wait_is_reclaimed_by_proxy_shutdown() {
     });
     println!("coord-wait-634 observation: {evidence}");
     if let Some(path) = std::env::var_os("SAFEYOLO_COORD_WAIT_EVIDENCE") {
+        fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_room_wait_consumer_is_reclaimed_by_proxy_shutdown() {
+    assert!(
+        std::env::var_os("SAFEYOLO_NATS_TEST_INSTANCE").is_some(),
+        "set SAFEYOLO_NATS_TEST_INSTANCE for the real NATS fixture"
+    );
+    let fixture_root = PathBuf::from(
+        std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
+            .expect("real coord fixture must set SAFEYOLO_COORD_DATA_DIR"),
+    );
+    let fixture: Value =
+        serde_json::from_slice(&fs::read(fixture_root.join("fixture.json")).unwrap()).unwrap();
+    let backing = Connection::open(fixture_root.join("v0.db")).unwrap();
+    let (room_id, permissions): (String, String) = backing
+        .query_row(
+            "SELECT r.room_id, m.permissions
+             FROM rooms AS r
+             JOIN memberships AS m ON m.room_id = r.room_id
+             WHERE r.name = 'coord-shutdown-room'
+               AND m.principal_kind = 'agent'
+               AND m.principal_id = 'ag-alice'
+               AND m.revoked_at IS NULL
+             ORDER BY m.granted_at DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(Some(room_id.as_str()), fixture["room_id"].as_str());
+    assert!(permissions
+        .split(',')
+        .any(|permission| permission == "receive"));
+    let stream_name = format!("ROOM_{room_id}");
+
+    let root = TempDir::new().unwrap();
+    write_fixture(root.path());
+    let config = config(root.path());
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    wait_for_path(&config.listeners[0].socket_path).await;
+    wait_for_path(&config.readiness_file).await;
+    let readiness: Value =
+        serde_json::from_slice(&fs::read(&config.readiness_file).unwrap()).unwrap();
+    let admin_port = readiness["admin_port"].as_u64().unwrap() as u16;
+    let instance_id = readiness["instance_id"].as_str().unwrap().to_owned();
+
+    let baseline = stream_consumer_count(&nats_jsz().await, &stream_name)
+        .expect("NATS monitor must expose the room stream consumer list");
+    assert_eq!(
+        baseline, 0,
+        "room wait must start without a leaked consumer"
+    );
+
+    // Hold a real room wait after it has created its JetStream pull consumer.
+    // Dropping the HTTP request cannot itself be the cleanup proof: the
+    // ConsumerCleanup guard must hand deletion to the process owner.
+    let mut wait_socket = UnixStream::connect(&config.listeners[0].socket_path)
+        .await
+        .unwrap();
+    wait_socket
+        .write_all(&request(
+            "GET",
+            "/api/coord/rooms/coord-shutdown-room/wait?since=0&limit=1&timeout=300",
+            AGENT_TOKEN,
+        ))
+        .await
+        .unwrap();
+    let mut consumers_before = 0;
+    for _ in 0..50 {
+        consumers_before = stream_consumer_count(&nats_jsz().await, &stream_name)
+            .expect("room stream must remain visible while the wait is held");
+        if consumers_before >= 1 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        consumers_before, 1,
+        "one process-owned wait consumer is expected"
+    );
+
+    let admin_response = exchange_admin(admin_port, &admin_request("/stats")).await;
+    assert_eq!(admin_response.status, 200);
+    let admin_identity =
+        exchange_admin(admin_port, &admin_request("/admin/runtime-identity")).await;
+    assert_eq!(admin_identity.status, 200);
+    assert_eq!(admin_identity.body["instance_id"], instance_id);
+    let audit_before = file_lines(&config.audit_log_path.clone().unwrap());
+    let events_before = file_lines(&config.event_log);
+
+    proxy.shutdown().await;
+
+    let mut consumers_after = usize::MAX;
+    for _ in 0..50 {
+        consumers_after = stream_consumer_count(&nats_jsz().await, &stream_name)
+            .expect("room stream must remain visible for cleanup observation");
+        if consumers_after == 0 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        consumers_after, 0,
+        "owner drain must delete the held room consumer"
+    );
+    assert!(!config.readiness_file.exists());
+    assert!(!config.listeners[0].socket_path.exists());
+    let mut wait_bytes = Vec::new();
+    timeout(
+        Duration::from_secs(2),
+        wait_socket.read_to_end(&mut wait_bytes),
+    )
+    .await
+    .expect("shutdown must close the held room wait connection")
+    .unwrap();
+    assert!(
+        wait_bytes.is_empty(),
+        "shutdown must not fabricate a wait result"
+    );
+    assert!(TcpStream::connect(("127.0.0.1", admin_port)).await.is_err());
+    let first_audit_lines_after_shutdown = file_lines(&config.audit_log_path.clone().unwrap());
+    let first_event_lines_after_shutdown = file_lines(&config.event_log);
+    let first_audit_lines_unchanged = first_audit_lines_after_shutdown == audit_before;
+    let first_event_lines_unchanged = first_event_lines_after_shutdown == events_before;
+    assert_eq!(first_audit_lines_after_shutdown, audit_before);
+    assert_eq!(first_event_lines_after_shutdown, events_before);
+
+    // Repeat the same owner boundary on the same state/socket paths. This
+    // catches stale consumer state and verifies a second process can admit the
+    // worker after the first process has drained it.
+    let restarted = Proxy::start(config.clone()).await.unwrap();
+    wait_for_path(&config.listeners[0].socket_path).await;
+    wait_for_path(&config.readiness_file).await;
+    let restarted_readiness: Value =
+        serde_json::from_slice(&fs::read(&config.readiness_file).unwrap()).unwrap();
+    let restarted_admin_port = restarted_readiness["admin_port"].as_u64().unwrap() as u16;
+    let restarted_instance_id = restarted_readiness["instance_id"].as_str().unwrap();
+    assert_ne!(restarted_instance_id, instance_id);
+    assert_eq!(
+        exchange_admin(restarted_admin_port, &admin_request("/stats"))
+            .await
+            .status,
+        200
+    );
+    let mut restarted_wait_socket = UnixStream::connect(&config.listeners[0].socket_path)
+        .await
+        .unwrap();
+    restarted_wait_socket
+        .write_all(&request(
+            "GET",
+            "/api/coord/rooms/coord-shutdown-room/wait?since=0&limit=1&timeout=300",
+            AGENT_TOKEN,
+        ))
+        .await
+        .unwrap();
+    let mut restarted_consumers_before = 0;
+    for _ in 0..50 {
+        restarted_consumers_before = stream_consumer_count(&nats_jsz().await, &stream_name)
+            .expect("restarted room stream must expose consumers");
+        if restarted_consumers_before >= 1 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(restarted_consumers_before, 1);
+    let restarted_audit_before = file_lines(&config.audit_log_path.clone().unwrap());
+    let restarted_events_before = file_lines(&config.event_log);
+    restarted.shutdown().await;
+
+    let mut restarted_consumers_after = usize::MAX;
+    for _ in 0..50 {
+        restarted_consumers_after = stream_consumer_count(&nats_jsz().await, &stream_name)
+            .expect("restarted room stream must remain visible for cleanup observation");
+        if restarted_consumers_after == 0 {
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(restarted_consumers_after, 0);
+    assert!(!config.readiness_file.exists());
+    assert!(!config.listeners[0].socket_path.exists());
+    let mut restarted_wait_bytes = Vec::new();
+    timeout(
+        Duration::from_secs(2),
+        restarted_wait_socket.read_to_end(&mut restarted_wait_bytes),
+    )
+    .await
+    .expect("restarted shutdown must close the held room wait connection")
+    .unwrap();
+    assert!(restarted_wait_bytes.is_empty());
+    assert!(TcpStream::connect(("127.0.0.1", restarted_admin_port))
+        .await
+        .is_err());
+    assert_eq!(
+        file_lines(&config.audit_log_path.clone().unwrap()),
+        restarted_audit_before
+    );
+    assert_eq!(file_lines(&config.event_log), restarted_events_before);
+
+    let evidence = json!({
+        "workflow": "native-coordination-room-wait-consumer-shutdown-restart",
+        "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT").unwrap_or_else(|_| "unknown".into()),
+        "room_id": room_id,
+        "stream": stream_name,
+        "agent_identity": "ag-alice resolved from configured Unix listener + policy",
+        "first_process": {
+            "instance_id": instance_id,
+            "consumer_count_before_shutdown": consumers_before,
+            "consumer_count_after_shutdown": consumers_after,
+            "readiness_removed": !config.readiness_file.exists(),
+            "agent_socket_removed": !config.listeners[0].socket_path.exists(),
+            "audit_lines_unchanged": first_audit_lines_unchanged,
+            "event_lines_unchanged": first_event_lines_unchanged,
+        },
+        "restart": {
+            "same_state_and_socket_paths": true,
+            "instance_id_distinct": restarted_instance_id != instance_id,
+            "instance_id": restarted_instance_id,
+            "consumer_count_before_shutdown": restarted_consumers_before,
+            "consumer_count_after_shutdown": restarted_consumers_after,
+            "readiness_removed": !config.readiness_file.exists(),
+            "agent_socket_removed": !config.listeners[0].socket_path.exists(),
+            "audit_lines_unchanged": file_lines(&config.audit_log_path.clone().unwrap()) == restarted_audit_before,
+            "event_lines_unchanged": file_lines(&config.event_log) == restarted_events_before,
+        },
+        "remaining_scope": [
+            "shared OAuth refresh owner shutdown",
+            "other #626/#628/#629 standalone workers",
+            "abrupt termination and blocked I/O",
+        ],
+    });
+    println!("coord-room-wait-634 observation: {evidence}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_COORD_ROOM_WAIT_EVIDENCE") {
         fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
     }
 }
