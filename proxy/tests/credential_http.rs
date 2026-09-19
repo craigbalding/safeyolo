@@ -6,6 +6,7 @@ use safeyolo_proxy::{AgentListener, Config, Inspection, Proxy};
 use serde_json::{Value, json};
 use std::{
     convert::Infallible,
+    io::Write,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -466,6 +467,16 @@ fn hex_bytes(text: &str) -> Vec<u8> {
         .step_by(2)
         .map(|offset| u8::from_str_radix(&text[offset..offset + 2], 16).unwrap())
         .collect()
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn gzip_bytes(body: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(body).unwrap();
+    encoder.finish().unwrap()
 }
 
 #[tokio::test]
@@ -1235,6 +1246,154 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
         "response pattern audit missing: {pattern_events:?}"
     );
     origin_task.abort();
+}
+
+#[tokio::test]
+async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [{"action":"network:request", "resource":"*", "effect":"allow"}],
+            "scan_patterns": [{"name":"compressed-secret","pattern":"SECRET","scope":["body"],"target":"both","action":"block"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let origin_seen = seen.clone();
+    let response_body = gzip_bytes(b"response-SECRET");
+    let origin_response_body = response_body.clone();
+    let origin_task = tokio::spawn(async move {
+        for response_body in [b"origin-ok".to_vec(), origin_response_body] {
+            let (mut stream, _) = origin_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let header_end = loop {
+                let size = stream.read(&mut buffer).await.unwrap();
+                assert!(size > 0, "origin ended before request headers");
+                request.extend_from_slice(&buffer[..size]);
+                if let Some(position) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                {
+                    break position + 4;
+                }
+            };
+            let content_length = std::str::from_utf8(&request[..header_end])
+                .unwrap()
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                })
+                .unwrap_or(0);
+            while request.len() < header_end + content_length {
+                let size = stream.read(&mut buffer).await.unwrap();
+                assert!(size > 0, "origin ended before request body");
+                request.extend_from_slice(&buffer[..size]);
+            }
+            origin_seen.lock().unwrap().push(request);
+            let encoding = if response_body.starts_with(&[0x1f, 0x8b]) {
+                "Content-Encoding: gzip\r\n"
+            } else {
+                ""
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{encoding}Connection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&response_body).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+    });
+    let mut proxy_config = config(&directory, &policy_path, &socket, false);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: true,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+
+    let blocked_body = gzip_bytes(b"request-SECRET");
+    let blocked_request = format!(
+        "POST http://127.0.0.1:{origin_port}/request-block HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        blocked_body.len()
+    );
+    let mut blocked_wire = blocked_request.into_bytes();
+    blocked_wire.extend_from_slice(&blocked_body);
+    let blocked = raw_round_trip(&socket, &blocked_wire).await;
+    assert!(blocked.starts_with(b"HTTP/1.1 403"), "{blocked:?}");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "blocked request reached origin"
+    );
+
+    let allowed_body = gzip_bytes(b"request-clear");
+    let allowed_request = format!(
+        "POST http://127.0.0.1:{origin_port}/request-clear HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        allowed_body.len()
+    );
+    let mut allowed_wire = allowed_request.into_bytes();
+    allowed_wire.extend_from_slice(&allowed_body);
+    let allowed = raw_round_trip(&socket, &allowed_wire).await;
+    assert!(allowed.starts_with(b"HTTP/1.1 200"), "{allowed:?}");
+
+    let response_request = format!(
+        "GET http://127.0.0.1:{origin_port}/response-block HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nConnection: close\r\n\r\n"
+    );
+    let response = raw_round_trip(&socket, response_request.as_bytes()).await;
+    assert!(response.starts_with(b"HTTP/1.1 502"), "{response:?}");
+
+    tokio::time::timeout(Duration::from_secs(2), origin_task)
+        .await
+        .unwrap()
+        .unwrap();
+    let requests = seen.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[0]
+            .windows(b"POST /request-clear HTTP/1.1".len())
+            .any(|window| { window == b"POST /request-clear HTTP/1.1" })
+    );
+    let first_body = requests[0]
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+        .unwrap();
+    assert_eq!(&requests[0][first_body..], allowed_body.as_slice());
+    assert!(
+        requests[1]
+            .windows(b"GET /response-block HTTP/1.1".len())
+            .any(|window| { window == b"GET /response-block HTTP/1.1" })
+    );
+    proxy.shutdown().await;
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    let pattern_events = audit
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["event"] == "security.pattern_scanner")
+        .collect::<Vec<_>>();
+    assert!(pattern_events.iter().any(|event| {
+        event["details"]["direction"] == "request" && event["decision"] == "deny"
+    }));
+    assert!(pattern_events.iter().any(|event| {
+        event["details"]["direction"] == "response" && event["decision"] == "deny"
+    }));
+    eprintln!(
+        "gzip production observer: blocked_status=403 allowed_status=200 response_status=502 origin_requests={} allowed_origin_request_hex={} response_body_hex={}",
+        requests.len(),
+        hex_encode(&requests[0]),
+        hex_encode(&response_body)
+    );
 }
 
 #[tokio::test]
