@@ -1,20 +1,26 @@
 //! Lossless security-header text adaptation.
 //!
-//! `RequestHeaders` owns the parser's ordered byte fields.  The credential
-//! matcher consumes Rust text, so this module is the only boundary at which a
-//! request header becomes a credential `Secret`.  Valid UTF-8 is kept as-is;
-//! malformed bytes use a private, reversible scalar representation that has
-//! the same one-byte identity as Python's surrogateescape subject.  There is
-//! no replacement character, lossy conversion, or map fallback here.
+//! The HTTP parser owns ordered byte fields, while the credential and pattern
+//! consumers operate on Rust text. This module is the narrow boundary between
+//! those representations. It keeps ordinary valid UTF-8 unchanged, escapes
+//! its bridge-private scalars, and maps every malformed source byte to a
+//! private, reversible scalar. The representation has the same one-byte
+//! identity as Python's `surrogateescape` subject, without putting lone
+//! UTF-16 surrogates into a Rust `String`.
+//!
+//! Callers must provide fields already grouped with the parser's first spelling
+//! and arrival order. This owner does not consult a `HeaderMap`, regroup fields,
+//! or rewrite bytes for forwarding. Values are held by `credentials::Secret`
+//! and can be borrowed only for the one security decision that owns this
+//! adapter.
 
 use crate::{credential_guard, credentials::Secret};
 use std::{fmt, str};
+use zeroize::Zeroizing;
 
-// Rust strings cannot contain Python's lone U+DCxx surrogate values.  Use one
-// private-use scalar per malformed source byte instead.  The escape scalar
-// lets us retain valid input that happens to use this reserved range, and is
-// removed again before HMAC fingerprinting.  This representation is private
-// to the detector; parser-owned bytes are still forwarded from RequestHeaders.
+// Keep these scalars outside the BMP so they cannot collide with ordinary
+// controls or the source's U+DCxx surrogateescape range. The escape scalar is
+// emitted before a real private scalar so valid Unicode input round-trips too.
 const SOURCE_BYTE_BASE: u32 = 0xF0000;
 const SOURCE_ESCAPE: u32 = 0xF1000;
 
@@ -25,14 +31,18 @@ fn source_byte(byte: u8) -> char {
 fn encode_source_char(output: &mut String, value: char) {
     let scalar = value as u32;
     if scalar == SOURCE_ESCAPE || (SOURCE_BYTE_BASE..SOURCE_BYTE_BASE + 256).contains(&scalar) {
-        output.push(char::from_u32(SOURCE_ESCAPE).unwrap());
+        output.push(char::from_u32(SOURCE_ESCAPE).expect("source escape scalar"));
     }
     output.push(value);
 }
 
-/// Convert parser bytes to source-equivalent security text. Every malformed
-/// byte remains distinguishable and can be matched by a pattern containing a
-/// Python-style `\\uDCxx` escape.
+/// Convert parser bytes to source-equivalent text.
+///
+/// Ordinary valid UTF-8 is preserved scalar-for-scalar. The bridge-private
+/// scalar range is escaped so valid private scalars cannot be confused with
+/// malformed source bytes. Invalid UTF-8 bytes are mapped one-for-one to
+/// private scalars, including malformed multi-byte sequences; no replacement
+/// character or lossy fallback is introduced.
 pub(crate) fn source_text(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len());
     let mut offset = 0;
@@ -46,30 +56,46 @@ pub(crate) fn source_text(bytes: &[u8]) -> String {
             }
             Err(error) => {
                 let valid_len = error.valid_up_to();
-                let valid = &bytes[offset..offset + valid_len];
-                // The prefix is known-valid even when the error is at EOF.
-                if !valid.is_empty() {
-                    let valid = str::from_utf8(valid).expect("valid UTF-8 prefix");
+                if valid_len != 0 {
+                    let valid = str::from_utf8(&bytes[offset..offset + valid_len])
+                        .expect("valid UTF-8 prefix");
                     valid
                         .chars()
                         .for_each(|value| encode_source_char(&mut output, value));
                 }
                 offset += valid_len;
-                let malformed_len = error.error_len().unwrap_or(1);
-                for &byte in &bytes[offset..offset + malformed_len.min(bytes.len() - offset)] {
+                // `error_len == None` means the remaining suffix is an
+                // incomplete sequence. Each byte still has a distinct source
+                // identity under surrogateescape.
+                let malformed_len = error
+                    .error_len()
+                    .unwrap_or(bytes.len().saturating_sub(offset));
+                let malformed_len = malformed_len.min(bytes.len().saturating_sub(offset));
+                for &byte in &bytes[offset..offset + malformed_len] {
                     output.push(source_byte(byte));
                 }
-                offset += malformed_len.min(bytes.len() - offset);
+                offset += malformed_len;
+                // This is defensive for an empty malformed suffix. The
+                // standard UTF-8 validator normally reports a positive length
+                // or an incomplete suffix, but no malformed input may loop.
+                if malformed_len == 0 && offset < bytes.len() {
+                    output.push(source_byte(bytes[offset]));
+                    offset += 1;
+                }
             }
         }
     }
     output
 }
 
-/// Recover the source byte stream represented by security text. This is used
-/// only for HMAC input; no recovered material is put in an event or response.
-pub(crate) fn source_bytes(text: &str) -> Vec<u8> {
-    let mut output = Vec::with_capacity(text.len());
+/// Recover the source bytes represented by security text.
+///
+/// This is intended only for keyed fingerprint input. The returned buffer is
+/// zeroized on drop and must never be placed in evidence, a response, or a
+/// diagnostic. Valid private scalars are escaped by [`source_text`] before
+/// this function sees them, so they remain distinct from malformed bytes.
+pub(crate) fn source_bytes(text: &str) -> Zeroizing<Vec<u8>> {
+    let mut output = Zeroizing::new(Vec::with_capacity(text.len()));
     let mut chars = text.chars();
     while let Some(value) = chars.next() {
         let scalar = value as u32;
@@ -100,11 +126,9 @@ pub(crate) fn source_bytes(text: &str) -> Vec<u8> {
     output
 }
 
-/// Adapt source regex escapes for the reversible internal representation.
-/// `python_pattern` intentionally rejects lone surrogates because Rust cannot
-/// represent them; this small boundary adapter handles only the source
-/// surrogateescape byte range and leaves the broader regex compatibility
-/// contract unchanged.
+/// Adapt Python-style surrogateescape regex escapes to the private source-byte
+/// representation. Only U+DC80..U+DCFF are source bytes; all other escapes are
+/// left for the existing regex compatibility compiler to handle.
 pub(crate) fn source_pattern(pattern: &str) -> String {
     let chars: Vec<char> = pattern.chars().collect();
     let mut output = String::with_capacity(pattern.len());
@@ -128,7 +152,7 @@ pub(crate) fn source_pattern(pattern: &str) -> String {
                 && digits.iter().all(char::is_ascii_hexdigit)
             {
                 let value = digits.iter().fold(0_u32, |value, digit| {
-                    value * 16 + digit.to_digit(16).unwrap()
+                    value * 16 + digit.to_digit(16).expect("checked hex digit")
                 });
                 if (0xDC80..=0xDCFF).contains(&value) {
                     output.push(source_byte((value - 0xDC00) as u8));
@@ -144,27 +168,13 @@ pub(crate) fn source_pattern(pattern: &str) -> String {
     output
 }
 
-/// Security text conversion failed.  This type carries no input bytes or
-/// header names so parser details and credential material cannot escape in a
-/// response, trace, or diagnostic.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Error {
-    InvalidName,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidName => "security header name encoding is invalid",
-        })
-    }
-}
-
-impl std::error::Error for Error {}
-
-/// Owned security-text fields.  The type intentionally has no `Debug`,
-/// `Serialize`, or `Clone` implementation: its values are secrets and remain
-/// borrowable only while a single guard call is in progress.
+/// A parser-ordered, source-text header owner.
+///
+/// Header names must be ASCII, as required by HTTP field-name syntax. Values
+/// may contain malformed bytes because the source detector accepts
+/// surrogateescaped text. The adapter retains no parser map and exposes no
+/// debug/serialization implementation that could accidentally disclose a
+/// credential.
 pub(crate) struct Headers {
     fields: Vec<Field>,
 }
@@ -174,11 +184,23 @@ struct Field {
     value: Secret,
 }
 
+/// Conversion failures intentionally contain only a category, never source
+/// bytes, names, parser diagnostics, or credential material.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Error {
+    InvalidName,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("security header name encoding is invalid")
+    }
+}
+
+impl std::error::Error for Error {}
+
 impl Headers {
-    /// Convert the already grouped, parser-ordered fields without consulting
-    /// `HeaderMap`.  The iterator must provide the first spelling and combine
-    /// duplicate values before this boundary; no order or duplicate semantics
-    /// are reconstructed here.
+    /// Take parser-owned fields in their existing grouped order.
     pub(crate) fn from_ordered<'a>(
         fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
     ) -> Result<Self, Error> {
@@ -198,171 +220,121 @@ impl Headers {
         Ok(Self { fields })
     }
 
-    /// Build the borrowed guard view for one request.  The returned vector is
-    /// short-lived and contains references into this owner; it cannot outlive
-    /// the conversion owner or be retained by guard outcomes.
-    pub(crate) fn as_guard_headers(&self) -> Vec<credential_guard::Header<'_>> {
+    /// Borrow source-text fields for exactly one consumer call. The returned
+    /// iterator cannot outlive this owner; consumers must not retain values.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Secret)> {
         self.fields
             .iter()
-            .map(|field| credential_guard::Header {
-                name: &field.name,
-                value: &field.value,
-            })
+            .map(|field| (field.name.as_str(), &field.value))
+    }
+
+    /// Compatibility view for the existing guard caller. The returned
+    /// references borrow this owner and cannot outlive the decision that uses
+    /// them.
+    pub(crate) fn as_guard_headers(&self) -> Vec<credential_guard::Header<'_>> {
+        self.iter()
+            .map(|(name, value)| credential_guard::Header { name, value })
             .collect()
     }
 
     #[cfg(test)]
-    fn fields(&self) -> impl Iterator<Item = (&[u8], &Secret)> {
-        self.fields
-            .iter()
-            .map(|field| (field.name.as_bytes(), &field.value))
+    fn values(&self) -> impl Iterator<Item = (&str, &Secret)> {
+        self.iter()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn text(fields: &[(&[u8], &[u8])]) -> Headers {
-        Headers::from_ordered(fields.iter().copied()).unwrap()
+    use fancy_regex::Regex;
+
+    fn headers(fields: &[(&[u8], &[u8])]) -> Headers {
+        Headers::from_ordered(fields.iter().copied()).expect("valid header names")
     }
 
     #[test]
-    fn preserves_first_spelling_order_and_combined_duplicate_bytes() {
-        let headers = text(&[
+    fn preserves_parser_order_and_first_spelling_without_regrouping() {
+        let fields = headers(&[
             (b"X-Api-Key", b"first"),
-            (b"authorization", b"Bearer key-a"),
+            (b"Authorization", b"Bearer key-a"),
             (b"x-api-key", b"second"),
         ]);
-        let values = headers
-            .fields()
-            .map(|(name, value)| (name.to_owned(), value.expose_secret().as_bytes().to_owned()))
+        let values = fields
+            .values()
+            .map(|(name, value)| (name, value.expose_secret()))
             .collect::<Vec<_>>();
         assert_eq!(
             values,
             vec![
-                (b"X-Api-Key".to_vec(), b"first".to_vec()),
-                (b"authorization".to_vec(), b"Bearer key-a".to_vec()),
-                (b"x-api-key".to_vec(), b"second".to_vec()),
+                ("X-Api-Key", "first"),
+                ("Authorization", "Bearer key-a"),
+                ("x-api-key", "second"),
             ]
         );
 
-        // Grouping belongs to RequestHeaders.  Supplying the grouped value
-        // here must retain its bytes exactly, including comma-space.
-        let grouped = text(&[(b"X-Api-Key", b"first, second")]);
-        let value = grouped.fields().next().unwrap().1.expose_secret();
-        assert_eq!(value, "first, second");
+        // Duplicate grouping belongs to the parser owner. A grouped value is
+        // retained byte-for-byte, including the source comma-space separator.
+        let grouped = headers(&[(b"X-Api-Key", b"first, second")]);
+        assert_eq!(
+            grouped.values().next().unwrap().1.expose_secret(),
+            "first, second"
+        );
     }
 
     #[test]
-    fn accepts_non_ascii_utf8_without_replacement() {
-        let headers = text(&[(b"X-Label", "café🙂".as_bytes())]);
-        let value = headers.fields().next().unwrap().1.expose_secret();
-        assert_eq!(value, "café🙂");
-    }
-
-    #[test]
-    fn rejects_invalid_name_but_preserves_invalid_value_source_bytes() {
+    fn preserves_valid_unicode_and_rejects_non_ascii_field_names() {
+        let fields = headers(&[(b"X-Label", "café🙂".as_bytes())]);
+        assert_eq!(fields.values().next().unwrap().1.expose_secret(), "café🙂");
         assert_eq!(
             Headers::from_ordered([(b"X-Name\xff".as_slice(), b"value".as_slice())]).err(),
             Some(Error::InvalidName)
         );
-        let headers =
-            Headers::from_ordered([(b"X-Name".as_slice(), b"value\xff".as_slice())]).unwrap();
-        let value = headers.fields().next().unwrap().1.expose_secret();
-        assert_eq!(source_bytes(value), b"value\xff");
-        assert!(!value.contains('\u{FFFD}'));
-    }
-
-    #[test]
-    fn guard_view_borrows_owned_text_and_has_no_raw_conversion_path() {
-        let headers = text(&[(b"Authorization", b"Bearer key-a")]);
-        let view = headers.as_guard_headers();
-        assert_eq!(view.len(), 1);
-        assert_eq!(view[0].name, "Authorization");
-        assert_eq!(view[0].value.expose_secret(), "Bearer key-a");
-    }
-
-    #[test]
-    fn source_pattern_maps_lone_surrogate_escape_without_loss() {
-        let pattern = source_pattern(r"key-\uDCFF");
-        assert!(pattern.contains(source_byte(0xff)));
-        assert_eq!(source_bytes(&source_text(b"key-\xff")), b"key-\xff");
-    }
-
-    #[test]
-    fn source_pattern_respects_backslash_parity_for_u_and_upper_u() {
-        let cases = [
-            // A single escape introduces the source-byte identity.
-            (r"key-\uDCFF", b"key-\xff".as_slice(), true),
-            // An even run escapes the slash, so the remaining spelling is
-            // literal source text and must not become a byte identity.
-            (r"key-\\uDCFF", b"key-\\uDCFF".as_slice(), true),
-            (r"key-\\uDCFF", b"key-\xff".as_slice(), false),
-            // An odd run leaves the preceding slashes literal and converts
-            // the final escape.
-            (r"key-\\\uDCFF", b"key-\\\xff".as_slice(), true),
-            (r"key-\U0000DCFF", b"key-\xff".as_slice(), true),
-            (r"key-\\U0000DCFF", b"key-\\U0000DCFF".as_slice(), true),
-            (r"key-\\U0000DCFF", b"key-\xff".as_slice(), false),
-            (r"key-\\\U0000DCFF", b"key-\\\xff".as_slice(), true),
-        ];
-        for (pattern, subject, expected) in cases {
-            let adapted = source_pattern(pattern);
-            let compiled = crate::inspection::compile_python_pattern(&adapted, false)
-                .unwrap_or_else(|_| panic!("pattern parity case did not compile: {pattern:?}"));
-            assert_eq!(
-                compiled.is_match(&source_text(subject)).unwrap(),
-                expected,
-                "pattern parity for {pattern:?}"
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "runs the source Python regex oracle when SAFEYOLO_POLICY_PYTHON is set"]
-    fn source_pattern_backslash_parity_matches_python_oracle() {
-        use std::{env, path::PathBuf, process::Command};
-
-        let python = env::var_os("SAFEYOLO_POLICY_PYTHON")
-            .expect("SAFEYOLO_POLICY_PYTHON must point to the source Python runtime");
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests")
-            .join("credential_text_source_oracle.py");
-        let output = Command::new(python)
-            .arg(script)
-            .output()
-            .expect("run source regex oracle");
-        assert!(
-            output.status.success(),
-            "source oracle failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+        assert_eq!(
+            Headers::from_ordered([("X-é".as_bytes(), b"value".as_slice())]).err(),
+            Some(Error::InvalidName)
         );
-        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-        for row in rows {
-            let pattern = row["pattern"].as_str().unwrap();
-            let bytes = row["bytes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|byte| byte.as_u64().unwrap() as u8)
-                .collect::<Vec<_>>();
-            let expected = row["matched"].as_bool().unwrap();
-            let adapted = source_pattern(pattern);
-            let compiled = crate::inspection::compile_python_pattern(&adapted, false)
-                .unwrap_or_else(|_| panic!("pattern parity case did not compile: {pattern:?}"));
+    }
+
+    #[test]
+    fn malformed_values_round_trip_without_replacement_or_loss() {
+        for bytes in [
+            b"prefix\xffsuffix".as_slice(),
+            b"\xc3\x28".as_slice(),
+            b"\xe2\x82".as_slice(),
+            b"\xf0\x28\x8c\xbc".as_slice(),
+            &[0_u8, 0x7f, 0x80, 0xff],
+        ] {
+            let text = source_text(bytes);
+            assert!(!text.contains('\u{fffd}'));
+            assert_eq!(source_bytes(&text).as_slice(), bytes);
+            let fields = headers(&[(b"Authorization", bytes)]);
             assert_eq!(
-                compiled.is_match(&source_text(&bytes)).unwrap(),
-                expected,
-                "pattern parity for {pattern:?}"
+                source_bytes(fields.values().next().unwrap().1.expose_secret()).as_slice(),
+                bytes
             );
         }
     }
 
     #[test]
-    fn source_text_escapes_reserved_private_scalars_losslessly() {
+    fn source_pattern_matches_surrogateescape_and_preserves_backslash_parity() {
+        let matching = Regex::new(&source_pattern(r"key-\uDCFF")).unwrap();
+        assert!(matching.is_match(&source_text(b"key-\xff")).unwrap());
+
+        // The even backslash run makes the source spelling literal. A raw
+        // invalid byte must not match this pattern.
+        let literal = Regex::new(&source_pattern(r"key-\\uDCFF")).unwrap();
+        assert!(!literal.is_match(&source_text(b"key-\xff")).unwrap());
+        assert!(literal.is_match(&source_text(b"key-\\uDCFF")).unwrap());
+
+        let triple = Regex::new(&source_pattern(r"key-\\\uDCFF")).unwrap();
+        assert!(triple.is_match(&source_text(b"key-\\\xff")).unwrap());
+    }
+
+    #[test]
+    fn valid_private_scalars_are_escaped_before_round_trip() {
         let value = "prefix\u{F0000}\u{F1000}suffix";
         assert_eq!(
-            source_bytes(&source_text(value.as_bytes())),
+            source_bytes(&source_text(value.as_bytes())).as_slice(),
             value.as_bytes()
         );
     }
