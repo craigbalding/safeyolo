@@ -113,7 +113,15 @@ fn request(owner: &mut PresenterOwner, agent_id: &str) -> Result<Value, Error> {
         return Err(Error::Failed);
     }
     let value: Value = serde_json::from_str(&line).map_err(|_| Error::Protocol)?;
-    decode_response(value)
+    let value = decode_response(value)?;
+    // The accepted listener identity selects the target.  The helper may
+    // return a durable agent_id, but its human-facing `agent` must still be
+    // the requested listener name.  Otherwise a faulty or compromised helper
+    // could make an operator present a different agent than the one approved.
+    if value.get("agent").and_then(Value::as_str) != Some(agent_id) {
+        return Err(Error::Protocol);
+    }
+    Ok(value)
 }
 
 pub(crate) async fn present(agent_id: String) -> Result<Value, Error> {
@@ -171,4 +179,50 @@ pub(crate) fn shutdown() {
         let _ = owner.child.kill();
     }
     let _ = owner.child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    fn fixture_script(response: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let script = directory.path().join("desktop-presenter-fixture");
+        let body = format!(
+            "#!/bin/sh\nIFS= read -r request\nprintf '%s %s %s\\n' \"$1\" \"$2\" \"$3\" > \"$0.args\"\nprintf '%s\\n' '{}'\n",
+            response
+        );
+        fs::write(&script, body).expect("fixture script");
+        let mut permissions = fs::metadata(&script)
+            .expect("fixture metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).expect("fixture executable");
+        (directory, script)
+    }
+
+    #[test]
+    fn helper_invocation_is_fixed_and_response_target_is_authorized() {
+        let response = r#"{"agent_id":"ag-durable","agent":"alice","url":"http://127.0.0.1:1/vnc.html","unlock_code":"fixture","reused":false}"#;
+        let (_directory, script) = fixture_script(response);
+        let mut owner = spawn_presenter(&script).expect("fixture helper starts");
+        let result = request(&mut owner, "alice").expect("authorized target");
+        assert_eq!(result["agent"], "alice");
+        assert_eq!(result["agent_id"], "ag-durable");
+        terminate_presenter(owner);
+        assert_eq!(
+            fs::read_to_string(script.with_extension("args")).expect("helper arguments"),
+            "-m safeyolo.desktop_presenter_rpc --daemon\n"
+        );
+    }
+
+    #[test]
+    fn helper_cannot_redirect_presentation_to_another_agent() {
+        let response = r#"{"agent_id":"ag-other","agent":"bob","url":"http://127.0.0.1:1/vnc.html","unlock_code":"fixture","reused":false}"#;
+        let (_directory, script) = fixture_script(response);
+        let mut owner = spawn_presenter(&script).expect("fixture helper starts");
+        assert!(matches!(request(&mut owner, "alice"), Err(Error::Protocol)));
+        terminate_presenter(owner);
+    }
 }
