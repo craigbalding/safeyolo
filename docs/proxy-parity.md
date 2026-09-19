@@ -2417,11 +2417,14 @@ The [source oracle](../proxy/tests/ignored_host_source.py) passes eighteen
 workflows. Four component tests include replay of all 71 lifecycle callbacks
 from sixteen applicable workflows and comparison of 26 accepted canonical
 records. Ten source matching observations remain separate from native matching.
-The [eight connection controls](../proxy/src/http/ignored_host_tests.rs) cover
-owned traffic, both half-close orders, refusal, negative controls, reload,
-graceful shutdown and explicit ownership/failure boundaries. Writer poisoning
-is tested at the already-admitted egress boundary because an earlier network
-audit otherwise fails first. Pending cancellation bookkeeping is an in-memory
+The [nine connection controls](../proxy/src/http/ignored_host_tests.rs) cover
+owned traffic, both half-close orders, refusal, the protected admin port under
+a broad `127.0.0.0/8` CIDR, unmatched and policy-denied controls, reload,
+graceful shutdown, resolved-peer ownership and explicit ownership/failure
+boundaries. The protected-port control must return the existing admin-shield
+403 without a passthrough event or egress session. Writer poisoning is tested
+at the already-admitted egress boundary because an earlier network audit
+otherwise fails first. Pending cancellation bookkeeping is an in-memory
 control, not a live cancellation equivalence test. The joined selection passes
 18 native tests, including seven existing transport regressions. These are
 implementation checks; full addon parity and independent acceptance remain
