@@ -167,9 +167,14 @@ pub(crate) fn load(path: &Path, environment: Option<&OsStr>) -> Result<HmacSecre
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::{digest, hmac};
     use std::os::unix::{
         ffi::OsStrExt,
         fs::{PermissionsExt, symlink},
+    };
+    use std::{
+        path::PathBuf,
+        process::{Command, Stdio},
     };
     use tempfile::TempDir;
 
@@ -371,5 +376,213 @@ mod tests {
         assert_eq!(row["file_length"], 7);
         assert_eq!(row["file_equals_generated"], false);
         assert_eq!(row["file_is_generated_prefix"], true);
+    }
+
+    const COMPARATOR_COMMIT: &str = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a";
+
+    fn sha256(bytes: &[u8]) -> String {
+        digest::digest(&digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn file_mode(path: &std::path::Path) -> String {
+        format!(
+            "{:04o}",
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        )
+    }
+
+    fn native_fingerprint(secret: &[u8]) -> String {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+        hmac::sign(&key, b"synthetic-credential").as_ref()[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn native_stage(path: &std::path::Path, operation: &str) -> serde_json::Value {
+        let secret = load(path, None).unwrap();
+        let bytes = secret.as_bytes();
+        assert_eq!(bytes.len(), 64, "native key must remain a 64-byte hex key");
+        assert!(bytes.iter().all(u8::is_ascii_hexdigit));
+        serde_json::json!({
+            "backend": "rust-native",
+            "operation": operation,
+            "key_sha256": sha256(bytes),
+            "key_mode": file_mode(path),
+            "key_length": bytes.len(),
+            "fingerprint": native_fingerprint(bytes),
+        })
+    }
+
+    fn git_output(repository: &std::path::Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repository)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    fn python_stage(
+        root: &std::path::Path,
+        source: &std::path::Path,
+        executable: &std::path::Path,
+        operation: &str,
+    ) -> serde_json::Value {
+        let script = r#"
+import hashlib
+import hmac
+import importlib.metadata
+import json
+import pathlib
+import stat
+import sys
+
+from safeyolo.core.utils import hmac_fingerprint, load_hmac_secret
+
+root = pathlib.Path(sys.argv[1])
+operation = sys.argv[2]
+expected_executable = pathlib.Path(sys.argv[3])
+source = pathlib.Path(sys.argv[4])
+assert pathlib.Path(sys.executable).resolve() == expected_executable.resolve()
+path = root / 'data' / 'hmac_secret'
+secret = load_hmac_secret(path)
+assert secret == path.read_bytes()
+print(json.dumps({
+    'backend': 'python-comparator',
+    'operation': operation,
+    'runtime': {
+        'source': str(source),
+        'commit': '7e934a5470f1aa9b74052fea08c6bae9b5f32e8a',
+        'program': sys.executable,
+        'python_version': '.'.join(map(str, sys.version_info[:3])),
+        'safeyolo': importlib.metadata.version('safeyolo'),
+        'mitmproxy': importlib.metadata.version('mitmproxy'),
+    },
+    'key_sha256': hashlib.sha256(secret).hexdigest(),
+    'key_mode': format(stat.S_IMODE(path.stat().st_mode), '04o'),
+    'key_length': len(secret),
+    'fingerprint': hmac_fingerprint('synthetic-credential', secret),
+}))
+"#;
+        let output = Command::new(executable)
+            .args(["-c", script, &root.to_string_lossy(), operation])
+            .arg(executable)
+            .arg(source)
+            .env_remove("CREDGUARD_HMAC_SECRET")
+            .env(
+                "PYTHONPATH",
+                format!("{}:{}", source.join("cli/src").display(), source.display()),
+            )
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Python HMAC stage {operation} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "Python HMAC stage {operation} returned invalid JSON: {error}; stdout={}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        })
+    }
+
+    #[test]
+    #[ignore = "requires the pinned Python comparator and retained evidence directory"]
+    fn selected_python_native_python_native_hmac_key_transition() {
+        let source = PathBuf::from(
+            std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+                .expect("SAFEYOLO_STATE_PYTHON_SOURCE must name the comparator checkout"),
+        );
+        let executable = PathBuf::from(
+            std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+                .expect("SAFEYOLO_POLICY_PYTHON must name the comparator interpreter"),
+        );
+        let evidence = PathBuf::from(
+            std::env::var_os("SAFEYOLO_STATE_EVIDENCE_DIR")
+                .expect("SAFEYOLO_STATE_EVIDENCE_DIR must name retained evidence"),
+        );
+        assert_eq!(
+            git_output(&source, &["rev-parse", "HEAD"]),
+            COMPARATOR_COMMIT
+        );
+        assert!(git_output(&source, &["status", "--porcelain"]).is_empty());
+        assert!(executable.is_file());
+        fs::create_dir_all(&evidence).unwrap();
+
+        let python_first = TempDir::new().unwrap();
+        let python_write = python_stage(python_first.path(), &source, &executable, "write");
+        let native_read = native_stage(
+            &python_first.path().join("data/hmac_secret"),
+            "read-python-key",
+        );
+        let python_reload = python_stage(python_first.path(), &source, &executable, "read");
+        let native_reload = native_stage(
+            &python_first.path().join("data/hmac_secret"),
+            "reload-python-key",
+        );
+        for stage in [&native_read, &python_reload, &native_reload] {
+            assert_eq!(stage["key_sha256"], python_write["key_sha256"]);
+            assert_eq!(stage["key_mode"], "0600");
+            assert_eq!(stage["fingerprint"], python_write["fingerprint"]);
+        }
+
+        let native_first = TempDir::new().unwrap();
+        let native_write = native_stage(&native_first.path().join("data/hmac_secret"), "write");
+        let python_read_native = python_stage(native_first.path(), &source, &executable, "read");
+        let native_reopen = native_stage(&native_first.path().join("data/hmac_secret"), "reload");
+        for stage in [&python_read_native, &native_reopen] {
+            assert_eq!(stage["key_sha256"], native_write["key_sha256"]);
+            assert_eq!(stage["key_mode"], "0600");
+            assert_eq!(stage["fingerprint"], native_write["fingerprint"]);
+        }
+
+        let manifest = serde_json::json!({
+            "test": "selected_python_native_python_native_hmac_key_transition",
+            "comparator": {
+                "source": source,
+                "commit": COMPARATOR_COMMIT,
+                "program": executable,
+            },
+            "secret_policy": "key bytes are represented only by SHA-256 and a synthetic-value HMAC fingerprint",
+            "python_rust_python_rust": {
+                "python_write": python_write,
+                "native_read": native_read,
+                "python_reload": python_reload,
+                "native_reload": native_reload,
+            },
+            "rust_python_rust": {
+                "native_write": native_write,
+                "python_read": python_read_native,
+                "native_reload": native_reopen,
+            },
+        });
+        fs::write(
+            evidence.join("hmac-python-rust-python-rust.json"),
+            serde_json::to_vec_pretty(&manifest["python_rust_python_rust"]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            evidence.join("hmac-rust-python-rust.json"),
+            serde_json::to_vec_pretty(&manifest["rust_python_rust"]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            evidence.join("hmac-transition-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
     }
 }
