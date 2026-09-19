@@ -16,10 +16,10 @@ and the source-level writer/state requirements remain in
 
 The following rules apply to every row:
 
-1. Keep `proxy.backend: python` as the default until the complete native
-   lifecycle, ingress, state, rollback, platform, and retained-consumer
-   evidence is accepted. An explicit `proxy.backend: rust` launch is not a
-   default-switch proof.
+1. Normal launch uses `proxy.backend: rust` and the generated native
+   configuration. Keep `proxy.backend: python` as an explicit rollback and
+   comparator selector until the complete native lifecycle, ingress, state,
+   rollback, platform, and retained-consumer evidence is accepted.
 2. Keep the Python comparator jobs, including `tests/proxy_migration`, while
    a row is being evaluated. A native test that passes in isolation does not
    authorize deleting the corresponding Python fixture or test.
@@ -82,7 +82,7 @@ minimum evidence required before the path can be deleted.
 | M8-26 | `cli/src/safeyolo/mitm_addons/admin_api.py` | Host-local policy, budget, approval, service, listener, and operator APIs | Native operator routes preserve authentication, transactional policy activation, and state rollback | `tests/test_admin_api.py`<br>`tests/test_policy_transaction_regressions.py`<br>`cli/tests/test_api.py` | retained |
 | M8-27 | `cli/src/safeyolo/mitm_addons/probe_sink.py` | Reserved diagnostic probes and local success synthesis | Native probe path reports only reached steps and never sends reserved probes upstream | `tests/test_probe_sink.py`<br>`tests/test_trace_chain_regression.py`<br>`cli/tests/test_doctor_traced_probe.py` | retained |
 | M8-28 | `cli/src/safeyolo/mitm_addons/transport_guard.py` | Reserved CONNECT containment, late probe fallback, and connection backstops | Native outbound boundary retains local classification and prevents handler failures from creating upstream effects | `tests/test_transport_guard.py`<br>`tests/test_agent_api.py`<br>`tests/test_probe_lifecycle.py` | retained |
-| M8-29 | `pdp/` | Python policy client/schema package used by the default proxy, CLI, and wheel | Native policy replacement plus all remaining CLI consumers pass; wheel/import and Python comparator rollback remain green | `tests/test_pdp_client.py`<br>`cli/tests/test_runtime_identity.py`<br>`tests/proxy_migration` | retained |
+| M8-29 | `pdp/` | Python policy client/schema package retained by the comparator, CLI, and wheel | Native policy replacement plus all remaining CLI consumers pass; wheel/import and Python comparator rollback remain green | `tests/test_pdp_client.py`<br>`cli/tests/test_runtime_identity.py`<br>`tests/proxy_migration` | retained |
 | M8-30 | `pyproject.toml` | mitmproxy and Python runtime package declarations, including retained `pdp` packaging | Consumer search and frozen install prove no Python path is needed by the selected native runtime while Python rollback still installs and starts | `tests/test_install_sh.py`<br>`cli/tests/test_cli_imports.py`<br>`tests/proxy_migration` | retained |
 | M8-31 | `uv.lock` | Reproducible Python comparator and rollback dependency graph | Replacement environment is attested and comparator jobs remain reproducible before dependency removal | `tests/test_install_sh.py`<br>`tests/proxy_migration` | retained |
 | M8-32 | `cli/src/safeyolo/websocket_console.py` | Python mitmproxy ConsoleMaster renderer patch and retained console flow details | Equivalent native console/detail outcomes are demonstrated before removing the mitmweb/ConsoleMaster glue | `cli/tests/test_websocket_console.py`<br>`tests/proxy_migration` | retained |
@@ -96,10 +96,11 @@ own writer and restart evidence exists.
 ## Current disposition
 
 The accepted #640 preparation candidate proves locked Rust artifact
-installation and explicit native launch while retaining the Python default and
-rollback. This ledger records the next authorized increment: make each later
-deletion reviewable against a concrete path and affected test set. It does not
-authorize a default switch, a Python dependency deletion, or a comparator-job
-change. A future deletion commit must update this ledger and its guard test in
-the same candidate, retaining a readable rollback entry for every removed
-owner.
+installation and explicit native launch. This candidate makes that native
+artifact and its generated instance configuration the normal launch path while
+retaining explicit Python rollback and comparator jobs. The ledger records the
+deletion work still required: each later removal remains reviewable against a
+concrete path and affected test set. The default switch does not authorize a
+Python dependency deletion or comparator-job change. A future deletion commit
+must update this ledger and its guard test in the same candidate, retaining a
+readable rollback entry for every removed owner.

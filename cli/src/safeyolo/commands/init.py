@@ -2,6 +2,7 @@
 
 import secrets
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import typer
@@ -125,7 +126,8 @@ def init(  # DOC: cli/README.md
         console.print("  [green]Created[/green] admin token")
 
     # Write config.yaml
-    config = DEFAULT_CONFIG.copy()
+    config = deepcopy(DEFAULT_CONFIG)
+    config["proxy"]["rust_config"] = str((config_dir / "data" / "native.json").absolute())
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 

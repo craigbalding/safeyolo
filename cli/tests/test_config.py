@@ -106,6 +106,18 @@ class TestLoadConfig:
 
         assert DEFAULT_CONFIG["proxy"]["ignore_hosts"] == []
 
+    def test_defaults_select_native_proxy_and_retain_explicit_python_escape_hatch(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        config = load_config()
+
+        assert config["proxy"]["backend"] == "rust"
+        assert config["proxy"]["rust_config"] == "data/native.json"
+        config["proxy"]["backend"] = "python"
+        assert config["proxy"]["backend"] == "python"
+
 
 class TestDesktopSize:
     def test_uses_persistent_host_preference(self, tmp_config_dir):

@@ -265,7 +265,7 @@ Missing binaries, failed readiness, or a failed selected backend are errors.
 nonzero result if either run fails.  `--proxy-impl rust|both` is currently
 proxy-only; combining it with VM isolation is rejected so an isolation pass
 cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
-lanes remain available for the default Python installation path.
+lanes remain available when the Python installation path is explicitly selected.
 
 Selected Rust runs set native policy mode for every migration fixture.  Each
 fixture writes `native-policy-provenance.json`, which records the policy file

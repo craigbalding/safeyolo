@@ -874,7 +874,7 @@ def selected_backend(config: dict | None = None) -> str:
     options = selected.get("proxy", {})
     if not isinstance(options, dict):
         raise ValueError("proxy configuration must be a mapping")
-    backend = options.get("backend", "python")
+    backend = options.get("backend", "rust")
     if backend not in ("python", "rust"):
         raise ValueError("proxy.backend must be python or rust")
     return backend

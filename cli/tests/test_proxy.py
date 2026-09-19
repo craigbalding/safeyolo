@@ -1981,6 +1981,7 @@ class TestProxyStartupSmoke:
             from safeyolo.config import save_config
 
             config = proxy.load_config()
+            config["proxy"]["backend"] = "python"
             config["proxy"]["web_port"] = web_port
             config["command_centre"] = {
                 "enabled": True,
@@ -2128,6 +2129,7 @@ class TestStartProxy:
         from safeyolo.proxy import start_proxy
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("proxy:\n  backend: python\n")
 
         with (
             patch(
@@ -2150,6 +2152,7 @@ class TestStartProxy:
         from safeyolo.proxy import start_proxy
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("proxy:\n  backend: python\n")
         (tmp_path / "data").mkdir(exist_ok=True)
 
         with (
@@ -2179,6 +2182,7 @@ class TestStartProxy:
         from safeyolo.proxy import start_proxy
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("proxy:\n  backend: python\n")
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
         monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord"))
         monkeypatch.setenv("SAFEYOLO_UPSTREAM_PROXY", "http://127.0.0.1:8080")
@@ -2276,6 +2280,7 @@ class TestStartProxy:
         from safeyolo.proxy import start_proxy
 
         monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("proxy:\n  backend: python\n")
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
         data_dir = tmp_path / "data"
         data_dir.mkdir(exist_ok=True)

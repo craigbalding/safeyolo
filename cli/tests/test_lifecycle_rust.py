@@ -80,9 +80,20 @@ def test_rust_start_uses_native_owner_and_preserves_python_test_setting(command)
     for name in ("check_guest_images", "missing_guest_images", "_start_coord_best_effort", "_web_tailnet_runtime"):
         command.mocks[name].assert_not_called()
     assert command.config_path.read_bytes() == before
-    assert "Rust development backend" in result.output and "owned-native.json" in result.output
+    assert "Rust native backend" in result.output and "owned-native.json" in result.output
     assert "localhost" not in result.output and "safeyolo agent add" not in result.output
     assert "incomplete." in result.output and "WebMITM:" not in result.output
+
+
+def test_first_run_bootstrap_persists_absolute_native_config_path(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+    lifecycle._bootstrap_config(config_dir)
+
+    config = yaml.safe_load((config_dir / "config.yaml").read_text())
+    assert config["proxy"]["backend"] == "rust"
+    assert config["proxy"]["rust_config"] == str(config_dir / "data" / "native.json")
 
 
 @pytest.mark.parametrize("args", [["--test"], ["--dev"], ["--flow-cache", "9"], ["--flow-cache-bytes", "90"]])
@@ -102,7 +113,7 @@ def test_rust_up_no_wait_still_uses_central_start_readiness(command):
     assert result.exit_code == 0, result.output
     command.mocks["start_proxy"].assert_called_once_with()
     command.mocks["wait_for_healthy"].assert_not_called()
-    assert "Rust development backend" in result.output
+    assert "Rust native backend" in result.output
 
 
 def test_running_rust_skips_launch_and_python_coord(command):
@@ -162,8 +173,8 @@ def test_rust_launch_error_is_reported_without_fallback(command):
     assert command.mocks["write_event"].call_args.kwargs["details"]["phase"] == "launch"
 
 
-def test_default_python_keeps_preflight_launch_flags_and_test_mode_reset(command):
-    command.configure(backend=None)
+def test_explicit_python_keeps_preflight_launch_flags_and_test_mode_reset(command):
+    command.configure(backend="python")
     result = command.runner.invoke(app, ["start", "--dev", "--flow-cache", "7", "--flow-cache-bytes", "70"])
     assert result.exit_code == 0, result.output
     command.preflight.assert_called_once_with(command.config_path.parent)
@@ -187,7 +198,7 @@ def test_python_test_flag_still_persists_enabled_setting(command):
 
 
 def test_running_python_still_reconciles_coord(command):
-    command.configure(backend=None)
+    command.configure(backend="python")
     command.mocks["check_running_backend"].return_value = True
     result = command.runner.invoke(app, ["start"])
     assert result.exit_code == 0 and "already healthy" in result.output

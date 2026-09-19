@@ -6,6 +6,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
@@ -257,7 +258,8 @@ def _bootstrap_config(config_dir: Path) -> None:
     agent_token_path.chmod(0o600)
 
     # Write config.yaml
-    config = DEFAULT_CONFIG.copy()
+    config = deepcopy(DEFAULT_CONFIG)
+    config["proxy"]["rust_config"] = str((config_dir / "data" / "native.json").absolute())
     save_config(config)
 
     # Copy policy.toml
@@ -387,7 +389,7 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
 
     # Enable test mode if --test flag passed
     if backend == "rust":
-        console.print("[bold]Starting SafeYolo (Rust development backend)...[/bold]")
+        console.print("[bold]Starting SafeYolo (Rust native backend)...[/bold]")
     elif test:
         test_cfg = config.get("test", {})
         if not test_cfg.get("sinkhole_router"):
@@ -476,7 +478,7 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
         _profile_enter("render startup result")
         console.print(
             Panel(
-                "[green]SafeYolo Rust development backend is running.[/green]\n\n"
+                "[green]SafeYolo Rust native backend is running.[/green]\n\n"
                 f"Native listeners: defined in {escape(str(config['proxy'].get('rust_config', 'proxy.rust_config')))}\n"
                 "HTTP credential inspection/injection, WebMITM and agent management remain incomplete.",
                 title="Started",

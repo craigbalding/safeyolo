@@ -295,6 +295,14 @@ def test_install_builds_and_packages_the_locked_release_proxy() -> None:
     assert 'tool_args+=("$python_interpreter" "$REPO_ROOT")' in source
 
 
+def test_wheel_maps_the_built_native_proxy_into_the_runtime_package() -> None:
+    """A normal wheel carries the executable selected by the native default."""
+    source = (REPO_ROOT / "hatch_build.py").read_text()
+
+    assert '"proxy" / "target" / "release" / "safeyolo-proxy"' in source
+    assert 'safeyolo/bin/safeyolo-proxy' in source
+
+
 def test_wheel_declares_the_retained_python_policy_package() -> None:
     """A wheel install must keep the Python comparator's pdp imports usable."""
     project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())

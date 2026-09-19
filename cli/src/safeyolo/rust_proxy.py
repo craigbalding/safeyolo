@@ -1,4 +1,4 @@
-"""Launch and stop the explicitly selected development Rust proxy."""
+"""Launch and stop the selected native Rust proxy."""
 
 from __future__ import annotations
 
@@ -17,7 +17,15 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .agent_command_supervisor import _write_json, _write_text
-from .config import get_agent_map_path, get_bridge_sockets_dir, get_data_dir, get_logs_dir
+from .config import (
+    DEFAULT_NATIVE_CONFIG,
+    get_agent_map_path,
+    get_bridge_sockets_dir,
+    get_data_dir,
+    get_logs_dir,
+    get_native_config_path,
+    get_policy_toml_path,
+)
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
 from .sockets import remove_stale_sockets
@@ -140,6 +148,68 @@ def _path(value: object, field: str) -> Path:
     return Path(value).absolute()
 
 
+def _default_native_config(config: dict) -> dict:
+    """Build the release native config from the existing CLI instance paths."""
+    proxy = config.get("proxy", {})
+    if not isinstance(proxy, dict):
+        raise ValueError("proxy configuration must be a mapping")
+    data_dir = get_data_dir()
+    logs_dir = get_logs_dir(create=True)
+    admin_port = proxy.get("admin_port", 9090)
+    if type(admin_port) is not int or not 0 <= admin_port <= 65535:
+        raise ValueError("proxy.admin_port must be an integer from 0 to 65535")
+    ignore_hosts = proxy.get("ignore_hosts", [])
+    if not isinstance(ignore_hosts, list) or not all(isinstance(value, str) for value in ignore_hosts):
+        raise ValueError("proxy.ignore_hosts must be a list of strings")
+    plumb = config.get("plumb", {})
+    if not isinstance(plumb, dict):
+        raise ValueError("plumb configuration must be a mapping")
+    return {
+        "listeners": [],
+        "agent_map_file": str(get_agent_map_path()),
+        "data_dir": str(data_dir),
+        "policy_file": str(get_policy_toml_path()),
+        "network_guard_enabled": True,
+        "network_guard_block": True,
+        "network_guard_homoglyph": True,
+        "credential_guard_block": True,
+        "circuit_breaker_enabled": True,
+        "circuit_state_file": str(data_dir / "circuit.json"),
+        "agent_api_enabled": True,
+        "test_context_block": True,
+        "sse_streaming_enabled": True,
+        "flow_store_enabled": True,
+        "flow_store_db_path": str(data_dir / "flows.sqlite3"),
+        "admin_port": admin_port,
+        "admin_api_token_file": str(data_dir / "admin_token"),
+        "readiness_file": str(data_dir / "proxy-readiness.json"),
+        "audit_log_path": str(logs_dir / "safeyolo.jsonl"),
+        "event_log": str(logs_dir / "native-events.jsonl"),
+        "parent_proxy": proxy.get("upstream_proxy") or None,
+        "upstream_ca_file": proxy.get("upstream_ca_cert") or None,
+        "ignore_hosts": ignore_hosts,
+        "via_token": proxy.get("via_token") or None,
+        "plumb": plumb,
+    }
+
+
+def _ensure_default_native_config(config: dict, path: Path) -> None:
+    """Create the generated config without overwriting operator native settings."""
+    desired = _default_native_config(config)
+    try:
+        existing_source = path.read_text(encoding="utf-8")
+        existing = json.loads(existing_source)
+    except FileNotFoundError:
+        existing = None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"Cannot read generated native configuration: {path}") from exc
+    if existing is not None and not isinstance(existing, dict):
+        raise RuntimeError(f"Generated native configuration must be an object: {path}")
+    if isinstance(existing, dict):
+        return
+    _write_text(path, json.dumps(desired, indent=2, sort_keys=True) + "\n", mode=0o600)
+
+
 @dataclass(frozen=True)
 class RustLaunch:
     binary: Path
@@ -176,9 +246,19 @@ def _binary() -> Path:
 def prepare(config: dict) -> RustLaunch:
     """Read launch metadata; the Rust executable validates its complete JSON schema."""
     configured_path = config.get("proxy", {}).get("rust_config")
-    if isinstance(configured_path, str):
+    default_path = get_native_config_path()
+    configured_default = (
+        isinstance(configured_path, str)
+        and Path(os.path.expanduser(configured_path)).absolute() == default_path.absolute()
+    )
+    if configured_path in (None, DEFAULT_NATIVE_CONFIG) or configured_default:
+        path = default_path
+        _ensure_default_native_config(config, path)
+    elif isinstance(configured_path, str):
         configured_path = os.path.expanduser(configured_path)
-    path = _path(configured_path, "proxy.rust_config")
+        path = _path(configured_path, "proxy.rust_config")
+    else:
+        path = _path(configured_path, "proxy.rust_config")
     try:
         source = path.read_text()
         native = json.loads(source)
@@ -431,7 +511,7 @@ def start(config: dict) -> None:
         raise RuntimeError("The traffic session is still running; stop it before launching Rust")
     launch.readiness.unlink(missing_ok=True)
     log.warning(
-        "Starting development Rust proxy from explicit JSON; HTTP credential inspection, "
+        "Starting Rust proxy from native JSON; HTTP credential inspection, "
         "vault injection and the full operator UI/management workflows are not yet implemented"
     )
     env = os.environ.copy()

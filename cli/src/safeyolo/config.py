@@ -11,6 +11,7 @@ import yaml
 # Environment variable names for path overrides (useful for testing and custom setups)
 _CONFIG_DIR_ENV = "SAFEYOLO_CONFIG_DIR"
 _LOGS_DIR_ENV = "SAFEYOLO_LOGS_DIR"
+DEFAULT_NATIVE_CONFIG = "data/native.json"
 
 
 def _get_config_dir_path() -> Path:
@@ -41,6 +42,10 @@ DEFAULT_CONFIG = {
         "upstream_proxy": "",
         # Empty means derive a stable token from this instance's coord ID.
         "via_token": "",
+        # Native Rust is the release backend. Set `backend: python` explicitly
+        # for the retained comparator and operator rollback path.
+        "backend": "rust",
+        "rust_config": DEFAULT_NATIVE_CONFIG,
     },
     "modes": {
         "credential_guard": "block",
@@ -152,6 +157,11 @@ def get_agents_dir() -> Path:
 def get_policy_toml_path() -> Path:
     """Get path to policy.toml (single policy file)."""
     return get_config_dir() / "policy.toml"
+
+
+def get_native_config_path() -> Path:
+    """Get the generated native Rust configuration for this instance."""
+    return get_data_dir() / "native.json"
 
 
 def get_admin_token_path() -> Path:

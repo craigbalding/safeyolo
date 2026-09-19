@@ -447,17 +447,19 @@ silently reduce accepted message sizes to a library default.
 ## Development CLI process selection
 
 The [CLI development workflow](DEVELOPERS.md#rust-proxy-development-backend)
-selects a supplied Rust executable and native JSON configuration through
-`proxy.backend: rust`. Python remains the default. Start, status and stop use
-the native readiness marker and a separate process lifetime record; no launch
-failure selects Python automatically. Rust shutdown waits for process exit.
+selects the packaged Rust executable and generated native JSON configuration
+by default through `proxy.backend: rust`. Set `proxy.backend: python`
+explicitly for the retained comparator or operator rollback. Start, status and
+stop use the native readiness marker and a separate process lifetime record; no
+launch failure selects Python automatically. Rust shutdown waits for process
+exit.
 
 The source installer now builds the locked release executable with the Cargo
-space guard and packages it into the installed CLI. This closes the artifact
-availability gap for an explicitly configured native launch while retaining the
-Python default until the complete native lifecycle, ingress, rollback and
-consumer evidence is rerun against one frozen candidate. It does not authorize
-deleting the Python comparator or switching the default.
+space guard and packages it into the installed CLI. The default instance
+configuration points at a generated native JSON file whose policy, state,
+listener map, audit and readiness paths remain under the existing instance
+directories. The wheel retains the Python CLI and comparator dependencies for
+explicit rollback; it does not authorize deleting those paths.
 
 The shared CLI admin client selects the recorded native IPv4 loopback endpoint
 and credentials. It verifies process identity before requests and follows a
@@ -489,8 +491,9 @@ fresh readiness and cleanup. This establishes native process restart/socket
 reuse for those paths; it does not establish installed host listener lifecycle,
 macOS/Linux ingress, packaging or pilot acceptance.
 Complete management and traffic UI workflows, credential inspection/injection,
-and real host listener lifecycle proofs remain unfinished.
-This development launcher does not complete M7 or authorize cutover.
+and real host listener lifecycle proofs remain unfinished. This increment
+switches normal launch and installation to native Rust but does not remove any
+M7/M8 Python owner or claim final cutover acceptance.
 
 ## Deletion map and evidence still required
 
@@ -498,8 +501,8 @@ The path-level #640 review ledger is maintained in
 [proxy-cutover-deletion-map.md](proxy-cutover-deletion-map.md). It keeps every
 current Python runtime owner retained, names its affected checks and replacement
 gate, and records the explicit Python rollback while comparator jobs remain
-active. The ledger is a plan and testable inventory; it does not authorize a
-default switch or deletion by itself.
+active. The ledger is a plan and testable inventory; the default switch does
+not authorize deletion by itself.
 
 Deletion is conditional on replacement, not movement behind an adapter.
 

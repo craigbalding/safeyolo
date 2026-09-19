@@ -344,10 +344,11 @@ implicit partial hot reload.
 For host installation and retrying an individual bootstrap phase, use the
 [installation reference](../cli/README.md#installation).
 
-**Running the default Python backend with live source editing:**
+**Running the retained Python comparator with live source editing:**
 ```bash
-# `--dev` runs the proxy from your local checkout so edits to addons/pdp
-# source pick up on the next start (no container image, no rebuild step).
+# Edit ~/.safeyolo/config.yaml and set proxy.backend to python before using
+# the source-backed development path.
+safeyolo stop
 safeyolo start --dev
 
 # Edit mitm_addons/*.py, safeyolo/*.py, or pdp/*.py, then restart the traffic
@@ -357,17 +358,19 @@ safeyolo stop && safeyolo start --dev
 
 ### Rust proxy development backend
 
-The CLI defaults to `proxy.backend: python`. Rust selection is an explicit
-development setting, not a completed migration or production cutover. HTTP
+The CLI defaults to `proxy.backend: rust` and generates a native JSON
+configuration under `data/native.json` for each initialized instance. Set
+`proxy.backend: python` explicitly for the retained comparator and operator
+rollback path; Rust launch failures never fall back automatically. HTTP
 credential inspection and injection, WebMITM, and complete agent management
 remain incomplete. Native listeners include the supplied JSON entries and
 the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
 `./install.sh` builds `proxy/target/release/safeyolo-proxy` through the Cargo
 space guard and installs a wheel containing that exact native executable. The
-installed binary is available to an explicitly configured `proxy.backend: rust`
-launch; the installer does not change the default Python selection while the
-remaining parity and rollback evidence is incomplete.
+installed binary is selected by the generated native default; the wheel keeps
+the Python CLI and comparator dependencies so an operator can explicitly set
+`proxy.backend: python` for rollback.
 
 ### Cargo disk-space guard and target retirement
 
@@ -472,7 +475,7 @@ the Python `test.enabled` setting.
 safeyolo start
 ```
 
-The success panel identifies the Rust development backend and its listener
+The success panel identifies the Rust native backend and its listener
 configuration. Startup requires native readiness. The default `--wait` also
 checks the running native operator endpoint when configured; otherwise it uses
 readiness. This establishes process availability, not full policy parity or a

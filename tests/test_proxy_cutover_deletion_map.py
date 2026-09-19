@@ -94,7 +94,7 @@ def test_ledger_covers_current_runtime_owners_and_existing_paths() -> None:
             assert (REPO_ROOT / check).exists(), (current_path, check)
 
 
-def test_ledger_keeps_default_python_and_explicit_rollback_contract() -> None:
+def test_ledger_keeps_native_default_and_explicit_python_rollback_contract() -> None:
     text = LEDGER.read_text(encoding="utf-8")
     for required in (
         "`proxy.backend: python`",
@@ -102,6 +102,7 @@ def test_ledger_keeps_default_python_and_explicit_rollback_contract() -> None:
         "`tests/proxy_migration`",
         "`SAFEYOLO_SKIP_RUST_BUILD=1`",
         "installed rollback",
+        "Normal launch uses `proxy.backend: rust`",
     ):
         assert required in text
 
@@ -109,5 +110,4 @@ def test_ledger_keeps_default_python_and_explicit_rollback_contract() -> None:
 def test_ledger_is_only_a_plan_until_replacement_evidence_exists() -> None:
     text = LEDGER.read_text(encoding="utf-8")
     assert "every row is currently **retained**" in text
-    assert "authorize a default switch" in text
-    assert "does not" in text and "authorize a default switch" in text
+    assert "default switch does not authorize" in text

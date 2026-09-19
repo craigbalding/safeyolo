@@ -12,6 +12,7 @@ from unittest.mock import create_autospec
 
 import pytest
 
+from safeyolo import config as safeyolo_config
 from safeyolo import proxy, runtime_identity, rust_proxy, traffic_session
 
 PID = 24680
@@ -153,6 +154,30 @@ def test_selected_rust_launch_skips_python_setup_and_publishes_owned_receipt(lau
     launch.http.assert_not_called()
 
 
+def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    logs_dir = tmp_path / "logs"
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs_dir))
+    binary = tmp_path / "safeyolo-proxy"
+    binary.write_text("native")
+    binary.chmod(0o700)
+    monkeypatch.setattr(rust_proxy, "_binary", lambda: binary)
+
+    launch = rust_proxy.prepare(
+        {"proxy": {"backend": "rust", "rust_config": safeyolo_config.DEFAULT_NATIVE_CONFIG}}
+    )
+
+    native_path = safeyolo_config.get_native_config_path()
+    native = json.loads(native_path.read_text())
+    assert launch.config == native_path
+    assert native["policy_file"] == str(config_dir / "policy.toml")
+    assert native["data_dir"] == str(config_dir / "data")
+    assert native["admin_api_token_file"] == str(config_dir / "data" / "admin_token")
+    assert native["event_log"] == str(logs_dir / "native-events.jsonl")
+    assert native_path.stat().st_mode & 0o777 == 0o600
+
+
 @pytest.mark.parametrize(
     "failure", ["missing_config", "bad_json", "nonobject", "missing_binary", "version", "version_io"]
 )
@@ -176,12 +201,23 @@ def test_selected_rust_startup_errors_never_fall_back_to_python(launch, failure)
     assert not rust_proxy.state_file().exists()
 
 
-def test_unspecified_backend_preserves_python_dispatch(launch):
-    launch.config["proxy"].pop("backend")
+def test_explicit_python_backend_preserves_python_dispatch(launch):
+    launch.config["proxy"]["backend"] = "python"
     proxy.start_proxy(proxy_port=18080, admin_port=19090, flow_cache=25, flow_cache_bytes=2048, dev=True)
     launch.python_start.assert_called_once_with(18080, 19090, 25, 2048, True)
     launch.begin.assert_not_called()
     launch.version.assert_not_called()
+
+
+def test_missing_backend_uses_native_dispatch_without_python_fallback(launch, monkeypatch):
+    launch.config["proxy"].pop("backend")
+    native_start = create_autospec(rust_proxy.start, spec_set=True)
+    monkeypatch.setattr(proxy.rust_proxy, "start", native_start)
+
+    proxy.start_proxy()
+
+    native_start.assert_called_once_with(launch.config)
+    launch.python_start.assert_not_called()
 
 
 def test_binary_prefers_the_packaged_native_artifact(monkeypatch, tmp_path):
