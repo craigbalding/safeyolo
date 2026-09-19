@@ -1,6 +1,7 @@
 //! Retention publication and live HTTP observations with owned fixture state.
 
 use super::*;
+use crate::websocket::{Event, Message, Reader, Writer};
 use bytes::Bytes;
 use flate2::read::ZlibDecoder;
 use http_body_util::{BodyExt, Full};
@@ -8,6 +9,10 @@ use hyper::{Method, Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::{io::Read, net::SocketAddr};
 use traffic_view::RequestInfo;
+use tungstenite::protocol::frame::{
+    FrameHeader,
+    coding::{Data, OpCode},
+};
 
 fn config(directory: &Path) -> Config {
     let policy = directory.join("policy.json");
@@ -199,6 +204,35 @@ async fn operator_http(
     drop(sender);
     let _ = task.await;
     (status, headers, body)
+}
+
+async fn read_http_head(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        head.push(stream.read_u8().await.unwrap());
+    }
+    head
+}
+
+fn masked_client_frame(opcode: OpCode, payload: &[u8]) -> Vec<u8> {
+    let key = [13, 17, 23, 31];
+    let header = FrameHeader {
+        opcode,
+        is_final: true,
+        mask: Some(key),
+        ..FrameHeader::default()
+    };
+    let mut bytes = Vec::new();
+    header.format(payload.len() as u64, &mut bytes).unwrap();
+    bytes.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ key[index % key.len()]),
+    );
+    bytes
 }
 
 #[tokio::test]
@@ -459,4 +493,192 @@ async fn live_operator_inspector_browses_scopes_and_exports_native_http() {
     })
     .await
     .expect("live native inspector workflow must finish");
+}
+
+#[tokio::test]
+async fn live_operator_inspector_browses_native_websocket_transcript() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use tokio::io::AsyncWriteExt;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(directory.path());
+        let policy = config.policy_file.as_ref().unwrap();
+        std::fs::write(
+            policy,
+            r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+        )
+        .unwrap();
+        config.network_guard_enabled = false;
+        let agent_socket = directory.path().join("alice.sock");
+        config.listeners.push(AgentListener {
+            agent_id: "alice".into(),
+            socket_path: agent_socket.clone(),
+            source_id: None,
+        });
+        let token = "live-websocket-inspector-token";
+        let token_path = directory.path().join("operator-token");
+        std::fs::write(&token_path, token).unwrap();
+        config.admin_port = Some(0);
+        config.admin_api_token_file = Some(token_path);
+
+        let origin = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let origin_address = origin.local_addr().unwrap();
+        let origin_task = tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let head = read_http_head(&mut stream).await;
+            assert!(head.starts_with(b"GET /socket?inspector=ws HTTP/1.1\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let (read, write) = tokio::io::split(stream);
+            let mut reader = Reader::new(read, true, None);
+            let mut writer = Writer::new(write, false, None);
+            let Event::Message(message) = reader.read().await.unwrap() else {
+                panic!("client WebSocket message expected");
+            };
+            message
+                .with_text(|text| assert_eq!(text, "client transcript"))
+                .unwrap();
+            writer
+                .message(Message::text_for_send("server transcript"))
+                .await
+                .unwrap();
+            let Event::Close(payload) = reader.read().await.unwrap() else {
+                panic!("client WebSocket close expected");
+            };
+            assert_eq!(payload, 1000_u16.to_be_bytes());
+        });
+
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let admin_address = proxy.admin.as_ref().unwrap().address();
+        let mut client = tokio::net::UnixStream::connect(&agent_socket).await.unwrap();
+        let request = format!(
+            "GET http://{origin_address}/socket?inspector=ws HTTP/1.1\r\nHost: {origin_address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        );
+        client.write_all(request.as_bytes()).await.unwrap();
+        let head = read_http_head(&mut client).await;
+        assert!(head.starts_with(b"HTTP/1.1 101"));
+        let (read, mut write) = tokio::io::split(client);
+        let mut reader = Reader::new(read, false, None);
+        write
+            .write_all(&masked_client_frame(
+                OpCode::Data(Data::Text),
+                b"client transcript",
+            ))
+            .await
+            .unwrap();
+        let Event::Message(message) = reader.read().await.unwrap() else {
+            panic!("server WebSocket message expected");
+        };
+        message
+            .with_text(|text| assert_eq!(text, "server transcript"))
+            .unwrap();
+
+        let (status, _, body) =
+            operator_http(admin_address, token, Method::GET, "/admin/traffic/flows", b"")
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        let flows: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(flows["flows"].as_array().unwrap().len(), 1);
+        let id = flows["flows"][0]["id"].as_str().unwrap().to_owned();
+        assert_eq!(flows["flows"][0]["agent"], "alice");
+        assert_eq!(flows["flows"][0]["state"], "websocket_open");
+
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}"),
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let detail: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail["state"], "websocket_open");
+        assert_eq!(detail["websocket"]["state"], "open");
+
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}/websocket/messages"),
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let transcript: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(transcript["websocket"]["state"], "open");
+        assert_eq!(transcript["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(transcript["messages"][0]["from_client"], true);
+        assert_eq!(transcript["messages"][0]["type"], "text");
+        assert_eq!(transcript["messages"][0]["body"]["size"], 17);
+        assert_eq!(transcript["messages"][1]["from_client"], false);
+        assert_eq!(transcript["messages"][1]["body"]["size"], 17);
+
+        for (message_id, expected) in [(0, b"client transcript"), (1, b"server transcript")] {
+            let (status, _, body) = operator_http(
+                admin_address,
+                token,
+                Method::GET,
+                &format!(
+                    "/admin/traffic/flows/{id}/websocket/messages/{message_id}/body?offset=0"
+                ),
+                b"",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let page: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(page["available"], true);
+            assert_eq!(
+                page["data_base64"],
+                STANDARD.encode(expected),
+                "message {message_id}"
+            );
+            assert_eq!(page["offset"], 0);
+            assert_eq!(page["end"], true);
+        }
+
+        write
+            .write_all(&masked_client_frame(
+                OpCode::Control(tungstenite::protocol::frame::coding::Control::Close),
+                &1000_u16.to_be_bytes(),
+            ))
+            .await
+            .unwrap();
+        let Event::Close(payload) = reader.read().await.unwrap() else {
+            panic!("server WebSocket close expected");
+        };
+        assert_eq!(payload, 1000_u16.to_be_bytes());
+        drop(reader);
+        drop(write);
+        origin_task.await.unwrap();
+
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{id}"),
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let closed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(closed["state"], "complete");
+        assert_eq!(closed["websocket"]["state"], "closed");
+        assert_eq!(closed["websocket"]["closed_by_client"], true);
+        assert_eq!(closed["websocket"]["close_code"], 1000);
+        assert_eq!(closed["websocket"]["messages_meta"]["count"], 2);
+
+        proxy.shutdown().await;
+        assert!(!agent_socket.exists());
+        assert!(!config.readiness_file.exists());
+    })
+    .await
+    .expect("live native WebSocket inspector workflow must finish");
 }
