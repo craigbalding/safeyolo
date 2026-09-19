@@ -592,7 +592,9 @@ impl Runtime {
                         config.policy_file.clone(),
                     ))
                 })
-                .unwrap_or_else(|| Arc::new(agent_api::CoordClient::new(config.policy_file.clone())));
+                .unwrap_or_else(|| {
+                    Arc::new(agent_api::CoordClient::new(config.policy_file.clone()))
+                });
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),
                 None => Arc::new(flow_recorder::FlowRecorder::start(
@@ -1782,12 +1784,14 @@ impl Proxy {
         ) {
             eprintln!("Audit writer shutdown did not complete");
         }
+        desktop_present::shutdown();
     }
 }
 
 impl Drop for Proxy {
     fn drop(&mut self) {
         clear_readiness(&self.readiness_file, &self.default_via);
+        desktop_present::shutdown();
         for (_, listener) in self.listeners.drain() {
             drop(listener.stop());
         }

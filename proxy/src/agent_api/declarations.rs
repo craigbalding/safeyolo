@@ -224,7 +224,8 @@ where
             now_ms,
             controls.circuits,
             controls.coord,
-        ).await);
+        )
+        .await);
     }
     let owner = controls.declarations.as_ref().map(|context| context.owner);
     if let Some(outcome) =

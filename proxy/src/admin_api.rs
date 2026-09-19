@@ -855,6 +855,13 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
                 vec![format!("{request_id}:{}", participants.join(","))]
             }
         }
+        "admin.desktop_presented" => details
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|agent_id| !agent_id.is_empty())
+            .map(|agent_id| format!("desktop.present:desktop:{agent_id}"))
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -868,11 +875,23 @@ fn pending_approvals(path: &Path) -> Value {
     // same durable-resolution semantics as the retained Python watcher apply
     // to both an earlier prompt and a later retry.
     for (sequence, event) in events.iter().rev().enumerate() {
-        let event_name = event.get("event").and_then(Value::as_str);
         for key in resolved_approval_keys(event) {
-            if event_name == Some("admin.denial") {
-                durable_resolutions.insert(key.clone());
-                pending.remove(&key);
+            let repeatable = key.starts_with("desktop.present:desktop:");
+            if repeatable {
+                let Some((_, prompt)) = pending.get(&key) else {
+                    continue;
+                };
+                let request_matches = event
+                    .get("details")
+                    .and_then(Value::as_object)
+                    .and_then(|details| details.get("approval_request_id"))
+                    .and_then(Value::as_str)
+                    .is_none_or(|request_id| {
+                        prompt.get("request_id").and_then(Value::as_str) == Some(request_id)
+                    });
+                if request_matches {
+                    pending.remove(&key);
+                }
             } else {
                 durable_resolutions.insert(key.clone());
                 pending.remove(&key);
@@ -885,7 +904,6 @@ fn pending_approvals(path: &Path) -> Value {
             .get("required")
             .and_then(Value::as_bool)
             .unwrap_or(false)
-            || approval.get("approval_type").and_then(Value::as_str) == Some("desktop_present")
         {
             continue;
         }
@@ -3125,6 +3143,47 @@ mod tests {
         });
         std::fs::write(&path, format!("{}\n{}\n{}\n", prompt, denial, retry)).unwrap();
         assert_eq!(pending_approvals(&path), json!([]));
+    }
+
+    #[test]
+    fn desktop_present_approvals_are_visible_and_resolve_repeatably() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("desktop.jsonl");
+        let request = json!({
+            "event": "agent.desktop_present_requested",
+            "request_id": "req-one",
+            "approval": {
+                "required": true,
+                "approval_type": "desktop_present",
+                "key": "desktop.present",
+                "target": "desktop:alice"
+            }
+        });
+        std::fs::write(&path, format!("{}\n", request)).unwrap();
+        assert_eq!(pending_approvals(&path), json!([request]));
+
+        let presented = json!({
+            "event": "admin.desktop_presented",
+            "details": {
+                "agent_id": "alice",
+                "approval_request_id": "req-one"
+            }
+        });
+        std::fs::write(&path, format!("{}\n{}\n", request, presented)).unwrap();
+        assert_eq!(pending_approvals(&path), json!([]));
+
+        let retry = json!({
+            "event": "agent.desktop_present_requested",
+            "request_id": "req-two",
+            "approval": {
+                "required": true,
+                "approval_type": "desktop_present",
+                "key": "desktop.present",
+                "target": "desktop:alice"
+            }
+        });
+        std::fs::write(&path, format!("{}\n{}\n{}\n", request, presented, retry)).unwrap();
+        assert_eq!(pending_approvals(&path), json!([retry]));
     }
 
     // Source35 results SHA256: 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.

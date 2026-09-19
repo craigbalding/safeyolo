@@ -10,15 +10,15 @@
 //! current scalar-string Policy API: these produce a typed compatibility failure,
 //! never lossy replacement. This is an incomplete development API slice.
 
-use std::{collections::HashMap, fs, path::Path};
 pub use coord::{CoordClient, CoordContext};
+use std::{collections::HashMap, fs, path::Path};
 
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-mod declarations;
 mod coord;
+mod declarations;
 mod discovery;
 mod explain;
 mod flows;
@@ -34,7 +34,6 @@ pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
     respond_with_body_and_audit_id,
 };
-pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
 pub use explain::ExplainFailure;
 pub use flows::FlowFailure;
 

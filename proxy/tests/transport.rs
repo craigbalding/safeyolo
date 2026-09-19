@@ -131,7 +131,6 @@ fn config(directory: &TempDir) -> Config {
         ignore_hosts: Vec::new(),
         via_token: Some("test-instance".into()),
         inspection: None,
-        plumb: Default::default(),
     }
 }
 

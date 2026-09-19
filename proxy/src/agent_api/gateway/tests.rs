@@ -333,7 +333,7 @@ async fn twenty_actual_source_catalog_responses_match_without_reading_a_body() {
                 flows: None,
                 circuits: None,
                 declarations: None,
-            coord: None,
+                coord: None,
             },
             RequestBody {
                 body: &mut body,
