@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from mitmproxy.certs import CertStore
@@ -100,6 +101,49 @@ def read_all(stream):
     while part := stream.recv(65536):
         received.extend(part)
     return bytes(received)
+
+
+def _process_fd_targets(pid):
+    """Return the live child descriptor targets without attaching to it."""
+    result = {}
+    for descriptor in Path(f"/proc/{pid}/fd").iterdir():
+        try:
+            result[descriptor.name] = os.readlink(descriptor)
+        except FileNotFoundError:
+            # A descriptor may close between directory enumeration and readlink.
+            continue
+    return result
+
+
+def _process_resources(pid):
+    """Capture external process resources for the bounded CONNECT workload."""
+    status = Path(f"/proc/{pid}/status")
+    if not status.exists():
+        pytest.skip("CONNECT resource workload requires Linux /proc measurements")
+    values = {}
+    for line in status.read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in {"VmRSS", "VmHWM", "Threads"}:
+            values[key] = int(value.strip().split()[0])
+    try:
+        fd_targets = _process_fd_targets(pid)
+        executable = str(Path(f"/proc/{pid}/exe").resolve())
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(
+            b"\0", b" "
+        ).decode(errors="replace").strip()
+    except FileNotFoundError:
+        fd_targets = {}
+        executable = command = None
+    return {
+        "pid": pid,
+        "rss_kib": values.get("VmRSS"),
+        "hwm_kib": values.get("VmHWM"),
+        "threads": values.get("Threads"),
+        "fd_count": len(fd_targets),
+        "fd_targets": fd_targets,
+        "executable": executable,
+        "command": command,
+    }
 
 
 def passthrough_audit(directory):
@@ -400,6 +444,183 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
                     },
                     "tunnel_events": events if proxy_backend == "rust" else [],
                 }, indent=2) + "\n")
+        finally:
+            thread.join(timeout=6)
+            assert not thread.is_alive()
+
+
+def test_repeated_raw_connect_cancellation_reclaims_origin_and_process_resources(
+    proxy_backend, tmp_path
+):
+    """Repeated abandoned raw CONNECTs close their origin and child resources."""
+    sessions = 3
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    greeting = b"raw-cancel-server-first\x00v1\n"
+    payloads = [
+        (b"abandoned-connect-" + index.to_bytes(2, "big")) * 4096
+        for index in range(sessions)
+    ]
+    observations = []
+    origin_error = []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        authority = f"127.0.0.1:{listener.getsockname()[1]}"
+
+        def origin():
+            try:
+                for index in range(sessions):
+                    stream, peer = listener.accept()
+                    with stream:
+                        stream.settimeout(5)
+                        stream.sendall(greeting)
+                        body = bytearray()
+                        while data := stream.recv(65536):
+                            body.extend(data)
+                        observations.append({
+                            "index": index,
+                            "peer": list(peer),
+                            "payload": bytes(body),
+                            "client_eof": True,
+                        })
+            except BaseException as error:  # surface thread failures in the test
+                origin_error.append(f"{type(error).__name__}: {error}")
+
+        thread = threading.Thread(target=origin)
+        thread.start()
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                DIRECT_CONNECT_HALF_CLOSE_POLICY,
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                batch_before = _process_resources(proxy.process.pid)
+                samples = []
+                for index, payload in enumerate(payloads):
+                    before = _process_resources(proxy.process.pid)
+                    before_targets = before["fd_targets"]
+                    stream = tunnel(proxy.paths["alice"], authority)
+                    try:
+                        assert read_exact(stream, len(greeting)) == greeting
+                        stream.sendall(payload)
+                    finally:
+                        # This is an abandoned client: it does not send a
+                        # half-close or wait for an origin response.
+                        stream.close()
+
+                    deadline = time.monotonic() + 5
+                    while len(observations) <= index:
+                        assert time.monotonic() < deadline, (
+                            "origin did not observe the abandoned CONNECT EOF"
+                        )
+                        time.sleep(0.01)
+                    after = _process_resources(proxy.process.pid)
+                    after_targets = after["fd_targets"]
+                    new_sockets = sorted(
+                        target
+                        for target in set(after_targets.values()) - set(before_targets.values())
+                        if target.startswith("socket:[")
+                    )
+                    retained_deleted = sorted(
+                        target
+                        for target in set(after_targets.values()) - set(before_targets.values())
+                        if target.endswith(" (deleted)")
+                    )
+                    assert not new_sockets, (
+                        f"CONNECT {index} retained new socket descriptors: {new_sockets}"
+                    )
+                    assert not retained_deleted, (
+                        f"CONNECT {index} retained deleted descriptors: {retained_deleted}"
+                    )
+                    assert proxy.process.poll() is None
+                    samples.append({
+                        "index": index,
+                        "before": before,
+                        "after": after,
+                        "new_socket_targets_after_close": new_sockets,
+                        "retained_deleted_targets_after_close": retained_deleted,
+                    })
+
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+                assert not origin_error, origin_error
+                assert len(observations) == sessions
+                assert all(item["client_eof"] for item in observations)
+                assert [item["payload"] for item in observations] == payloads
+                batch_after = _process_resources(proxy.process.pid)
+                events = proxy.events("proxy.tunnel")
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                    deadline = time.monotonic() + 5
+                    while len(events) < sessions:
+                        assert time.monotonic() < deadline, (
+                            "Rust CONNECT cancellation events did not settle"
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
+                    assert len(events) == sessions
+                    assert all(event["agent"] == "alice" for event in events)
+                    assert all(event["coverage"] == "opaque" for event in events)
+                (directory / "connect-cancellation-resources.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "authority": authority,
+                            "sessions": sessions,
+                            "greeting_hex": greeting.hex(),
+                            "payloads": [
+                                {
+                                    "length": len(payload),
+                                    "sha256": hashlib.sha256(payload).hexdigest(),
+                                    "prefix_hex": payload[:32].hex(),
+                                    "suffix_hex": payload[-32:].hex(),
+                                }
+                                for payload in payloads
+                            ],
+                            "origin_observed": [
+                                {
+                                    "index": item["index"],
+                                    "peer": item["peer"],
+                                    "payload_length": len(item["payload"]),
+                                    "payload_sha256": hashlib.sha256(
+                                        item["payload"]
+                                    ).hexdigest(),
+                                    "client_eof": item["client_eof"],
+                                }
+                                for item in observations
+                            ],
+                            "resources": {
+                                "batch_before": batch_before,
+                                "sessions": samples,
+                                "batch_after": batch_after,
+                            },
+                            "proxy_tunnel_events": events if proxy_backend == "rust" else [],
+                            "native_policy_provenance": (
+                                provenance if proxy_backend == "rust" else None
+                            ),
+                            "limits": [
+                                "Three sequential raw CONNECT sessions with a server-first greeting and an abrupt client close after a bounded upload.",
+                                "This measures closure and retained descriptor identity; it establishes no RSS/HWM ceiling, concurrency limit, long-duration stability, or OOM behavior.",
+                                "The workload does not claim real SSH authentication or full production traffic coverage; those remain separate contract cases.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
         finally:
             thread.join(timeout=6)
             assert not thread.is_alive()
