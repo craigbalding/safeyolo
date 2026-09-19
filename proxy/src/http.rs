@@ -1306,6 +1306,7 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::AuthenticationFailed
                 | crate::agent_api::AuditKind::HandlerUnavailable
+                | crate::agent_api::AuditKind::CoordPublishOutcomeUnknown
         ) {
             event["decision"] = json!("deny");
         } else if matches!(
@@ -1355,6 +1356,7 @@ async fn local_agent_api<B>(
     traffic: Arc<traffic::Traffic>,
     identity: &ConnectionIdentity,
     request_id: &str,
+    upgrades: &UpgradeTasks,
     request: &mut Request<B>,
     destination: &Destination,
     trace: Option<&Arc<RequestTrace>>,
@@ -1461,6 +1463,11 @@ where
                         owner: &runtime.test_context,
                         now: declaration_time,
                     }),
+                plumb: Some(runtime.plumb.as_ref()),
+                coord: Some(agent_api::CoordContext {
+                    client: &runtime.coord,
+                    cancellation: upgrades.cancellation_receiver.clone(),
+                }),
             },
             Some(runtime.plumb.as_ref()),
             agent_api::RequestBody {
@@ -2088,6 +2095,7 @@ where
                     .clone(),
                 identity,
                 request_id,
+                &upgrades,
                 &mut request,
                 destination,
                 trace.as_ref(),

@@ -17,6 +17,8 @@ pub struct Controls<'a> {
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
+    pub(crate) plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
+    pub coord: Option<CoordContext<'a>>,
 }
 
 /// Trace expiry samples wall time only when an authorized lookup is reached.
@@ -177,6 +179,9 @@ where
     if let Some(route) = flows::recognize(request) {
         return flows::respond(route, request, controls.flows, body).await;
     }
+    if coord::is_route(request) {
+        return coord::respond_with_body(request, controls.coord, body).await;
+    }
     if route(request) != "/api/test-context/current" {
         return Ok(authenticated_read(
             request,
@@ -184,7 +189,8 @@ where
             tasks,
             now_ms,
             controls.circuits,
-        ));
+            controls.coord,
+        ).await);
     }
     let owner = controls.declarations.as_ref().map(|context| context.owner);
     if let Some(outcome) =

@@ -11,12 +11,14 @@
 //! never lossy replacement. This is an incomplete development API slice.
 
 use std::{collections::HashMap, fs, path::Path};
+pub use coord::{CoordClient, CoordContext};
 
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
 mod declarations;
+mod coord;
 mod discovery;
 mod explain;
 mod flows;
@@ -148,6 +150,7 @@ pub enum AuditKind {
     PlumbMessageFlagged,
     PlumbMessageAllowed,
     PlumbConversationClosed,
+    CoordPublishOutcomeUnknown,
 }
 
 /// The approval envelope accepted by the existing audit writer. This is an
@@ -259,6 +262,13 @@ impl AuditIntent {
                 Severity::Low,
                 "plumb",
                 Some(Decision::Log),
+            ),
+            AuditKind::CoordPublishOutcomeUnknown => (
+                "coord.publish_outcome_unknown",
+                Kind::Security,
+                Severity::High,
+                "agent-api",
+                Some(Decision::Deny),
             ),
         };
         let mut event = Event::new(name, kind, severity, self.summary.clone());
@@ -576,7 +586,7 @@ pub async fn respond_read_with_circuits<'p>(
     if route(request) == "/gateway/services" {
         return gateway::respond(request, None);
     }
-    authenticated_read(request, policy, tasks, now_ms, circuits)
+    authenticated_read(request, policy, tasks, now_ms, circuits, None).await
 }
 
 fn valid_request_id(value: &str) -> bool {
@@ -651,12 +661,13 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcom
     Ok(())
 }
 
-fn authenticated_read<'p>(
+async fn authenticated_read<'p>(
     request: Request<'_>,
     policy: PolicyState<'p>,
     tasks: &crate::tasks::Registry,
     now_ms: f64,
     circuits: Option<CircuitContext<'_>>,
+    coord: Option<CoordContext<'_>>,
 ) -> Outcome<'p> {
     let path = route(request);
     if path == "/health" {
@@ -769,17 +780,16 @@ fn authenticated_read<'p>(
             }
         }
     }
-    if ENDPOINTS.contains(&path)
-        || path.starts_with("/api/flows/")
-        || path.starts_with("/plumb")
-        || path.starts_with("/api/coord/")
-    {
+    if ENDPOINTS.contains(&path) || path.starts_with("/api/flows/") || path.starts_with("/plumb") {
         let mut outcome = response(
             503,
             json!({"error":"Agent API endpoint unavailable in native development mode"}),
         );
         outcome.failure = Some(Failure::DevelopmentEndpoint);
         return outcome;
+    }
+    if path.starts_with("/api/coord/") {
+        return coord::respond(request, coord).await;
     }
     response(404, json!({"error":"Not Found", "endpoints":ENDPOINTS}))
 }

@@ -18,6 +18,8 @@ use tokio::{
 pub(crate) struct ConnectionTasks {
     inner: Mutex<Inner>,
     pub(crate) stop: watch::Receiver<bool>,
+    cancellation: watch::Sender<bool>,
+    pub(crate) cancellation_receiver: watch::Receiver<bool>,
 }
 struct Inner {
     tasks: JoinSet<()>,
@@ -49,13 +51,20 @@ impl<T> Drop for Task<T> {
 
 impl ConnectionTasks {
     pub(crate) fn new(stop: watch::Receiver<bool>) -> Arc<Self> {
+        let (cancellation, cancellation_receiver) = watch::channel(false);
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 tasks: JoinSet::new(),
                 closing: false,
             }),
             stop,
+            cancellation,
+            cancellation_receiver,
         })
+    }
+
+    pub(crate) fn cancellation_sender(&self) -> watch::Sender<bool> {
+        self.cancellation.clone()
     }
     pub(crate) fn spawn(&self, future: impl Future<Output = ()> + Send + 'static) -> AbortHandle {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());

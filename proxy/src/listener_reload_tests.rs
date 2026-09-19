@@ -266,3 +266,25 @@ async fn occupied_replacement_path_rejects_transfer_without_new_acknowledgement(
     // replacement file during cleanup.
     assert_eq!(std::fs::read(&path).unwrap(), b"owned replacement file");
 }
+
+#[tokio::test]
+async fn closing_agent_socket_cancels_connection_coordination_waits() {
+    let (server, client) = UnixStream::pair().unwrap();
+    let (_stop, receiver) = watch::channel(false);
+    let tasks = connection_tasks::ConnectionTasks::new(receiver);
+    let monitor = monitor_agent_disconnect(&server, &tasks).unwrap();
+    let mut cancellation = tasks.cancellation_receiver.clone();
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!*cancellation.borrow(), "an open peer must not cancel the wait");
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(1), cancellation.changed())
+        .await
+        .expect("peer close should wake the connection monitor")
+        .unwrap();
+    assert!(*cancellation.borrow());
+
+    monitor.abort();
+    let _ = monitor.await;
+    drop(server);
+}

@@ -89,6 +89,7 @@ async fn call_with_clock(
             flows: None,
             circuits: None,
             declarations: None,
+            coord: None,
         },
         RequestBody {
             body: &mut body,
