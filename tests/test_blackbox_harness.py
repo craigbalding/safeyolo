@@ -24,6 +24,16 @@ def test_harness_assigns_distinct_proxy_admin_and_web_ports():
     assert "config['proxy']['web_port'] = $TEST_WEB_PORT" in harness
 
 
+def test_compatibility_isolation_lane_selects_python_before_test_start():
+    """The retained VM/Python lane must opt out of the native default."""
+    harness = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
+
+    selector = "config['proxy']['backend'] = 'python'"
+    start = "safeyolo start --test --no-wait"
+    assert selector in harness
+    assert harness.index(selector) < harness.index(start)
+
+
 def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     """The compatibility lane must not kill unrelated process names."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()

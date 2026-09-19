@@ -325,6 +325,10 @@ import yaml
 from pathlib import Path
 config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
 config = yaml.safe_load(config_path.read_text())
+# The prepared-host and VM isolation lanes remain the retained Python
+# comparator path. Select it explicitly now that normal CLI initialization
+# defaults to the native Rust backend.
+config['proxy']['backend'] = 'python'
 config['proxy']['port'] = $TEST_PROXY_PORT
 config['proxy']['admin_port'] = $TEST_ADMIN_PORT
 config['proxy']['web_port'] = $TEST_WEB_PORT
