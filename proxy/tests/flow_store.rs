@@ -391,6 +391,143 @@ fn source(mode: &str, path: &Path) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn source_rollback(mode: &str, path: &Path) -> Value {
+    let python = std::env::var("SAFEYOLO_PYTHON").unwrap_or_else(|_| "python3".into());
+    let output = Command::new(python)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/flow_store_oracle.py"
+        ))
+        .arg(mode)
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "owned source rollback fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn source_native_source_rollback_preserves_owned_rows_and_tags() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rollback.sqlite3");
+
+    // The selected prior Python release authors the durable starting state.
+    let seeded = source_rollback("rollback-seed", &path);
+    assert_eq!(seeded["flow_id"], 1);
+    assert_eq!(
+        seeded["summary"],
+        json!({
+            "request_id":"python-seed",
+            "agent_id":"alice",
+            "evidence_owner":"alice",
+            "attribution_status":"resolved",
+            "request_body_hex":hex(b"python request"),
+            "response_body_hex":hex(b"python response"),
+            "tags":[
+                {"tag":"python-explicit","value":"source"},
+                {"tag":"python-seed","value":"source"}
+            ]
+        })
+    );
+
+    let store = FlowStore::open(&path, Settings::default()).unwrap();
+    let source_row = store.get_flow(1).unwrap().unwrap();
+    assert_eq!(source_row["request_id"], "python-seed");
+    assert_eq!(source_row["agent_id"], "alice");
+    assert_eq!(source_row["evidence_owner"], "alice");
+    assert_eq!(source_row["attribution_status"], "resolved");
+    assert_eq!(store.get_flow_tags(1).unwrap()[0]["tag"], "python-explicit");
+    assert_eq!(
+        store
+            .body(1, Side::Request)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"python request"
+    );
+
+    // Rust is the replacement writer: add a row and an explicit native tag.
+    let native_metadata = metadata("native-between");
+    let native = record(
+        &store,
+        &native_metadata,
+        b"native request",
+        b"native response",
+    )
+    .unwrap();
+    assert_eq!(native.id, 2);
+    store
+        .tag_flow(
+            2,
+            &CircuitValue::from(json!("native-explicit")),
+            &CircuitValue::from(json!("native")),
+            NOW,
+        )
+        .unwrap();
+
+    // A failed row/tag transaction must not publish either half of the row.
+    let mut failed = metadata("native-failed");
+    failed.insert("provenance_tags".into(), json!({"bad": []}));
+    assert_eq!(
+        record(&store, &failed, b"discarded request", b"discarded response")
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Programming
+    );
+    assert!(store.get_flow(3).unwrap().is_none());
+    assert_eq!(store.get_flow_tags(3).unwrap(), json!([]));
+    drop(store);
+
+    // The retained Python release reads the native row and writes a tag.
+    let source_after_native = source_rollback("rollback-after-native", &path);
+    assert_eq!(
+        source_after_native["before"]["source_row"]["request_id"],
+        "python-seed"
+    );
+    assert_eq!(
+        source_after_native["before"]["native_row"],
+        json!({
+            "request_id":"native-between",
+            "agent_id":"alice",
+            "evidence_owner":"alice",
+            "attribution_status":"resolved",
+            "request_body_hex":hex(b"native request"),
+            "response_body_hex":hex(b"native response"),
+            "tags":[
+                {"tag":"a-first","value":"a"},
+                {"tag":"native-explicit","value":"native"},
+                {"tag":"z-last","value":"z"}
+            ]
+        })
+    );
+    assert_eq!(
+        source_after_native["after"]["tags"],
+        json!([
+            {"tag":"python-after-native","value":"source"},
+            {"tag":"python-explicit","value":"source"},
+            {"tag":"python-seed","value":"source"}
+        ])
+    );
+
+    // Native re-open observes the source-version tag and the failed row stays absent.
+    let reopened = FlowStore::open(&path, Settings::default()).unwrap();
+    let tags = reopened.get_flow_tags(1).unwrap();
+    assert_eq!(tags[0]["tag"], "python-after-native");
+    assert_eq!(tags[1]["tag"], "python-explicit");
+    assert_eq!(tags[2]["tag"], "python-seed");
+    assert_eq!(
+        reopened.get_flow(2).unwrap().unwrap()["request_id"],
+        "native-between"
+    );
+    assert!(reopened.get_flow(3).unwrap().is_none());
+    assert_eq!(reopened.get_flow_tags(3).unwrap(), json!([]));
+}
+
 #[test]
 #[ignore = "requires actual source Python environment"]
 fn differential_storage_and_bidirectional_database_interoperability() {

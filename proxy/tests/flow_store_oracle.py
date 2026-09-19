@@ -58,6 +58,61 @@ def view(store, flow_id):
     return output
 
 
+def rollback_summary(store, flow_id):
+    """Return stable cross-version facts without volatile timestamps."""
+    flow = store.get_flow(flow_id)
+    if flow is None:
+        return None
+    request = store.get_request_body(flow_id)
+    response = store.get_response_body(flow_id)
+    return {
+        "request_id": flow["request_id"],
+        "agent_id": flow["agent_id"],
+        "evidence_owner": flow["evidence_owner"],
+        "attribution_status": flow["attribution_status"],
+        "request_body_hex": request["body"].hex(),
+        "response_body_hex": response["body"].hex(),
+        "tags": [
+            {"tag": row["tag"], "value": row["value"]}
+            for row in store.get_flow_tags(flow_id)
+        ],
+    }
+
+
+def rollback_seed(path):
+    """Write one source-version row and tag for the native reader."""
+    store = FlowStore(str(path))
+    store.init_db()
+    record = metadata("python-seed")
+    record.update(
+        request_body=b"python request",
+        response_body=b"python response",
+        provenance_tags={"python-seed": "source"},
+    )
+    flow_id = store.record_flow(record)
+    store.tag_flow(flow_id, "python-explicit", "source")
+    result = rollback_summary(store, flow_id)
+    store.close()
+    return {"flow_id": flow_id, "summary": result}
+
+
+def rollback_after_native(path):
+    """Read a native row, then make a source-version tag update."""
+    store = FlowStore(str(path))
+    store.init_db()
+    before = {
+        "source_row": rollback_summary(store, 1),
+        "native_row": rollback_summary(store, 2),
+    }
+    store.tag_flow(1, "python-after-native", "source")
+    result = {
+        "before": before,
+        "after": rollback_summary(store, 1),
+    }
+    store.close()
+    return result
+
+
 def run_case(
     directory,
     name,
@@ -237,6 +292,10 @@ if __name__ == "__main__":
         store.init_db()
         result = view(store, 1)
         store._conn.close()
+    elif mode == "rollback-seed":
+        result = rollback_seed(Path(path))
+    elif mode == "rollback-after-native":
+        result = rollback_after_native(Path(path))
     elif mode == "schema":
         store = FlowStore(path)
         store.init_db()
