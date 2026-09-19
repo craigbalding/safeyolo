@@ -676,12 +676,196 @@ async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen
     assert_eq!(reopened.get_flow_tags(2).unwrap(), json!([]));
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_recovery() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut healthy = config(directory.path(), true);
+    std::fs::write(
+        healthy.policy_file.as_ref().unwrap(),
+        json!({
+            "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
+            "addons":{"test_context":{"target_hosts":["127.0.0.2"]}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    healthy.listeners = vec![AgentListener {
+        agent_id: "alice".into(),
+        socket_path: directory.path().join("alice.sock"),
+        source_id: None,
+    }];
+
+    // Replace the event-evidence sink only after the request has reached the
+    // origin. This isolates the response-phase sink failure from admission,
+    // while still using the real native writer and a real native request.
+    let mut proxy = Proxy::start(healthy.clone()).await.unwrap();
+    let recorder = proxy.runtime.read().unwrap().flow_recorder.clone();
+    let store = recorder.store().unwrap().clone();
+    let event_owner = proxy.runtime.read().unwrap().clone();
+    let failed_response = record_wire_flow_case_observe_with_hook(
+        directory.path(),
+        "/audit-sink-failure",
+        b"635-audit-failure-request",
+        b"635-audit-failure-response",
+        move || {
+            *event_owner.events.lock().unwrap() = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/full")
+                .unwrap();
+        },
+    )
+    .await;
+    println!(
+        "635.evidence.failed_response={:?}",
+        String::from_utf8_lossy(&failed_response)
+    );
+    assert!(failed_response.starts_with(b"HTTP/1.1 200"));
+    assert!(failed_response.ends_with(b"635-audit-failure-response"));
+    assert!(
+        failed_response
+            .windows(b"x-safeyolo-evidence-error: true".len())
+            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true"))
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.get_flow(1).unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Restore only the event-evidence destination. The same process and flow
+    // recorder continue, so a later successful write proves recovery rather
+    // than a new isolated store accidentally hiding the first failure.
+    proxy.reload(healthy.clone()).await.unwrap();
+    let recovered_response = record_wire_flow_case_observe_with_hook(
+        directory.path(),
+        "/after-audit-recovery",
+        b"635-recovered-request",
+        b"635-recovered-response",
+        || {},
+    )
+    .await;
+    println!(
+        "635.evidence.recovered_response={:?}",
+        String::from_utf8_lossy(&recovered_response)
+    );
+    assert!(recovered_response.starts_with(b"HTTP/1.1 200"));
+    assert!(recovered_response.ends_with(b"635-recovered-response"));
+    assert!(
+        !recovered_response
+            .windows(b"x-safeyolo-evidence-error: true".len())
+            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true"))
+    );
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while store.get_flow(2).unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    proxy.shutdown().await;
+    let stats = recorder.stats();
+    println!("635.evidence.recorder_stats={stats}");
+    assert_eq!(
+        stats,
+        json!({"recorded":2,"errors":0,"skipped":0,"queue_dropped":0,"write_errors":0})
+    );
+    let event_rows = std::fs::read_to_string(&healthy.event_log).unwrap();
+    let recovered_event_count = event_rows
+        .lines()
+        .filter(|line| line.contains("\"event\":\"proxy.request\""))
+        .count();
+    println!("635.evidence.recovered_event_rows={recovered_event_count}");
+    assert!(
+        event_rows
+            .lines()
+            .any(|line| line.contains("\"event\":\"proxy.request\"")),
+        "recovered event sink must retain a later request-evidence row"
+    );
+
+    // Reopen the existing flow database and prove capture survived the audit
+    // sink failure. The first row is durable even though its evidence status
+    // was explicitly failed; neither request was falsely reported as a
+    // transport failure.
+    drop(store);
+    drop(recorder);
+    let reopened =
+        flow_store::FlowStore::open(&healthy.flow_store_db_path, Default::default()).unwrap();
+    println!(
+        "635.evidence.reopened_paths={:?}",
+        [
+            reopened.get_flow(1).unwrap().unwrap()["path"].as_str(),
+            reopened.get_flow(2).unwrap().unwrap()["path"].as_str(),
+        ]
+    );
+    assert_eq!(
+        reopened.get_flow(1).unwrap().unwrap()["path"],
+        "/audit-sink-failure"
+    );
+    assert_eq!(
+        reopened.get_flow(2).unwrap().unwrap()["path"],
+        "/after-audit-recovery"
+    );
+    assert_eq!(
+        reopened
+            .body(1, flow_store::Side::Response)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"635-audit-failure-response"
+    );
+    assert_eq!(
+        reopened
+            .body(2, flow_store::Side::Response)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"635-recovered-response"
+    );
+}
+
 async fn record_wire_flow_case(
     directory: &Path,
     route: &str,
     request_body: &[u8],
     response_body: &[u8],
 ) {
+    let response =
+        record_wire_flow_case_observe(directory, route, request_body, response_body).await;
+    assert!(response.starts_with(b"HTTP/1.1 200"));
+    assert!(response.ends_with(response_body));
+    assert!(
+        !response
+            .windows(b"x-safeyolo-evidence-error: true".len())
+            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true"))
+    );
+}
+
+async fn record_wire_flow_case_observe(
+    directory: &Path,
+    route: &str,
+    request_body: &[u8],
+    response_body: &[u8],
+) -> Vec<u8> {
+    record_wire_flow_case_observe_with_hook(directory, route, request_body, response_body, || {})
+        .await
+}
+
+async fn record_wire_flow_case_observe_with_hook<F>(
+    directory: &Path,
+    route: &str,
+    request_body: &[u8],
+    response_body: &[u8],
+    before_response: F,
+) -> Vec<u8>
+where
+    F: FnOnce() + Send + 'static,
+{
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, UnixStream},
@@ -719,6 +903,7 @@ async fn record_wire_flow_case(
         let mut body = vec![0; content_length];
         socket.read_exact(&mut body).await.unwrap();
         assert_eq!(body, origin_request_body);
+        before_response();
         let response_head = format!(
             "HTTP/1.1 200 Owned\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             origin_response_body.len()
@@ -727,7 +912,7 @@ async fn record_wire_flow_case(
         socket.write_all(&origin_response_body).await.unwrap();
         socket.shutdown().await.unwrap();
     });
-    tokio::time::timeout(Duration::from_secs(3), async {
+    let response = tokio::time::timeout(Duration::from_secs(3), async {
         let mut socket = UnixStream::connect(directory.join("alice.sock")).await.unwrap();
         socket
             .write_all(
@@ -742,11 +927,7 @@ async fn record_wire_flow_case(
         socket.write_all(&request_body).await.unwrap();
         let mut response = Vec::new();
         socket.read_to_end(&mut response).await.unwrap();
-        assert!(response.starts_with(b"HTTP/1.1 200"));
-        assert!(response.ends_with(&response_body));
-        assert!(!response
-            .windows(b"x-safeyolo-evidence-error: true".len())
-            .any(|window| window.eq_ignore_ascii_case(b"x-safeyolo-evidence-error: true")));
+        response
     })
     .await
     .unwrap();
@@ -754,6 +935,7 @@ async fn record_wire_flow_case(
         .await
         .unwrap()
         .unwrap();
+    response
 }
 
 async fn record_wire_flow(directory: &Path) {
