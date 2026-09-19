@@ -2454,6 +2454,20 @@ event. This is one native server-first/client-half-close wire order; the
 opposite half-close order, refusal, pending cancellation and graceful-shutdown
 wire cases remain separate evidence.
 
+The follow-up native-policy migration controls
+`test_configured_passthrough_client_half_close_keeps_final_response`,
+`test_configured_passthrough_refusal_records_error_after_no_accept` and
+`test_configured_passthrough_graceful_shutdown_releases_live_socket` cover the
+other configured wire transitions. The client-first case sends a complete
+payload, half-closes, and still receives the origin's final bytes before both
+sides finish; it records one canonical start/end pair with the same logical
+hostname and physical loopback peer. A matched closed IPv4 endpoint returns
+502 and records one canonical passthrough error with the refused socket
+failure, without a connected session. A live matched session receives a
+graceful SIGTERM, both client and origin observe EOF, and the end event follows
+socket release. All three use native policy provenance and exact event/byte
+observations. Pending-dial cancellation equivalence remains unproven.
+
 ### Live operator HTTP and WebSocket inspection
 
 The native [live view](../proxy/src/traffic_view.rs) retains ordinary HTTP
