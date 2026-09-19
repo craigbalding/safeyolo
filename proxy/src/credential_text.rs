@@ -331,6 +331,47 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "runs the source Python regex oracle when SAFEYOLO_POLICY_PYTHON is set"]
+    fn source_pattern_backslash_parity_matches_python_oracle() {
+        use std::{env, path::PathBuf, process::Command};
+
+        let python = env::var_os("SAFEYOLO_POLICY_PYTHON")
+            .expect("SAFEYOLO_POLICY_PYTHON must point to the source Python runtime");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("credential_text_source_oracle.py");
+        let output = Command::new(python)
+            .arg(script)
+            .output()
+            .expect("run source regex oracle");
+        assert!(
+            output.status.success(),
+            "source oracle failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(rows.len(), 136, "source oracle lost exhaustive byte rows");
+        for row in rows {
+            let pattern = row["pattern"].as_str().unwrap();
+            let bytes = row["bytes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|byte| byte.as_u64().unwrap() as u8)
+                .collect::<Vec<_>>();
+            let expected = row["matched"].as_bool().unwrap();
+            let adapted = source_pattern(pattern);
+            let compiled = crate::inspection::compile_python_pattern(&adapted, false)
+                .unwrap_or_else(|_| panic!("pattern parity case did not compile: {pattern:?}"));
+            assert_eq!(
+                compiled.is_match(&source_text(&bytes)).unwrap(),
+                expected,
+                "pattern parity for {pattern:?}"
+            );
+        }
+    }
+
+    #[test]
     fn valid_private_scalars_are_escaped_before_round_trip() {
         let value = "prefix\u{F0000}\u{F1000}suffix";
         assert_eq!(
