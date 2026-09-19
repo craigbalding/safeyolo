@@ -142,10 +142,16 @@ remain separate writer-owner gaps.
 The installed-instance rollback command is now available in the disposable
 host smoke lane. Run `tests/blackbox/installed_host_smoke.py --mode smoke
 --rollback-python` against an installed CLI and a caller-created disposable
-configuration to exercise Rust start/stop, an explicit `proxy.backend:
-python` selection in the same installation, Python start/stop, and cleanup of
-both backend process records. The lane changes only `proxy.backend` in the
-disposable `config.yaml`, removes `SAFEYOLO_RUST_PROXY` for the rollback
-start, and reports a rollback failure if Python does not publish and clean its
-`proxy.pid`. This is an executable installed-path control; it does not claim
-that the Python comparator, guest isolation, or a platform lane has passed.
+configuration. With that flag, the lane starts Rust, writes one allowed and
+one denied host rule through the authenticated native admin writer, checks
+200/403 behavior through the real UDS, stops Rust, selects the retained
+Python comparator in the same installation, and checks the saved host rules
+and the same 200/403 behavior there. It then selects Rust again, repeats the
+behavior check, and stops both processes cleanly. The lane changes only
+`proxy.backend` in the disposable `config.yaml`, removes
+`SAFEYOLO_RUST_PROXY` for the rollback start, records the durable policy hash,
+and restores the caller's original selector bytes. The report marks this
+rollback sequence `passed` while the overall smoke result remains partial
+because guest isolation and platform acceptance are separate requirements. It
+does not claim that the Python comparator, guest isolation, or a platform lane
+has passed as a full release gate.

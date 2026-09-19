@@ -10,13 +10,17 @@ discover is read-only apart from its evidence file. smoke requires a
 caller-created disposable config directory marked with
 .safeyolo-platform-smoke; it starts and stops that instance through the
 selected CLI and performs one authenticated Agent API health request through
-one existing UDS listener.
+one existing UDS listener. With --rollback-python it also runs the bounded
+Rust → Python → Rust state and behavior sequence described in
+docs/state-compatibility.md.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
+import http.server
 import ipaddress
 import json
 import os
@@ -28,9 +32,11 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 SCHEMA = 1
 COMMAND_TIMEOUT = 20.0
@@ -338,6 +344,168 @@ def _select_backend(config_dir: Path, backend: str) -> bytes:
         temporary.unlink(missing_ok=True)
         raise SmokeError(f"unable to select proxy.backend: {backend}") from exc
     return original
+
+
+def _restore_config(config_dir: Path, original: bytes) -> None:
+    """Restore the caller's disposable selector after a rollback probe."""
+    path = config_dir / "config.yaml"
+    mode = path.stat().st_mode & 0o777
+    temporary = path.with_name(f".{path.name}.rollback.restore.tmp")
+    try:
+        temporary.write_bytes(original)
+        temporary.chmod(mode)
+        os.replace(temporary, path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise SmokeError(f"unable to restore the disposable installed config: {path}") from exc
+
+
+def _admin_request(
+    native: dict[str, Any],
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[int, Any]:
+    """Use the running native operator API without retaining its bearer token."""
+    readiness = _read_json(Path(native["readiness_file"]), "Rust readiness marker")
+    port = readiness.get("admin_port")
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise SmokeError("native rollback control has no published admin port")
+    token_value = native["raw"].get("admin_api_token_file")
+    if not isinstance(token_value, str) or not token_value:
+        raise SmokeError("native rollback control has no admin token file")
+    token_path = Path(token_value).expanduser()
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError, UnicodeError) as exc:
+        raise SmokeError("native rollback control cannot read its admin token") from exc
+    if not token or any(char in token for char in "\r\n"):
+        raise SmokeError("native rollback control has an empty or malformed admin token")
+    encoded = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Authorization": f"Bearer {token}"}
+    if encoded is not None:
+        headers["Content-Type"] = "application/json"
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request(method, path, body=encoded, headers=headers)
+        response = connection.getresponse()
+        body = response.read(JSON_LIMIT)
+        status = response.status
+    except (OSError, http.client.HTTPException) as exc:
+        raise SmokeError(f"native rollback control request failed: {method} {path}") from exc
+    finally:
+        connection.close()
+    try:
+        value: Any = json.loads(body) if body else None
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise SmokeError(f"native rollback control returned non-JSON: {method} {path}") from exc
+    return status, value
+
+
+def _proxy_status(socket_path: str, url: str) -> int:
+    """Drive one ordinary HTTP request through an installed proxy UDS."""
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or not parsed.netloc:
+        raise SmokeError(f"rollback probe URL must be an HTTP URL: {url}")
+    request = (
+        f"GET {url} HTTP/1.1\r\nHost: {parsed.netloc}\r\n"
+        "Connection: close\r\n\r\n"
+    ).encode()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(socket_path)
+            client.sendall(request)
+            response = bytearray()
+            while len(response) < JSON_LIMIT:
+                chunk = client.recv(16_384)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if b"\r\n\r\n" in response:
+                    head, _, body = bytes(response).partition(b"\r\n\r\n")
+                    content_length = next(
+                        (
+                            int(line.split(b":", 1)[1].strip())
+                            for line in head.split(b"\r\n")[1:]
+                            if line.lower().startswith(b"content-length:")
+                        ),
+                        None,
+                    )
+                    if content_length is not None and len(body) >= content_length:
+                        break
+    except OSError as exc:
+        raise SmokeError(f"installed rollback HTTP probe failed for {url}") from exc
+    first_line = bytes(response).split(b"\r\n", 1)[0].split()
+    if len(first_line) < 2:
+        raise SmokeError(f"installed rollback HTTP probe returned no status for {url}")
+    try:
+        return int(first_line[1])
+    except ValueError as exc:
+        raise SmokeError(f"installed rollback HTTP probe returned an invalid status for {url}") from exc
+
+
+def _rollback_origin() -> tuple[http.server.ThreadingHTTPServer, threading.Thread]:
+    """Provide an owned local origin for the allowed behavior check."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
+            body = b"rollback-origin-ok\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, name="safeyolo-rollback-origin", daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _write_native_rollback_state(native: dict[str, Any], origin_port: int) -> dict[str, Any]:
+    """Write one supported host policy through native's authenticated writer."""
+    allow_status, allow_body = _admin_request(
+        native,
+        method="POST",
+        path="/admin/policy/host/allow",
+        payload={"host": "127.0.0.1", "port": origin_port, "rate": 60},
+    )
+    deny_status, deny_body = _admin_request(
+        native,
+        method="POST",
+        path="/admin/policy/host/deny",
+        payload={"host": "rollback-denied.invalid"},
+    )
+    if allow_status != 200 or deny_status != 200:
+        raise SmokeError(
+            f"native rollback policy writes failed: allow HTTP {allow_status}, deny HTTP {deny_status}"
+        )
+    read_status, baseline = _admin_request(
+        native, method="GET", path="/admin/policy/baseline"
+    )
+    if read_status != 200:
+        raise SmokeError(f"native rollback policy read failed: HTTP {read_status}")
+    policy_value = native["raw"].get("policy_file")
+    if not isinstance(policy_value, str) or not policy_value:
+        raise SmokeError("native rollback policy has no durable policy path")
+    policy_path = Path(policy_value).expanduser()
+    try:
+        persisted = policy_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError, UnicodeError) as exc:
+        raise SmokeError("native rollback policy was not durably saved") from exc
+    if "rollback-denied.invalid" not in persisted or "127.0.0.1" not in persisted:
+        raise SmokeError("native rollback policy file omitted the written host rules")
+    return {
+        "allow": {"status": allow_status, "response": allow_body},
+        "deny": {"status": deny_status, "response": deny_body},
+        "read": {"status": read_status, "contains_written_hosts": True},
+        "policy_sha256": _sha256(policy_path),
+        "origin_port": origin_port,
+    }
 
 
 def _pid_alive(pid: int) -> bool:
@@ -782,6 +950,7 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     cli = _cli_identity(args.cli)
     candidate_path, candidate = _rust_identity(args.rust_bin)
     config = _read_cli_yaml(config_dir)
+    original_config = (config_dir / "config.yaml").read_bytes()
     configured = _configured_rust_config(config, cwd)
     supplied = _absolute_path(args.rust_config, cwd)
     if configured != supplied:
@@ -874,6 +1043,45 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "stderr_tail": cleanup.stderr,
         }
         return report, 2
+    rollback_server: http.server.ThreadingHTTPServer | None = None
+    rollback_thread: threading.Thread | None = None
+    rollback_state: dict[str, Any] | None = None
+    if args.rollback_python:
+        try:
+            rollback_server, rollback_thread = _rollback_origin()
+            rollback_state = _write_native_rollback_state(
+                native, rollback_server.server_address[1]
+            )
+            listener = _agent_map(config_dir)[0]["path"]
+            report["native_before_rollback"] = {
+                "state": rollback_state,
+                "allowed_status": _proxy_status(
+                    listener, f"http://127.0.0.1:{rollback_state['origin_port']}/allowed"
+                ),
+                "denied_status": _proxy_status(
+                    listener, "http://rollback-denied.invalid/denied"
+                ),
+            }
+            if report["native_before_rollback"]["allowed_status"] != 200:
+                raise SmokeError("native written allow rule did not permit the local origin")
+            if report["native_before_rollback"]["denied_status"] != 403:
+                raise SmokeError("native written deny rule did not reject the denied origin")
+        except SmokeError as exc:
+            if rollback_server is not None:
+                rollback_server.shutdown()
+                if rollback_thread is not None:
+                    rollback_thread.join(timeout=5)
+            cleanup = _run([str(cli_path), "stop"], env=env, cwd=cwd)
+            report["commands"]["cleanup_stop"] = {
+                "argv": [str(cli_path), "stop"],
+                "exit": cleanup.returncode,
+                "stdout_tail": cleanup.stdout,
+                "stderr_tail": cleanup.stderr,
+            }
+            report["status"] = "rollback_failure"
+            report["error"] = str(exc)
+            return report, 2
+
     runtime_pid = report["runtime"]["pid"]
     stop_command = [str(cli_path), "stop"]
     stop_result = _run(stop_command, env=env, cwd=cwd)
@@ -922,11 +1130,44 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 raise SmokeError("installed Python rollback did not publish proxy.pid") from exc
             if not _pid_alive(python_pid):
                 raise SmokeError("installed Python rollback process is not alive")
+            if rollback_state is None or rollback_server is None:
+                raise SmokeError("installed rollback state was not prepared before Python selection")
+            policy_show = _run(
+                [str(cli_path), "policy", "show", "--section", "hosts"],
+                env=rollback_env,
+                cwd=cwd,
+            )
+            report["commands"]["rollback_python_policy_show"] = {
+                "argv": [str(cli_path), "policy", "show", "--section", "hosts"],
+                "exit": policy_show.returncode,
+                "stdout_tail": policy_show.stdout,
+                "stderr_tail": policy_show.stderr,
+            }
+            if policy_show.returncode != 0:
+                raise SmokeError("selected Python comparator could not read effective policy")
+            if "rollback-denied.invalid" not in policy_show.stdout:
+                raise SmokeError("selected Python comparator omitted the native-written deny rule")
+            listener = _agent_map(config_dir)[0]["path"]
+            python_allowed = _proxy_status(
+                listener, f"http://127.0.0.1:{rollback_state['origin_port']}/python"
+            )
+            python_denied = _proxy_status(listener, "http://rollback-denied.invalid/python")
+            if python_allowed != 200 or python_denied != 403:
+                raise SmokeError(
+                    "selected Python comparator did not enforce the native-written allow/deny state"
+                )
             report["rollback"] = {
                 "backend": "python",
                 "pid": python_pid,
                 "pid_alive_before_stop": True,
                 "rust_receipt_exists": receipt.exists(),
+                "policy_show": {
+                    "exit": policy_show.returncode,
+                    "contains_native_allow_and_deny": True,
+                    "representation": "source host rules; compiled deny remains default-deny",
+                },
+                "allowed_status": python_allowed,
+                "denied_status": python_denied,
             }
             rollback_stop = _run([str(cli_path), "stop"], env=rollback_env, cwd=cwd)
             report["commands"]["rollback_python_stop"] = {
@@ -942,14 +1183,67 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             report["rollback"].update(
                 {"pid_alive_after_stop": _pid_alive(python_pid), "pid_file_exists": python_pid_file.exists()}
             )
+            _select_backend(config_dir, "rust")
+            return_start = _run(start_command, env=env, cwd=cwd)
+            report["commands"]["return_rust_start"] = {
+                "argv": start_command,
+                "exit": return_start.returncode,
+                "stdout_tail": return_start.stdout,
+                "stderr_tail": return_start.stderr,
+            }
+            if return_start.returncode != 0:
+                raise SmokeError("return to the Rust backend failed after Python rollback")
+            returned_native = _native_config(supplied, cwd)
+            report["return_rust_runtime"] = _runtime_observation(
+                config_dir,
+                returned_native,
+                candidate_path,
+                config_path=supplied,
+                working_directory=cwd,
+                require_running=True,
+            )
+            returned_listener = _agent_map(config_dir)[0]["path"]
+            returned_health = _probe_agent_health(_agent_map(config_dir)[0], config_dir)
+            returned_allowed = _proxy_status(
+                returned_listener, f"http://127.0.0.1:{rollback_state['origin_port']}/returned"
+            )
+            returned_denied = _proxy_status(
+                returned_listener, "http://rollback-denied.invalid/returned"
+            )
+            if returned_allowed != 200 or returned_denied != 403:
+                raise SmokeError("Rust after rollback did not preserve the allowed/denied behavior")
+            report["return_rust"] = {
+                "health": returned_health,
+                "allowed_status": returned_allowed,
+                "denied_status": returned_denied,
+            }
+            return_stop = _run(stop_command, env=env, cwd=cwd)
+            report["commands"]["return_rust_stop"] = {
+                "argv": stop_command,
+                "exit": return_stop.returncode,
+                "stdout_tail": return_stop.stdout,
+                "stderr_tail": return_stop.stderr,
+            }
+            if return_stop.returncode != 0 or receipt.exists():
+                raise SmokeError("Rust return stop did not clean its process receipt")
+            report["rollback"]["status"] = "passed"
         except SmokeError as exc:
             report["status"] = "rollback_failure"
             report["error"] = str(exc)
             try:
-                _run([str(cli_path), "stop"], env=rollback_env, cwd=cwd)
-            except (OSError, subprocess.SubprocessError):
+                selected_config = _read_cli_yaml(config_dir)
+                selected_backend = selected_config.get("proxy", {}).get("backend")
+                cleanup_env = env if selected_backend == "rust" else rollback_env
+                _run([str(cli_path), "stop"], env=cleanup_env, cwd=cwd)
+            except (OSError, subprocess.SubprocessError, SmokeError):
                 pass
             return report, 2
+        finally:
+            _restore_config(config_dir, original_config)
+            if rollback_server is not None:
+                rollback_server.shutdown()
+                if rollback_thread is not None:
+                    rollback_thread.join(timeout=5)
 
     report["status"] = PARTIAL_STATUS
     report["acceptance_a"] = {
@@ -975,7 +1269,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--rollback-python",
         action="store_true",
-        help="after native stop, select Python in the same installed instance and start/stop it",
+        help="write native host state, select Python, verify 200/403 behavior, then return to Rust",
     )
     parser.add_argument("--output", type=Path, required=True, help="JSON evidence output outside the checkout")
     args = parser.parse_args(argv)
