@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpStream, UnixStream},
     time::{sleep, timeout},
 };
 
@@ -173,6 +173,67 @@ async fn authenticated_canceled_service_shutdown_drains_held_policy_lock() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_shutdown_reopens_same_agent_socket_and_readiness_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = Paths::new(&directory);
+    paths.write_inputs();
+
+    let (first, mut first_guard) = start_proxy(&paths);
+    let first_ready = wait_for_readiness(&paths.readiness).await;
+    let first_instance = first_ready["instance_id"]
+        .as_str()
+        .expect("first readiness must publish an instance identity")
+        .to_owned();
+    let first_admin_port = first_ready["admin_port"]
+        .as_u64()
+        .expect("first readiness must publish the operator port") as u16;
+    wait_for_path(&paths.agent_socket()).await;
+    probe_agent_socket(&paths.agent_socket(), first_admin_port).await;
+    stop_proxy(first, &mut first_guard).await;
+    wait_for_absent(&paths.readiness).await;
+    wait_for_absent(&paths.agent_socket()).await;
+
+    // A second native process gets the same configured state and socket paths.
+    // Requiring the old marker and inode to disappear first prevents a stale
+    // readiness file or socket from making this a false-positive launch.
+    let (second, mut second_guard) = start_proxy(&paths);
+    let second_ready = wait_for_readiness(&paths.readiness).await;
+    let second_instance = second_ready["instance_id"]
+        .as_str()
+        .expect("second readiness must publish an instance identity");
+    assert_ne!(second_instance, first_instance);
+    let second_admin_port = second_ready["admin_port"]
+        .as_u64()
+        .expect("second readiness must publish the operator port")
+        as u16;
+    wait_for_path(&paths.agent_socket()).await;
+    probe_agent_socket(&paths.agent_socket(), second_admin_port).await;
+    stop_proxy(second, &mut second_guard).await;
+    wait_for_absent(&paths.readiness).await;
+    wait_for_absent(&paths.agent_socket()).await;
+
+    let evidence = json!({
+        "first_instance_id": first_instance,
+        "second_instance_id": second_instance,
+        "same_configured_agent_socket": true,
+        "first_agent_probe": "handled",
+        "second_agent_probe": "handled",
+        "first_readiness_removed": true,
+        "first_socket_removed": true,
+        "second_readiness_removed": true,
+        "second_socket_removed": true,
+    });
+    println!("lifecycle-634 restart observation: {evidence}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_LIFECYCLE_RESTART_EVIDENCE") {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+}
+
 struct Paths {
     root: PathBuf,
     config: PathBuf,
@@ -230,6 +291,88 @@ impl Paths {
         });
         fs::write(&self.config, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
     }
+
+    fn agent_socket(&self) -> PathBuf {
+        self.root.join("alice.sock")
+    }
+}
+
+fn start_proxy(paths: &Paths) -> (std::process::Child, ChildGuard) {
+    let child = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
+        .arg("--config")
+        .arg(&paths.config)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("native proxy process must start");
+    let guard = ChildGuard {
+        pid: child.id() as i32,
+        active: true,
+    };
+    (child, guard)
+}
+
+async fn stop_proxy(mut child: std::process::Child, guard: &mut ChildGuard) {
+    // SAFETY: the PID belongs to the process spawned by this test.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .expect("child wait task must join")
+        .expect("proxy process must report exit status");
+    guard.active = false;
+    assert!(
+        status.success(),
+        "proxy process must exit cleanly: {status}"
+    );
+}
+
+async fn wait_for_path(path: &Path) {
+    timeout(WAIT_FOR_READY, async {
+        loop {
+            if path.exists() {
+                return;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("proxy must publish the configured socket");
+}
+
+async fn wait_for_absent(path: &Path) {
+    timeout(WAIT_FOR_READY, async {
+        loop {
+            if !path.exists() {
+                return;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("proxy must remove its lifecycle marker and socket");
+}
+
+async fn probe_agent_socket(path: &Path, admin_port: u16) {
+    let mut stream = UnixStream::connect(path)
+        .await
+        .expect("reopened agent socket must accept connections");
+    let request = format!(
+        "GET http://127.0.0.1:{admin_port}/ HTTP/1.1\r\nHost: 127.0.0.1:{admin_port}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(3), stream.read_to_end(&mut response))
+        .await
+        .expect("reopened agent socket must return an HTTP response")
+        .expect("agent response must be readable");
+    assert!(
+        response.starts_with(b"HTTP/1.1 403") || response.starts_with(b"HTTP/1.1 502"),
+        "agent probe must be handled by the proxy: {}",
+        String::from_utf8_lossy(&response)
+    );
 }
 
 async fn wait_for_readiness(path: &Path) -> Value {

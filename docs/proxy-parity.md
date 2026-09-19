@@ -474,6 +474,13 @@ Custom listeners are retained. [Mocked synchronization tests](../cli/tests/test_
 cover the CLI's configuration edits and acknowledgment decisions.
 [Native library tests](../proxy/src/listener_reload_tests.rs) cover listener
 publication and failed preparation with temporary files and Unix sockets.
+The process-level `admin_service_shutdown` witness also starts the shipped
+binary twice against the same disposable state and agent socket paths. It
+waits for the first readiness marker and socket to be removed after graceful
+shutdown, then sends a real request through the reopened socket and verifies
+fresh readiness and cleanup. This establishes native process restart/socket
+reuse for those paths; it does not establish installed host listener lifecycle,
+macOS/Linux ingress, packaging or pilot acceptance.
 Complete management and traffic UI workflows, credential inspection/injection,
 and real host listener lifecycle proofs remain unfinished.
 This development launcher does not complete M7 or authorize cutover.
