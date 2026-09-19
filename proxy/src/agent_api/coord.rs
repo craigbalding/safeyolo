@@ -1055,12 +1055,16 @@ fn message_wakes_waiter(
             recipient.agent_id == principal
                 && recipient_generation(access, principal) == Some(recipient.membership_granted_at)
         })),
-        "legacy_room" | "room" => Ok((!exclude_self || !sender_is_self)
+        "room" => Ok((!exclude_self || !sender_is_self)
             && manifest.recipients.iter().any(|recipient| {
                 recipient.agent_id == principal
                     && recipient_generation(access, principal)
                         == Some(recipient.membership_granted_at)
             })),
+        "legacy_room" => {
+            Ok((!exclude_self || !sender_is_self)
+                && recipient_generation(access, principal).is_some())
+        }
         _ => Err(CoordError::Data),
     }
 }
@@ -3244,7 +3248,27 @@ async fn read_messages_with_timeout(
                 break;
             }
             if !page.is_empty() {
-                break;
+                // A revoke or regrant can race the provider fetch. Re-read
+                // the current grant before returning a wake page, then apply
+                // the same candidate authorization against that snapshot.
+                let current = match client.access(room_name, principal).await {
+                    Ok(current) => current,
+                    Err(CoordError::NotFound) => {
+                        return Ok((Vec::new(), (since, since)));
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !current
+                    .permissions
+                    .iter()
+                    .any(|permission| permission == "receive")
+                {
+                    return Ok((Vec::new(), (since, since)));
+                }
+                page = filter_wait_candidates(page, principal, &current, exclude_self)?;
+                if !page.is_empty() {
+                    break;
+                }
             }
             // A self-only, non-targeted, or generation-stale batch must not
             // terminate a wait. The same consumer advances beyond every
@@ -3436,6 +3460,15 @@ mod tests {
         );
         assert!(
             message_wakes_waiter(Some(&headers), &annotated, "ag-alice", &access, false).unwrap()
+        );
+        let self_annotated = json!({"msg_id": "msg-legacy", "sender_agent_id": "ag-alice"});
+        assert!(
+            !message_wakes_waiter(Some(&headers), &self_annotated, "ag-alice", &access, true,)
+                .unwrap()
+        );
+        assert!(
+            message_wakes_waiter(Some(&headers), &self_annotated, "ag-alice", &access, false,)
+                .unwrap()
         );
 
         // A legacy/unannotated pull can wake after a revoke raced the fetch;
