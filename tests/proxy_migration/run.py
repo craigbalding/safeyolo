@@ -227,7 +227,9 @@ def short_connections(backend, directory, count):
                 "proxy_identity": proxy_identity(proxy)}
 
 
-def concurrent_short_admin_workload(backend, directory, count, concurrency=8, batches=3):
+def concurrent_short_admin_workload(
+    backend, directory, count, concurrency=8, batches=3, *, warmup=0, quiet_seconds=0.0
+):
     """Run repeated fresh HTTP connections while an authenticated admin request runs.
 
     Each batch uses the existing UDS/origin fixture and starts ``concurrency``
@@ -237,8 +239,8 @@ def concurrent_short_admin_workload(backend, directory, count, concurrency=8, ba
     during and after every batch so RSS/high-water/VM/thread/FD observations
     remain separate from the proxy's own counters.
     """
-    if count < 1 or concurrency < 1 or batches < 1:
-        raise ValueError("count, concurrency and batches must be positive")
+    if count < 1 or concurrency < 1 or batches < 1 or warmup < 0 or quiet_seconds < 0:
+        raise ValueError("count, concurrency and batches must be positive; warmup and quiet_seconds nonnegative")
     token = "concurrent-admin-fixture-token"
     token_file = directory / "operator-token"
     token_file.parent.mkdir(parents=True, exist_ok=True)
@@ -259,6 +261,50 @@ def concurrent_short_admin_workload(backend, directory, count, concurrency=8, ba
         all_latencies = []
         batches_result = []
         started = time.perf_counter()
+
+        warmup_outcomes = []
+        for index in range(warmup):
+            began = time.perf_counter()
+            try:
+                status, _, body = request(proxy.paths["alice"], target)
+                outcome = {
+                    "index": index,
+                    "status": status,
+                    "body_bytes": len(body),
+                    "latency_ms": (time.perf_counter() - began) * 1000,
+                }
+                if status != 200 or body != b"hello":
+                    outcome["error"] = f"unexpected warm-up response: status={status}, body_bytes={len(body)}"
+                warmup_outcomes.append(outcome)
+            except Exception as error:  # retain a concrete warm-up failure
+                warmup_outcomes.append({
+                    "index": index,
+                    "error": f"{type(error).__name__}: {error}",
+                    "latency_ms": (time.perf_counter() - began) * 1000,
+                })
+        warmup_failures = [outcome for outcome in warmup_outcomes if "error" in outcome]
+        warmup_completed = [outcome for outcome in warmup_outcomes if "error" not in outcome]
+        assert not warmup_failures, warmup_failures
+        warmup_latencies = [outcome["latency_ms"] for outcome in warmup_outcomes]
+        warmup_request_events = len([
+            event for event in read_events(proxy.event_log)
+            if event.get("event") == "proxy.request"
+        ])
+        warmup_origin_accepts = origin.accepts
+        quiet_before = runtime_resources(proxy)
+        quiet_started = time.perf_counter()
+        time.sleep(quiet_seconds)
+        quiet_after = runtime_resources(proxy)
+        quiet_elapsed = time.perf_counter() - quiet_started
+        quiet_request_events = len([
+            event for event in read_events(proxy.event_log)
+            if event.get("event") == "proxy.request"
+        ])
+        quiet_origin_connections_after = origin.accepts
+        quiet_proxy_request_events_after = quiet_request_events
+        assert quiet_origin_connections_after == warmup_origin_accepts
+        assert quiet_proxy_request_events_after == warmup_request_events
+        measured_started = time.perf_counter()
 
         def admin_request(headers=None):
             marker = json.loads(proxy.readiness_file.read_text())
@@ -369,37 +415,81 @@ def concurrent_short_admin_workload(backend, directory, count, concurrency=8, ba
                 },
             })
 
+        measured_elapsed = time.perf_counter() - measured_started
         elapsed = time.perf_counter() - started
-        assert origin.accepts == count * batches
-        assert len(origin.requests) == count * batches
+        measured_requests = count * batches
+        expected_requests = warmup + measured_requests
+        assert origin.accepts == expected_requests
+        assert len(origin.requests) == expected_requests
         request_events = [event for event in read_events(proxy.event_log)
                           if event.get("event") == "proxy.request"]
-        assert len(request_events) == count * batches
+        assert len(request_events) == expected_requests
         return {
             "workload": "repeated_concurrent_short_http_admin",
             "requests_per_batch": count,
             "batches": batches,
             "concurrency": active_workers,
-            "requests": count * batches,
+            "requests": measured_requests,
             "completed": len(all_latencies),
             "failed_or_incomplete": 0,
             "elapsed_seconds": elapsed,
-            "requests_per_second": (count * batches) / elapsed,
+            "requests_per_second": measured_requests / measured_elapsed,
+            "measured_elapsed_seconds": measured_elapsed,
             "latency_median_ms": statistics.median(all_latencies),
             "latency_p95_ms": sorted(all_latencies)[max(0, int(len(all_latencies) * 0.95) - 1)],
             "latency_max_ms": max(all_latencies),
+            "warmup": {
+                "requests": warmup,
+                "completed": len(warmup_completed),
+                "failed_or_incomplete": len(warmup_failures),
+                "latency_samples_ms": warmup_latencies,
+                "origin_connections": warmup_origin_accepts,
+                "proxy_request_events": warmup_request_events,
+            },
+            "quiet": {
+                "requested_seconds": quiet_seconds,
+                "elapsed_seconds": quiet_elapsed,
+                "origin_connections_before": warmup_origin_accepts,
+                "origin_connections_after": quiet_origin_connections_after,
+                "proxy_request_events_before": warmup_request_events,
+                "proxy_request_events_after": quiet_proxy_request_events_after,
+                "runtime_resources_before": quiet_before,
+                "runtime_resources_after": quiet_after,
+            },
+            "request_counts": {
+                "warmup": {
+                    "expected": warmup,
+                    "completed": len(warmup_completed),
+                    "failed_or_incomplete": len(warmup_failures),
+                },
+                "measured": {
+                    "expected": measured_requests,
+                    "completed": len(all_latencies),
+                    "failed_or_incomplete": 0,
+                },
+                "total": {
+                    "expected": expected_requests,
+                    "origin_connections": origin.accepts,
+                    "proxy_request_events": len(request_events),
+                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                },
+            },
             "batches_result": batches_result,
             "origin_observation": {
                 "accepted_connections": origin.accepts,
                 "requests": list(origin.requests),
-                "expected_requests": count * batches,
+                "expected_requests": expected_requests,
             },
             "proxy_observation": {
                 "request_events": len(request_events),
                 "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
             },
             "proxy_identity": proxy_identity(proxy),
-            "limitation": "three short-connection batches on Linux; no long-duration, WS/WSS, CONNECT/SSH, production-chain or platform claim",
+            "limitation": (
+                f"{batches} measured short-connection batches after {warmup} warm-up requests "
+                f"and a {quiet_seconds:.3f}s quiet interval on Linux; no long-duration, "
+                "WS/WSS, CONNECT/SSH, production-chain or platform claim"
+            ),
         }
 
 
@@ -871,6 +961,16 @@ def capture(args):
                     args.concurrency,
                     args.resource_batches,
                 ))
+            elif workload == "concurrent-admin-quiet":
+                workloads.append(concurrent_short_admin_workload(
+                    args.backend,
+                    args.evidence / "concurrent-admin-quiet-workload",
+                    args.requests,
+                    args.concurrency,
+                    args.resource_batches,
+                    warmup=args.warmup_requests,
+                    quiet_seconds=args.quiet_seconds,
+                ))
             elif workload == "sse-cancel":
                 workloads.append(cancelled_sse_workload(
                     args.backend, args.evidence / "sse-cancel-workload", args.stream_seconds
@@ -950,7 +1050,7 @@ def main():
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
     run.add_argument("--workload", action="append",
-                     choices=("short", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "sse-cancel", "websocket", "local-api"),
+                     choices=("short", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "concurrent-admin-quiet", "sse-cancel", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)
@@ -959,6 +1059,10 @@ def main():
                      help="Worker count for the concurrent-admin workload")
     run.add_argument("--resource-batches", type=int, default=3,
                      help="Repeated batches for the concurrent-admin workload")
+    run.add_argument("--warmup-requests", type=int, default=4,
+                     help="Warm-up requests for the concurrent-admin-quiet workload")
+    run.add_argument("--quiet-seconds", type=float, default=0.25,
+                     help="Quiet interval before measured batches for the concurrent-admin-quiet workload")
     diff = commands.add_parser("compare")
     diff.add_argument("baseline", type=Path)
     diff.add_argument("candidate", type=Path)
@@ -975,8 +1079,9 @@ def main():
     if not args.python_source.is_dir():
         parser.error(f"--python-source is not a directory: {args.python_source}")
     if (args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0
-            or args.concurrency < 1 or args.resource_batches < 1):
-        parser.error("stream duration must be positive; WebSocket values nonnegative; concurrency/batches positive")
+            or args.concurrency < 1 or args.resource_batches < 1
+            or args.warmup_requests < 0 or args.quiet_seconds < 0):
+        parser.error("stream duration must be positive; WebSocket values nonnegative; concurrency/batches positive; warmup/quiet nonnegative")
     capture(args)
     return 0
 

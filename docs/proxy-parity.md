@@ -595,6 +595,14 @@ WebSocket traffic, repeated short connections, and concurrent approvals/API
 activity. Record peak and steady memory, early chunk arrival, cleanup and API
 responsiveness. No performance or complete-parity claim is made here.
 
+The reusable concurrent short-HTTP workload can add a small warm-up, a quiet
+interval, and repeated measured batches while keeping the same backend policy,
+fixture and authenticated admin settings. It records request/error counts,
+per-batch latency, external RSS/high-water/virtual-memory/thread/FD samples,
+and the selected executable plus native-policy provenance. These observations
+help distinguish a bounded retained cache from continued per-batch growth;
+they do not define a memory threshold or a long-duration claim.
+
 ## Run the initial development slice
 
 These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain

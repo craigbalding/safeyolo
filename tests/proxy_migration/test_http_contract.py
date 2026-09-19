@@ -62,6 +62,48 @@ def test_repeated_concurrent_short_requests_keep_authenticated_admin_live(proxy_
     assert all(batch["admin"]["authenticated_status"] == 200 for batch in result["batches_result"])
 
 
+def test_short_requests_report_warmup_quiet_and_repeated_resource_phases(proxy_backend, tmp_path):
+    result = concurrent_short_admin_workload(
+        proxy_backend,
+        tmp_path / proxy_backend,
+        8,
+        4,
+        3,
+        warmup=4,
+        quiet_seconds=0.25,
+    )
+    assert result["warmup"]["requests"] == 4
+    assert result["warmup"]["completed"] == 4
+    assert result["warmup"]["failed_or_incomplete"] == 0
+    assert result["quiet"]["elapsed_seconds"] >= 0.25
+    assert result["quiet"]["origin_connections_before"] == 4
+    assert result["quiet"]["origin_connections_after"] == 4
+    assert result["quiet"]["proxy_request_events_before"] == 4
+    assert result["quiet"]["proxy_request_events_after"] == 4
+    assert result["origin_observation"]["expected_requests"] == 28
+    assert result["request_counts"] == {
+        "warmup": {"expected": 4, "completed": 4, "failed_or_incomplete": 0},
+        "measured": {"expected": 24, "completed": 24, "failed_or_incomplete": 0},
+        "total": {
+            "expected": 28,
+            "origin_connections": 28,
+            "proxy_request_events": 28,
+            "error_responses": 0,
+        },
+    }
+    assert len(result["warmup"]["latency_samples_ms"]) == 4
+    assert len(result["batches_result"]) == 3
+    assert all(batch["completed"] == 8 for batch in result["batches_result"])
+    assert all(batch["failed_or_incomplete"] == 0 for batch in result["batches_result"])
+    assert all(batch["runtime_resources"]["before_batch"] for batch in result["batches_result"])
+    assert all(batch["runtime_resources"]["during_batch"] for batch in result["batches_result"])
+    assert all(batch["runtime_resources"]["after_batch"] for batch in result["batches_result"])
+    if proxy_backend == "rust":
+        provenance = result["proxy_identity"]["native_policy_provenance"]["payload"]
+        assert provenance["policy_mode"] == "native"
+        assert provenance["temporary_policy_adapter"] is False
+
+
 def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_backend, tmp_path, request):
     if proxy_backend == "python":
         # The comparator currently drains this response after the downstream
