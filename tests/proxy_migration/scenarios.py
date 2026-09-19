@@ -26,7 +26,7 @@ FORGED_REQUEST_ID = "req-" + "f" * 32
 class Origin(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=0, *, stream_seconds=2.0):
+    def __init__(self, port=0, *, stream_seconds=2.0, response_delay=0.0):
         self.accepts = 0
         self.requests = []
         self.websocket_frames = []
@@ -37,6 +37,7 @@ class Origin(ThreadingHTTPServer):
         self.stream_release = threading.Event()
         self.stream_cancelled = threading.Event()
         self.stream_write_error = None
+        self.response_delay = response_delay
         self.stream_bytes_sent = 0
         self.stream_chunks = max(1, math.ceil(stream_seconds / 0.02))
         super().__init__(("127.0.0.1", port), OriginHandler)
@@ -92,6 +93,8 @@ class OriginHandler(BaseHTTPRequestHandler):
         if self.headers.get("Upgrade", "").lower() == "websocket":
             self.websocket()
             return
+        if self.server.response_delay:
+            time.sleep(self.server.response_delay)
         self.send_response(200)
         self.send_header("Content-Length", "5")
         self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
@@ -127,8 +130,8 @@ class OriginHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False):
-    server = Origin(port, stream_seconds=stream_seconds)
+def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False, response_delay=0.0):
+    server = Origin(port, stream_seconds=stream_seconds, response_delay=response_delay)
     server.keep_alive = keep_alive
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
