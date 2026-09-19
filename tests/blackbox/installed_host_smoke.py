@@ -33,6 +33,8 @@ import stat
 import subprocess
 import sys
 import threading
+import time
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,8 @@ OUTPUT_LIMIT = 4_096
 JSON_LIMIT = 4 * 1024 * 1024
 PARTIAL_STATUS = "partial_unexecuted"
 AGENT_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+ROLLBACK_ORIGIN_HOST = "127.0.0.2"
+ROLLBACK_ACTIVATION_TIMEOUT = 5.0
 
 
 class SmokeError(RuntimeError):
@@ -446,8 +450,33 @@ def _proxy_status(socket_path: str, url: str) -> int:
         raise SmokeError(f"installed rollback HTTP probe returned an invalid status for {url}") from exc
 
 
+def _poll_proxy_allowed(socket_path: str, url: str) -> float:
+    """Wait for the policy watcher to publish an allowed endpoint, for at most 5s."""
+    started = time.monotonic()
+    deadline = started + ROLLBACK_ACTIVATION_TIMEOUT
+    last_status: int | None = None
+    last_error: SmokeError | None = None
+    while True:
+        try:
+            last_status = _proxy_status(socket_path, url)
+            last_error = None
+            if last_status == 200:
+                return time.monotonic() - started
+        except SmokeError as exc:
+            last_error = exc
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = f"HTTP {last_status}" if last_status is not None else str(last_error)
+            raise SmokeError(
+                f"installed rollback policy watcher did not allow {url} within "
+                f"{ROLLBACK_ACTIVATION_TIMEOUT:.1f}s ({detail})"
+            )
+        time.sleep(min(0.05, remaining))
+
+
 def _rollback_origin() -> tuple[http.server.ThreadingHTTPServer, threading.Thread]:
     """Provide an owned local origin for the allowed behavior check."""
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib callback name
             body = b"rollback-origin-ok\n"
@@ -460,7 +489,7 @@ def _rollback_origin() -> tuple[http.server.ThreadingHTTPServer, threading.Threa
         def log_message(self, _format: str, *_args: object) -> None:
             return
 
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = http.server.ThreadingHTTPServer((ROLLBACK_ORIGIN_HOST, 0), Handler)
     thread = threading.Thread(target=server.serve_forever, name="safeyolo-rollback-origin", daemon=True)
     thread.start()
     return server, thread
@@ -468,11 +497,12 @@ def _rollback_origin() -> tuple[http.server.ThreadingHTTPServer, threading.Threa
 
 def _write_native_rollback_state(native: dict[str, Any], origin_port: int) -> dict[str, Any]:
     """Write one supported host policy through native's authenticated writer."""
+    allow_endpoint = f"{ROLLBACK_ORIGIN_HOST}:{origin_port}"
     allow_status, allow_body = _admin_request(
         native,
         method="POST",
         path="/admin/policy/host/allow",
-        payload={"host": "127.0.0.1", "port": origin_port, "rate": 60},
+        payload={"host": ROLLBACK_ORIGIN_HOST, "port": origin_port, "rate": 60},
     )
     deny_status, deny_body = _admin_request(
         native,
@@ -497,13 +527,27 @@ def _write_native_rollback_state(native: dict[str, Any], origin_port: int) -> di
         persisted = policy_path.read_text(encoding="utf-8")
     except (FileNotFoundError, OSError, UnicodeError) as exc:
         raise SmokeError("native rollback policy was not durably saved") from exc
-    if "rollback-denied.invalid" not in persisted or "127.0.0.1" not in persisted:
-        raise SmokeError("native rollback policy file omitted the written host rules")
+    try:
+        parsed_policy = tomllib.loads(persisted)
+    except tomllib.TOMLDecodeError as exc:
+        raise SmokeError("native rollback policy file is not valid TOML") from exc
+    hosts = parsed_policy.get("hosts")
+    if not isinstance(hosts, dict) or allow_endpoint not in hosts or "rollback-denied.invalid" not in hosts:
+        raise SmokeError(
+            f"native rollback policy file omitted exact written host rules: {allow_endpoint}"
+        )
     return {
         "allow": {"status": allow_status, "response": allow_body},
         "deny": {"status": deny_status, "response": deny_body},
-        "read": {"status": read_status, "contains_written_hosts": True},
+        "read": {
+            "status": read_status,
+            "contains_written_hosts": True,
+            "contains_allow_endpoint": True,
+            "allow_endpoint": allow_endpoint,
+        },
         "policy_sha256": _sha256(policy_path),
+        "allow_endpoint": allow_endpoint,
+        "origin_host": ROLLBACK_ORIGIN_HOST,
         "origin_port": origin_port,
     }
 
@@ -1053,18 +1097,26 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 native, rollback_server.server_address[1]
             )
             listener = _agent_map(config_dir)[0]["path"]
+            native_allowed_wait = _poll_proxy_allowed(
+                listener,
+                f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/allowed",
+            )
+            native_allowed_status = _proxy_status(
+                listener,
+                f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/allowed",
+            )
+            native_denied_status = _proxy_status(
+                listener, "http://rollback-denied.invalid/denied"
+            )
             report["native_before_rollback"] = {
                 "state": rollback_state,
-                "allowed_status": _proxy_status(
-                    listener, f"http://127.0.0.1:{rollback_state['origin_port']}/allowed"
-                ),
-                "denied_status": _proxy_status(
-                    listener, "http://rollback-denied.invalid/denied"
-                ),
+                "allowed_status": native_allowed_status,
+                "allowed_activation_wait_seconds": native_allowed_wait,
+                "denied_status": native_denied_status,
             }
-            if report["native_before_rollback"]["allowed_status"] != 200:
+            if native_allowed_status != 200:
                 raise SmokeError("native written allow rule did not permit the local origin")
-            if report["native_before_rollback"]["denied_status"] != 403:
+            if native_denied_status != 403:
                 raise SmokeError("native written deny rule did not reject the denied origin")
         except SmokeError as exc:
             if rollback_server is not None:
@@ -1147,9 +1199,18 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 raise SmokeError("selected Python comparator could not read effective policy")
             if "rollback-denied.invalid" not in policy_show.stdout:
                 raise SmokeError("selected Python comparator omitted the native-written deny rule")
+            allow_endpoint = rollback_state["allow_endpoint"]
+            if allow_endpoint not in policy_show.stdout:
+                raise SmokeError(
+                    "selected Python comparator omitted the exact native-written allow endpoint"
+                )
             listener = _agent_map(config_dir)[0]["path"]
+            python_allowed_wait = _poll_proxy_allowed(
+                listener,
+                f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/python",
+            )
             python_allowed = _proxy_status(
-                listener, f"http://127.0.0.1:{rollback_state['origin_port']}/python"
+                listener, f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/python"
             )
             python_denied = _proxy_status(listener, "http://rollback-denied.invalid/python")
             if python_allowed != 200 or python_denied != 403:
@@ -1164,9 +1225,12 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "policy_show": {
                     "exit": policy_show.returncode,
                     "contains_native_allow_and_deny": True,
+                    "contains_allow_endpoint": True,
+                    "allow_endpoint": allow_endpoint,
                     "representation": "source host rules; compiled deny remains default-deny",
                 },
                 "allowed_status": python_allowed,
+                "allowed_activation_wait_seconds": python_allowed_wait,
                 "denied_status": python_denied,
             }
             rollback_stop = _run([str(cli_path), "stop"], env=rollback_env, cwd=cwd)
@@ -1204,8 +1268,13 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
             returned_listener = _agent_map(config_dir)[0]["path"]
             returned_health = _probe_agent_health(_agent_map(config_dir)[0], config_dir)
+            returned_allowed_wait = _poll_proxy_allowed(
+                returned_listener,
+                f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/returned",
+            )
             returned_allowed = _proxy_status(
-                returned_listener, f"http://127.0.0.1:{rollback_state['origin_port']}/returned"
+                returned_listener,
+                f"http://{rollback_state['origin_host']}:{rollback_state['origin_port']}/returned",
             )
             returned_denied = _proxy_status(
                 returned_listener, "http://rollback-denied.invalid/returned"
@@ -1215,6 +1284,7 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             report["return_rust"] = {
                 "health": returned_health,
                 "allowed_status": returned_allowed,
+                "allowed_activation_wait_seconds": returned_allowed_wait,
                 "denied_status": returned_denied,
             }
             return_stop = _run(stop_command, env=env, cwd=cwd)

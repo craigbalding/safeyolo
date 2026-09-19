@@ -146,11 +146,18 @@ configuration. With that flag, the lane starts Rust, writes one allowed and
 one denied host rule through the authenticated native admin writer, checks
 200/403 behavior through the real UDS, stops Rust, selects the retained
 Python comparator in the same installation, and checks the saved host rules
-and the same 200/403 behavior there. It then selects Rust again, repeats the
-behavior check, and stops both processes cleanly. The lane changes only
+and the same 200/403 behavior there. The allowed origin uses a loopback
+host-and-port endpoint that is absent from the starting policy, so the
+successful request proves the newly written rule. After each write or backend
+start, the lane polls that allowed request for up to five seconds while the
+existing policy watcher publishes the change; the denied request remains an
+explicit 403 assertion. It then selects Rust again, repeats the behavior
+check, and stops both processes cleanly. The lane changes only
 `proxy.backend` in the disposable `config.yaml`, removes
 `SAFEYOLO_RUST_PROXY` for the rollback start, records the durable policy hash,
-and restores the caller's original selector bytes. The report marks this
+asserts the exact `host:port` key in both the persisted policy and
+`policy show --section hosts`, and restores the caller's original selector
+bytes. The report marks this
 rollback sequence `passed` while the overall smoke result remains partial
 because guest isolation and platform acceptance are separate requirements. It
 does not claim that the Python comparator, guest isolation, or a platform lane
