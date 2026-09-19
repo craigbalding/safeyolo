@@ -45,6 +45,8 @@ REQUIRED_PATHS = {
     "cli/src/safeyolo/mitm_addons/admin_api.py",
     "cli/src/safeyolo/mitm_addons/probe_sink.py",
     "cli/src/safeyolo/mitm_addons/transport_guard.py",
+    "cli/src/safeyolo/websocket_console.py",
+    "cli/src/safeyolo/websocket_body_filter.py",
     "pdp/",
     "pyproject.toml",
     "uv.lock",
