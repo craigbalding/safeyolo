@@ -353,7 +353,9 @@ async fn serve_connection(
                 admin_api::Audit::PolicyMutation(_) | admin_api::Audit::ModeChanged { .. } => {
                     vec![]
                 }
-                admin_api::Audit::PlumbMutation(_) => vec![],
+                admin_api::Audit::PlumbMutation(_)
+                | admin_api::Audit::DesktopPresented(_)
+                | admin_api::Audit::DesktopPresentationFailed(_) => vec![],
             });
             // Diagnostic sink failures remain separate from canonical producer
             // exceptions. Attempt each diagnostic without claiming rollback.
@@ -603,6 +605,7 @@ fn is_operator_event(event: &serde_json::Value) -> bool {
                 | "admin.gateway_grant_revoked"
                 | "admin.contract_binding_approved"
                 | "admin.desktop_presented"
+                | "admin.desktop_presentation_failed"
                 | "plumb.approved"
                 | "plumb.denied"
                 | "plumb.conversation_created"

@@ -1274,6 +1274,7 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::GatewayAccessRequested
                 | crate::agent_api::AuditKind::GatewayBindingSubmitted
+                | crate::agent_api::AuditKind::DesktopPresentRequested
                 | crate::agent_api::AuditKind::PlumbRequested
                 | crate::agent_api::AuditKind::PlumbMessageBlocked
                 | crate::agent_api::AuditKind::PlumbMessageFlagged
@@ -1290,7 +1291,11 @@ fn record_agent_api(
             ) {
                 "plumb"
             } else {
-                "gateway"
+                if audit.kind == crate::agent_api::AuditKind::DesktopPresentRequested {
+                    "agent"
+                } else {
+                    "gateway"
+                }
             }
         } else {
             "security"
@@ -1313,6 +1318,7 @@ fn record_agent_api(
             audit.kind,
             crate::agent_api::AuditKind::GatewayAccessRequested
                 | crate::agent_api::AuditKind::GatewayBindingSubmitted
+                | crate::agent_api::AuditKind::DesktopPresentRequested
                 | crate::agent_api::AuditKind::PlumbRequested
         ) {
             event["decision"] = json!("require_approval");
@@ -1463,13 +1469,11 @@ where
                         owner: &runtime.test_context,
                         now: declaration_time,
                     }),
-                plumb: Some(runtime.plumb.as_ref()),
                 coord: Some(agent_api::CoordContext {
                     client: &runtime.coord,
                     cancellation: upgrades.cancellation_receiver.clone(),
                 }),
             },
-            Some(runtime.plumb.as_ref()),
             agent_api::RequestBody {
                 body: request.body_mut(),
                 content_encoding: &content_encoding,
@@ -1477,6 +1481,7 @@ where
                 observation: Some(&mut local_observation),
             },
             Some(request_id),
+            Some(runtime.plumb.as_ref()),
         )
         .await?
     } else {

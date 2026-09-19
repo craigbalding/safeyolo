@@ -131,6 +131,42 @@ impl Audit {
                 }
                 events
             }
+            Self::DesktopPresented(presentation) => {
+                let mut event = event(
+                    "admin.desktop_presented",
+                    Kind::Admin,
+                    Severity::Low,
+                    format!("Desktop presented for {}", sanitize(&presentation.agent)),
+                    "admin-api",
+                );
+                event.agent = Some(presentation.agent.clone());
+                event.details = json!({
+                    "agent_id": presentation.agent_id,
+                    "agent": presentation.agent,
+                    "url": presentation.url,
+                    "reused": presentation.reused,
+                    "approval_request_id": presentation.approval_request_id,
+                })
+                .into();
+                vec![event]
+            }
+            Self::DesktopPresentationFailed(failure) => {
+                let mut event = event(
+                    "admin.desktop_presentation_failed",
+                    Kind::Admin,
+                    Severity::High,
+                    "Desktop presentation failed".into(),
+                    "admin-api",
+                );
+                event.decision = Some(crate::audit::Decision::Deny);
+                event.details = json!({
+                    "agent_id": failure.agent_id,
+                    "status": failure.status,
+                    "reason": failure.reason,
+                })
+                .into();
+                vec![event]
+            }
             Self::ModeChanged {
                 addon,
                 mode,

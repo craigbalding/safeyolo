@@ -19,6 +19,7 @@ mod credential_hmac;
 pub mod credential_injection;
 mod credential_text;
 pub mod credentials;
+pub(crate) mod desktop_present;
 mod flow_recorder;
 #[cfg(test)]
 mod flow_runtime_tests;
@@ -1729,6 +1730,7 @@ impl Proxy {
         // have stopped producing work.
         plumb.stop_admission().await;
         service_mutations.stop_admission().await;
+        plumb.stop_admission().await;
         if let Some(listener) = self.admin.take() {
             self.draining.push(listener.stop());
         }

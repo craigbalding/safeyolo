@@ -29,6 +29,7 @@ mod trace;
 pub use gateway::GatewayContext;
 pub use memory::MemoryContext;
 
+pub(crate) use declarations::respond_with_body_and_audit_id_with_plumb;
 pub use declarations::{
     BodyObservation, Controls, DeclarationContext, RequestBody, TraceContext, respond_with_body,
     respond_with_body_and_audit_id,
@@ -145,6 +146,7 @@ pub enum AuditKind {
     TestContextCleared,
     GatewayAccessRequested,
     GatewayBindingSubmitted,
+    DesktopPresentRequested,
     PlumbRequested,
     PlumbMessageBlocked,
     PlumbMessageFlagged,
@@ -225,6 +227,13 @@ impl AuditIntent {
                 "gateway.submit_binding",
                 Kind::Gateway,
                 Severity::Critical,
+                "agent-api",
+                Some(Decision::RequireApproval),
+            ),
+            AuditKind::DesktopPresentRequested => (
+                "agent.desktop_present_requested",
+                Kind::Agent,
+                Severity::High,
                 "agent-api",
                 Some(Decision::RequireApproval),
             ),
@@ -416,6 +425,7 @@ impl Outcome<'_> {
             Some(
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
+                | AuditKind::DesktopPresentRequested
                 | AuditKind::PlumbRequested,
             ) => {
                 let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));

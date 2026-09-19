@@ -139,6 +139,8 @@ pub enum Audit {
     },
     PolicyMutation(PolicyMutationAudit),
     PlumbMutation(PlumbMutationAudit),
+    DesktopPresented(DesktopPresentationAudit),
+    DesktopPresentationFailed(DesktopPresentationFailureAudit),
     ModeChanged {
         addon: String,
         mode: String,
@@ -162,6 +164,20 @@ pub struct PlumbMutationAudit {
     pub(super) details: Value,
     pub(super) agent: Option<String>,
     pub(super) decision: crate::audit::Decision,
+}
+
+pub struct DesktopPresentationAudit {
+    pub(super) agent_id: String,
+    pub(super) agent: String,
+    pub(super) url: String,
+    pub(super) reused: bool,
+    pub(super) approval_request_id: Option<String>,
+}
+
+pub struct DesktopPresentationFailureAudit {
+    pub(super) agent_id: String,
+    pub(super) status: u16,
+    pub(super) reason: &'static str,
 }
 
 impl Drop for PlumbMutationAudit {
@@ -620,6 +636,22 @@ fn mutation(event: &'static str, summary: impl Into<String>, details: Value) -> 
     })
 }
 
+fn desktop_failure(
+    agent_id: &str,
+    status: StatusCode,
+    reason: &'static str,
+    message: &'static str,
+) -> Outcome {
+    let mut outcome = response(status, json!({"error":message}));
+    outcome.audit = Some(Audit::DesktopPresentationFailed(
+        DesktopPresentationFailureAudit {
+            agent_id: agent_id.to_owned(),
+            status: status.as_u16(),
+            reason,
+        },
+    ));
+    outcome
+}
 /// Build the canonical operator plumb events while the process-owned mailbox
 /// worker still owns the committed projection and its audit responsibility.
 pub(crate) fn plumb_events(
@@ -817,9 +849,11 @@ fn resolved_approval_keys(event: &Value) -> Vec<String> {
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>();
-            (!participants.is_empty())
-                .then(|| vec![format!("{request_id}:{}", participants.join(","))])
-                .unwrap_or_default()
+            if participants.is_empty() {
+                Vec::new()
+            } else {
+                vec![format!("{request_id}:{}", participants.join(","))]
+            }
         }
         _ => Vec::new(),
     }
@@ -1336,7 +1370,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     "agent_lifecycle":false,
                     "approvals":true,
                     "audit_events":audit.is_some(),
-                    "desktop_present":false
+                    "desktop_present":crate::desktop_present::available()
                 }
             }),
         ));
@@ -1510,6 +1544,126 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             crate::python_json::encode_indented(&json!({"agents":agents})),
             false,
         ));
+    }
+    if method == Method::POST
+        && let Some(agent_id) = path
+            .strip_prefix("/admin/agents/")
+            .and_then(|value| value.strip_suffix("/desktop/present"))
+        && !agent_id.contains('/')
+    {
+        if !crate::desktop_present::valid_agent_id(agent_id) {
+            return Ok(desktop_failure(
+                agent_id,
+                StatusCode::BAD_REQUEST,
+                "invalid_agent_id",
+                "invalid agent id",
+            ));
+        }
+        if !listeners
+            .iter()
+            .any(|listener| listener.agent_id == agent_id)
+        {
+            return Ok(desktop_failure(
+                agent_id,
+                StatusCode::NOT_FOUND,
+                "agent_not_found",
+                "Agent not found",
+            ));
+        }
+        let data = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+            ParsedBody::Value(data) => data.0.clone(),
+        };
+        let approval_request_id = match data {
+            Value::Null => None,
+            Value::Object(fields) => match fields.get("approval_request_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+                    Some(value.clone())
+                }
+                Some(_) => {
+                    return Ok(desktop_failure(
+                        agent_id,
+                        StatusCode::BAD_REQUEST,
+                        "invalid_approval_request_id",
+                        "approval_request_id must be a non-empty string",
+                    ));
+                }
+            },
+            _ => {
+                return Ok(desktop_failure(
+                    agent_id,
+                    StatusCode::BAD_REQUEST,
+                    "invalid_body",
+                    "request body must be an object",
+                ));
+            }
+        };
+        let result = match crate::desktop_present::present(agent_id.to_owned()).await {
+            Ok(value) => value,
+            Err(crate::desktop_present::Error::NotFound) => {
+                return Ok(desktop_failure(
+                    agent_id,
+                    StatusCode::NOT_FOUND,
+                    "agent_not_found",
+                    "Agent not found",
+                ));
+            }
+            Err(crate::desktop_present::Error::Unavailable) => {
+                return Ok(desktop_failure(
+                    agent_id,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "desktop_presenter_unavailable",
+                    "desktop presenter is unavailable",
+                ));
+            }
+            Err(crate::desktop_present::Error::Failed) => {
+                return Ok(desktop_failure(
+                    agent_id,
+                    StatusCode::CONFLICT,
+                    "desktop_presentation_failed",
+                    "Desktop presentation failed",
+                ));
+            }
+            Err(crate::desktop_present::Error::Protocol) => {
+                return Ok(desktop_failure(
+                    agent_id,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "desktop_presenter_protocol",
+                    "desktop presenter returned an invalid result",
+                ));
+            }
+        };
+        let Some(fields) = result.as_object() else {
+            return Ok(desktop_failure(
+                agent_id,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "desktop_presenter_protocol",
+                "desktop presenter returned an invalid result",
+            ));
+        };
+        let audit = Audit::DesktopPresented(DesktopPresentationAudit {
+            agent_id: agent_id.to_owned(),
+            agent: fields
+                .get("agent")
+                .and_then(Value::as_str)
+                .unwrap_or(agent_id)
+                .to_owned(),
+            url: fields
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            reused: fields
+                .get("reused")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            approval_request_id,
+        });
+        let mut outcome = response(StatusCode::OK, result);
+        outcome.audit = Some(audit);
+        return Ok(outcome);
     }
     if method == Method::GET && path == "/modes" {
         let Some(modes) = operator_modes else {

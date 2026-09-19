@@ -431,6 +431,10 @@ def start(config: dict) -> None:
     env = os.environ.copy()
     env["SAFEYOLO_DATA_DIR"] = str(get_data_dir().absolute())
     env["SAFEYOLO_LOG_PATH"] = str((get_logs_dir(create=True) / "safeyolo.jsonl").absolute())
+    # The native proxy invokes only this fixed SafeYolo presenter module for
+    # desktop approvals.  The interpreter is inherited from the trusted CLI
+    # launcher; request data supplies a validated stable agent ID only.
+    env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
     process = RustProcess(None, None, str(launch.readiness), launch.admin_port,
                           str(launch.admin_token) if launch.admin_token else None,
                           str(launch.config), str(Path.cwd()))

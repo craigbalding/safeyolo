@@ -2303,6 +2303,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // Hold SQLite open to deterministically gate the owned worker.
     async fn canceled_request_chat_keeps_projection_and_canonical_audit() {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
@@ -2369,6 +2370,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // Hold SQLite open to deterministically gate the owned worker.
     async fn canceled_message_keeps_projection_and_canonical_audit() {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
@@ -2442,6 +2444,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // Hold SQLite open to deterministically gate the owned worker.
     async fn canceled_leave_keeps_projection_and_canonical_audit() {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));
@@ -2513,6 +2516,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // Hold SQLite open to deterministically gate the owned worker.
     async fn canceled_approval_keeps_projection_and_both_canonical_audits() {
         let directory = tempfile::tempdir().unwrap();
         let owner = Arc::new(PlumbOwner::for_data_dir(directory.path()));

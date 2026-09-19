@@ -17,7 +17,6 @@ pub struct Controls<'a> {
     pub flows: Option<&'a std::sync::Arc<crate::flow_store::FlowStore>>,
     pub circuits: Option<CircuitContext<'a>>,
     pub declarations: Option<DeclarationContext<'a>>,
-    pub(crate) plumb: Option<&'a crate::agent_api::plumb::PlumbOwner>,
     pub coord: Option<CoordContext<'a>>,
 }
 
@@ -96,9 +95,9 @@ where
         tasks,
         now_ms,
         controls,
-        None,
         body,
         source_request_id,
+        None,
     )
     .await
 }
@@ -113,9 +112,9 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
     tasks: &crate::tasks::Registry,
     now_ms: f64,
     controls: Controls<'_>,
-    plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
     body: RequestBody<'_, B>,
     source_request_id: Option<&str>,
+    plumb: Option<&crate::agent_api::plumb::PlumbOwner>,
 ) -> Result<Outcome<'p>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
@@ -169,6 +168,41 @@ where
             Err(error) => return Ok(content_error(error)),
         };
         return Ok(gateway::submit_binding(request, controls.gateway, &content));
+    }
+    if route(request) == "/desktop/present" {
+        let Some(agent_name) = agent(request.identity) else {
+            return Ok(response(403, json!({"error":"Could not identify agent"})));
+        };
+        let agent_id = agent_name.to_owned();
+        let mut outcome = response(
+            202,
+            json!({
+                "status":"pending",
+                "agent":agent_name,
+                "agent_id":agent_id,
+                "request_id":request.request_id,
+                "message":"Desktop presentation submitted for operator approval."
+            }),
+        );
+        outcome.audit = Some(AuditIntent {
+            kind: AuditKind::DesktopPresentRequested,
+            event: "agent.desktop_present_requested",
+            severity: "high",
+            addon: "agent-api",
+            summary: format!("{} requests desktop presentation", agent_name),
+            agent: Some(agent_name.to_owned()),
+            request_id: Some(request.request_id.to_owned()),
+            host: None,
+            details: json!({"agent_id":agent_id}),
+            approval: Some(AuditApproval {
+                required: true,
+                approval_type: crate::audit::ApprovalType::DesktopPresent,
+                key: "desktop.present".into(),
+                target: format!("desktop:{agent_id}"),
+                scope_hint: json!({"agent_id":agent_id}),
+            }),
+        });
+        return Ok(outcome);
     }
     if route(request).starts_with("/plumb") {
         return plumb::respond(request, body, plumb, controls.audit.cloned()).await;
