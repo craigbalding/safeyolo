@@ -11,6 +11,7 @@ reviewed together with the raw origin/control results.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
 import hashlib
 import http.client
@@ -20,6 +21,7 @@ import platform
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from importlib.metadata import version
@@ -223,6 +225,182 @@ def short_connections(backend, directory, count):
                     "expected_requests": count,
                 },
                 "proxy_identity": proxy_identity(proxy)}
+
+
+def concurrent_short_admin_workload(backend, directory, count, concurrency=8, batches=3):
+    """Run repeated fresh HTTP connections while an authenticated admin request runs.
+
+    Each batch uses the existing UDS/origin fixture and starts ``concurrency``
+    workers together. A small delay in the owned origin keeps the batch active
+    long enough for the admin operation to be observed concurrently; it adds no
+    product timeout or admission policy. ``/proc`` samples are taken before,
+    during and after every batch so RSS/high-water/VM/thread/FD observations
+    remain separate from the proxy's own counters.
+    """
+    if count < 1 or concurrency < 1 or batches < 1:
+        raise ValueError("count, concurrency and batches must be positive")
+    token = "concurrent-admin-fixture-token"
+    token_file = directory / "operator-token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n")
+    token_file.chmod(0o600)
+    # The delay is confined to this owned origin and prevents a fast machine
+    # from completing all workers before the independent admin request starts.
+    with origin_server(response_delay=0.01) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        native_policy=backend == "rust",
+        admin_port=0,
+        admin_api_token_file=token_file,
+    ) as proxy:
+        target = f"http://127.0.0.1:{origin.server_address[1]}/latency"
+        active_workers = min(concurrency, count)
+        all_latencies = []
+        batches_result = []
+        started = time.perf_counter()
+
+        def admin_request(headers=None):
+            marker = json.loads(proxy.readiness_file.read_text())
+            admin = http.client.HTTPConnection("127.0.0.1", marker["admin_port"], timeout=5)
+            began = time.perf_counter()
+            try:
+                admin.request("GET", "/stats", headers=headers or {})
+                response = admin.getresponse()
+                body = response.read()
+                return {
+                    "status": response.status,
+                    "elapsed_seconds": time.perf_counter() - began,
+                    "body_bytes": len(body),
+                    "body_sha256": hashlib.sha256(body).hexdigest(),
+                }
+            finally:
+                admin.close()
+
+        for batch_index in range(batches):
+            before = runtime_resources(proxy)
+            barrier = threading.Barrier(active_workers + 1)
+            condition = threading.Condition()
+            inflight = 0
+
+            def send(index):
+                nonlocal inflight
+                # The first queued wave synchronizes with the coordinator. The
+                # remaining queued tasks must proceed after that release and
+                # must not wait on a second barrier cycle.
+                if index < active_workers:
+                    barrier.wait()
+                with condition:
+                    inflight += 1
+                    condition.notify_all()
+                began = time.perf_counter()
+                try:
+                    status, _, body = request(proxy.paths["alice"], target)
+                    return {
+                        "index": index,
+                        "status": status,
+                        "body_bytes": len(body),
+                        "body_sha256": hashlib.sha256(body).hexdigest(),
+                        "latency_ms": (time.perf_counter() - began) * 1000,
+                    }
+                except Exception as error:  # retain failed/incomplete work in evidence
+                    return {"index": index, "error": f"{type(error).__name__}: {error}"}
+                finally:
+                    with condition:
+                        inflight -= 1
+                        condition.notify_all()
+
+            batch_started = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=active_workers) as workers:
+                futures = [workers.submit(send, index) for index in range(count)]
+                barrier.wait()
+                with condition:
+                    deadline = time.monotonic() + 5
+                    while inflight < active_workers and time.monotonic() < deadline:
+                        condition.wait(timeout=0.05)
+                    assert inflight >= active_workers, "concurrent batch did not become active"
+                admin_started_while_batch_active = inflight > 0
+                unauthenticated = admin_request()
+                authenticated = admin_request({"Authorization": f"Bearer {token}"})
+                admin_completed_while_batch_active = inflight > 0
+                assert unauthenticated["status"] == 401
+                assert authenticated["status"] == 200 and authenticated["body_bytes"] > 0
+                assert admin_completed_while_batch_active
+                resource_samples = [runtime_resources(proxy)]
+                sampled_at = time.monotonic()
+                while not all(future.done() for future in futures):
+                    if time.monotonic() - sampled_at >= 0.02:
+                        resource_samples.append(runtime_resources(proxy))
+                        sampled_at = time.monotonic()
+                    time.sleep(0.005)
+                outcomes = [future.result() for future in futures]
+            resource_samples.append(runtime_resources(proxy))
+            completed = [outcome for outcome in outcomes if "error" not in outcome]
+            failures = [outcome for outcome in outcomes if "error" in outcome]
+            latencies = [outcome["latency_ms"] for outcome in completed]
+            all_latencies.extend(latencies)
+            assert not failures, failures
+            assert len(completed) == count
+            assert all(outcome["status"] == 200 and outcome["body_bytes"] == 5 for outcome in completed)
+            batch_elapsed = time.perf_counter() - batch_started
+            batches_result.append({
+                "batch": batch_index + 1,
+                "requests": count,
+                "completed": len(completed),
+                "failed_or_incomplete": len(failures),
+                "elapsed_seconds": batch_elapsed,
+                "requests_per_second": count / batch_elapsed,
+                "latency_median_ms": statistics.median(latencies),
+                "latency_p95_ms": sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)],
+                "latency_max_ms": max(latencies),
+                "admin": {
+                    "unauthenticated_status": unauthenticated["status"],
+                    "authenticated_status": authenticated["status"],
+                    "authenticated_elapsed_seconds": authenticated["elapsed_seconds"],
+                    "authenticated_body_bytes": authenticated["body_bytes"],
+                    "authenticated_body_sha256": authenticated["body_sha256"],
+                    "started_while_batch_active": admin_started_while_batch_active,
+                    "completed_while_batch_active": admin_completed_while_batch_active,
+                },
+                "runtime_resources": {
+                    "before_batch": before,
+                    "during_batch": resource_samples[:-1],
+                    "after_batch": resource_samples[-1],
+                },
+            })
+
+        elapsed = time.perf_counter() - started
+        assert origin.accepts == count * batches
+        assert len(origin.requests) == count * batches
+        request_events = [event for event in read_events(proxy.event_log)
+                          if event.get("event") == "proxy.request"]
+        assert len(request_events) == count * batches
+        return {
+            "workload": "repeated_concurrent_short_http_admin",
+            "requests_per_batch": count,
+            "batches": batches,
+            "concurrency": active_workers,
+            "requests": count * batches,
+            "completed": len(all_latencies),
+            "failed_or_incomplete": 0,
+            "elapsed_seconds": elapsed,
+            "requests_per_second": (count * batches) / elapsed,
+            "latency_median_ms": statistics.median(all_latencies),
+            "latency_p95_ms": sorted(all_latencies)[max(0, int(len(all_latencies) * 0.95) - 1)],
+            "latency_max_ms": max(all_latencies),
+            "batches_result": batches_result,
+            "origin_observation": {
+                "accepted_connections": origin.accepts,
+                "requests": list(origin.requests),
+                "expected_requests": count * batches,
+            },
+            "proxy_observation": {
+                "request_events": len(request_events),
+                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+            },
+            "proxy_identity": proxy_identity(proxy),
+            "limitation": "three short-connection batches on Linux; no long-duration, WS/WSS, CONNECT/SSH, production-chain or platform claim",
+        }
 
 
 def stream_workload(backend, directory, seconds=2.0):
@@ -685,6 +863,14 @@ def capture(args):
                 workloads.append(streamed_slow_admin_workload(
                     args.backend, args.evidence / "stream-slow-admin-workload", args.stream_seconds
                 ))
+            elif workload == "concurrent-admin":
+                workloads.append(concurrent_short_admin_workload(
+                    args.backend,
+                    args.evidence / "concurrent-admin-workload",
+                    args.requests,
+                    args.concurrency,
+                    args.resource_batches,
+                ))
             elif workload == "sse-cancel":
                 workloads.append(cancelled_sse_workload(
                     args.backend, args.evidence / "sse-cancel-workload", args.stream_seconds
@@ -764,11 +950,15 @@ def main():
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
     run.add_argument("--workload", action="append",
-                     choices=("short", "sse", "stream-control", "stream-slow-admin", "sse-cancel", "websocket", "local-api"),
+                     choices=("short", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "sse-cancel", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)
     run.add_argument("--websocket-interval", type=float, default=0.0)
+    run.add_argument("--concurrency", type=int, default=8,
+                     help="Worker count for the concurrent-admin workload")
+    run.add_argument("--resource-batches", type=int, default=3,
+                     help="Repeated batches for the concurrent-admin workload")
     diff = commands.add_parser("compare")
     diff.add_argument("baseline", type=Path)
     diff.add_argument("candidate", type=Path)
@@ -784,8 +974,9 @@ def main():
         parser.error(f"--python-executable is not a file: {args.python_executable}")
     if not args.python_source.is_dir():
         parser.error(f"--python-source is not a directory: {args.python_source}")
-    if args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0:
-        parser.error("stream duration must be positive; WebSocket duration and interval must be nonnegative")
+    if (args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0
+            or args.concurrency < 1 or args.resource_batches < 1):
+        parser.error("stream duration must be positive; WebSocket values nonnegative; concurrency/batches positive")
     capture(args)
     return 0
 

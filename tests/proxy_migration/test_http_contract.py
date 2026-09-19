@@ -7,6 +7,7 @@ import pytest
 from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
 from tests.proxy_migration.run import (
     cancelled_sse_workload,
+    concurrent_short_admin_workload,
     streamed_control_workload,
     streamed_slow_admin_workload,
 )
@@ -47,6 +48,18 @@ def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_
     assert result["admin"]["status"] == 200
     assert result["admin"]["completed_while_stream_active"] is True
     assert result["origin_observation"]["stream_finished_after_read"] is True
+
+
+def test_repeated_concurrent_short_requests_keep_authenticated_admin_live(proxy_backend, tmp_path):
+    result = concurrent_short_admin_workload(proxy_backend, tmp_path / proxy_backend, 24, 8, 3)
+    assert result["completed"] == 72
+    assert result["failed_or_incomplete"] == 0
+    assert result["origin_observation"]["accepted_connections"] == 72
+    assert result["proxy_observation"] == {"request_events": 72, "error_responses": 0}
+    assert all(batch["admin"]["started_while_batch_active"] for batch in result["batches_result"])
+    assert all(batch["admin"]["completed_while_batch_active"] for batch in result["batches_result"])
+    assert all(batch["admin"]["unauthenticated_status"] == 401 for batch in result["batches_result"])
+    assert all(batch["admin"]["authenticated_status"] == 200 for batch in result["batches_result"])
 
 
 def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_backend, tmp_path, request):
