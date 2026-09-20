@@ -8,6 +8,7 @@ from tests.proxy_migration.harness import connection, launch_proxy, read_events,
 from tests.proxy_migration.run import (
     cancelled_sse_workload,
     concurrent_short_admin_workload,
+    short_https_connections,
     streamed_control_workload,
     streamed_slow_admin_workload,
 )
@@ -60,6 +61,32 @@ def test_repeated_concurrent_short_requests_keep_authenticated_admin_live(proxy_
     assert all(batch["admin"]["completed_while_batch_active"] for batch in result["batches_result"])
     assert all(batch["admin"]["unauthenticated_status"] == 401 for batch in result["batches_result"])
     assert all(batch["admin"]["authenticated_status"] == 200 for batch in result["batches_result"])
+
+
+def test_short_https_requests_record_counts_latency_resources_and_control(proxy_backend, tmp_path):
+    result = short_https_connections(proxy_backend, tmp_path / proxy_backend, 8)
+    assert result["workload"] == "sequential_short_https_connections"
+    assert result["requests"] == 8
+    assert result["completed"] == 8
+    assert result["failed_or_incomplete"] == 0
+    counts = result["request_counts"]
+    assert counts["measured"] == {"expected": 8, "completed": 8, "failed_or_incomplete": 0}
+    assert counts["control"] == {"expected": 1, "completed": 1, "failed_or_incomplete": 0}
+    assert counts["total"]["expected"] == counts["total"]["origin_requests"] == 9
+    assert counts["total"]["proxy_request_events"] == 9
+    assert counts["total"]["proxy_events_total"] == 9 + (9 if proxy_backend == "rust" else 0)
+    assert counts["total"]["connect_events"] == (9 if proxy_backend == "rust" else 0)
+    assert counts["total"]["error_responses"] == 0
+    assert len(result["latency_samples_ms"]) == 8
+    assert result["control_observation"]["status"] == 200
+    assert result["control_observation"]["body_bytes"] == 5
+    assert len(result["resource_samples"]) >= 5
+    assert len(result["origin_observation"]["requests"]) == 9
+    assert result["proxy_observation"]["request_events"] == 9
+    if proxy_backend == "rust":
+        provenance = result["proxy_identity"]["native_policy_provenance"]["payload"]
+        assert provenance["policy_mode"] == "native"
+        assert provenance["temporary_policy_adapter"] is False
 
 
 def test_short_requests_report_warmup_quiet_and_repeated_resource_phases(proxy_backend, tmp_path):

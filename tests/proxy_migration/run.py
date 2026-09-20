@@ -227,6 +227,127 @@ def short_connections(backend, directory, count):
                 "proxy_identity": proxy_identity(proxy)}
 
 
+def short_https_connections(backend, directory, count):
+    """Run fresh HTTP/1.1 requests through the existing CONNECT/TLS fixture."""
+    from mitmproxy.certs import CertStore
+
+    from tests.proxy_migration.test_http2_contract import (
+        origin_certificate,
+        origin_server as tls_origin_server,
+        tls_tunnel,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    origin_pem, origin_ca = origin_certificate(directory)
+    with tls_origin_server(origin_pem, protocols=("http/1.1",)) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        tls=True,
+        upstream_ca=origin_ca,
+        native_policy=backend == "rust",
+    ) as proxy:
+        client_ca = directory / "ca/mitmproxy-ca-cert.pem"
+
+        def https_request(path):
+            stream = tls_tunnel(proxy.paths["alice"], origin.authority, client_ca, offers=("http/1.1",))
+            try:
+                stream.sendall(
+                    f"GET {path} HTTP/1.1\r\nHost: {origin.authority}\r\nConnection: close\r\n\r\n".encode()
+                )
+                response = http.client.HTTPResponse(stream)
+                response.begin()
+                status = response.status
+                headers = dict(response.getheaders())
+                body = response.read()
+                response.close()
+                return status, headers, body
+            finally:
+                stream.close()
+
+        samples = []
+        resource_samples = [runtime_resources(proxy)]
+        started = time.perf_counter()
+        sample_every = max(1, count // 4)
+        for index in range(count):
+            before = time.perf_counter()
+            status, _, body = https_request("/latency")
+            elapsed_ms = (time.perf_counter() - before) * 1000
+            assert status == 200 and body == b"hello"
+            samples.append(elapsed_ms)
+            if (index + 1) % sample_every == 0:
+                resource_samples.append(runtime_resources(proxy))
+        measured_elapsed = time.perf_counter() - started
+        control_started = time.perf_counter()
+        control_status, control_headers, control_body = https_request("/control")
+        control = {
+            "status": control_status,
+            "elapsed_seconds": time.perf_counter() - control_started,
+            "body_bytes": len(control_body),
+            "body_sha256": hashlib.sha256(control_body).hexdigest(),
+            "content_type": control_headers.get("Content-Type"),
+        }
+        resource_samples.append(runtime_resources(proxy))
+        assert control_status == 200 and control_body == b"hello"
+        ordered = sorted(samples)
+        expected_total = count + 1
+        event_deadline = time.monotonic() + 2
+        request_events = []
+        all_request_events = []
+        while time.monotonic() < event_deadline:
+            all_request_events = [event for event in read_events(proxy.event_log)
+                                  if event.get("event") == "proxy.request"]
+            # Native Rust records the CONNECT decision and the subsequent
+            # decrypted application request as separate proxy.request events;
+            # Python's mitmproxy comparator records only the application hook.
+            request_events = [event for event in all_request_events
+                              if event.get("coverage") != "native_network_guard_only"]
+            if len(request_events) >= expected_total:
+                break
+            time.sleep(0.01)
+        assert len(origin.requests) == expected_total
+        assert len(request_events) == expected_total
+        return {
+            "workload": "sequential_short_https_connections",
+            "requests": count,
+            "completed": count,
+            "failed_or_incomplete": 0,
+            "elapsed_seconds": measured_elapsed,
+            "requests_per_second": count / measured_elapsed,
+            "latency_median_ms": statistics.median(samples),
+            "latency_p95_ms": ordered[max(0, int(count * 0.95) - 1)],
+            "latency_max_ms": max(samples),
+            "latency_samples_ms": samples,
+            "request_counts": {
+                "measured": {"expected": count, "completed": count, "failed_or_incomplete": 0},
+                "control": {"expected": 1, "completed": 1, "failed_or_incomplete": 0},
+                "total": {
+                    "expected": expected_total,
+                    "origin_requests": len(origin.requests),
+                    "proxy_request_events": len(request_events),
+                    "proxy_events_total": len(all_request_events),
+                    "connect_events": len(all_request_events) - len(request_events),
+                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                },
+            },
+            "resource_samples": resource_samples,
+            "origin_observation": {
+                "requests": list(origin.requests),
+                "expected_requests": expected_total,
+            },
+            "control_observation": control,
+            "proxy_observation": {
+                "request_events": len(request_events),
+                "proxy_events_total": len(all_request_events),
+                "connect_events": len(all_request_events) - len(request_events),
+                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+            },
+            "proxy_identity": proxy_identity(proxy),
+            "limitation": "sequential fresh HTTP/1.1-over-TLS requests and one control request; no concurrent or long-duration claim",
+        }
+
+
 def concurrent_short_admin_workload(
     backend, directory, count, concurrency=8, batches=3, *, warmup=0, quiet_seconds=0.0
 ):
@@ -944,6 +1065,8 @@ def capture(args):
         for workload in selected:
             if workload == "short":
                 workloads.append(short_connections(args.backend, args.evidence / "workload", args.requests))
+            elif workload == "short-https":
+                workloads.append(short_https_connections(args.backend, args.evidence / "https-workload", args.requests))
             elif workload == "sse":
                 workloads.append(stream_workload(args.backend, args.evidence / "stream-workload", args.stream_seconds))
             elif workload == "stream-control":
@@ -1050,7 +1173,7 @@ def main():
     run.add_argument("--requests", type=int, default=100)
     run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
     run.add_argument("--workload", action="append",
-                     choices=("short", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "concurrent-admin-quiet", "sse-cancel", "websocket", "local-api"),
+                     choices=("short", "short-https", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "concurrent-admin-quiet", "sse-cancel", "websocket", "local-api"),
                      help="Select individual workloads; overrides --extended-workloads")
     run.add_argument("--stream-seconds", type=float, default=2.0)
     run.add_argument("--websocket-seconds", type=float, default=0.0)
