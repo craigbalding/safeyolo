@@ -7,10 +7,13 @@ mod stats_tests;
 mod mutation_tests;
 
 use std::{
-    future::Future,
+    future::{Future, poll_fn},
     net::{Ipv4Addr, SocketAddr},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -22,7 +25,7 @@ use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncSeekExt},
     net::{TcpListener, TcpStream},
-    sync::{Mutex as AsyncMutex, watch},
+    sync::{Mutex as AsyncMutex, oneshot, watch},
     task::{JoinHandle, JoinSet},
 };
 use zeroize::Zeroizing;
@@ -38,6 +41,65 @@ pub(crate) struct Prepared {
 }
 
 type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
+
+/// Keep blocking statistics work owned by the operator listener. The request
+/// only owns the result receiver; the listener joins the worker before proxy
+/// shutdown stops the shared audit writer.
+struct StatsTasks {
+    tasks: Mutex<JoinSet<()>>,
+    closing: AtomicBool,
+}
+
+impl StatsTasks {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            tasks: Mutex::new(JoinSet::new()),
+            closing: AtomicBool::new(false),
+        })
+    }
+
+    fn spawn<R: Send + 'static>(&self, work: impl FnOnce() -> R + Send + 'static) -> JoinHandle<R> {
+        let (sender, receiver) = oneshot::channel();
+        let mut tasks = self.tasks.lock().unwrap_or_else(|error| error.into_inner());
+        if self.closing.load(Ordering::Acquire) {
+            drop(tasks);
+            return tokio::spawn(async {
+                panic!("closed statistics owner cannot return a result")
+            });
+        }
+        tasks.spawn_blocking(move || {
+            let _ = sender.send(work());
+        });
+        drop(tasks);
+        tokio::spawn(async move {
+            receiver
+                .await
+                .expect("statistics worker must return a result")
+        })
+    }
+
+    async fn drain(&self) {
+        // Publish the closing fence before waiting for the registration lock.
+        // A spawn that already holds the lock either registers before this
+        // drain acquires it or observes the fence and does not start work.
+        self.closing.store(true, Ordering::Release);
+        loop {
+            let result = poll_fn(|context| {
+                self.tasks
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .poll_join_next(context)
+            })
+            .await;
+            let Some(result) = result else {
+                return;
+            };
+            if let Err(error) = result {
+                eprintln!("operator statistics worker failed: {error}");
+            }
+        }
+    }
+}
 
 impl Prepared {
     pub(crate) async fn bind(config: &Config) -> Result<Option<Self>, Error> {
@@ -61,11 +123,19 @@ impl Prepared {
     pub(crate) fn start(self, state: RuntimeState) -> Running {
         let (stop, receiver) = watch::channel(false);
         let event_tasks = Arc::new(AsyncMutex::new(JoinSet::new()));
+        let stats_tasks = StatsTasks::new();
         Running {
             address: self.address,
             stop,
             _event_tasks: event_tasks.clone(),
-            task: Some(tokio::spawn(accept(self, state, receiver, event_tasks))),
+            _stats_tasks: stats_tasks.clone(),
+            task: Some(tokio::spawn(accept(
+                self,
+                state,
+                receiver,
+                event_tasks,
+                stats_tasks,
+            ))),
         }
     }
 }
@@ -74,6 +144,7 @@ pub(crate) struct Running {
     address: SocketAddr,
     stop: watch::Sender<bool>,
     _event_tasks: EventTasks,
+    _stats_tasks: Arc<StatsTasks>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -132,6 +203,7 @@ async fn accept(
     state: RuntimeState,
     mut stop: watch::Receiver<bool>,
     event_tasks: EventTasks,
+    stats_tasks: Arc<StatsTasks>,
 ) {
     let mut connections = JoinSet::new();
     loop {
@@ -147,6 +219,7 @@ async fn accept(
                         prepared.token.clone(),
                         stop.clone(),
                         event_tasks.clone(),
+                        stats_tasks.clone(),
                     ));
                 }
                 Err(_) => {
@@ -182,6 +255,7 @@ async fn accept(
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
     }
+    stats_tasks.drain().await;
 }
 
 async fn drain_event_tasks(event_tasks: EventTasks) {
@@ -213,6 +287,7 @@ async fn serve_connection(
     token: Arc<Zeroizing<String>>,
     mut stop: watch::Receiver<bool>,
     event_tasks: EventTasks,
+    stats_tasks: Arc<StatsTasks>,
 ) {
     let event_stop = stop.clone();
     let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
@@ -220,6 +295,7 @@ async fn serve_connection(
         let token = token.clone();
         let event_stop = event_stop.clone();
         let event_tasks = event_tasks.clone();
+        let stats_tasks = stats_tasks.clone();
         async move {
             let runtime = state
                 .read()
@@ -267,7 +343,7 @@ async fn serve_connection(
             }
             let stats = || {
                 let runtime = runtime.clone();
-                tokio::task::spawn_blocking(move || crate::operator_stats::document(&runtime))
+                stats_tasks.spawn(move || crate::operator_stats::document(&runtime))
             };
             let outcome = admin_api::respond_with_context(
                 request,
@@ -732,5 +808,37 @@ mod tests {
         assert_eq!(tasks.len(), 1, "the completed subscription was reaped");
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn canceled_statistics_result_remains_owned_until_listener_drain() {
+        let owner = StatsTasks::new();
+        let (started, started_receiver) = tokio::sync::oneshot::channel();
+        let (release, release_receiver) = std::sync::mpsc::channel();
+        let result = owner.spawn(move || {
+            started.send(()).expect("worker start signal receiver");
+            release_receiver.recv().expect("statistics worker release");
+            7_u8
+        });
+        started_receiver
+            .await
+            .expect("statistics worker must start");
+        result.abort();
+
+        let mut drain = tokio::spawn({
+            let owner = owner.clone();
+            async move { owner.drain().await }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut drain)
+                .await
+                .is_err(),
+            "listener drain must retain a canceled statistics worker"
+        );
+        release
+            .send(())
+            .expect("statistics worker must remain owned");
+        drain.await.expect("statistics owner drain must join");
+        assert!(owner.tasks.lock().unwrap().is_empty());
     }
 }
