@@ -207,6 +207,30 @@ def test_desktop_present_uses_stable_agent_id(command_centre_admin):
     assert write_event.call_args.kwargs["details"]["approval_request_id"] == "req-desktop"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"target": "ag-other"},
+        {"approval_request_id": 42},
+        {"approval_request_id": ""},
+    ],
+)
+def test_desktop_present_rejects_unsupported_arguments(command_centre_admin, payload):
+    base_url, _ = command_centre_admin
+    presenter = create_autospec(DesktopPresenter, instance=True, spec_set=True)
+    AdminRequestHandler.desktop_presenter = presenter
+
+    response = httpx.post(
+        f"{base_url}/admin/agents/ag-forge/desktop/present",
+        headers={"Authorization": "Bearer test-admin-token"},
+        json=payload,
+    )
+
+    assert response.status_code == 400
+    assert "approval_request_id" in response.json()["error"]
+    presenter.present.assert_not_called()
+
+
 def test_agent_inventory_and_lifecycle_use_stable_agent_ids(command_centre_admin):
     base_url, _ = command_centre_admin
     api = AdminAPI(base_url=base_url, token="test-admin-token")

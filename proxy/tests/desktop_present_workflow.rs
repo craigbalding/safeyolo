@@ -226,6 +226,51 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     observations
         .push(json!({"step":"operator_pending","status":pending.status,"body":pending.body}));
 
+    // The operator route accepts only the approval correlation field. A
+    // caller-supplied target must not be silently ignored and turn into a
+    // host operation for the path-selected agent.
+    let forged_target = exchange_admin(
+        port,
+        &admin_request(
+            "POST",
+            "/admin/agents/alice/desktop/present",
+            br#"{"approval_request_id":"req-desktop","target":"bob"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(forged_target.status, 400);
+    assert_eq!(
+        forged_target.body["error"],
+        "desktop presentation requests accept only approval_request_id"
+    );
+    assert!(!root.path().join("desktop-presenter-fixture.args").exists());
+    observations.push(json!({
+        "step":"forged_operator_target",
+        "status":forged_target.status,
+        "body":forged_target.body
+    }));
+
+    let invalid_approval_id = exchange_admin(
+        port,
+        &admin_request(
+            "POST",
+            "/admin/agents/alice/desktop/present",
+            br#"{"approval_request_id":42}"#,
+        ),
+    )
+    .await;
+    assert_eq!(invalid_approval_id.status, 400);
+    assert_eq!(
+        invalid_approval_id.body["error"],
+        "approval_request_id must be a non-empty string"
+    );
+    assert!(!root.path().join("desktop-presenter-fixture.args").exists());
+    observations.push(json!({
+        "step":"invalid_approval_id",
+        "status":invalid_approval_id.status,
+        "body":invalid_approval_id.body
+    }));
+
     let missing = exchange_admin(
         port,
         &admin_request(
@@ -277,6 +322,20 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     assert!(audit.contains(&request_id));
     assert!(!audit.contains(AGENT_TOKEN));
     assert!(!audit.contains(OPERATOR_TOKEN));
+    let audit_events = audit
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    assert!(audit_events.iter().any(|event| {
+        event["event"] == "admin.desktop_presentation_failed"
+            && event["details"]["reason"] == "invalid_arguments"
+            && event["details"]["status"] == 400
+    }));
+    assert!(audit_events.iter().any(|event| {
+        event["event"] == "admin.desktop_presentation_failed"
+            && event["details"]["reason"] == "invalid_approval_request_id"
+            && event["details"]["status"] == 400
+    }));
     write_evidence(root.path(), &observations, "success");
 }
 

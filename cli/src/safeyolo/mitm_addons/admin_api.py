@@ -1193,7 +1193,25 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         data = self._read_optional_json_object()
         if data is None:
             return
+        if any(key != "approval_request_id" for key in data):
+            self._send_json(
+                {
+                    "error": "desktop presentation requests accept only approval_request_id"
+                },
+                400,
+            )
+            return
         approval_request_id = data.get("approval_request_id")
+        if approval_request_id is not None and (
+            not isinstance(approval_request_id, str)
+            or not approval_request_id
+            or len(approval_request_id) > 128
+        ):
+            self._send_json(
+                {"error": "approval_request_id must be a non-empty string"},
+                400,
+            )
+            return
         if self.desktop_presenter is None:
             self._send_json({"error": "desktop presenter is unavailable"}, 503)
             return

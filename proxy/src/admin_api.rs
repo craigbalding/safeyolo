@@ -1600,21 +1600,36 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         };
         let approval_request_id = match data {
             Value::Null => None,
-            Value::Object(fields) => match fields.get("approval_request_id") {
-                None | Some(Value::Null) => None,
-                Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
-                    Some(value.clone())
-                }
-                Some(_) => {
+            Value::Object(fields) => {
+                // The path-selected listener is the only target authority.  A
+                // request body may carry the durable approval correlation ID,
+                // but target, agent, command and argv fields have no meaning
+                // at this host boundary and must not be silently ignored.
+                if fields.keys().any(|key| key != "approval_request_id") {
                     return Ok(desktop_failure(
                         agent_id,
                         StatusCode::BAD_REQUEST,
-                        "invalid_approval_request_id",
-                        "approval_request_id must be a non-empty string",
+                        "invalid_arguments",
+                        "desktop presentation requests accept only approval_request_id",
                         None,
                     ));
                 }
-            },
+                match fields.get("approval_request_id") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(value)) if !value.is_empty() && value.len() <= 128 => {
+                        Some(value.clone())
+                    }
+                    Some(_) => {
+                        return Ok(desktop_failure(
+                            agent_id,
+                            StatusCode::BAD_REQUEST,
+                            "invalid_approval_request_id",
+                            "approval_request_id must be a non-empty string",
+                            None,
+                        ));
+                    }
+                }
+            }
             _ => {
                 return Ok(desktop_failure(
                     agent_id,
