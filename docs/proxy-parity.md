@@ -648,7 +648,7 @@ SHA-256
 | Backend | Repeated short HTTP and admin result | External `/proc` observations across the run |
 |---|---|---|
 | Python | 1,536/1,536 measured requests; 327.6 requests/s; median 22.83 ms; 95th percentile 27.28 ms; authenticated admin latency 0.220–2.891 ms | RSS/high-water 92,296–97,616 KiB; virtual memory 415,872–494,636 KiB; threads 4–5; open FDs 9–29 |
-| Rust release, native policy | 1,536/1,536 measured requests; 559.0 requests/s; median 12.77 ms; 95th percentile 14.75 ms; authenticated admin latency 0.154–1.099 ms | RSS/high-water 16,664–22,424 KiB; virtual memory 972,384–973,800 KiB; threads 15; open FDs 16–41 |
+| Rust release, native policy | 1,536/1,536 measured requests; 559.0 requests/s; median 12.77 ms; 95th percentile 14.75 ms; authenticated admin latency 0.154–1.099 ms | RSS/high-water 15,888–22,424 KiB; virtual memory 498,708–973,800 KiB; threads 8–15; open FDs 16–41 |
 
 The final five Python batches retained 97,616 KiB RSS, while the native
 after-batch RSS rose from 16,920 KiB on batch 1 to 22,424 KiB on batch 48.
