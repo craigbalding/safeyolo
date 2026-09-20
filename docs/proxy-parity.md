@@ -607,6 +607,16 @@ WebSocket traffic, repeated short connections, and concurrent approvals/API
 activity. Record peak and steady memory, early chunk arrival, cleanup and API
 responsiveness. No performance or complete-parity claim is made here.
 
+The native `gateway_workflow::oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token`
+witness now records one real service request/approval and authorization, then
+holds one OAuth token response while eight authenticated Agent API health
+requests and an authenticated `/stats` operation complete. Its retained
+activity evidence records completion/error counts, elapsed observations,
+request-access/authorization/approval/refresh events and the `rust-m2` native
+readiness identity. This is a bounded Linux responsiveness observation; it
+does not establish sustained growth, a throughput target, or WS/CONNECT/SSH,
+OOM or non-Linux coverage.
+
 The reusable concurrent short-HTTP workload can add a small warm-up, a quiet
 interval, and repeated measured batches while keeping the same backend policy,
 fixture and authenticated admin settings. It records request/error counts,

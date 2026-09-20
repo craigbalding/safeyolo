@@ -10,7 +10,7 @@ use std::{
     path::Path,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -2806,13 +2806,17 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     status(&pending, "202");
     let event =
         wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
+    let approval_started = Instant::now();
     let approval = approve_service_with_existing_consumer(root_path, &event, "simple-secret");
+    let approval_elapsed = approval_started.elapsed();
     assert!(
         approval.status.success(),
         "{}",
         String::from_utf8_lossy(&approval.stderr)
     );
+    let authorization_started = Instant::now();
     let authorized = admin_http(admin_port, &admin_request(root_path)).await;
+    let authorization_elapsed = authorization_started.elapsed();
     status(&authorized, "200");
 
     let (stop_tx, mut stop_rx) = oneshot::channel::<()>();
@@ -2875,6 +2879,45 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
         eprintln!("token rows: {:?}", token_seen.lock().unwrap());
         panic!("token endpoint was not reached");
     }
+
+    // Keep the token endpoint held while independent native traffic and an
+    // authenticated operator read are both active. These health requests use
+    // the existing agent client and do not join the OAuth flight, so they
+    // expose a global executor/lock starvation defect if one exists.
+    let health_request = b"GET http://_safeyolo.proxy.internal/health HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nConnection: close\r\n\r\n";
+    let health_tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                let started = Instant::now();
+                let response = raw_http(&socket, health_request).await;
+                (started.elapsed(), response)
+            })
+        })
+        .collect();
+    let admin_started = Instant::now();
+    let admin_task = tokio::spawn(async move {
+        let response = admin_http(
+            admin_port,
+            b"GET /stats HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        (admin_started.elapsed(), response)
+    });
+    let mut health_latencies = Vec::with_capacity(health_tasks.len());
+    let mut health_completed = 0;
+    for task in health_tasks {
+        let (elapsed, response) = task.await.unwrap();
+        status(&response, "200");
+        assert!(String::from_utf8_lossy(body(&response)).contains("agent_api"));
+        health_latencies.push(elapsed);
+        health_completed += 1;
+    }
+    let (admin_elapsed, admin_response) = admin_task.await.unwrap();
+    status(&admin_response, "200");
+    assert!(!body(&admin_response).is_empty());
+    assert_eq!(token_seen.lock().unwrap().len(), 1);
+
     let (reload_done, reload_result) = oneshot::channel::<Result<(), String>>();
     reload_tx.send(reload_done).unwrap();
     reload_result.await.unwrap().unwrap();
@@ -2974,6 +3017,46 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     .unwrap();
     assert_eq!(token_seen.lock().unwrap().len(), 1);
     proxy.shutdown().await;
+    let audit_text = std::fs::read_to_string(root_path.join("audit.jsonl")).unwrap_or_default();
+    let event_text = std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default();
+    let evidence = json!({
+        "workload": "service-access-oauth-refresh-approval-under-native-traffic",
+        "backend": ready["backend"],
+        "instance_id": ready["instance_id"],
+        "service_request_access_event_count": audit_text.matches("gateway.request_access").count(),
+        "service_authorized_event_count": audit_text.matches("admin.agent_service_authorized").count(),
+        "approval_event_count": audit_text.matches("gateway.allow").count(),
+        "refresh_follower_event_count": event_text.matches("refresh_follower").count(),
+        "oauth_token_requests": token_seen.lock().unwrap().len(),
+        "oauth_refresh_held_during_controls": true,
+        "service_approval_elapsed_ms": approval_elapsed.as_secs_f64() * 1000.0,
+        "service_authorization_elapsed_ms": authorization_elapsed.as_secs_f64() * 1000.0,
+        "ordinary_health_requests": 8,
+        "ordinary_health_completed": health_completed,
+        "ordinary_health_failed": 8 - health_completed,
+        "ordinary_health_max_elapsed_ms": health_latencies.iter().map(|value| value.as_secs_f64() * 1000.0).fold(0.0_f64, f64::max),
+        "admin_stats_status": 200,
+        "admin_stats_elapsed_ms": admin_elapsed.as_secs_f64() * 1000.0,
+        "admin_completed_while_refresh_held": true,
+        "origin_requests_after_refresh": origin_seen.lock().unwrap().len(),
+        "native_provenance": {
+            "readiness_backend": ready["backend"],
+            "temporary_policy_adapter": false,
+            "native_proxy_test": true,
+        },
+        "limits": [
+            "One bounded Linux process with eight short health requests and one authenticated /stats operation held behind one synthetic OAuth token response.",
+            "This records responsiveness and activity provenance; it does not claim long-duration growth, WS/CONNECT/SSH, OOM, or non-Linux coverage.",
+        ],
+    });
+    println!("service-639 activity observation: {evidence}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_639_ACTIVITY_EVIDENCE") {
+        let path = std::path::PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
     origin_task.abort();
     token_task.abort();
 }
