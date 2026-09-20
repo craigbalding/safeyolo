@@ -2,7 +2,14 @@
 //! The source writer adds attribution to its envelope; these comparisons keep
 //! its original detail fields and test the development envelope separately.
 
-use std::sync::Arc;
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+    sync::{Arc, mpsc},
+    thread,
+    time::Duration,
+};
 
 use indexmap::IndexMap;
 use serde_json::{Value, json};
@@ -17,7 +24,10 @@ fn source() -> Value {
     serde_json::from_str(include_str!("../tests/circuit_audit_source.json")).unwrap()
 }
 
-fn runtime(directory: &std::path::Path) -> Runtime {
+fn runtime_with_event_path(
+    directory: &std::path::Path,
+    event_log_path: &std::path::Path,
+) -> Runtime {
     let policy = directory.join("policy.toml");
     std::fs::write(&policy, "[hosts]\n\"*\" = {egress = \"allow\"}\n").unwrap();
     let config: Config = serde_json::from_value(json!({
@@ -27,13 +37,17 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
         "audit_log_path": directory.join("audit.jsonl"),
-        "event_log": directory.join("events.jsonl"),
+        "event_log": event_log_path,
         "admin_port": 0,
         "circuit_state_file": ""
     }))
     .unwrap();
     // Prepare only: this constructor binds no listener and starts no worker.
     Runtime::new(config, "owned-audit-test", Arc::default(), None, None).unwrap()
+}
+
+fn runtime(directory: &std::path::Path) -> Runtime {
+    runtime_with_event_path(directory, &directory.join("events.jsonl"))
 }
 
 #[test]
@@ -110,6 +124,77 @@ fn actual_source_audit_details_match_typed_writer_and_transition_sink() {
         assert_eq!(event["agent"], row["agent"], "{name}");
         assert_eq!(event["request_id"], row["request_id"], "{name}");
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn blocked_circuit_transition_event_log_drains_after_owned_fifo_peer_arrives() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("events.fifo");
+    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let mut peer = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&path)
+        .unwrap();
+    let filler = [b'x'; 8192];
+    loop {
+        match peer.write(&filler) {
+            Ok(0) => panic!("FIFO accepted a zero-byte write"),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("filling event FIFO: {error}"),
+        }
+    }
+    let runtime = Arc::new(runtime_with_event_path(directory.path(), &path));
+    let transition = Transition {
+        event: TransitionKind::Open,
+        domain: "blocked-event.invalid".into(),
+        details: None,
+    };
+
+    // The circuit producer writes its event synchronously. A full owned FIFO
+    // holds that native producer until the peer drains it.
+    let (started_tx, started_rx) = mpsc::channel();
+    let producer_runtime = runtime.clone();
+    let producer = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        record_transition(&producer_runtime, &transition, None)
+    });
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        !producer.is_finished(),
+        "full event FIFO did not hold producer"
+    );
+
+    let mut observed = Vec::new();
+    let mut drained = [0; 8192];
+    loop {
+        match peer.read(&mut drained) {
+            Ok(0) => break,
+            Ok(count) => observed.extend_from_slice(&drained[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("draining event FIFO: {error}"),
+        }
+    }
+    producer.join().unwrap().unwrap();
+
+    loop {
+        match peer.read(&mut drained) {
+            Ok(0) => break,
+            Ok(count) => observed.extend_from_slice(&drained[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("reading event FIFO: {error}"),
+        }
+    }
+    let start = observed.iter().position(|byte| *byte == b'{').unwrap();
+    let event: Value = serde_json::from_slice(&observed[start..]).unwrap();
+    assert_eq!(event["event"], "proxy.circuit");
+    assert_eq!(event["audit_intent"], "ops.circuit_breaker.open");
+    assert_eq!(event["host"], "blocked-event.invalid");
 }
 
 #[test]
