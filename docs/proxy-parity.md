@@ -2853,7 +2853,14 @@ and observes the binding and exactly one event. The shutdown-owner control
 closes admission, joins that canceled worker before stopping the writer, and
 rejects later work. A later loader invocation checks the saved binding; this
 does not prove a running watcher or the complete service authorization and
-forwarding workflow.
+forwarding workflow. The bounded
+`abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit` witness
+completes one authenticated service mutation, then sends SIGKILL and observes
+the stale readiness marker and agent socket. A fresh native process replaces
+both paths, handles a real agent-socket request, and retains exactly one
+completed authorization audit event without creating an audit fallback file.
+This is crash-leftover recovery for one completed service producer; SIGKILL
+cannot prove durability of an in-flight mutation or drain an arbitrary worker.
 
 The bounded #638 state transition
 [`selected_python_native_python_service_authorization_rollback`](../proxy/tests/gateway_contract_workflow.rs)

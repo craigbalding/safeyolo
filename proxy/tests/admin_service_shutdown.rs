@@ -11,6 +11,7 @@
 
 use std::{
     fs::{self, OpenOptions},
+    os::unix::{fs::MetadataExt, process::ExitStatusExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -234,6 +235,136 @@ async fn completed_shutdown_reopens_same_agent_socket_and_readiness_paths() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = Paths::new(&directory);
+    paths.write_inputs();
+
+    let (mut first, mut first_guard) = start_proxy(&paths);
+    let first_ready = wait_for_readiness(&paths.readiness).await;
+    let first_instance = first_ready["instance_id"]
+        .as_str()
+        .expect("first readiness must publish an instance identity")
+        .to_owned();
+    let first_admin_port = first_ready["admin_port"]
+        .as_u64()
+        .expect("first readiness must publish the operator port") as u16;
+    wait_for_path(&paths.agent_socket()).await;
+
+    let response = submit_completed_service(first_admin_port).await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "authenticated service mutation must complete before the crash: {}",
+        String::from_utf8_lossy(&response)
+    );
+    let before_rows = wait_for_authorized_audit(&paths.audit).await;
+    let completed_event = before_rows
+        .iter()
+        .find(|row| row["event"] == "admin.agent_service_authorized")
+        .cloned()
+        .expect("completed service mutation must have one canonical audit event");
+    let first_socket = fs::metadata(paths.agent_socket()).unwrap();
+
+    // SIGKILL deliberately skips Drop. The next native start must reclaim the
+    // stale Unix socket and replace the stale readiness marker before serving.
+    let first_pid = u64::from(first.id());
+    unsafe {
+        libc::kill(first_pid as i32, libc::SIGKILL);
+    }
+    let first_status = tokio::task::spawn_blocking(move || first.wait())
+        .await
+        .expect("first child wait task must join")
+        .expect("first proxy must report an exit status");
+    first_guard.active = false;
+    assert_eq!(first_status.signal(), Some(libc::SIGKILL));
+    assert!(
+        paths.readiness.exists(),
+        "SIGKILL must leave stale readiness"
+    );
+    assert!(
+        paths.agent_socket().exists(),
+        "SIGKILL must leave the stale agent socket for startup cleanup"
+    );
+    let stale_ready: Value = serde_json::from_slice(&fs::read(&paths.readiness).unwrap()).unwrap();
+    assert_eq!(stale_ready["instance_id"], first_instance);
+    assert_eq!(stale_ready["pid"], first_pid);
+
+    let (second, mut second_guard) = start_proxy(&paths);
+    let second_ready =
+        wait_for_restarted_readiness(&paths.readiness, &first_instance, first_pid).await;
+    let second_instance = second_ready["instance_id"]
+        .as_str()
+        .expect("restarted readiness must publish an instance identity");
+    let second_pid = second_ready["pid"].as_u64().unwrap();
+    assert_ne!(second_instance, first_instance);
+    assert_ne!(second_pid, first_pid);
+    wait_for_path(&paths.agent_socket()).await;
+    let second_socket = fs::metadata(paths.agent_socket()).unwrap();
+    assert!(
+        first_socket.ino() != second_socket.ino() || first_socket.dev() != second_socket.dev(),
+        "restart must replace the stale socket inode"
+    );
+    let second_admin_port = second_ready["admin_port"]
+        .as_u64()
+        .expect("restarted readiness must publish the operator port")
+        as u16;
+    probe_agent_socket(&paths.agent_socket(), second_admin_port).await;
+
+    let after_rows = read_audit(&paths.audit);
+    assert_eq!(
+        after_rows
+            .iter()
+            .filter(|row| row["event"] == "admin.agent_service_authorized")
+            .count(),
+        1,
+        "restart must retain exactly one completed authorization event"
+    );
+    assert!(
+        after_rows.iter().any(|row| row == &completed_event),
+        "restart must retain the completed authorization event verbatim"
+    );
+    stop_proxy(second, &mut second_guard).await;
+    wait_for_absent(&paths.readiness).await;
+    wait_for_absent(&paths.agent_socket()).await;
+    assert!(
+        !paths.fallback_audit().exists(),
+        "explicit audit destination must not silently fall back after crash/restart"
+    );
+
+    let evidence = json!({
+        "first_instance_id": first_instance,
+        "second_instance_id": second_instance,
+        "first_pid": first_pid,
+        "second_pid": second_pid,
+        "first_exit_signal": first_status.signal(),
+        "stale_readiness_observed": true,
+        "stale_agent_socket_observed": true,
+        "stale_readiness_replaced": true,
+        "stale_socket_replaced": true,
+        "completed_mutation_response": "HTTP/1.1 200",
+        "completed_authorization_events_after_restart": 1,
+        "completed_authorization_event_retained": true,
+        "agent_probe_after_restart": "handled",
+        "fallback_audit_absent": true,
+        "final_readiness_removed": !paths.readiness.exists(),
+        "final_agent_socket_removed": !paths.agent_socket().exists(),
+        "limits": [
+            "SIGKILL is used only to exercise stale path recovery; it cannot prove durability of an in-flight mutation.",
+            "The completed mutation and its audit row are observed before SIGKILL; no producer is claimed to survive an arbitrary crash.",
+            "This covers one authenticated service producer and does not establish the full #626/#628/#629 worker matrix.",
+        ],
+    });
+    println!("lifecycle-634 crash/restart observation: {evidence}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_LIFECYCLE_CRASH_EVIDENCE") {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+}
+
 struct Paths {
     root: PathBuf,
     config: PathBuf,
@@ -295,12 +426,17 @@ impl Paths {
     fn agent_socket(&self) -> PathBuf {
         self.root.join("alice.sock")
     }
+
+    fn fallback_audit(&self) -> PathBuf {
+        self.root.join("unexpected-fallback-audit.jsonl")
+    }
 }
 
 fn start_proxy(paths: &Paths) -> (std::process::Child, ChildGuard) {
     let child = Command::new(env!("CARGO_BIN_EXE_safeyolo-proxy"))
         .arg("--config")
         .arg(&paths.config)
+        .env("SAFEYOLO_LOG_PATH", paths.fallback_audit())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -392,6 +528,25 @@ async fn wait_for_readiness(path: &Path) -> Value {
     .expect("proxy must publish readiness")
 }
 
+async fn wait_for_restarted_readiness(path: &Path, old_instance: &str, old_pid: u64) -> Value {
+    timeout(WAIT_FOR_READY, async {
+        loop {
+            if let Ok(bytes) = fs::read(path)
+                && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
+                && value["ready"] == true
+                && value["admin_port"].is_number()
+                && value["instance_id"].as_str() != Some(old_instance)
+                && value["pid"].as_u64() != Some(old_pid)
+            {
+                return value;
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("proxy must replace stale readiness before restart is accepted")
+}
+
 async fn submit_and_cancel(port: u16) {
     let mut stream = TcpStream::connect(("127.0.0.1", port))
         .await
@@ -414,6 +569,45 @@ async fn submit_and_cancel(port: u16) {
         Ok(Err(error)) => panic!("authenticated mutation connection failed: {error}"),
     }
     drop(stream);
+}
+
+async fn submit_completed_service(port: u16) -> Vec<u8> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("authenticated admin listener must accept TCP");
+    let request = format!(
+        "POST /admin/agents/alice/services HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        BODY.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    stream.write_all(BODY).await.unwrap();
+    let mut response = Vec::new();
+    timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+        .await
+        .expect("completed service response must arrive")
+        .expect("completed service response must be readable");
+    response
+}
+
+async fn wait_for_authorized_audit(path: &Path) -> Vec<Value> {
+    timeout(WAIT_FOR_READY, async {
+        loop {
+            if let Ok(text) = fs::read_to_string(path) {
+                let parsed: Result<Vec<_>, _> =
+                    text.lines().map(serde_json::from_str::<Value>).collect();
+                if let Ok(rows) = parsed
+                    && rows
+                        .iter()
+                        .any(|row| row["event"] == "admin.agent_service_authorized")
+                {
+                    return rows;
+                }
+            }
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("completed service audit must be published")
 }
 
 fn read_audit(path: &Path) -> Vec<Value> {
