@@ -2024,8 +2024,12 @@ witnesses. The live
 control sends a gzip response from a real TLS/HTTP/2 origin through the native
 proxy, observes the credential-guard event before the response scanner deny,
 and confirms that neither the encoded bytes nor the decoded canary reaches the
-client or event/audit text. Opaque delegated-search cancellation, streamed
-HTTP bodies and unsupported text codecs remain explicit coverage limits. Python 3.12 accepts
+client or event/audit text. Its paired
+[`native_pattern_scanner_rejects_unsupported_response_encoding_on_real_h2`](../proxy/tests/credential_http.rs)
+control uses a real H2 `rot13` response, records `content_decode`/
+`ContentDecode` after the guard event, and applies the same canary redaction.
+Opaque delegated-search cancellation and streamed HTTP bodies remain explicit
+coverage limits. Python 3.12 accepts
 both `(` and `(?:` nesting through depth 495 and rejects depth 496 with
 `RecursionError`; the vendored parser retains that finite boundary and the
 scanner compiles patterns deeper than its ordinary worker-stack handoff on an

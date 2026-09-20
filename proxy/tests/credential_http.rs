@@ -1539,6 +1539,24 @@ async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_cred
 
 #[tokio::test]
 async fn native_pattern_scanner_decodes_gzip_response_on_real_h2() {
+    run_h2_response_content_case("gzip", gzip_bytes(b"h2-response-secret"), None).await;
+}
+
+#[tokio::test]
+async fn native_pattern_scanner_rejects_unsupported_response_encoding_on_real_h2() {
+    run_h2_response_content_case(
+        "rot13",
+        b"h2-response-secret".to_vec(),
+        Some("content_decode"),
+    )
+    .await;
+}
+
+async fn run_h2_response_content_case(
+    content_encoding: &'static str,
+    response_body: Vec<u8>,
+    expected_failure: Option<&'static str>,
+) {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
     let policy_path = directory.path().join("policy.json");
@@ -1605,7 +1623,6 @@ async fn native_pattern_scanner_decodes_gzip_response_on_real_h2() {
     )
     .unwrap();
     origin_tls.alpn_protocols = vec![b"h2".to_vec()];
-    let response_body = gzip_bytes(b"h2-response-secret");
     let origin_seen = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
     let origin_seen_task = origin_seen.clone();
     let origin_response_body = response_body.clone();
@@ -1632,7 +1649,7 @@ async fn native_pattern_scanner_decodes_gzip_response_on_real_h2() {
                     hyper::Response::builder()
                         .status(200)
                         .header("content-type", "text/plain")
-                        .header("content-encoding", "gzip")
+                        .header("content-encoding", content_encoding)
                         .body(Full::new(Bytes::from(body)))
                         .unwrap(),
                 )
@@ -1750,14 +1767,21 @@ async fn native_pattern_scanner_decodes_gzip_response_on_real_h2() {
     );
     assert_eq!(rows[credential]["outcome"], "allowed");
     assert_eq!(rows[scanner]["decision"], "deny");
-    assert!(rows[scanner]["failure"].is_null());
     assert!(!events.contains("key-h2-response"));
     assert!(!events.contains("h2-response-secret"));
     let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
     assert!(!audit.contains("key-h2-response"));
     assert!(!audit.contains("h2-response-secret"));
+    if let Some(failure) = expected_failure {
+        assert_eq!(rows[scanner]["failure"], failure);
+        assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    } else {
+        assert!(rows[scanner]["failure"].is_null());
+    }
     eprintln!(
-        "h2 gzip response observer: status=502 origin_alpn=h2 origin_path=/h2-response origin_authorization=Bearer key-h2-response credential_before_response_scanner=true response_encoding=gzip response_body_hex={} raw_canary_retained=false",
+        "h2 response observer: status=502 origin_alpn=h2 origin_path=/h2-response origin_authorization=Bearer key-h2-response credential_before_response_scanner=true response_encoding={content_encoding} scanner_failure={} scanner_error_type={} response_body_hex={} raw_canary_retained=false",
+        expected_failure.unwrap_or("none"),
+        expected_failure.map_or("none", |_| "ContentDecode"),
         hex_encode(&response_body)
     );
 }
