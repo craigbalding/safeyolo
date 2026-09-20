@@ -1409,31 +1409,21 @@ fn url_text(input: UrlInput<'_>) -> std::result::Result<UrlText, UrlFailure> {
     Ok(UrlText { raw, decoded })
 }
 
-fn source_headers(headers: &[(&[u8], &[u8])]) -> Result<Vec<(String, String)>> {
-    let mut result: Vec<(String, String)> = Vec::new();
-    for (name, value) in headers {
-        let name = std::str::from_utf8(name).map_err(|_| error(ErrorKind::ContentDecode, None))?;
-        if !name.is_ascii() {
-            return Err(error(ErrorKind::ContentDecode, None));
-        }
-        let value = crate::credential_text::source_text(value);
-        if let Some((_, existing)) = result
-            .iter_mut()
-            .find(|(existing, _)| existing.eq_ignore_ascii_case(name))
-        {
-            existing.push_str(", ");
-            existing.push_str(&value);
-        } else {
-            result.push((name.to_owned(), value));
-        }
-    }
-    Ok(result)
+fn source_headers(headers: &[(&[u8], &[u8])]) -> Result<crate::credential_text::Headers> {
+    crate::credential_text::Headers::from_parser_fields(headers.iter().copied())
+        .map_err(|_| error(ErrorKind::ContentDecode, None))
 }
 
-fn combined_header(headers: &[(String, String)], name: &str) -> String {
+fn combined_header<'a>(
+    mut headers: impl Iterator<Item = (&'a str, &'a str)>,
+    name: &str,
+) -> String {
     headers
-        .iter()
-        .find_map(|(header, value)| header.eq_ignore_ascii_case(name).then_some(value.clone()))
+        .find_map(|(header, value)| {
+            header
+                .eq_ignore_ascii_case(name)
+                .then_some(value.to_owned())
+        })
         .unwrap_or_default()
 }
 
@@ -1589,10 +1579,7 @@ impl Scanner {
     ) -> Result<Decision> {
         check_cancelled(cancel)?;
         let headers = source_headers(headers)?;
-        let header_refs = headers
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
+        let header_refs = headers.text_pairs().collect::<Vec<_>>();
         let decision =
             self.scan_http_request_with_cancel(path, &header_refs, None, options, cancel)?;
         check_cancelled(cancel)?;
@@ -1640,10 +1627,7 @@ impl Scanner {
     ) -> Result<Decision> {
         check_cancelled(cancel)?;
         let headers = source_headers(headers)?;
-        let header_refs = headers
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
-            .collect::<Vec<_>>();
+        let header_refs = headers.text_pairs().collect::<Vec<_>>();
         let decision =
             self.scan_http_response_with_cancel(present, &header_refs, None, options, cancel)?;
         check_cancelled(cancel)?;
@@ -1662,7 +1646,7 @@ impl Scanner {
     fn scan_http_body_bytes(
         &self,
         direction: Direction,
-        headers: &[(String, String)],
+        headers: &crate::credential_text::Headers,
         body: &[u8],
         options: Options,
         cancel: Option<&AtomicBool>,
@@ -1675,7 +1659,7 @@ impl Scanner {
         if !self.has_scope(direction, "body")? {
             return Ok(Decision::plain(Outcome::NoMatch));
         }
-        let encoding = combined_header(headers, "content-encoding");
+        let encoding = combined_header(headers.text_pairs(), "content-encoding");
         let decoded = match crate::http_content::decode(body, encoding.as_bytes()) {
             Ok(decoded) => decoded,
             Err(_) => {
@@ -1684,7 +1668,7 @@ impl Scanner {
             }
         };
         check_cancelled(cancel)?;
-        let content_type = combined_header(headers, "content-type");
+        let content_type = combined_header(headers.text_pairs(), "content-type");
         let text = crate::traffic_view::export::decode_text(
             &decoded,
             (!content_type.is_empty()).then_some(content_type.as_str()),
