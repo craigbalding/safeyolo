@@ -1428,9 +1428,13 @@ boundary: if the client reaches EOF after `Host` but before the terminating
 header line, the proxy must not dial the origin speculatively. The fixture then
 opens a separate complete CONNECT and checks the server-first greeting, exact
 payload, final response and native tunnel counters, so a canceled parse cannot
-poison the listener. This is one bounded incomplete-request control; it does
-not establish a repeated resource-growth or long-duration limit. The Python
-comparator keeps a strict expected failure for the complete control because its
+poison the listener. A repeated control now performs three sequential
+incomplete CONNECT cancellations after one successful live-origin control. It
+records each raw request, independently observes zero new origin accepts and
+waits for the process descriptor set to settle; Python and native Rust both
+pass this finite control. It does not establish an RSS/HWM ceiling, concurrency
+limit, long-duration stability or OOM behavior. The Python comparator keeps a
+strict expected failure for the original complete-control case because its
 existing adapter turns the valid client's later half-close into a full close;
 `--runxfail` reproduces that missing final response.
 

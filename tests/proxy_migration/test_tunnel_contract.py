@@ -1617,6 +1617,185 @@ def test_incomplete_connect_client_half_close_does_not_dial_origin(
                 assert not thread.is_alive()
 
 
+def test_repeated_incomplete_connect_cancellation_reclaims_origin_and_process_resources(
+    proxy_backend, tmp_path
+):
+    """Repeated incomplete CONNECT EOFs close without dialing the live origin."""
+    sessions = 3
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    greeting = b"incomplete-cancel-positive-control\x00v1\n"
+    observations = []
+    origin_error = []
+    cancellations = []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        authority = f"127.0.0.1:{listener.getsockname()[1]}"
+
+        def origin():
+            try:
+                stream, peer = listener.accept()
+                with stream:
+                    stream.settimeout(5)
+                    stream.sendall(greeting)
+                    body = bytearray()
+                    while data := stream.recv(65536):
+                        body.extend(data)
+                    observations.append({
+                        "peer": list(peer),
+                        "payload": bytes(body),
+                        "client_eof": True,
+                    })
+            except BaseException as error:  # surface thread failures in the test
+                origin_error.append(f"{type(error).__name__}: {error}")
+
+        thread = threading.Thread(target=origin)
+        thread.start()
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                DIRECT_CONNECT_HALF_CLOSE_POLICY,
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                # A real successful CONNECT proves that this listener is live
+                # and that the selected policy permits the control path.
+                with tunnel(proxy.paths["alice"], authority) as complete:
+                    assert read_exact(complete, len(greeting)) == greeting
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+                assert not origin_error, origin_error
+                assert len(observations) == 1
+                assert observations[0]["payload"] == b""
+                batch_before = _process_resources(proxy.process.pid)
+                listener.settimeout(0.25)
+                incomplete_request = (
+                    f"CONNECT {authority} HTTP/1.1\r\n"
+                    f"Host: {authority}\r\n"
+                ).encode()
+                for index in range(sessions):
+                    before = _process_resources(proxy.process.pid)
+                    with socket.socket(socket.AF_UNIX) as incomplete:
+                        incomplete.settimeout(5)
+                        incomplete.connect(proxy.paths["alice"])
+                        incomplete.sendall(incomplete_request)
+                        incomplete.shutdown(socket.SHUT_WR)
+                    settle_started = time.monotonic()
+                    settle_deadline = settle_started + 5
+                    settle_attempts = 0
+                    while True:
+                        after = _process_resources(proxy.process.pid)
+                        before_targets = set(before["fd_targets"].values())
+                        new_targets = set(after["fd_targets"].values()) - before_targets
+                        new_sockets = sorted(
+                            target for target in new_targets if target.startswith("socket:[")
+                        )
+                        retained_deleted = sorted(
+                            target for target in new_targets if target.endswith(" (deleted)")
+                        )
+                        if not new_sockets and not retained_deleted:
+                            break
+                        assert time.monotonic() < settle_deadline, (
+                            f"incomplete CONNECT {index} did not reclaim descriptors within 5s: "
+                            f"sockets={new_sockets}, deleted={retained_deleted}"
+                        )
+                        settle_attempts += 1
+                        time.sleep(0.005)
+                    cancellations.append({
+                        "index": index,
+                        "request_hex": incomplete_request.hex(),
+                        "client_write_eof": True,
+                        "before": before,
+                        "after": after,
+                        "new_socket_targets_after_close": new_sockets,
+                        "retained_deleted_targets_after_close": retained_deleted,
+                        "descriptor_settle_seconds": round(
+                            time.monotonic() - settle_started, 6
+                        ),
+                        "descriptor_settle_attempts": settle_attempts,
+                    })
+                    # The positive control left a listening origin. A bounded
+                    # accept check therefore observes whether this cancellation
+                    # created a new origin leg, rather than relying on proxy logs.
+                    try:
+                        unexpected, peer = listener.accept()
+                    except TimeoutError:
+                        pass
+                    else:
+                        with unexpected:
+                            unexpected.settimeout(1)
+                            leaked = unexpected.recv(4096)
+                        pytest.fail(
+                            f"incomplete CONNECT {index} dialed origin peer={peer!r} "
+                            f"bytes={leaked!r}"
+                        )
+
+                assert proxy.process.poll() is None
+                batch_after = _process_resources(proxy.process.pid)
+                events = proxy.events("proxy.tunnel")
+                provenance = None
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust positive CONNECT event did not settle"
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
+                    assert len(events) == 1
+                    assert events[0]["agent"] == "alice"
+                    assert events[0]["coverage"] == "opaque"
+                    assert events[0]["uploaded_bytes"] == 0
+                    assert events[0]["downloaded_bytes"] == len(greeting)
+                (directory / "repeated-incomplete-connect-resources.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "authority": authority,
+                            "sessions": sessions,
+                            "incomplete_request_hex": incomplete_request.hex(),
+                            "positive_control": {
+                                "greeting_hex": greeting.hex(),
+                                "origin_accepts": len(observations),
+                                "origin_payload_length": len(observations[0]["payload"]),
+                                "origin_client_eof": observations[0]["client_eof"],
+                            },
+                            "incomplete_cancellations": cancellations,
+                            "origin_accepts_after_incomplete": 0,
+                            "resources": {
+                                "batch_before": batch_before,
+                                "batch_after": batch_after,
+                            },
+                            "proxy_tunnel_events": events if proxy_backend == "rust" else [],
+                            "native_policy_provenance": provenance,
+                            "limits": [
+                                "Three sequential incomplete CONNECT requests with client write EOF before the header terminator.",
+                                "A successful CONNECT first proves the origin listener is live; each later bounded accept observes no new origin leg.",
+                                "This measures descriptor reclamation for this finite workload; it establishes no RSS/HWM ceiling, concurrency limit, long-duration stability, or OOM behavior.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+        finally:
+            thread.join(timeout=6)
+            assert not thread.is_alive()
+
+
 @pytest.mark.skipif(os.environ.get("SAFEYOLO_RUN_SSH_CONTRACT") != "1", reason="Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd")
 @pytest.mark.parametrize("passthrough", [False, True])
 def test_real_openssh_preserves_server_first_output_and_client_input(proxy_backend, tmp_path, passthrough):

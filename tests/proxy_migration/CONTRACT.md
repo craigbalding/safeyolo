@@ -63,6 +63,11 @@ The shared assertions cover:
   completes a separate valid CONNECT control. The Python comparator remains a
   strict expected failure because its existing CONNECT adapter drops the final
   response after the valid control's client half-close.
+- Three sequential incomplete CONNECT cancellations repeat that request-side
+  EOF control after a successful live-origin CONNECT. Each cancellation records
+  the raw request, independent zero-origin-accept observation and process
+  descriptor-settle result for Python and native Rust; the finite run does not
+  claim an RSS/HWM ceiling, concurrency limit or long-duration bound.
 - Configured opaque CONNECT uses a positive parent route control and a refused
   parent route control. The refused parent returns 502 while an independently
   listening direct-origin canary records zero accepts; the Python comparator's
