@@ -1397,6 +1397,125 @@ async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
 }
 
 #[tokio::test]
+async fn native_pattern_scanner_rejects_unsupported_request_encoding_before_origin() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"unsupported-request-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.1/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"unsupported-request-credential",
+                "patterns":["key-[a-z-]+"],
+                "allowed_hosts":["127.0.0.1"],
+                "header_names":["authorization"]
+            }],
+            "scan_patterns": [{
+                "name":"unsupported-request-body",
+                "pattern":"request-secret-canary",
+                "scope":["body"],
+                "target":"request",
+                "action":"block"
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin_listener.local_addr().unwrap().port();
+    let origin_seen = Arc::new(Mutex::new(None));
+    let origin_ready = Arc::new(Notify::new());
+    let origin_task = tokio::spawn(live_receiver(
+        origin_listener,
+        origin_seen.clone(),
+        origin_ready.clone(),
+    ));
+    origin_ready.notified().await;
+
+    let mut proxy_config = config(&directory, &policy_path, &socket, true);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: true,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+
+    let body = b"request-secret-canary";
+    let mut request = format!(
+        "POST http://127.0.0.1:{origin_port}/unsupported-request HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nAuthorization: Bearer key-unsupported\r\nContent-Type: text/plain\r\nContent-Encoding: rot13\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(body);
+    let response = raw_round_trip(&socket, &request).await;
+    assert!(response.starts_with(b"HTTP/1.1 403"), "{response:?}");
+    assert!(
+        response
+            .windows(b"x-blocked-by: pattern-scanner".len())
+            .any(|window| window.eq_ignore_ascii_case(b"x-blocked-by: pattern-scanner")),
+        "unsupported request encoding did not produce the local scanner error: {response:?}"
+    );
+    assert!(
+        response
+            .windows(b"content_decode".len())
+            .any(|window| window == b"content_decode")
+    );
+    assert!(!response.windows(body.len()).any(|window| window == body));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        origin_seen.lock().unwrap().is_none(),
+        "unsupported request encoding reached the origin"
+    );
+
+    proxy.shutdown().await;
+    origin_task.abort();
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| event["event"] == "proxy.credential_guard")
+        .expect("credential guard event missing");
+    let scanner = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "security.pattern_scanner" && event["direction"] == "request"
+        })
+        .expect("unsupported request scanner event missing");
+    assert!(
+        credential < scanner,
+        "request scanner did not run after credential guard"
+    );
+    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[scanner]["decision"], "deny");
+    assert_eq!(rows[scanner]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert!(!events.contains("key-unsupported"));
+    assert!(!events.contains("request-secret-canary"));
+
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-unsupported"));
+    assert!(!audit.contains("request-secret-canary"));
+    eprintln!(
+        "unsupported request observer: status=403 origin_connected=false credential_before_request_scanner=true scanner_failure=content_decode scanner_error_type=ContentDecode raw_canary_retained=false"
+    );
+}
+
+#[tokio::test]
 async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_credential_guard() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
