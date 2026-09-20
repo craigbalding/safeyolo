@@ -794,21 +794,21 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
     drop(recorder);
     let reopened =
         flow_store::FlowStore::open(&healthy.flow_store_db_path, Default::default()).unwrap();
+    let failed_capture = reopened.get_flow(1).unwrap().unwrap();
+    let recovered_capture = reopened.get_flow(2).unwrap().unwrap();
     println!(
         "635.evidence.reopened_paths={:?}",
         [
-            reopened.get_flow(1).unwrap().unwrap()["path"].as_str(),
-            reopened.get_flow(2).unwrap().unwrap()["path"].as_str(),
+            failed_capture["path"].as_str(),
+            recovered_capture["path"].as_str(),
         ]
     );
-    assert_eq!(
-        reopened.get_flow(1).unwrap().unwrap()["path"],
-        "/audit-sink-failure"
-    );
-    assert_eq!(
-        reopened.get_flow(2).unwrap().unwrap()["path"],
-        "/after-audit-recovery"
-    );
+    assert_eq!(failed_capture["path"], "/audit-sink-failure");
+    assert_eq!(failed_capture["flow_state"], "completed");
+    assert_eq!(failed_capture["status_code"], 200);
+    assert_eq!(recovered_capture["path"], "/after-audit-recovery");
+    assert_eq!(recovered_capture["flow_state"], "completed");
+    assert_eq!(recovered_capture["status_code"], 200);
     assert_eq!(
         reopened
             .body(1, flow_store::Side::Response)
