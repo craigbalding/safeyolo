@@ -1,10 +1,16 @@
 use super::*;
 use crate::admin_api::{OperatorContext, respond_with_context};
+use crate::audit::{Event, Kind, Settings as AuditSettings, Severity, Submission};
 use http_body_util::{BodyExt, Full};
 use std::{
+    ffi::CString,
+    fs::{self, OpenOptions},
+    io::Read,
+    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     pin::Pin,
     sync::Arc,
     task::{Context as PollContext, Poll},
+    time::{Duration, Instant},
 };
 
 const TOKEN: &str = "owned-service-operator";
@@ -574,4 +580,133 @@ async fn shutdown_owner_drains_canceled_mutation_before_audit_shutdown() {
         fixture.call("alice", BODY).await,
         Err(Error::ServiceMutation)
     ));
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn admitted_service_mutation_distinguishes_queue_full_submission_failure() {
+    let mut fixture = Fixture::new();
+    let sink = fixture.directory.path().join("held-audit-fifo");
+    let name = CString::new(sink.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    fixture.writer = Arc::new(crate::audit::Writer::new(
+        sink.clone(),
+        AuditSettings {
+            max_queue: 1.into(),
+            ..AuditSettings::default()
+        },
+    ));
+
+    let mut seed = Event::new(
+        "ops.service-queue-fixture",
+        Kind::Ops,
+        Severity::Low,
+        "Held audit queue fixture",
+    );
+    seed.details = json!({"canary":"queue-held"}).into();
+    assert_eq!(fixture.writer.emit(seed).unwrap(), Submission::Queued);
+
+    // There is no FIFO reader. The real writer thread therefore remains
+    // blocked opening the first batch while the one-entry queue fills behind
+    // it. The loop tolerates either scheduling order (the worker may dequeue
+    // the first entry before the second producer runs).
+    let mut queue_full = false;
+    for index in 0..32 {
+        let mut event = Event::new(
+            "ops.service-queue-fixture",
+            Kind::Ops,
+            Severity::Low,
+            "Held audit queue fixture",
+        );
+        event.details = json!({"canary":"queue-fill","index":index}).into();
+        if fixture.writer.emit(event).unwrap() == Submission::QueueFull {
+            queue_full = true;
+            break;
+        }
+    }
+    assert!(
+        queue_full,
+        "the one-entry queue must reject a later submission"
+    );
+    let held_reservations = fixture.writer.pending_count().unwrap();
+    assert!(held_reservations >= 1);
+    let dropped_before_failure = fixture.writer.dropped_count().unwrap();
+    assert!(dropped_before_failure >= 1.into());
+
+    // This is the same synchronous submission-failure injection used by the
+    // native operator tests. It runs in this process while the same writer is
+    // still held/full. The service mutation must remain committed, while its
+    // canonical event must not be presented as durable evidence.
+    fixture.writer.poison_for_test();
+    let outcome = fixture.call("alice", BODY).await;
+    assert!(matches!(outcome, Err(Error::Audit(_))));
+    let persisted = fixture.persisted();
+    assert_eq!(
+        persisted["agents"]["alice"]["services"]["mail"],
+        json!({"capability":"read","token":"vault-entry"})
+    );
+
+    // Release the held writer and independently inspect the FIFO bytes. The
+    // service event is absent because submission failed before admission;
+    // the only rows observed are the pre-existing synthetic canaries.
+    let mut reader = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&sink)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while fixture.writer.pending_count().unwrap() != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "held audit reservations did not drain"
+        );
+        tokio::task::yield_now().await;
+    }
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("held FIFO read failed: {error}"),
+        }
+    }
+    let rows: Vec<Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(!rows.is_empty(), "admitted canaries must reach the FIFO");
+    assert!(rows.iter().all(|row| {
+        row["event"] != "admin.agent_service_authorized" && row["details"]["service"] != "mail"
+    }));
+    assert_eq!(fixture.writer.pending_count().unwrap(), 0);
+    assert!(fixture.writer.wait_for_drain(Duration::ZERO).unwrap());
+
+    let evidence = json!({
+        "mutation": "alice -> mail/read",
+        "policy_persisted": true,
+        "submission_result": "synchronous audit submission failure",
+        "queue_capacity": 1,
+        "queue_full_observed": queue_full,
+        "held_reservations_before_failure": held_reservations,
+        "dropped_before_failure": dropped_before_failure.to_string(),
+        "reservations_after_release": fixture.writer.pending_count().unwrap(),
+        "durable_fifo_rows": rows.len(),
+        "canonical_service_event_durable": false,
+        "limits": [
+            "Linux FIFO and a poisoned writer are deterministic in-process controls; this does not claim arbitrary filesystem-crash durability.",
+            "The synthetic canaries exercise the existing audit writer; the service route is the production mutation owner path.",
+        ],
+    });
+    println!("service-634 queue/submission observation: {evidence}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_SERVICE_QUEUE_FAILURE_EVIDENCE") {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
 }
