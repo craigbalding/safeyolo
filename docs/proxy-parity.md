@@ -2308,7 +2308,12 @@ registration mutex across an await. Normal CONNECT/101 completion retains the
 adopted session. A failed main driver or CONNECT task cancels its descendants;
 late registration drops captured work without starting it. Client removal
 follows the final transport-task drain, before the proxy stops the audit writer.
-D63 records the earlier forced-cancellation gap.
+D63 records the earlier forced-cancellation gap. The authenticated operator
+`/stats` path is also listener-owned: its blocking statistics worker is
+admitted through the `StatsTasks` registration/closing fence, retained in the
+owner's `JoinSet` even if the request result is canceled, and joined after
+accepted connections and event tasks but before process-owned drains and audit
+writer shutdown.
 
 Each connection observes shutdown and allows ten seconds of transport grace.
 After that grace, the supervisor cancels asynchronous or queued work and joins
