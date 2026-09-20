@@ -511,48 +511,52 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
 #[tokio::test]
 async fn resolved_peer_match_creates_lifecycle_owner_after_tcp_connect() {
     // `127.1` is accepted by the system resolver as 127.0.0.1 but is not
-    // parsed as an IPv4 literal by the native matcher.  The configured
-    // 127.0.0.0/8 range therefore selects this connection only from its
-    // resolved physical peer, not from the logical CONNECT authority.
+    // parsed as an IPv4 literal by the native matcher.  Both a configured
+    // range and an exact configured address therefore select this connection
+    // only from its resolved physical peer, not from the logical authority.
     use crate::tunnels::Passthrough;
 
-    let directory = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let port = origin.local_addr().unwrap().port();
-    let proxy = Proxy::start(config(directory.path(), port, false, true))
-        .await
-        .unwrap();
-    let runtime = proxy.runtime.read().unwrap().clone();
-    let matcher = Passthrough::new(&[], "127.0.0.0/8").unwrap();
-    *runtime.passthrough.write().unwrap() = matcher;
-    let mut client = connect_to(directory.path(), "127.1", port).await;
+    for matcher in [
+        Passthrough::new(&[], "127.0.0.0/8").unwrap(),
+        Passthrough::new(&["127.0.0.1".into()], "").unwrap(),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let origin = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let port = origin.local_addr().unwrap().port();
+        let proxy = Proxy::start(config(directory.path(), port, false, true))
+            .await
+            .unwrap();
+        let runtime = proxy.runtime.read().unwrap().clone();
+        *runtime.passthrough.write().unwrap() = matcher;
+        let mut client = connect_to(directory.path(), "127.1", port).await;
 
-    let start = wait_lifecycle(&runtime, directory.path(), 1).await;
-    assert_eq!(start[0]["event"], "traffic.passthrough_start");
-    assert_eq!(start[0]["host"], "127.1");
-    assert_eq!(start[0]["details"]["port"], port);
-    assert_eq!(start[0]["details"]["transport"], "tcp");
-    assert_eq!(start[0]["details"]["client"], SOURCE);
+        let start = wait_lifecycle(&runtime, directory.path(), 1).await;
+        assert_eq!(start[0]["event"], "traffic.passthrough_start");
+        assert_eq!(start[0]["host"], "127.1");
+        assert_eq!(start[0]["details"]["port"], port);
+        assert_eq!(start[0]["details"]["transport"], "tcp");
+        assert_eq!(start[0]["details"]["client"], SOURCE);
 
-    let mut peer = accept(&origin).await;
-    peer.write_all(b"resolved-opaque").await.unwrap();
-    peer.shutdown().await.unwrap();
-    assert_eq!(remaining(&mut client).await, b"resolved-opaque");
-    client.write_all(b"reply-after-resolution").await.unwrap();
-    client.shutdown().await.unwrap();
-    assert_eq!(remaining(&mut peer).await, b"reply-after-resolution");
-    drop(client);
-    drop(peer);
-    let rows = wait_lifecycle(&runtime, directory.path(), 2).await;
-    assert_eq!(rows[1]["event"], "traffic.passthrough_end");
-    assert_eq!(rows[1]["host"], "127.1");
-    assert_eq!(rows[1]["details"]["port"], port);
-    assert_eq!(rows[1]["details"]["transport"], "tcp");
-    assert_eq!(rows[1]["details"]["client"], SOURCE);
-    proxy.shutdown().await;
-    clean(directory.path());
+        let mut peer = accept(&origin).await;
+        peer.write_all(b"resolved-opaque").await.unwrap();
+        peer.shutdown().await.unwrap();
+        assert_eq!(remaining(&mut client).await, b"resolved-opaque");
+        client.write_all(b"reply-after-resolution").await.unwrap();
+        client.shutdown().await.unwrap();
+        assert_eq!(remaining(&mut peer).await, b"reply-after-resolution");
+        drop(client);
+        drop(peer);
+        let rows = wait_lifecycle(&runtime, directory.path(), 2).await;
+        assert_eq!(rows[1]["event"], "traffic.passthrough_end");
+        assert_eq!(rows[1]["host"], "127.1");
+        assert_eq!(rows[1]["details"]["port"], port);
+        assert_eq!(rows[1]["details"]["transport"], "tcp");
+        assert_eq!(rows[1]["details"]["client"], SOURCE);
+        proxy.shutdown().await;
+        clean(directory.path());
+    }
 }
 
 #[test]
