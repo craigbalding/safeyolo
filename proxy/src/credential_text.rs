@@ -220,12 +220,47 @@ impl Headers {
         Ok(Self { fields })
     }
 
+    /// Combine raw parser fields using the source's first spelling and arrival
+    /// order before converting their values to security text. The credential
+    /// guard receives the already-combined `RequestHeaders` view, while the
+    /// pattern scanner receives parser pairs directly; keeping this operation
+    /// here makes both consumers use the same invalid-byte representation.
+    pub(crate) fn from_parser_fields<'a>(
+        fields: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+    ) -> Result<Self, Error> {
+        let mut grouped: Vec<(Vec<u8>, Zeroizing<Vec<u8>>)> = Vec::new();
+        for (name, value) in fields {
+            if let Some((_, existing)) = grouped
+                .iter_mut()
+                .find(|(first, _)| first.eq_ignore_ascii_case(name))
+            {
+                existing.extend_from_slice(b", ");
+                existing.extend_from_slice(value);
+            } else {
+                grouped.push((name.to_vec(), Zeroizing::new(value.to_vec())));
+            }
+        }
+        Self::from_ordered(
+            grouped
+                .iter()
+                .map(|(name, value)| (name.as_slice(), value.as_slice())),
+        )
+    }
+
     /// Borrow source-text fields for exactly one consumer call. The returned
     /// iterator cannot outlive this owner; consumers must not retain values.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&str, &Secret)> {
         self.fields
             .iter()
             .map(|field| (field.name.as_str(), &field.value))
+    }
+
+    /// Borrow converted source text for a scanner call without exposing the
+    /// secret owner or creating a second lossy string representation.
+    pub(crate) fn text_pairs(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.value.expose_secret()))
     }
 
     /// Compatibility view for the existing guard caller. The returned
@@ -278,6 +313,23 @@ mod tests {
         assert_eq!(
             grouped.values().next().unwrap().1.expose_secret(),
             "first, second"
+        );
+    }
+
+    #[test]
+    fn parser_fields_share_grouping_and_lossless_text_conversion() {
+        let fields = Headers::from_parser_fields([
+            (b"X-Value".as_slice(), b"first".as_slice()),
+            (b"x-value".as_slice(), b"key-\xff".as_slice()),
+        ])
+        .expect("valid parser fields");
+        assert_eq!(
+            fields.text_pairs().collect::<Vec<_>>(),
+            vec![("X-Value", "first, key-\u{f00ff}")]
+        );
+        assert_eq!(
+            source_bytes(fields.text_pairs().next().unwrap().1).as_slice(),
+            b"first, key-\xff"
         );
     }
 
