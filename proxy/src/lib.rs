@@ -1086,7 +1086,7 @@ impl RunningListener {
             agent_id.clone(),
             source_id.clone(),
             runtime,
-            stop.clone(),
+            Arc::downgrade(&stop),
             receiver,
         ));
         Self {
@@ -1117,7 +1117,7 @@ async fn accept_agents(
     agent_id: String,
     source_id: Option<String>,
     runtime: Arc<RwLock<Arc<Runtime>>>,
-    stop_signal: Arc<watch::Sender<bool>>,
+    stop_signal: std::sync::Weak<watch::Sender<bool>>,
     mut stop: watch::Receiver<bool>,
 ) {
     let mut connections = JoinSet::new();
@@ -1173,7 +1173,9 @@ async fn accept_agents(
     drop(listener);
     // Cleanup supervisors are never aborted: they cancel transport tasks after
     // the existing grace and join tracked transport tasks before dropping the client.
-    stop_signal.send_replace(true);
+    if let Some(stop_signal) = stop_signal.upgrade() {
+        stop_signal.send_replace(true);
+    }
     while connections.join_next().await.is_some() {}
 }
 
