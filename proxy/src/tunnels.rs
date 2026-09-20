@@ -137,19 +137,37 @@ impl Passthrough {
     }
 
     pub(crate) fn matches(&self, host: &str, port: u16, peer: Option<Ipv4Addr>) -> bool {
-        self.hosts.iter().any(|(entry, entry_port)| {
-            entry.eq_ignore_ascii_case(host) && entry_port.is_none_or(|entry| entry == port)
-        }) || host
-            .parse::<Ipv4Addr>()
-            .ok()
-            .into_iter()
-            .chain(peer)
-            .any(|address| {
-                let address = u32::from(address);
-                self.networks
-                    .iter()
-                    .any(|(network, mask)| address & mask == *network)
+        // The source logger considers both the logical address and the
+        // resolved peer address.  Keep the logical authority as the event
+        // identity, but do not lose an exact configured address when DNS
+        // resolves a name to that address.  CIDRs retain their existing
+        // resolved-peer behavior below.
+        let exact_host = |candidate: &str| {
+            // Trim operator entries at configuration time only. A wire
+            // candidate containing surrounding whitespace is not a canonical
+            // authority and must not inherit a configured exemption.
+            let normalized = (candidate == candidate.trim())
+                .then(|| Self::parse_host(candidate).ok().map(|(host, _)| host))
+                .flatten();
+            self.hosts.iter().any(|(entry, entry_port)| {
+                entry_port.is_none_or(|entry| entry == port)
+                    && (entry.eq_ignore_ascii_case(candidate)
+                        || normalized.as_deref() == Some(entry.as_str()))
             })
+        };
+        exact_host(host)
+            || peer.is_some_and(|address| exact_host(&address.to_string()))
+            || host
+                .parse::<Ipv4Addr>()
+                .ok()
+                .into_iter()
+                .chain(peer)
+                .any(|address| {
+                    let address = u32::from(address);
+                    self.networks
+                        .iter()
+                        .any(|(network, mask)| address & mask == *network)
+                })
     }
 }
 
@@ -733,9 +751,29 @@ mod tests {
             443,
             Some("192.168.1.8".parse().unwrap())
         ));
+        // An exact configured address is also a source candidate after DNS
+        // resolution, even when the logical CONNECT authority is an alias.
+        assert!(config.matches("unresolved.example", 443, Some("10.2.9.1".parse().unwrap())));
+        let port_limited = Passthrough::new(&["10.2.9.1:443".into()], "").unwrap();
+        assert!(port_limited.matches("unresolved.example", 443, Some("10.2.9.1".parse().unwrap())));
+        assert!(!port_limited.matches(
+            "unresolved.example",
+            8443,
+            Some("10.2.9.1".parse().unwrap())
+        ));
         // SNI/inner-Host values are not alternate destinations for this
         // matcher, and a configured parent disables direct passthrough at the
         // CONNECT owner (covered by the parent wire control).
+    }
+
+    #[test]
+    fn passthrough_runtime_candidates_use_cli_idna_normalization() {
+        let config = Passthrough::new(&["bücher.example:443".into()], "").unwrap();
+
+        assert!(config.matches("BÜCHER.EXAMPLE", 443, None));
+        assert!(config.matches("xn--bcher-kva.example", 443, None));
+        assert!(!config.matches("bücher.example", 8443, None));
+        assert!(!config.matches("bücher.example.", 443, None));
     }
 
     #[test]
