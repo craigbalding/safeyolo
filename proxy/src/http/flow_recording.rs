@@ -175,6 +175,9 @@ impl Recording {
         destination: &super::Destination,
         fields: impl Iterator<Item = (&'a [u8], &'a [u8])>,
         websocket: bool,
+        // Header selected by the service gateway. Its value is retained only
+        // as the source contract's gateway suffix in durable flow metadata.
+        redact_header: Option<&[u8]>,
     ) {
         if self.recorder.store().is_none() {
             return;
@@ -229,7 +232,7 @@ impl Recording {
             "method": request.method().as_str(), "path": destination.path.split('?').next().unwrap_or(""),
             "query_string": query_json(&destination.path), "full_url": full_url,
             "request_content_type": content_type, "is_websocket": websocket,
-            "request_headers_json": headers_json(&pairs, None),
+            "request_headers_json": headers_json(&pairs, None, redact_header),
         }));
     }
 
@@ -543,7 +546,7 @@ impl Recording {
             "reason": if !success { record.error.as_deref().map(|v| v.to_string()) } else {
                 record.head.as_ref().and_then(|head| head.reason.as_ref().map(|bytes| bytes.trim_ascii_start().iter().copied().map(char::from).collect::<String>())) },
             "response_content_type": response_content_type,
-            "response_headers_json": match record.head.as_ref() { Some(head) => headers_json(&head.pairs, success.then_some(self.request_id.as_str())), None => "[]".into() },
+            "response_headers_json": match record.head.as_ref() { Some(head) => headers_json(&head.pairs, success.then_some(self.request_id.as_str()), None), None => "[]".into() },
         })));
         Ok(Some(QueuedRecord {
             metadata_encoding_error: record.metadata_encoding_error,
@@ -600,7 +603,7 @@ fn scalar_header(pairs: &Pairs, name: &[u8]) -> Result<String, ContentError> {
     // the writer thread; a categorical queued failure retains that phase.
     String::from_utf8(combined(pairs, name).to_vec()).map_err(|_| ContentError::Type)
 }
-fn headers_json(pairs: &Pairs, request_id: Option<&str>) -> String {
+fn headers_json(pairs: &Pairs, request_id: Option<&str>, redact_header: Option<&[u8]>) -> String {
     let mut found = false;
     let mut values = Vec::new();
     for (name, value) in pairs {
@@ -615,13 +618,15 @@ fn headers_json(pairs: &Pairs, request_id: Option<&str>) -> String {
         } else {
             None
         };
-        values.push(json!([
-            String::from_utf8_lossy(name),
+        let value = if redact_header.is_some_and(|header| name.eq_ignore_ascii_case(header)) {
+            std::borrow::Cow::Owned(redacted_gateway_value(value))
+        } else {
             replacement.map_or_else(
                 || String::from_utf8_lossy(value),
-                std::borrow::Cow::Borrowed
+                std::borrow::Cow::Borrowed,
             )
-        ]));
+        };
+        values.push(json!([String::from_utf8_lossy(name), value]));
     }
     if let Some(request_id) = request_id.filter(|_| !found) {
         values.push(json!(["X-SafeYolo-Request-Id", request_id]));
@@ -630,6 +635,26 @@ fn headers_json(pairs: &Pairs, request_id: Option<&str>) -> String {
     let encoded = python_json::encode(&value);
     crate::credentials::wipe_json(&mut value);
     encoded
+}
+
+fn redacted_gateway_value(value: &[u8]) -> String {
+    let value = String::from_utf8_lossy(value);
+    let suffix = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    format!(
+        "[GATEWAY:...{}]",
+        if suffix.chars().count() == 4 {
+            suffix
+        } else {
+            "?".to_owned()
+        }
+    )
 }
 /// Source parse_authority(check=False) for the informational Host projection.
 /// Reuse the validated hostname primitive; a malformed authority returns its

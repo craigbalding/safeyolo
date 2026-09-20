@@ -20,6 +20,41 @@ fn identity(agent: &str) -> ConnectionIdentity {
         reconciled: None,
     }
 }
+
+#[test]
+fn gateway_header_redaction_matches_existing_flow_recorder_contract() {
+    let pairs: Pairs = vec![
+        (
+            zeroize::Zeroizing::new(b"Authorization".to_vec()),
+            zeroize::Zeroizing::new(b"Bearer exact-synthetic-origin-credential".to_vec()),
+        ),
+        (
+            zeroize::Zeroizing::new(b"Content-Type".to_vec()),
+            zeroize::Zeroizing::new(b"application/json".to_vec()),
+        ),
+    ];
+    let encoded = super::headers_json(&pairs, None, Some(b"authorization"));
+    let headers: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(
+        headers,
+        serde_json::json!([
+            ["Authorization", "[GATEWAY:...tial]"],
+            ["Content-Type", "application/json"]
+        ])
+    );
+    assert!(!encoded.contains("exact-synthetic-origin-credential"));
+
+    let invalid = vec![(
+        zeroize::Zeroizing::new(b"X-Auth".to_vec()),
+        zeroize::Zeroizing::new(b"\xffab".to_vec()),
+    )];
+    let encoded = super::headers_json(&invalid, None, Some(b"x-auth"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+        serde_json::json!([["X-Auth", "[GATEWAY:...?]"]])
+    );
+}
+
 fn context() -> AppliedContext {
     AppliedContext {
         context: TestContext::from_pairs(
@@ -137,7 +172,13 @@ fn record_builder_matches_fourteen_actual_source_projections() {
         if name.starts_with("ipv6_") {
             selected.policy_host = "::1".into();
         }
-        recording.request(&request, &selected, request_fields.iter().copied(), false);
+        recording.request(
+            &request,
+            &selected,
+            request_fields.iter().copied(),
+            false,
+            None,
+        );
         if name != "no_context" {
             recording.applied(
                 &context(),
@@ -467,6 +508,73 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     );
 }
 
+#[test]
+fn gateway_injected_header_is_redacted_in_stored_flow() {
+    let directory = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(FlowRecorder::start(
+        true,
+        &directory.path().join("flows.sqlite3"),
+        None,
+    ));
+    let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);
+    let request = Request::builder()
+        .method("POST")
+        .uri("http://127.0.0.2:12345/canary")
+        .body(())
+        .unwrap();
+    recording.request(
+        &request,
+        &destination("/canary", 12345),
+        [
+            (b"Host".as_slice(), b"logical.invalid:12345".as_slice()),
+            (
+                b"Authorization".as_slice(),
+                b"Bearer exact-synthetic-origin-credential".as_slice(),
+            ),
+            (b"X-Canary".as_slice(), b"ordinary-header-canary".as_slice()),
+        ]
+        .into_iter(),
+        false,
+        Some(b"authorization"),
+    );
+    recording.applied(&context(), Some(b"request-secret-canary"), Ok(b""), 1000.0);
+    recording.head(
+        StatusCode::OK,
+        Some(response_pairs().into_iter()),
+        Some(b"OK"),
+    );
+    recording.finish_at(true, Some(b"response-secret-canary"), false, 1001.0);
+    assert!(recorder.shutdown());
+
+    let row = recorder.store().unwrap().get_flow(1).unwrap().unwrap();
+    let headers = row["request_headers_json"].as_str().unwrap();
+    assert!(headers.contains("[GATEWAY:...tial]"));
+    assert!(headers.contains("ordinary-header-canary"));
+    assert!(!headers.contains("exact-synthetic-origin-credential"));
+    assert_eq!(
+        recorder
+            .store()
+            .unwrap()
+            .body(1, Side::Request)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"request-secret-canary".as_slice()
+    );
+    assert_eq!(
+        recorder
+            .store()
+            .unwrap()
+            .body(1, Side::Response)
+            .unwrap()
+            .unwrap()
+            .body
+            .as_slice(),
+        b"response-secret-canary".as_slice()
+    );
+}
+
 #[tokio::test]
 async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_ineligible() {
     use super::super::test_context::{Provenance, ResponseCapture};
@@ -502,6 +610,7 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
             &destination("/body", 12345),
             request_pairs().into_iter(),
             false,
+            None,
         );
         let provenance = Arc::new(Provenance::new(
             runtime.clone(),
@@ -661,6 +770,7 @@ fn scalar_encoding_failure_stays_a_writer_error_after_both_body_decodes() {
             &destination("/body", 80),
             pairs.into_iter(),
             false,
+            None,
         );
         recording.applied(
             &context(),
@@ -973,7 +1083,7 @@ fn probe_reached_terminals_skip_once_without_capturing_evidence() {
                 panic!("probe headers must not be copied");
             })
         };
-        recording.request(&request, &destination("/probe", 80), fields(), false);
+        recording.request(&request, &destination("/probe", 80), fields(), false, None);
         recording.applied(
             &context(),
             Some(b"invalid gzip"),
@@ -1085,6 +1195,7 @@ fn probe_marker_keeps_connect_inactive_and_ordinary_context_recording_active() {
         &destination("/ordinary", 80),
         ordinary_fields.into_iter(),
         false,
+        None,
     );
     ordinary.applied(&context(), Some(b"request body"), Ok(b""), 1000.5);
     ordinary.head(
@@ -1099,6 +1210,7 @@ fn probe_marker_keeps_connect_inactive_and_ordinary_context_recording_active() {
         &destination("/malformed", 80),
         request_pairs().into_iter(),
         false,
+        None,
     );
     malformed.applied(&context(), Some(b"invalid gzip"), Ok(b"gzip"), 1000.5);
     malformed.finish_at(true, Some(b"response body"), false, 1001.25);

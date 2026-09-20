@@ -2543,6 +2543,7 @@ where
     // observation or outbound dial.
     let mut grant_lease = None;
     let mut gateway_injected_header = None;
+    let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
@@ -2734,6 +2735,7 @@ where
                 match start {
                     crate::credential_injection::Start::Ready(replacement) => {
                         let name = replacement.name().clone();
+                        gateway_recording_header = Some(name.clone());
                         let evidence = match replacement.apply(request.headers_mut()) {
                             Ok(evidence) => evidence,
                             Err(_) => {
@@ -2802,7 +2804,7 @@ where
     // header view before dialing so a refreshed access token cannot bypass a
     // credential:use deny rule. This second observation is still header-only;
     // it does not inspect body bytes or create another guard owner.
-    if let Some(name) = gateway_injected_header
+    if let Some(name) = gateway_injected_header.as_ref()
         && let Some(policy) = runtime.policy.as_ref()
     {
         let guard = runtime
@@ -2973,6 +2975,9 @@ where
             destination,
             ordered_headers.recording_pairs(),
             hygiene.websocket,
+            gateway_recording_header
+                .as_ref()
+                .map(|name| name.as_str().as_bytes()),
         );
         provenance.attach_recording(recording.clone());
     }
