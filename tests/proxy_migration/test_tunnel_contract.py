@@ -1866,7 +1866,22 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                     f"CONNECT {authority} HTTP/1.1\r\n"
                     f"Host: {authority}\r\n"
                 ).encode()
+                baseline_started = time.monotonic()
                 before = _process_resources(proxy.process.pid)
+                baseline_stable_samples = 1
+                baseline_deadline = baseline_started + 5
+                while baseline_stable_samples < 2:
+                    assert time.monotonic() < baseline_deadline, (
+                        "proxy process FD baseline did not settle before the concurrent batch"
+                    )
+                    time.sleep(0.005)
+                    settled = _process_resources(proxy.process.pid)
+                    if settled["fd_targets"] == before["fd_targets"]:
+                        baseline_stable_samples += 1
+                    else:
+                        before = settled
+                        baseline_stable_samples = 1
+                baseline_settle_seconds = time.monotonic() - baseline_started
                 for _ in range(sessions):
                     stream = socket.socket(socket.AF_UNIX)
                     stream.settimeout(5)
@@ -1876,15 +1891,27 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
 
                 # Wait for the selected proxy process to expose all three
                 # concurrent client legs before recording the resource peak.
+                def socket_inodes(sample):
+                    return {
+                        target
+                        for target in sample["fd_targets"].values()
+                        if target.startswith("socket:[")
+                    }
+
+                baseline_socket_inodes = socket_inodes(before)
                 deadline = time.monotonic() + 5
                 during = _process_resources(proxy.process.pid)
-                while during["fd_count"] < before["fd_count"] + sessions:
+                new_socket_inodes = socket_inodes(during) - baseline_socket_inodes
+                while len(new_socket_inodes) < sessions:
                     assert time.monotonic() < deadline, (
                         "concurrent incomplete CONNECTs did not become observable "
-                        f"in /proc: before={before['fd_count']} during={during['fd_count']}"
+                        f"in /proc: baseline_sockets={len(baseline_socket_inodes)} "
+                        f"new_sockets={len(new_socket_inodes)} expected={sessions}"
                     )
                     time.sleep(0.005)
                     during = _process_resources(proxy.process.pid)
+                    new_socket_inodes = socket_inodes(during) - baseline_socket_inodes
+                assert len(new_socket_inodes) >= sessions
                 assert_no_origin_accepts("open incomplete CONNECT batch")
 
                 for stream in clients:
@@ -1913,6 +1940,7 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                     )
                     settle_attempts += 1
                     time.sleep(0.005)
+                settle_seconds = time.monotonic() - settle_started
                 assert after["fd_count"] <= before["fd_count"]
                 assert_no_origin_accepts("closed incomplete CONNECT batch")
                 assert proxy.process.poll() is None
@@ -1961,13 +1989,16 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                                 "before": before,
                                 "during_open_batch": during,
                                 "after_close": after,
+                                "baseline_stable_samples": baseline_stable_samples,
+                                "baseline_settle_seconds": round(
+                                    baseline_settle_seconds, 6
+                                ),
+                                "new_socket_inodes": sorted(new_socket_inodes),
                                 "peak_rss_kib": max(sample["rss_kib"] for sample in samples),
                                 "peak_hwm_kib": max(sample["hwm_kib"] for sample in samples),
                                 "peak_threads": max(sample["threads"] for sample in samples),
                                 "peak_fd_count": max(sample["fd_count"] for sample in samples),
-                                "descriptor_settle_seconds": round(
-                                    time.monotonic() - settle_started, 6
-                                ),
+                                "descriptor_settle_seconds": round(settle_seconds, 6),
                                 "descriptor_settle_attempts": settle_attempts,
                             },
                             "origin_accepts_after_incomplete": 0,
