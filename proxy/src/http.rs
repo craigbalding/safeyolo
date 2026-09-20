@@ -916,6 +916,8 @@ async fn open_egress_for_flow(
     let mut connection_audit = ignored.map(|selected| {
         ignored_host::ConnectionAudit::new(runtime.audit.clone(), allowed.identity, selected)
     });
+    #[cfg(test)]
+    wait_test_dial_barrier(&destination.host, destination.port).await;
     let protect_addresses = runtime.admin_shield.protects_port(port)
         || runtime
             .admin_address
@@ -2278,8 +2280,6 @@ where
             host: &destination.host,
             port: destination.port,
         });
-        #[cfg(test)]
-        wait_test_dial_barrier(&destination.host, destination.port).await;
         let connected = open_egress_for_flow(
             &runtime,
             &AllowedRequest {
@@ -3999,6 +3999,93 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["traffic.passthrough_start", "traffic.passthrough_end"]
         );
+    }
+
+    #[tokio::test]
+    async fn pending_passthrough_connect_cancellation_records_one_error() {
+        let _barrier_guard = TestDialBarrierGuard;
+        let directory = tempfile::tempdir().unwrap();
+        let closed = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let authority = closed.local_addr().unwrap().to_string();
+        drop(closed);
+        let config = race_config(directory.path(), "pending-cancel", &authority);
+        let proxy = crate::Proxy::start(config.clone()).await.unwrap();
+        let barrier = Arc::new(TestDialBarrier {
+            target: authority.clone(),
+            reached: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        install_test_dial_barrier(Some(barrier.clone()));
+
+        let mut client = UnixStream::connect(directory.path().join("alice.sock"))
+            .await
+            .unwrap();
+        client
+            .write_all(
+                format!(
+                    "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), barrier.reached.notified())
+            .await
+            .expect("CONNECT reached the production pre-dial boundary");
+        assert!(passthrough_events(&directory.path().join("audit.jsonl")).is_empty());
+
+        tokio::time::timeout(Duration::from_secs(12), proxy.shutdown())
+            .await
+            .expect("proxy shutdown joined the cancelled pre-dial request");
+        let mut response = Vec::new();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response)).await;
+        let events = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|event| event["addon"] == "ignored-host-logger")
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1, "unexpected passthrough events: {events:?}");
+        assert_eq!(events[0]["event"], "traffic.passthrough_error");
+        assert_eq!(events[0]["details"]["error"], "connection cancelled");
+        assert_eq!(events[0]["host"], "127.0.0.1");
+        assert_eq!(
+            events[0]["details"]["port"],
+            authority
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .parse::<u16>()
+                .unwrap()
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event["event"] != "traffic.passthrough_start")
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event["event"] != "traffic.passthrough_end")
+        );
+
+        if let Ok(path) = std::env::var("SAFEYOLO_D29_CANCELLATION_EVIDENCE") {
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&json!({
+                    "authority": authority,
+                    "pre_dial_boundary_reached": true,
+                    "physical_connect_started": false,
+                    "events": events,
+                    "client_response_bytes": response,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
     }
 
     #[tokio::test(start_paused = true)]

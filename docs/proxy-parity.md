@@ -2497,6 +2497,15 @@ no direct passthrough lifecycle event is emitted. This proves one direct IPv4
 match with one configured parent and does not establish parent-address matching,
 aliases, reserved-name controls or same-request retry.
 
+The native `http::tests::pending_passthrough_connect_cancellation_records_one_error`
+control drives a real CONNECT through the production matcher and egress owner,
+holds it at the pre-TCP dial boundary, then shuts down the proxy. The owner
+records exactly one `traffic.passthrough_error` with `connection cancelled`,
+without a start or end event, and the client receives no origin bytes. This
+proves terminal ownership for cancellation before the operating-system TCP
+connect begins; an in-flight kernel connect cancellation and the remaining
+reserved-name/invalid-interception matrix remain unproven.
+
 The direct matcher remains below local containment: a broad `127.0.0.0/8`
 CIDR installed in the live runtime cannot select the protected operator port.
 The owned CONNECT control receives the existing admin-shield 403, emits no
@@ -2515,8 +2524,9 @@ graceful shutdown, resolved-peer ownership and explicit ownership/failure
 boundaries. The protected-port control must return the existing admin-shield
 403 without a passthrough event or egress session. Writer poisoning is tested
 at the already-admitted egress boundary because an earlier network audit
-otherwise fails first. Pending cancellation bookkeeping is an in-memory
-control, not a live cancellation equivalence test. The joined selection passes
+otherwise fails first. The pending cancellation control is a real production
+CONNECT owner run through the pre-TCP dial boundary; it does not establish
+kernel-level in-flight connect cancellation. The joined selection passes
 18 native tests, including seven existing transport regressions. These are
 implementation checks; full addon parity and independent acceptance remain
 pending.
