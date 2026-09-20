@@ -356,11 +356,14 @@ impl TrafficView {
     pub(crate) fn export(&self, id: &str, format: ExportFormat) -> Result<ExportPlan, ExportError> {
         let snapshot = {
             let state = self.lock();
-            state
-                .rows
-                .get(id)
-                .map(Row::export_snapshot)
-                .ok_or(ExportError::MissingFlow)?
+            let row = state.rows.get(id).ok_or(ExportError::MissingFlow)?;
+            // A queued terminal selection must not export a row hidden by a
+            // later pinned-scope change. Treat hidden rows like pruned rows so
+            // the operator route does not disclose why the ID is unavailable.
+            if !state.scope.matches(row) {
+                return Err(ExportError::MissingFlow);
+            }
+            row.export_snapshot()
         };
         ExportPlan::build(snapshot, format)
     }

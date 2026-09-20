@@ -288,6 +288,77 @@ async fn authorized_operator_scope_can_view_each_owner_and_unattributed_record()
     );
 }
 
+#[tokio::test]
+async fn selected_export_rechecks_scope_and_retention_before_snapshot() {
+    let view = Arc::new(TrafficView::new(2, 1024));
+    for (id, agent) in [("alice-flow", "alice"), ("bob-flow", "bob")] {
+        let exchange = view.begin(RequestInfo {
+            id: id.into(),
+            connection_id: "selection-scope".into(),
+            agent: Some(agent.into()),
+            method: "GET".into(),
+            url: format!("http://owned.invalid/{id}"),
+            headers: vec![],
+            started: 1.,
+        });
+        exchange.request_line("HTTP/1.1", "/");
+        exchange.request_body(Some(b"request"));
+        exchange.response_head(200, vec![]);
+        exchange.response_body(Some(b"response"));
+        exchange.finish(None);
+        drop(exchange);
+    }
+
+    // The selected Bob row remains exportable under its current pinned scope.
+    view.set_scope(&json!({"agent":"bob"})).unwrap();
+    assert!(view.export("bob-flow", ExportFormat::RawRequest).is_ok());
+
+    // A queued Alice selection is hidden by the scope change and must not
+    // reach export snapshotting, even though the operator route is authorized
+    // to read retained rows directly.
+    assert!(matches!(
+        view.export("alice-flow", ExportFormat::Raw),
+        Err(ExportError::MissingFlow)
+    ));
+    let hidden = call(
+        Some(&view),
+        "GET",
+        "/admin/traffic/flows/alice-flow/export?format=raw",
+        "",
+        true,
+    )
+    .await;
+    assert_eq!(hidden.status(), StatusCode::NOT_FOUND);
+    assert_eq!(document(hidden).await["error"], "flow not found");
+    let unsupported = call(
+        Some(&view),
+        "GET",
+        "/admin/traffic/flows/bob-flow/export?format=not-a-format",
+        "",
+        true,
+    )
+    .await;
+    assert_eq!(unsupported.status(), StatusCode::BAD_REQUEST);
+
+    // Count pruning reports the same explicit missing-flow result after the
+    // row disappears, without fabricating an empty export.
+    view.configure(1, 1024);
+    assert!(matches!(
+        view.export("alice-flow", ExportFormat::Raw),
+        Err(ExportError::MissingFlow)
+    ));
+    let pruned = call(
+        Some(&view),
+        "GET",
+        "/admin/traffic/flows/alice-flow/export?format=raw",
+        "",
+        true,
+    )
+    .await;
+    assert_eq!(pruned.status(), StatusCode::NOT_FOUND);
+    assert_eq!(document(pruned).await["error"], "flow not found");
+}
+
 async fn export_bytes(outcome: Outcome) -> Result<Bytes, Error> {
     outcome
         .into_response()
