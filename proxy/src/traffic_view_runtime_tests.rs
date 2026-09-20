@@ -206,6 +206,150 @@ async fn operator_http(
     (status, headers, body)
 }
 
+async fn owned_http_request(agent_socket: &Path, path: &str, response_body: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let origin = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    let path = path.to_owned();
+    let origin_path = path.clone();
+    let response_body = response_body.to_vec();
+    let origin_task = tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut block = [0; 1024];
+            let size = stream.read(&mut block).await.unwrap();
+            assert!(size > 0, "origin closed before receiving request");
+            request.extend_from_slice(&block[..size]);
+        }
+        assert!(
+            String::from_utf8_lossy(&request).starts_with(&format!("GET {origin_path} HTTP/1.1"))
+        );
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n",
+            response_body.len()
+        );
+        stream.write_all(head.as_bytes()).await.unwrap();
+        stream.write_all(&response_body).await.unwrap();
+        stream.shutdown().await.unwrap();
+    });
+
+    let mut client = tokio::net::UnixStream::connect(agent_socket).await.unwrap();
+    client
+        .write_all(
+            format!(
+                "GET http://{origin_address}{path} HTTP/1.1\r\nHost: {origin_address}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    origin_task.await.unwrap();
+    response
+}
+
+#[tokio::test]
+async fn live_operator_inspector_enforces_configured_flow_limit() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = config(directory.path());
+        std::fs::write(
+            config.policy_file.as_ref().unwrap(),
+            r#"{"permissions":[{"action":"network:request","resource":"*","effect":"allow"}]}"#,
+        )
+        .unwrap();
+        config.network_guard_enabled = false;
+        config.flow_pruner_max = 1;
+        let agent_socket = directory.path().join("alice.sock");
+        config.listeners.push(AgentListener {
+            agent_id: "alice".into(),
+            socket_path: agent_socket.clone(),
+            source_id: None,
+        });
+        let token = "live-retention-token";
+        let token_path = directory.path().join("operator-token");
+        std::fs::write(&token_path, token).unwrap();
+        config.admin_port = Some(0);
+        config.admin_api_token_file = Some(token_path);
+
+        let proxy = Proxy::start(config.clone()).await.unwrap();
+        let admin_address = proxy.admin.as_ref().unwrap().address();
+
+        let first_response = owned_http_request(&agent_socket, "/first", b"first-result").await;
+        assert!(first_response.starts_with(b"HTTP/1.1 200"));
+        assert!(first_response.ends_with(b"first-result"));
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            "/admin/traffic/flows",
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let first_flows: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(first_flows["flows"].as_array().unwrap().len(), 1);
+        let first_id = first_flows["flows"][0]["id"].as_str().unwrap().to_owned();
+        assert!(
+            first_flows["flows"][0]["url"]
+                .as_str()
+                .unwrap()
+                .ends_with("/first")
+        );
+
+        let second_response = owned_http_request(&agent_socket, "/second", b"second-result").await;
+        assert!(second_response.starts_with(b"HTTP/1.1 200"));
+        assert!(second_response.ends_with(b"second-result"));
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            "/admin/traffic/flows",
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let second_flows: Value = serde_json::from_slice(&body).unwrap();
+        let rows = second_flows["flows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        let second_id = rows[0]["id"].as_str().unwrap();
+        assert_ne!(second_id, first_id);
+        assert!(rows[0]["url"].as_str().unwrap().ends_with("/second"));
+
+        let (status, _, _) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{first_id}"),
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, body) = operator_http(
+            admin_address,
+            token,
+            Method::GET,
+            &format!("/admin/traffic/flows/{second_id}/body?side=response"),
+            b"",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let response_body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response_body["available"], true);
+
+        proxy.shutdown().await;
+        assert!(!agent_socket.exists());
+        assert!(!config.readiness_file.exists());
+    })
+    .await
+    .expect("live configured retention inspector workflow must finish");
+}
+
 async fn read_http_head(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> Vec<u8> {
     use tokio::io::AsyncReadExt;
 

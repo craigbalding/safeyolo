@@ -2673,6 +2673,16 @@ bytes. This proves the joined native selection/export path for the controlled
 HTTP case; it does not establish WebSocket, multi-row retention, terminal UI or
 full inspector parity.
 
+The bounded runtime witness
+[`live_operator_inspector_enforces_configured_flow_limit`](../proxy/src/traffic_view_runtime_tests.rs)
+sets the existing `flow_pruner_max` to one, sends two real HTTP exchanges through
+the native listener, and reads the result through the authenticated operator
+inspector. The first row is pruned, the second row remains browsable with its
+response body, and the original row returns the same missing-flow response as
+the inspector route. This proves one configured flow-count boundary through the
+live path; it does not establish configured retained-body-byte limits,
+WebSocket pruning, multi-row selection or terminal UI parity.
+
 The companion live native WebSocket witness
 [`live_operator_inspector_browses_native_websocket_transcript`](../proxy/src/traffic_view_runtime_tests.rs)
 reads both retained message bodies through the authenticated operator API and
