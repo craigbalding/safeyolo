@@ -178,6 +178,7 @@ pub struct DesktopPresentationFailureAudit {
     pub(super) agent_id: String,
     pub(super) status: u16,
     pub(super) reason: &'static str,
+    pub(super) approval_request_id: Option<String>,
 }
 
 impl Drop for PlumbMutationAudit {
@@ -641,6 +642,7 @@ fn desktop_failure(
     status: StatusCode,
     reason: &'static str,
     message: &'static str,
+    approval_request_id: Option<&str>,
 ) -> Outcome {
     let mut outcome = response(status, json!({"error":message}));
     outcome.audit = Some(Audit::DesktopPresentationFailed(
@@ -648,6 +650,7 @@ fn desktop_failure(
             agent_id: agent_id.to_owned(),
             status: status.as_u16(),
             reason,
+            approval_request_id: approval_request_id.map(str::to_owned),
         },
     ));
     outcome
@@ -1575,6 +1578,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 StatusCode::BAD_REQUEST,
                 "invalid_agent_id",
                 "invalid agent id",
+                None,
             ));
         }
         if !listeners
@@ -1586,6 +1590,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 StatusCode::NOT_FOUND,
                 "agent_not_found",
                 "Agent not found",
+                None,
             ));
         }
         let data = match read_json(request).await? {
@@ -1606,6 +1611,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         StatusCode::BAD_REQUEST,
                         "invalid_approval_request_id",
                         "approval_request_id must be a non-empty string",
+                        None,
                     ));
                 }
             },
@@ -1615,6 +1621,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     StatusCode::BAD_REQUEST,
                     "invalid_body",
                     "request body must be an object",
+                    None,
                 ));
             }
         };
@@ -1626,6 +1633,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     StatusCode::NOT_FOUND,
                     "agent_not_found",
                     "Agent not found",
+                    approval_request_id.as_deref(),
                 ));
             }
             Err(crate::desktop_present::Error::Unavailable) => {
@@ -1634,6 +1642,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "desktop_presenter_unavailable",
                     "desktop presenter is unavailable",
+                    approval_request_id.as_deref(),
                 ));
             }
             Err(crate::desktop_present::Error::Failed) => {
@@ -1642,6 +1651,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     StatusCode::CONFLICT,
                     "desktop_presentation_failed",
                     "Desktop presentation failed",
+                    approval_request_id.as_deref(),
                 ));
             }
             Err(crate::desktop_present::Error::Protocol) => {
@@ -1650,6 +1660,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "desktop_presenter_protocol",
                     "desktop presenter returned an invalid result",
+                    approval_request_id.as_deref(),
                 ));
             }
         };
@@ -1659,6 +1670,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "desktop_presenter_protocol",
                 "desktop presenter returned an invalid result",
+                approval_request_id.as_deref(),
             ));
         };
         let audit = Audit::DesktopPresented(DesktopPresentationAudit {

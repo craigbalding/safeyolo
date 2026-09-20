@@ -217,6 +217,18 @@ access; do not substitute an agent-accessible management listener.
 | PUT | `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/proxy/mode`, `/admin/proxy/ignore-hosts`, `/admin/proxy/web-tailnet`, `/admin/traffic/scope` |
 | DELETE | `/admin/policy/task/{id}`, `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
 
+The bounded native presentation witness in
+[`proxy/tests/desktop_present_workflow.rs`](../proxy/tests/desktop_present_workflow.rs)
+drives the retained workflow end to end: an accepted Alice listener submits a
+request, the authenticated operator reads the durable pending approval, and the
+operator sends that exact request ID to the native desktop route. A harmless
+executable fixture proves the fixed host-helper invocation and listener-derived
+agent binding. The same witness records the real `503` unavailable result and
+keeps the failed request pending, with the approval ID in the failure audit.
+This Linux fixture does not prove a real supported-platform presentation; the
+Tart/macOS guest lane, missing-target and host-operation failure cases remain
+open.
+
 The authenticated WebSocket `/admin/events` streams selected operator audit
 events through `core/operator_event_server.py`. The web application's traffic
 routes expose stock flow operations through the shared master. Compatibility
@@ -241,7 +253,7 @@ checked.
 | POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
 | DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
-| POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Delegated | Retained-agent-workflows implementation and host boundary; no native fake endpoint. |
+| POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Partly implemented | Native route and retained host boundary; the #629 running workflow witness proves pending approval, exact request-ID handoff, listener-derived target binding, fixture helper invocation and truthful unavailable/failure audit. Real supported-platform presentation and the remaining collaboration/persistence cases remain open. |
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
 | POST `/admin/policy/task/{id}/activate` | Implemented | Native task activation publishes enforcement, `/config` and hash together; retained `AdminAPI` and live listener workflow prove the boundary. |
 | DELETE `/admin/policy/task/{id}` | Implemented | Native task clear removes the registered document and selected overlay; retained `AdminAPI` and live listener workflow prove baseline restoration. |

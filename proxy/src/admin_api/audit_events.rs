@@ -163,6 +163,7 @@ impl Audit {
                     "agent_id": failure.agent_id,
                     "status": failure.status,
                     "reason": failure.reason,
+                    "approval_request_id": failure.approval_request_id,
                 })
                 .into();
                 vec![event]
