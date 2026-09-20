@@ -267,6 +267,21 @@ proxy-only; combining it with VM isolation is rejected so an isolation pass
 cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
 lanes remain available when the Python installation path is explicitly selected.
 
+The inexpensive runner self-tests cover invalid selectors, missing or wrong
+executables, readiness markers and stale listeners, independent second-backend
+execution after a failure, byte-preserving argument forwarding, and owned
+cleanup. Run them with:
+
+```bash
+pytest -q tests/test_blackbox_harness.py tests/proxy_migration/test_readiness.py
+```
+
+These tests use temporary fake processes and do not install SafeYolo, boot a
+VM, or build Rust. A selected-backend validation failure writes its
+`proxy-<backend>-runtime.json` artifact with `status: infrastructure_failure`;
+in `both` mode the other backend still runs and retains its own JUnit and
+runtime artifacts.
+
 Selected Rust runs set native policy mode for every migration fixture.  Each
 fixture writes `native-policy-provenance.json`, which records the policy file
 and confirms that no temporary Python policy adapter was started.  Direct

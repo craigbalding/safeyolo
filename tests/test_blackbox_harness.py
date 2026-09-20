@@ -349,6 +349,102 @@ def test_selected_runner_rejects_bad_selector_and_missing_binary(tmp_path):
     assert "Rust proxy executable" in missing.stderr
 
 
+def test_selected_runner_rejects_wrong_rust_executable_before_pytest(tmp_path):
+    """A wrong program is infrastructure failure, without a fallback run."""
+    binary = tmp_path / "wrong-program"
+    binary.write_text("#!/bin/sh\nprintf 'unrelated-program 1.0\\n'\n")
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    pytest_log = tmp_path / "pytest-ran"
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text(f"#!/bin/sh\ntouch {pytest_log}\nexit 0\n")
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    artifacts = tmp_path / "artifacts"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
+    }
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "rust",
+            "--rust-bin",
+            str(binary),
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "unexpected identity" in result.stderr
+    assert not pytest_log.exists()
+    evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
+    assert evidence["backend"] == "rust"
+    assert evidence["status"] == "infrastructure_failure"
+
+
+def test_both_backend_runner_continues_after_readiness_failure(tmp_path):
+    """A failed first readiness report cannot suppress the second backend."""
+    binary = tmp_path / "safeyolo-proxy"
+    binary.write_text(
+        "#!/bin/sh\n[ \"$1\" = --version ] && printf 'safeyolo-proxy fixture\\n'\n"
+    )
+    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "pytest-args"
+    fake_pytest = tmp_path / "pytest"
+    fake_pytest.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$@\" >> \"$BLACKBOX_ARGS_LOG\"\n"
+        "junit=''\n"
+        "for arg in \"$@\"; do case \"$arg\" in --junitxml=*) junit=\"${arg#*=}\";; esac; done\n"
+        "case \" $* \" in\n"
+        "  *'--proxy-backend python'*) printf '%s\\n' '<testsuite><testcase><failure>ReadinessError: stale listener</failure></testcase></testsuite>' > \"$junit\"; exit 1;;\n"
+        "  *'--proxy-backend rust'*) printf '%s\\n' '<testsuite></testsuite>' > \"$junit\"; exit 0;;\n"
+        "esac\n"
+        "exit 3\n"
+    )
+    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
+    artifacts = tmp_path / "artifacts"
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "BLACKBOX_ARGS_LOG": str(log),
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
+    }
+
+    result = subprocess.run(
+        [
+            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
+            "--proxy",
+            "--proxy-impl",
+            "both",
+            "--rust-bin",
+            str(binary),
+            "--",
+            "tests/proxy_migration/test_readiness.py",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    forwarded = log.read_text().splitlines()
+    assert forwarded.count("--proxy-backend") == 2
+    assert forwarded.count("python") == 1
+    assert forwarded.count("rust") == 1
+    assert (artifacts / "proxy-python-junit.xml").is_file()
+    assert (artifacts / "proxy-rust-junit.xml").is_file()
+    assert json.loads((artifacts / "proxy-python-runtime.json").read_text())["backend"] == "python"
+    assert json.loads((artifacts / "proxy-rust-runtime.json").read_text())["backend"] == "rust"
+
+
 def test_both_backend_runner_forwards_args_and_runs_second_after_failure(tmp_path):
     """Both mode keeps the second independent run after a first failure."""
     binary = tmp_path / "safeyolo-proxy"
