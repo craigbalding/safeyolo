@@ -617,6 +617,17 @@ readiness identity. This is a bounded Linux responsiveness observation; it
 does not establish sustained growth, a throughput target, or WS/CONNECT/SSH,
 OOM or non-Linux coverage.
 
+The `gateway_workflow::repeated_service_oauth_activity_runs_concurrently`
+control repeats that complete service fixture three times concurrently in one
+release test process. Each independent native fixture performs request-access,
+approval and authorization, holds one OAuth refresh while its shared-flight
+follower and eight authenticated health requests run, and completes an
+authenticated `/stats` read. The retained JSON records 3/3 completed fixtures,
+zero fixture failures and native `rust-m2` provenance; external `/proc` samples
+record RSS/high-water memory, threads, task count and file descriptors during
+the run. This is a short Linux contention observation, not a throughput target,
+SLO, long-duration growth or OOM claim, and it does not cover non-Linux paths.
+
 The reusable concurrent short-HTTP workload can add a small warm-up, a quiet
 interval, and repeated measured batches while keeping the same backend policy,
 fixture and authenticated admin settings. It records request/error counts,

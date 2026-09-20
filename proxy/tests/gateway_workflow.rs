@@ -9,7 +9,10 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -20,6 +23,7 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, rustls};
 
 const PASS: &str = "synthetic-vault-passphrase";
+static ACTIVITY_EVIDENCE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 fn initial_policy(origin_port: u16) -> String {
     format!(
         r#"
@@ -2691,8 +2695,8 @@ token = "other-secret"
 /// The gateway's expired OAuth path is exercised through the real UDS listener,
 /// watcher publication and two controlled TCP origins. The token endpoint is
 /// intentionally delayed so the second request must join the first flight.
-#[tokio::test]
-async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
+async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
+    let activity_id = ACTIVITY_EVIDENCE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
     for directory in ["data", "builtin", "services"] {
@@ -3050,7 +3054,14 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
         ],
     });
     println!("service-639 activity observation: {evidence}");
-    if let Some(path) = std::env::var_os("SAFEYOLO_639_ACTIVITY_EVIDENCE") {
+    let evidence_path = std::env::var_os("SAFEYOLO_639_ACTIVITY_EVIDENCE_DIR")
+        .map(|directory| {
+            std::path::PathBuf::from(directory).join(format!("activity-{activity_id}.json"))
+        })
+        .or_else(|| {
+            std::env::var_os("SAFEYOLO_639_ACTIVITY_EVIDENCE").map(std::path::PathBuf::from)
+        });
+    if let Some(path) = evidence_path {
         let path = std::path::PathBuf::from(path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
@@ -3059,6 +3070,52 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
     }
     origin_task.abort();
     token_task.abort();
+}
+
+#[tokio::test]
+async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
+    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token().await;
+}
+
+/// Repeat the complete service/approval/OAuth activity fixture concurrently.
+/// Each invocation has independent listeners, policy and vault files; the
+/// shared test process makes resource sampling and executor contention visible
+/// without adding a product load framework.
+#[tokio::test]
+async fn repeated_service_oauth_activity_runs_concurrently() {
+    let tasks: Vec<_> = (0..3)
+        .map(|_| {
+            tokio::spawn(run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token())
+        })
+        .collect();
+    let mut completed = 0;
+    let mut failed = 0;
+    for task in tasks {
+        match task.await {
+            Ok(()) => completed += 1,
+            Err(error) => {
+                failed += 1;
+                eprintln!("repeated service activity task failed: {error}");
+            }
+        }
+    }
+    let summary = json!({
+        "workload": "repeated-service-oauth-activity-concurrent",
+        "iterations": 3,
+        "completed": completed,
+        "failed": failed,
+        "limits": [
+            "Three independent native Linux fixtures ran concurrently.",
+            "Each fixture retained the existing one-refresh shared-flight, service approval, authorization, eight health requests and authenticated stats control.",
+            "This is a short repeated observation; it does not claim a throughput target, long-duration growth bound, OOM limit, or non-Linux coverage."
+        ]
+    });
+    println!("service-639 repeated activity summary: {summary}");
+    if let Some(path) = std::env::var_os("SAFEYOLO_639_ACTIVITY_SUMMARY") {
+        std::fs::write(path, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
+    }
+    assert_eq!(completed, 3);
+    assert_eq!(failed, 0);
 }
 
 /// A refreshed credential is checked on the actual native forwarding path. The
