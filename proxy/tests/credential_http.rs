@@ -1538,6 +1538,231 @@ async fn native_pattern_scanner_rejects_unsupported_response_encoding_after_cred
 }
 
 #[tokio::test]
+async fn native_pattern_scanner_decodes_gzip_response_on_real_h2() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"h2-response-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"127.0.0.2/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"h2-response-credential",
+                "patterns":["key-h2-response"],
+                "allowed_hosts":["127.0.0.2"],
+                "header_names":["authorization"]
+            }],
+            "scan_patterns": [{
+                "name":"h2-response-body",
+                "pattern":"h2-response-secret",
+                "scope":["body"],
+                "target":"response",
+                "action":"block"
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut proxy_config = config(&directory, &policy_path, &socket, true);
+    let proxy_ca = {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        let ca = params.self_signed(&key).unwrap();
+        std::fs::write(
+            directory.path().join("mitmproxy-ca.pem"),
+            format!("{}{}", key.serialize_pem(), ca.pem()),
+        )
+        .unwrap();
+        proxy_config.tls_ca_file = Some(directory.path().join("mitmproxy-ca.pem"));
+        ca.der().clone()
+    };
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+    std::fs::write(directory.path().join("upstream.pem"), cert.pem()).unwrap();
+    proxy_config.upstream_ca_file = Some(directory.path().join("upstream.pem"));
+
+    let origin_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
+    let authority = format!("127.0.0.2:{}", origin_listener.local_addr().unwrap().port());
+    let mut origin_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    origin_tls.alpn_protocols = vec![b"h2".to_vec()];
+    let response_body = gzip_bytes(b"h2-response-secret");
+    let origin_seen = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+    let origin_seen_task = origin_seen.clone();
+    let origin_response_body = response_body.clone();
+    let origin_task = tokio::spawn(async move {
+        let Ok((socket, _)) = origin_listener.accept().await else {
+            return;
+        };
+        let socket = tokio_rustls::TlsAcceptor::from(Arc::new(origin_tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        assert_eq!(socket.get_ref().1.alpn_protocol(), Some(b"h2".as_slice()));
+        let service = service_fn(move |request: Request<Incoming>| {
+            origin_seen_task.lock().unwrap().push((
+                request.uri().path().to_owned(),
+                request
+                    .headers()
+                    .get("authorization")
+                    .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+            ));
+            let body = origin_response_body.clone();
+            async move {
+                Ok::<_, Infallible>(
+                    hyper::Response::builder()
+                        .status(200)
+                        .header("content-type", "text/plain")
+                        .header("content-encoding", "gzip")
+                        .body(Full::new(Bytes::from(body)))
+                        .unwrap(),
+                )
+            }
+        });
+        let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(socket), service)
+            .await;
+    });
+
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: true,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+    let mut upstream = UnixStream::connect(&socket).await.unwrap();
+    upstream
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut connect_reply = Vec::new();
+    while !connect_reply.ends_with(b"\r\n\r\n") {
+        connect_reply.push(upstream.read_u8().await.unwrap());
+    }
+    assert!(
+        connect_reply.starts_with(b"HTTP/1.1 200"),
+        "{connect_reply:?}"
+    );
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(proxy_ca).unwrap();
+    let mut client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec()];
+    let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+        .connect(
+            rustls::pki_types::ServerName::try_from("127.0.0.2".to_owned()).unwrap(),
+            upstream,
+        )
+        .await
+        .unwrap();
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls_stream))
+            .await
+            .unwrap();
+    let connection_task = tokio::spawn(connection);
+    let response = sender
+        .send_request(
+            Request::builder()
+                .uri(format!("https://{authority}/h2-response"))
+                .header("authorization", "Bearer key-h2-response")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 502);
+    let request_id = response_request_id(&response);
+    let response_bytes = response.collect().await.unwrap().to_bytes();
+    assert!(
+        !response_bytes
+            .windows(b"h2-response-secret".len())
+            .any(|window| window == b"h2-response-secret")
+    );
+    assert!(
+        !response_bytes
+            .windows(response_body.len())
+            .any(|window| window == response_body.as_slice())
+    );
+    tokio::time::timeout(Duration::from_secs(2), origin_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        origin_seen.lock().unwrap().as_slice(),
+        &[(
+            "/h2-response".to_owned(),
+            b"Bearer key-h2-response".to_vec()
+        )]
+    );
+
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+        })
+        .expect("H2 response credential guard event missing");
+    let scanner = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "security.pattern_scanner"
+                && event["request_id"] == request_id
+                && event["direction"] == "response"
+        })
+        .expect("H2 response scanner event missing");
+    assert!(
+        credential < scanner,
+        "response scan ran before credential guard"
+    );
+    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[scanner]["decision"], "deny");
+    assert!(rows[scanner]["failure"].is_null());
+    assert!(!events.contains("key-h2-response"));
+    assert!(!events.contains("h2-response-secret"));
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-h2-response"));
+    assert!(!audit.contains("h2-response-secret"));
+    eprintln!(
+        "h2 gzip response observer: status=502 origin_alpn=h2 origin_path=/h2-response origin_authorization=Bearer key-h2-response credential_before_response_scanner=true response_encoding=gzip response_body_hex={} raw_canary_retained=false",
+        hex_encode(&response_body)
+    );
+}
+
+#[tokio::test]
 async fn native_http_client_disconnect_cancels_scan_without_late_publication() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");
