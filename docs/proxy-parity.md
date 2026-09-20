@@ -1161,7 +1161,14 @@ continues to replace the complete binding collection.
 The [source oracle](../proxy/tests/service_catalog_source.py) records strict
 loader, actual AgentAPI dispatch and selected configure/read behavior using
 owned synthetic data. Its disclosed lifecycle client and watcher seams do not
-prove full startup. [API comparisons](../proxy/src/agent_api/gateway/tests.rs)
+prove full startup. The current-head rollback witness
+`gateway_contract_workflow::selected_python_native_python_service_catalog_roundtrip`
+uses the pinned Python YAML writer and `ServiceRegistry`, the real native
+startup/reload and authenticated catalog endpoint, and Python readback. It
+retains ordered definitions, user-over-builtin precedence, removal fallback,
+empty-directory publication, exact file hashes and `0600` modes. It is a
+bounded synthetic catalog reader/reloader proof; no native catalog writer or
+live external provider is claimed. [API comparisons](../proxy/src/agent_api/gateway/tests.rs)
 replay the response cases without polling a request body. Runtime and HTTP/1
 controls exercise scoped reads and coherent publication through owned listeners.
 The read owner and simple service request path are installed. The native
