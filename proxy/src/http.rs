@@ -3877,6 +3877,18 @@ mod tests {
             .unwrap_or_else(|error| error.into_inner()) = barrier;
     }
 
+    // TEST_DIAL_BARRIER is process-global, so the two tests that install it
+    // must not overlap when the default test harness runs in parallel.
+    static TEST_DIAL_BARRIER_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+
+    async fn dial_barrier_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        TEST_DIAL_BARRIER_TEST_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     struct TestDialBarrierGuard;
 
     impl Drop for TestDialBarrierGuard {
@@ -3887,6 +3899,7 @@ mod tests {
 
     #[tokio::test]
     async fn passthrough_snapshot_controls_real_connect_after_live_update() {
+        let _barrier_test_lock = dial_barrier_test_lock().await;
         let _barrier_guard = TestDialBarrierGuard;
         let directory = tempfile::tempdir().unwrap();
         let token = "dial-race-admin";
@@ -4003,6 +4016,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_passthrough_connect_cancellation_records_one_error() {
+        let _barrier_test_lock = dial_barrier_test_lock().await;
         let _barrier_guard = TestDialBarrierGuard;
         let directory = tempfile::tempdir().unwrap();
         let closed = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
