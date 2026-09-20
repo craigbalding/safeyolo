@@ -2487,6 +2487,16 @@ A failure in the native pre-dial diagnostic write is reported as an attempt
 error while retaining its existing transport failure; the source has no
 identical diagnostic stage.
 
+The focused `configured_passthrough_entry_does_not_bypass_parent_route` control
+adds one real parent-parity witness: an exact `127.0.0.1:<origin-port>`
+passthrough entry still sends the CONNECT and client payload to the configured
+parent, while an independently listening origin accepts zero connections. The
+parent records the logical authority and its loopback peer, and the single
+`proxy.egress` event keeps the logical host and port with `route: "parent"`;
+no direct passthrough lifecycle event is emitted. This proves one direct IPv4
+match with one configured parent and does not establish parent-address matching,
+aliases, reserved-name controls or same-request retry.
+
 The direct matcher remains below local containment: a broad `127.0.0.0/8`
 CIDR installed in the live runtime cannot select the protected operator port.
 The owned CONNECT control receives the existing admin-shield 403, emits no

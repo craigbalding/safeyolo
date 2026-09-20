@@ -313,6 +313,118 @@ async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
 }
 
 #[tokio::test]
+async fn configured_passthrough_entry_does_not_bypass_parent_route() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+
+    // Keep an independently listening origin as a no-egress canary. The exact
+    // authority is a configured passthrough match, but the parent route must
+    // still own the physical connection.
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let authority = format!("127.0.0.1:{origin_port}");
+    config.ignore_hosts = vec![authority.clone()];
+
+    let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let parent_address = parent.local_addr().unwrap();
+    config.parent_proxy = Some(format!("http://{parent_address}"));
+    let origin_contacts = Arc::new(AtomicUsize::new(0));
+    let origin_seen = origin_contacts.clone();
+    let origin_task = tokio::spawn(async move {
+        match tokio::time::timeout(Duration::from_secs(2), origin.accept()).await {
+            Ok(Ok((_socket, _peer))) => {
+                origin_seen.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(Err(error)) => panic!("origin accept failed: {error}"),
+            Err(_) => {}
+        }
+    });
+    let parent_task = tokio::spawn(async move {
+        let (mut socket, peer) = tokio::time::timeout(Duration::from_secs(2), parent.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nparent-first")
+            .await
+            .unwrap();
+        let mut payload = Vec::new();
+        socket.read_to_end(&mut payload).await.unwrap();
+        socket.write_all(b"parent-final").await.unwrap();
+        socket.shutdown().await.unwrap();
+        (peer, head, payload)
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+    let mut first = [0; 12];
+    client.read_exact(&mut first).await.unwrap();
+    assert_eq!(&first, b"parent-first");
+    client.write_all(b"client").await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    assert_eq!(response, b"parent-final");
+
+    let (parent_peer, parent_head, parent_payload) =
+        tokio::time::timeout(Duration::from_secs(2), parent_task)
+            .await
+            .unwrap()
+            .unwrap();
+    origin_task.await.unwrap();
+    assert_eq!(
+        parent_peer.ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert!(parent_address.port() != origin_port);
+    assert!(parent_head.starts_with(format!("CONNECT {authority} HTTP/1.1\r\n").as_bytes()));
+    assert_eq!(parent_payload, b"client");
+    assert_eq!(origin_contacts.load(Ordering::SeqCst), 0);
+
+    let egress = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let rows = events(&config)
+                .into_iter()
+                .filter(|event| event["event"] == "proxy.egress")
+                .collect::<Vec<_>>();
+            if !rows.is_empty() {
+                break rows;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(egress.len(), 1);
+    assert_eq!(egress[0]["agent"], "alice");
+    assert_eq!(egress[0]["host"], "127.0.0.1");
+    assert_eq!(egress[0]["port"], origin_port);
+    assert_eq!(egress[0]["route"], "parent");
+    assert!(passthrough_events(&config).is_empty());
+
+    if let Ok(path) = std::env::var("SAFEYOLO_PARENT_PARITY_EVIDENCE") {
+        let witness = json!({
+            "logical_authority": authority,
+            "origin_port": origin_port,
+            "parent_listener": parent_address.to_string(),
+            "parent_peer": parent_peer.to_string(),
+            "parent_connect": String::from_utf8_lossy(&parent_head),
+            "parent_payload": String::from_utf8_lossy(&parent_payload),
+            "origin_accepts": origin_contacts.load(Ordering::SeqCst),
+            "proxy_egress": egress[0],
+            "passthrough_events": passthrough_events(&config),
+        });
+        std::fs::write(path, serde_json::to_vec_pretty(&witness).unwrap()).unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
 async fn opaque_disconnect_and_shutdown_release_the_destination() {
     for shutdown in [false, true] {
         let directory = tempfile::tempdir().unwrap();
