@@ -226,17 +226,47 @@ fn source_hash_reload_skips_bad_patterns_and_preserves_last_good_compatibility_c
     assert!(guard.maybe_reload(Some(&json!({}))).unwrap().is_none());
     assert_eq!(guard.stats().unwrap().rules_count, 0);
     guard.maybe_reload(Some(&sensor())).unwrap().unwrap();
-    let old = guard.stats().unwrap();
     assert!(guard.maybe_reload(None).unwrap().is_none());
     assert!(guard.maybe_reload(Some(&sensor())).unwrap().is_none());
     let mut candidate = sensor();
     candidate["policy_hash"] = json!("new");
     candidate["credential_rules"][0]["patterns"] = json!([r"\N{LATIN SMALL LETTER A}"]);
+    let report = guard.maybe_reload(Some(&candidate)).unwrap().unwrap();
+    assert_eq!(report.invalid_patterns, 0);
+    assert_eq!(report.rules_count, 1);
+    let named = Secret::new("a");
+    let findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &named,
+        }])
+        .unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule, "Demo");
+    assert_eq!(findings[0].credential_type.as_deref(), Some("demo"));
+    let named_stats = guard.stats().unwrap();
+
+    candidate["policy_hash"] = json!("unsupported");
+    // Named Unicode escapes are supported; use the source-backed depth-496
+    // boundary for the compatibility failure that must leave this snapshot active.
+    let unsupported = format!("{}a{}", "(?:".repeat(496), ")".repeat(496));
+    candidate["credential_rules"][0]["patterns"] = json!([unsupported]);
     assert_eq!(
         guard.maybe_reload(Some(&candidate)).unwrap_err(),
         Error::RegexCompatibility
     );
-    assert_eq!(guard.stats().unwrap(), old);
+    assert_eq!(guard.stats().unwrap(), named_stats);
+    let findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &named,
+        }])
+        .unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule, "Demo");
+    assert_eq!(findings[0].credential_type.as_deref(), Some("demo"));
+
+    candidate["policy_hash"] = json!("invalid");
     candidate["credential_rules"][0]["patterns"] = json!(["(", "(.+)+", "key-[a-z]+"]);
     let report = guard.maybe_reload(Some(&candidate)).unwrap().unwrap();
     assert_eq!(report.invalid_patterns, 2);
