@@ -897,40 +897,153 @@ async fn configured_inner_host_alias_cannot_expand_admitted_destination() {
     let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let proxy_ca = interception_ca(&directory, &mut config);
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let alias_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = alias_listener.local_addr().unwrap().port();
     let authority = format!("localhost:{port}");
     let inner_alias = format!("inner.alias.invalid:{port}");
     config.ignore_hosts = vec![inner_alias.clone()];
-    let expected_request = format!(
+    let alias_request = format!(
         "GET /inner-host-alias HTTP/1.1\r\nHost: {inner_alias}\r\nConnection: close\r\n\r\n"
     );
-    let origin = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut bytes = Vec::new();
-        socket.read_to_end(&mut bytes).await.unwrap();
+    let neighbor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let neighbor_authority = format!(
+        "localhost:{}",
+        neighbor_listener.local_addr().unwrap().port()
+    );
+    let rcgen::CertifiedKey {
+        cert: origin_cert,
+        signing_key: origin_signing_key,
+    } = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let upstream_ca = directory.path().join("inner-host-upstream.pem");
+    std::fs::write(&upstream_ca, origin_cert.pem()).unwrap();
+    config.upstream_ca_file = Some(upstream_ca);
+    let origin_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(origin_signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let origin_certificate = origin_cert.der().clone();
+    let neighbor_request = format!(
+        "GET /inner-host-neighbor HTTP/1.1\r\nHost: {neighbor_authority}\r\nConnection: close\r\n\r\n"
+    );
+    let expected_neighbor_origin_request = format!(
+        "GET /inner-host-neighbor HTTP/1.1\r\nHost: {neighbor_authority}\r\nvia: 1.1 test-instance\r\n\r\n"
+    );
+    let expected_neighbor_response =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nneighbor".to_vec();
+    let origin_neighbor_response = expected_neighbor_response.clone();
+    let alias_origin = tokio::spawn(async move {
+        let (mut socket, _) = alias_listener.accept().await.unwrap();
+        let mut alias_bytes = Vec::new();
+        socket.read_to_end(&mut alias_bytes).await.unwrap();
         assert!(
-            bytes.is_empty(),
+            alias_bytes.is_empty(),
             "mismatched inner Host must not send application bytes to origin"
         );
-        bytes
+        alias_bytes
+    });
+    let neighbor_origin = tokio::spawn(async move {
+        let (socket, _) = neighbor_listener.accept().await.unwrap();
+        let mut socket = tokio_rustls::TlsAcceptor::from(Arc::new(origin_tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut neighbor_bytes = Vec::new();
+        while !neighbor_bytes.ends_with(b"\r\n\r\n") {
+            neighbor_bytes.push(socket.read_u8().await.unwrap());
+        }
+        socket.write_all(&origin_neighbor_response).await.unwrap();
+        socket.shutdown().await.unwrap();
+        neighbor_bytes
     });
 
     let proxy = Proxy::start(config.clone()).await.unwrap();
-    let mut client = connect_tls(
+    let proxy_ca_subject = x509_parser::parse_x509_certificate(proxy_ca.as_ref())
+        .unwrap()
+        .1
+        .subject()
+        .to_string();
+    let mut alias_client = connect_tls(
         &config.listeners[0].socket_path,
         &authority,
+        "localhost",
+        proxy_ca.clone(),
+    )
+    .await
+    .unwrap();
+    let alias_certificate = alias_client
+        .get_ref()
+        .1
+        .peer_certificates()
+        .unwrap()
+        .first()
+        .unwrap()
+        .as_ref()
+        .to_vec();
+    alias_client
+        .write_all(alias_request.as_bytes())
+        .await
+        .unwrap();
+    let mut alias_response = Vec::new();
+    alias_client.read_to_end(&mut alias_response).await.unwrap();
+    assert!(alias_response.starts_with(b"HTTP/1.1 400"));
+    drop(alias_client);
+
+    let mut neighbor_client = connect_tls(
+        &config.listeners[0].socket_path,
+        &neighbor_authority,
         "localhost",
         proxy_ca,
     )
     .await
     .unwrap();
-    client.write_all(expected_request.as_bytes()).await.unwrap();
-    let mut response = Vec::new();
-    client.read_to_end(&mut response).await.unwrap();
-    assert!(response.starts_with(b"HTTP/1.1 400"));
-    drop(client);
-    let origin_bytes = origin.await.unwrap();
+    let neighbor_certificate = neighbor_client
+        .get_ref()
+        .1
+        .peer_certificates()
+        .unwrap()
+        .first()
+        .unwrap()
+        .as_ref()
+        .to_vec();
+    assert!(!alias_certificate.is_empty());
+    assert!(!neighbor_certificate.is_empty());
+    for certificate in [&alias_certificate, &neighbor_certificate] {
+        let (_, certificate) = x509_parser::parse_x509_certificate(certificate).unwrap();
+        assert_eq!(
+            certificate.issuer().to_string(),
+            proxy_ca_subject,
+            "intercepted TLS must receive a leaf issued by the configured proxy CA"
+        );
+    }
+    neighbor_client
+        .write_all(neighbor_request.as_bytes())
+        .await
+        .unwrap();
+    let mut neighbor_response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        neighbor_client.read_to_end(&mut neighbor_response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(neighbor_response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    assert!(neighbor_response.ends_with(b"\r\nneighbor"));
+    drop(neighbor_client);
+    let alias_origin_bytes = alias_origin.await.unwrap();
+    let neighbor_origin_bytes = neighbor_origin.await.unwrap();
+    assert_eq!(
+        neighbor_origin_bytes,
+        expected_neighbor_origin_request.as_bytes(),
+        "intercepted neighbor changed the origin request bytes"
+    );
 
     let passthrough = passthrough_events(&config);
     assert!(
@@ -947,13 +1060,28 @@ async fn configured_inner_host_alias_cannot_expand_admitted_destination() {
                     .unwrap_or_else(|_| "unrecorded-test-binary".into()),
                 "configured_alias": inner_alias,
                 "connect_authority": authority,
+                "neighbor_authority": neighbor_authority,
                 "client_sni": "localhost",
-                "origin_request": String::from_utf8_lossy(expected_request.as_bytes()),
-                "origin_application_bytes": origin_bytes.len(),
-                "response": String::from_utf8_lossy(&response),
+                "alias": {
+                    "inner_request": String::from_utf8_lossy(alias_request.as_bytes()),
+                    "response": String::from_utf8_lossy(&alias_response),
+                    "proxy_certificate_der_hex": hex_bytes(&alias_certificate),
+                    "proxy_certificate_issuer": x509_parser::parse_x509_certificate(&alias_certificate).unwrap().1.issuer().to_string(),
+                    "origin_application_bytes": alias_origin_bytes.len(),
+                },
+                "intercepted_neighbor": {
+                    "inner_request": String::from_utf8_lossy(neighbor_request.as_bytes()),
+                    "origin_request": String::from_utf8_lossy(&neighbor_origin_bytes),
+                    "response": String::from_utf8_lossy(&neighbor_response),
+                    "origin_certificate_der_hex": hex_bytes(origin_certificate.as_ref()),
+                    "proxy_certificate_der_hex": hex_bytes(&neighbor_certificate),
+                    "proxy_certificate_issuer": x509_parser::parse_x509_certificate(&neighbor_certificate).unwrap().1.issuer().to_string(),
+                    "origin_application_bytes": neighbor_origin_bytes.len(),
+                },
                 "passthrough_events": passthrough,
                 "limits": [
-                    "This proves one direct HTTPS request remains inspected when only its inner Host matches a configured entry.",
+                    "The configured entry is consulted only for the admitted CONNECT destination and captured SNI; a decrypted inner Host cannot switch this connection to opaque forwarding.",
+                    "The neighboring request proves the same SNI remains intercepted and can deliver only its admitted-authority request bytes after policy.",
                     "It does not implement inner-Host alias passthrough or claim parent-route parity.",
                 ]
             }))
