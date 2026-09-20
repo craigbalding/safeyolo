@@ -1432,11 +1432,15 @@ poison the listener. A repeated control now performs three sequential
 incomplete CONNECT cancellations after one successful live-origin control. It
 records each raw request, independently observes zero new origin accepts and
 waits for the process descriptor set to settle; Python and native Rust both
-pass this finite control. It does not establish an RSS/HWM ceiling, concurrency
-limit, long-duration stability or OOM behavior. The Python comparator keeps a
-strict expected failure for the original complete-control case because its
-existing adapter turns the valid client's later half-close into a full close;
-`--runxfail` reproduces that missing final response.
+pass this finite control. A sibling control holds three incomplete CONNECTs
+open concurrently, records the external process RSS/HWM/thread/FD peak, then
+closes them together and requires the FD set to return to baseline with zero
+new origin accepts. These are finite observations, not RSS/HWM ceilings,
+global concurrency caps, long-duration stability or OOM guarantees. The
+Python comparator keeps a strict expected failure for the original
+complete-control case because its existing adapter turns the valid client's
+later half-close into a full close; `--runxfail` reproduces that missing final
+response.
 
 With `tls_ca_file`, detected TLS receives an interception endpoint using the
 existing CA. Upstream TLS verifies names and trust chains, including through a

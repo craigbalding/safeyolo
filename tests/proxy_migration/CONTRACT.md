@@ -68,6 +68,11 @@ The shared assertions cover:
   the raw request, independent zero-origin-accept observation and process
   descriptor-settle result for Python and native Rust; the finite run does not
   claim an RSS/HWM ceiling, concurrency limit or long-duration bound.
+- Three incomplete CONNECT cancellations can also remain open concurrently
+  before their client write EOFs are sent together. The paired fixture records
+  the external process RSS/HWM/thread/FD peak, then requires the FD set to
+  return to baseline and the live origin to accept no new connection. This is
+  a finite three-session observation, not a global resource cap.
 - Configured opaque CONNECT uses a positive parent route control and a refused
   parent route control. The refused parent returns 502 while an independently
   listening direct-origin canary records zero accepts; the Python comparator's

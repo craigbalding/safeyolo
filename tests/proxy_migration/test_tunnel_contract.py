@@ -1796,6 +1796,200 @@ def test_repeated_incomplete_connect_cancellation_reclaims_origin_and_process_re
             assert not thread.is_alive()
 
 
+def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
+    proxy_backend, tmp_path
+):
+    """Concurrent incomplete CONNECTs leave no origin leg or retained descriptors."""
+    sessions = 3
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    greeting = b"concurrent-cancel-positive-control\x00v1\n"
+    observations = []
+    origin_error = []
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(5)
+        authority = f"127.0.0.1:{listener.getsockname()[1]}"
+
+        def origin():
+            try:
+                stream, peer = listener.accept()
+                with stream:
+                    stream.settimeout(5)
+                    stream.sendall(greeting)
+                    body = bytearray()
+                    while data := stream.recv(65536):
+                        body.extend(data)
+                    observations.append({
+                        "peer": list(peer),
+                        "payload": bytes(body),
+                        "client_eof": True,
+                    })
+            except BaseException as error:  # surface thread failures in the test
+                origin_error.append(f"{type(error).__name__}: {error}")
+
+        def assert_no_origin_accepts(label):
+            try:
+                unexpected, peer = listener.accept()
+            except TimeoutError:
+                return
+            with unexpected:
+                unexpected.settimeout(1)
+                leaked = unexpected.recv(4096)
+            pytest.fail(
+                f"{label} opened origin peer={peer!r} bytes={leaked!r}"
+            )
+
+        thread = threading.Thread(target=origin)
+        thread.start()
+        clients = []
+        try:
+            with launch_proxy(
+                proxy_backend,
+                directory,
+                DIRECT_CONNECT_HALF_CLOSE_POLICY,
+                eager_connect=True,
+                native_policy=True,
+            ) as proxy:
+                # A complete control establishes that the origin is listening
+                # before the concurrent cancellations are attempted.
+                with tunnel(proxy.paths["alice"], authority) as complete:
+                    assert read_exact(complete, len(greeting)) == greeting
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+                assert not origin_error, origin_error
+                assert len(observations) == 1
+                assert observations[0]["payload"] == b""
+
+                request_bytes = (
+                    f"CONNECT {authority} HTTP/1.1\r\n"
+                    f"Host: {authority}\r\n"
+                ).encode()
+                before = _process_resources(proxy.process.pid)
+                for _ in range(sessions):
+                    stream = socket.socket(socket.AF_UNIX)
+                    stream.settimeout(5)
+                    stream.connect(proxy.paths["alice"])
+                    stream.sendall(request_bytes)
+                    clients.append(stream)
+
+                # Wait for the selected proxy process to expose all three
+                # concurrent client legs before recording the resource peak.
+                deadline = time.monotonic() + 5
+                during = _process_resources(proxy.process.pid)
+                while during["fd_count"] < before["fd_count"] + sessions:
+                    assert time.monotonic() < deadline, (
+                        "concurrent incomplete CONNECTs did not become observable "
+                        f"in /proc: before={before['fd_count']} during={during['fd_count']}"
+                    )
+                    time.sleep(0.005)
+                    during = _process_resources(proxy.process.pid)
+                assert_no_origin_accepts("open incomplete CONNECT batch")
+
+                for stream in clients:
+                    stream.shutdown(socket.SHUT_WR)
+                    stream.close()
+                clients.clear()
+
+                settle_started = time.monotonic()
+                settle_deadline = settle_started + 5
+                settle_attempts = 0
+                while True:
+                    after = _process_resources(proxy.process.pid)
+                    baseline_targets = set(before["fd_targets"].values())
+                    new_targets = set(after["fd_targets"].values()) - baseline_targets
+                    new_sockets = sorted(
+                        target for target in new_targets if target.startswith("socket:[")
+                    )
+                    retained_deleted = sorted(
+                        target for target in new_targets if target.endswith(" (deleted)")
+                    )
+                    if not new_sockets and not retained_deleted:
+                        break
+                    assert time.monotonic() < settle_deadline, (
+                        "concurrent incomplete CONNECTs retained descriptors within 5s: "
+                        f"sockets={new_sockets}, deleted={retained_deleted}"
+                    )
+                    settle_attempts += 1
+                    time.sleep(0.005)
+                assert after["fd_count"] <= before["fd_count"]
+                assert_no_origin_accepts("closed incomplete CONNECT batch")
+                assert proxy.process.poll() is None
+
+                events = proxy.events("proxy.tunnel")
+                provenance = None
+                if proxy_backend == "rust":
+                    provenance = json.loads(
+                        (directory / "native-policy-provenance.json").read_text()
+                    )
+                    assert provenance == {
+                        "backend": "rust",
+                        "policy_mode": "native",
+                        "policy_file": str(directory / "policy.toml"),
+                        "temporary_policy_socket": None,
+                        "temporary_policy_adapter": False,
+                    }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust positive CONNECT event did not settle"
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
+                    assert len(events) == 1
+                    assert events[0]["agent"] == "alice"
+                    assert events[0]["coverage"] == "opaque"
+                    assert events[0]["uploaded_bytes"] == 0
+                    assert events[0]["downloaded_bytes"] == len(greeting)
+
+                samples = [before, during, after]
+                (directory / "concurrent-incomplete-connect-resources.json").write_text(
+                    json.dumps(
+                        {
+                            "backend": proxy_backend,
+                            "authority": authority,
+                            "sessions": sessions,
+                            "request_hex": request_bytes.hex(),
+                            "positive_control": {
+                                "greeting_hex": greeting.hex(),
+                                "origin_accepts": len(observations),
+                                "origin_payload_length": len(observations[0]["payload"]),
+                                "origin_client_eof": observations[0]["client_eof"],
+                            },
+                            "resources": {
+                                "before": before,
+                                "during_open_batch": during,
+                                "after_close": after,
+                                "peak_rss_kib": max(sample["rss_kib"] for sample in samples),
+                                "peak_hwm_kib": max(sample["hwm_kib"] for sample in samples),
+                                "peak_threads": max(sample["threads"] for sample in samples),
+                                "peak_fd_count": max(sample["fd_count"] for sample in samples),
+                                "descriptor_settle_seconds": round(
+                                    time.monotonic() - settle_started, 6
+                                ),
+                                "descriptor_settle_attempts": settle_attempts,
+                            },
+                            "origin_accepts_after_incomplete": 0,
+                            "proxy_tunnel_events": events if proxy_backend == "rust" else [],
+                            "native_policy_provenance": provenance,
+                            "limits": [
+                                "Three incomplete CONNECT requests are held open concurrently, then all write sides close together.",
+                                "The peak is an external /proc observation for this finite three-session workload, not an operator memory or concurrency cap.",
+                                "This establishes no RSS/HWM ceiling, long-duration stability, OOM behavior, or arbitrary larger-batch bound.",
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+        finally:
+            for stream in clients:
+                stream.close()
+            thread.join(timeout=6)
+            assert not thread.is_alive()
+
+
 @pytest.mark.skipif(os.environ.get("SAFEYOLO_RUN_SSH_CONTRACT") != "1", reason="Opt-in owned OpenSSH daemon; requires installed ssh, ssh-keygen and sshd")
 @pytest.mark.parametrize("passthrough", [False, True])
 def test_real_openssh_preserves_server_first_output_and_client_input(proxy_backend, tmp_path, passthrough):
