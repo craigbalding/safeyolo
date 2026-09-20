@@ -636,6 +636,49 @@ and the selected executable plus native-policy provenance. These observations
 help distinguish a bounded retained cache from continued per-batch growth;
 they do not define a memory threshold or a long-duration claim.
 
+The same workload was rerun on integrated release checkout
+`e7df1ccc50517b8809a43872163544c0cbb3cfa8` on Linux aarch64. Each backend
+received 32 warm-up requests, a 3-second quiet interval, and 48 measured
+batches of 32 requests at concurrency 8. Every measured request completed and
+each batch's authenticated `/stats` request completed while that batch was
+active. The native binary was built with the guarded release command and has
+SHA-256
+`2e51a59567d6f23109e8b812e0c67fb5a638c06188751c815b028033bcee3787`.
+
+| Backend | Repeated short HTTP and admin result | External `/proc` observations across the run |
+|---|---|---|
+| Python | 1,536/1,536 measured requests; 327.6 requests/s; median 22.83 ms; 95th percentile 27.28 ms; authenticated admin latency 0.220–2.891 ms | RSS/high-water 92,296–97,616 KiB; virtual memory 415,872–494,636 KiB; threads 4–5; open FDs 9–29 |
+| Rust release, native policy | 1,536/1,536 measured requests; 559.0 requests/s; median 12.77 ms; 95th percentile 14.75 ms; authenticated admin latency 0.154–1.099 ms | RSS/high-water 16,664–22,424 KiB; virtual memory 972,384–973,800 KiB; threads 15; open FDs 16–41 |
+
+The final five Python batches retained 97,616 KiB RSS, while the native
+after-batch RSS rose from 16,920 KiB on batch 1 to 22,424 KiB on batch 48.
+This finite run therefore does not establish bounded retention or a resource
+ceiling for either allocator, and the native sequence does not support a
+bounded-growth conclusion. The attempted 64-batch run also records the
+existing fixture policy boundary: 1,901 requests succeeded and 19 received
+HTTP 429 responses, so that result is retained as a limit rather than folded
+into the successful comparison.
+
+Held-stream and slow-consumer responsiveness used the same release binary and
+a requested 30-second stream. The held stream delivered 24,559,635 bytes and
+completed its independent control request before release for both backends.
+The slow consumer delivered 24,576,000 bytes after a 7.5-second read pause;
+its independent control and authenticated `/stats` requests completed while
+the stream remained active.
+
+| Backend | Held-stream control | Slow-consumer control / admin | Slow-consumer RSS and FD samples |
+|---|---:|---:|---|
+| Python | 1.957 ms | 3.396 ms / 0.374 ms | RSS 92,420 KiB before and during controls, 92,676 KiB after drain; FDs 11 to 9 |
+| Rust release, native policy | 0.689 ms | 1.241 ms / 0.332 ms | RSS 15,580 KiB before controls, 16,136 KiB after controls, 18,544 KiB after drain; FDs 19 to 18 |
+
+The retained manifest records the exact commands, source and binary hashes,
+per-workload configuration hashes, JSON result hashes, and external resource
+summaries under `/home/agent/safeyolo-rust-620-evidence/639-closure-e7df1ccc`.
+These are finite Linux observations of the focused fixture. They do not cover
+arbitrary concurrency, out-of-memory behavior, non-Linux hosts, WS/WSS,
+CONNECT/SSH, or the complete production chain, and they do not define a
+throughput target, service-level objective, or memory cap.
+
 ## Run the initial development slice
 
 These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain
