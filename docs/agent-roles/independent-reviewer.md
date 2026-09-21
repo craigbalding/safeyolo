@@ -163,8 +163,11 @@ impossibility.
 ## Independent PR acceptance
 
 The independent reviewer's mandate for `REVIEW_READY` is to determine whether
-the proposed change correctly satisfies the issue. This is not a second
-implementation pass and not a check that the owner's report sounds plausible.
+the proposed change is correct and safe to integrate for its documented scope,
+and whether it remains consistent with the issue's unresolved requirements.
+The pull request can be a bounded increment that proves only part of the issue.
+This is not a second implementation pass and not a check that the owner's
+report sounds plausible.
 
 ## Evidence order
 
@@ -335,7 +338,8 @@ the exact tests or probes supporting the finding. Finish with exactly one clear
 disposition and name the exact reviewed target:
 
 - `READY` — independent evidence reasonably establishes that the exact reviewed
-  target satisfies the issue.
+  target is correct and safe to integrate for its documented scope. This does
+  not claim that every acceptance criterion in the issue is complete.
 - `CHANGES_REQUIRED` — concrete correctness or acceptance problems remain.
   Identify them; optional polish alone is not sufficient for this disposition.
 - `BLOCKED` — required evidence cannot be established after the approved
