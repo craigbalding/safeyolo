@@ -1,73 +1,50 @@
 # Backlog review routing
 
-This is the ordinary coordinator workflow for the remaining #620 backlog. It
-does not use the factory supervisor pattern.
+This is the supervised backlog-factory workflow for the remaining #620 work.
+The approved factory snapshot, not an agent's mutable default configuration,
+binds the routine role models.
 
 ## Roles and provider pinning
 
-- The coordinator remains Terra medium.
-- Implementation workers remain `gpt-5.6-luna` at `xhigh` reasoning.
-- Routine issue review and acceptance run through
-  `scripts/codex_deepseek_review.sh`, using the `opencode-go-review` profile:
-  OpenCode Go provider `opencode_go_review`, model
-  `deepseek-v4.1-flash`, and `max` model reasoning. The previous
-  `openrouter-ds-review` profile remains available as an explicit rollback
-  override through `SAFEYOLO_REVIEW_PROFILE`.
+- Relay is the coordinator. It uses `gpt-5.6-sol` at medium reasoning and owns
+  GitHub intake, dependency sequencing, assignments, integration state and
+  recovery. It does not implement or independently accept candidates.
+- Forge is the implementation owner. It uses `gpt-5.6-terra` at max reasoning
+  for routine issue implementation, focused tests, candidate commits and
+  corrections requested by Lens.
+- Lens uses the `opencode-go-review` Codex profile with provider
+  `opencode_go_review`, model `deepseek-v4.1-flash`, and max reasoning. These
+  values are also explicit factory arguments so mutable defaults cannot route
+  review to another model or provider.
 - DeepSeek is the independent reviewer and acceptance authority for each
   routine issue. It inspects the execution paths and callers, runs required
   builds and focused tests or probes, verifies retained evidence, reports
   findings, verifies corrections, and writes the acceptance receipt. Its
   `READY` receipt satisfies the independent-review requirement for issue and
   integration acceptance under the existing rules.
-- Sol at `gpt-5.6-sol` with high reasoning is reserved for an explicitly
-  escalated concrete problem or the integrated final-release acceptance
-  milestone. There is no additional per-issue Sol gate.
+- After two `CHANGES_REQUIRED` dispositions for the same task still leave
+  material findings, Relay may issue the factory's existing `REPAIR` handoff. The next
+  Forge repair invocation uses `gpt-5.6-sol` at high reasoning. At most one
+  stronger repair round is available, and the role returns to Terra max when
+  it sends `REVIEW_READY`.
+- Astra has no factory role, handoff or automatic fallback. Emergency Astra
+  use requires a separate explicit operator decision.
 - If the requested provider, model, or reasoning level cannot be proven at
   launch, stop and report the missing credential or configuration. Never
   silently substitute another model or provider.
 
-## Session and candidate rules
+## Review continuity and visibility
 
-Start one fresh reviewer session for each issue. Keep that session for every
-candidate correction round:
+Lens reviews the exact immutable candidate named by each `REVIEW_READY` and
+returns one independent disposition. The existing supervisor retires that
+harness session when the disposition settles the request. A later correction
+review starts a fresh session and recovers still-valid evidence and findings
+from the retained Coord disposition. A `READY` disposition is the routine
+independent acceptance decision; it is not followed by another per-issue Sol
+gate.
 
-```sh
-scripts/codex_deepseek_review.sh start 627 <candidate-sha> \
-  'Review the retained facade workflow and route ledger against issue #627.'
-```
-
-The launcher writes JSONL, stderr, last-message, acceptance-receipt and
-metadata files under the evidence root and prints the pane details. Extract
-the explicit session id
-from the JSONL log:
-
-```sh
-scripts/codex_deepseek_review.sh session-id <jsonl-log>
-```
-
-Correction rounds must resume that exact id:
-
-```sh
-scripts/codex_deepseek_review.sh resume 627 <session-id> \
-  'Recheck the repaired findings against the same stable candidate.'
-```
-
-`--last` is intentionally rejected. The reviewer runs with no interactive
-approval prompts and the nested Codex workspace in `danger-full-access` mode
-by default. The outer SafeYolo sandbox remains the containment boundary. This
-is required for real fixture sockets and for writing disposable Cargo/test
-output; it is not permission to edit product source or configuration, integrate
-commits, or change issue state. `SAFEYOLO_REVIEW_SANDBOX` can select a tighter
-mode for a diagnostic smoke, but read-only mode cannot perform acceptance
-validation. The coordinator records the receipt, hands concrete repairs to a
-Luna worker, and asks the same explicit review session to recheck the repaired
-candidate. A separate Sol review is started only for a bounded escalation or
-the final integrated release acceptance. Each issue reuses its
-`targets/<issue>` directory across correction rounds and concurrent issues use
-distinct target directories.
-
-The visible pane reuses the factory timeline renderer in
-`contrib/watch-agent-room.py` with its local `--jsonl -` input. It shows
-bounded session, tool, agent, completion and error lines while the raw JSONL
-remains the retained source of truth. A successful `READY` pane closes after
-its receipt is copied; a failed or non-READY pane remains for inspection.
+Run `scripts/watch_backlog_factory.sh start` from an existing tmux session to
+open one `factory-watch` window with equal-width Relay, Forge and Lens panes.
+Each pane runs `contrib/watch-agent-room.py` against the corresponding retained
+agent room. The launcher waits for rooms to be provisioned and restarts a
+viewer if it exits. It does not start or resume the factory.

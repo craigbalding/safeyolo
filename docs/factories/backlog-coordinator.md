@@ -233,12 +233,13 @@ Lens's independent conclusion. A Lens disposition must include specific code
 references with annotations and specific repair advice. A sample patch or
 before-and-after example is useful when practical.
 
-Use the owner's repair policy supplied in the supervisor checkpoint. Count
-completed fix-and-review rounds for the same task from retained Coord messages,
+Use the owner's repair policy supplied in the supervisor checkpoint. Count each
+`CHANGES_REQUIRED` disposition for the same task as one failed review round,
+including the initial candidate review. Count from retained Coord messages,
 not process starts, retries, or repeated notifications of the same finding.
-After `after_rounds` ordinary repair rounds still leave material defects,
-select the configured stronger model for the next repair round by notifying
-Forge in the factory room with this first line:
+After `after_rounds` failed review rounds still leave material defects, select
+the configured stronger model for the next repair round by notifying Forge in
+the factory room with this first line:
 
 ```text
 REPAIR target=<original-task-url> attention_id=<original-task-attention-id>

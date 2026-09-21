@@ -9,23 +9,25 @@ types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
 [roles.coordinator]
 agent = "relay"
 contract = "backlog-coordinator.md"
+args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=medium"]
 
 [roles.owner]
 agent = "forge"
 contract = "../agent-roles/issue-owner.md"
-args = ["--model", "gpt-5.6-luna", "-c", "model_reasoning_effort=xhigh"]
+args = ["--model", "gpt-5.6-terra", "-c", "model_reasoning_effort=max"]
 
 [roles.owner.repair]
 request = "REPAIR"
 from = "coordinator"
-args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=medium"]
-after_rounds = 5
-max_rounds = 3
+args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"]
+after_rounds = 2
+max_rounds = 1
 release_on = "REVIEW_READY"
 
 [roles.reviewer]
 agent = "lens"
 contract = "../agent-roles/independent-reviewer.md"
+args = ["--profile", "opencode-go-review", "-c", "model_provider=\"opencode_go_review\"", "-c", "model=\"deepseek-v4.1-flash\"", "-c", "review_model=\"deepseek-v4.1-flash\"", "-c", "model_reasoning_effort=\"max\"", "-c", "plan_mode_reasoning_effort=\"max\"", "-c", "model_supports_reasoning_summaries=true"]
 
 [[updates]]
 type = "CONTEXT"
