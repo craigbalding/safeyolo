@@ -190,11 +190,10 @@ fn protocol(prefix: &[u8]) -> Option<Protocol> {
         if prefix.len() < 3 {
             return None;
         }
-        return Some(if prefix[1] == 3 && prefix[2] <= 3 {
-            Protocol::Tls
-        } else {
-            Protocol::Opaque
-        });
+        // A TLS handshake content type stays on the inspected path even when
+        // its record version is invalid. The TLS terminator owns that failure;
+        // malformed handshake bytes must not gain opaque forwarding.
+        return Some(Protocol::Tls);
     }
     // An HTTP method is a token, including extension methods. Wait for its
     // delimiter instead of treating an incomplete method as opaque bytes.
@@ -614,6 +613,7 @@ mod tests {
             b"SSH-EXT / HTTP/1.1\r\n",
             b"SSH-2.0-test / HTTP/1.1\r\n",
             b"\x16\x03\x01\0\xff",
+            b"\x16\x03\x04\0\x04\x02\0\0\0",
         ] {
             for end in 0..=bytes.len() {
                 assert_ne!(protocol(&bytes[..end]), Some(Protocol::Opaque));

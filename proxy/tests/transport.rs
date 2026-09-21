@@ -693,6 +693,324 @@ async fn exact_passthrough_keeps_origin_tls_and_reload_restores_interception() {
 }
 
 #[tokio::test]
+async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let origin_certificate = cert.der().clone();
+
+    let configured_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let configured_port = configured_listener.local_addr().unwrap().port();
+    let configured_authority = format!("localhost:{configured_port}");
+    // The supported configuration boundary keeps the explicit port: this is
+    // the admitted opaque control, while the next loopback port stays
+    // inspected even though it has the same logical hostname.
+    config.ignore_hosts = vec![configured_authority.clone()];
+    let intercepted_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let intercepted_port = intercepted_listener.local_addr().unwrap().port();
+    let intercepted_authority = format!("localhost:{intercepted_port}");
+
+    let origin_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_certificate.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let configured_request = format!(
+        "GET /configured-opaque HTTP/1.1\r\nHost: {configured_authority}\r\nConnection: close\r\n\r\n"
+    );
+    let expected_configured_request = configured_request.clone();
+    let configured_origin = tokio::spawn(async move {
+        let (socket, peer) = configured_listener.accept().await.unwrap();
+        let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(origin_tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        assert_eq!(request, expected_configured_request.as_bytes());
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\nconfigured",
+            )
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+        (peer, request)
+    });
+    // Every unconfigured attempt reaches this controlled origin because CONNECT
+    // opens its admitted destination before TLS classification. Neither may
+    // deliver client handshake or application bytes to it.
+    let intercepted_origin = tokio::spawn(async move {
+        let mut observations = Vec::new();
+        for _ in 0..3 {
+            let (mut socket, peer) = intercepted_listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+                .await
+                .unwrap()
+                .unwrap();
+            observations.push((peer, bytes));
+        }
+        observations
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+
+    let mut configured = connect_tls(
+        &config.listeners[0].socket_path,
+        &configured_authority,
+        "localhost",
+        origin_certificate.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        configured
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_certificate.as_ref(),
+        "the exact configured port must retain the origin TLS certificate"
+    );
+    configured
+        .write_all(configured_request.as_bytes())
+        .await
+        .unwrap();
+    let mut configured_response = Vec::new();
+    configured
+        .read_to_end(&mut configured_response)
+        .await
+        .unwrap();
+    assert!(configured_response.ends_with(b"configured"));
+    drop(configured);
+
+    // This neighboring endpoint uses the proxy trust root and proves that a
+    // normal unconfigured TLS connection remains intercepted before the
+    // deliberately failing client follows it.
+    let mut intercepted = connect_tls(
+        &config.listeners[0].socket_path,
+        &intercepted_authority,
+        "localhost",
+        proxy_ca.clone(),
+    )
+    .await
+    .unwrap();
+    let proxy_certificate = intercepted
+        .get_ref()
+        .1
+        .peer_certificates()
+        .unwrap()
+        .first()
+        .unwrap()
+        .clone();
+    assert_ne!(
+        proxy_certificate.as_ref(),
+        origin_certificate.as_ref(),
+        "the unconfigured port must receive a proxy certificate"
+    );
+    intercepted
+        .write_all(
+            format!(
+                "GET /deny-inner HTTP/1.1\r\nHost: {intercepted_authority}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut denied = Vec::new();
+    intercepted.read_to_end(&mut denied).await.unwrap();
+    assert!(denied.starts_with(b"HTTP/1.1 403"));
+    drop(intercepted);
+
+    // Trusting the unrelated configured-origin certificate forces the client
+    // to reject the proxy-issued leaf. A TLS failure on this unconfigured
+    // endpoint must close rather than turn the pre-opened socket into opaque
+    // forwarding.
+    let client_error = match connect_tls(
+        &config.listeners[0].socket_path,
+        &intercepted_authority,
+        "localhost",
+        origin_certificate.clone(),
+    )
+    .await
+    {
+        Ok(_) => panic!("unconfigured TLS interception unexpectedly succeeded"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        client_error.contains("invalid peer certificate"),
+        "expected a client certificate-verification failure, got {client_error}"
+    );
+
+    // The handshake content type deliberately resembles TLS, but its record
+    // version is invalid. CONNECT has already admitted and opened the origin
+    // socket. This must reach the TLS interception failure path, not the
+    // unconfigured opaque relay path.
+    let malformed_tls = b"\x16\x03\x04\x00\x04\x02\x00\x00\x00";
+    let mut malformed_client =
+        connect_raw(&config.listeners[0].socket_path, &intercepted_authority).await;
+    malformed_client.write_all(malformed_tls).await.unwrap();
+    malformed_client.shutdown().await.unwrap();
+    let mut malformed_response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        malformed_client.read_to_end(&mut malformed_response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        malformed_response.len(),
+        7,
+        "malformed TLS returned non-alert bytes: {malformed_response:?}"
+    );
+    assert_eq!(
+        &malformed_response[..5],
+        b"\x15\x03\x03\x00\x02",
+        "malformed TLS must return a TLS alert, not an opaque response"
+    );
+    assert_eq!(
+        malformed_response[5], 2,
+        "malformed TLS must return a fatal alert before EOF"
+    );
+    drop(malformed_client);
+
+    let (configured_peer, configured_bytes) =
+        tokio::time::timeout(Duration::from_secs(2), configured_origin)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(configured_peer.ip().is_loopback());
+    assert_eq!(configured_bytes, configured_request.as_bytes());
+    let intercepted_observations = tokio::time::timeout(Duration::from_secs(2), intercepted_origin)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(intercepted_observations.len(), 3);
+    assert_eq!(
+        intercepted_observations
+            .iter()
+            .map(|(peer, bytes)| (peer.ip().is_loopback(), bytes.len()))
+            .collect::<Vec<_>>(),
+        [(true, 0), (true, 0), (true, 0)],
+        "unconfigured origin received intercepted client bytes"
+    );
+
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(
+        lifecycle
+            .iter()
+            .map(|event| event["event"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["traffic.passthrough_start", "traffic.passthrough_end"]
+    );
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "localhost"
+            && event["details"]["port"] == configured_port
+            && event["event"] != "traffic.passthrough_error"
+    }));
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 4, "each CONNECT must retain its own dial");
+    assert!(egress.iter().all(|event| event["route"] == "direct"));
+    assert_eq!(
+        egress
+            .iter()
+            .filter(|event| event["host"] == "localhost" && event["port"] == configured_port)
+            .count(),
+        1
+    );
+    assert_eq!(
+        egress
+            .iter()
+            .filter(|event| { event["host"] == "localhost" && event["port"] == intercepted_port })
+            .count(),
+        3
+    );
+    let tunnel_events = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.tunnel")
+        .collect::<Vec<_>>();
+    assert_eq!(tunnel_events.len(), 1);
+    assert_eq!(tunnel_events[0]["coverage"], "configured_passthrough");
+    assert_eq!(tunnel_events[0]["host"], "localhost");
+    assert_eq!(tunnel_events[0]["port"], configured_port);
+
+    if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(
+            path.join("invalid-interception.json"),
+            serde_json::to_vec_pretty(&json!({
+                "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT")
+                    .unwrap_or_else(|_| "unrecorded-test-binary".into()),
+                "test": "unconfigured_tls_interception_failure_never_uses_configured_passthrough",
+                "config_sha256": sha256_bytes(&serde_json::to_vec(&config).unwrap()),
+                "certificate_sha256": {
+                    "configured_origin": sha256_bytes(origin_certificate.as_ref()),
+                    "proxy_root": sha256_bytes(proxy_ca.as_ref()),
+                    "observed_proxy_leaf": sha256_bytes(proxy_certificate.as_ref()),
+                },
+                "configured_passthrough": {
+                    "authority": configured_authority,
+                    "origin_peer": configured_peer.to_string(),
+                    "origin_certificate_matches_client": true,
+                    "origin_request": String::from_utf8_lossy(&configured_bytes),
+                },
+                "unconfigured_interception": {
+                    "authority": intercepted_authority,
+                    "accepted_connections": intercepted_observations.len(),
+                    "origin_received_byte_counts": intercepted_observations
+                        .iter()
+                        .map(|(_, bytes)| bytes.len())
+                        .collect::<Vec<_>>(),
+                    "intercepted_control_status": String::from_utf8_lossy(
+                        &denied[..denied.iter().position(|byte| *byte == b'\r').unwrap_or(0)]
+                    ),
+                    "client_handshake": "failed against the untrusted proxy leaf",
+                    "client_error": client_error,
+                },
+                "malformed_client_tls": {
+                    "record_hex": hex_bytes(malformed_tls),
+                    "client_response_hex": hex_bytes(&malformed_response),
+                    "client_response_is_fatal_tls_alert": true,
+                    "client_response_eof": true,
+                    "origin_received_byte_count": intercepted_observations.last().unwrap().1.len(),
+                },
+                "proxy_egress": egress,
+                "proxy_tunnel": tunnel_events,
+                "passthrough_events": lifecycle,
+                "limits": [
+                    "One direct loopback hostname with one exact configured port and one same-host, different-port control.",
+                    "The failed interceptions are a client rejection of the proxy certificate and one TLS-handshake record with an invalid record version; this does not prove upstream-verification failure or every malformed TLS record.",
+                    "Parent routes, aliases, reserved-name containment, and the remaining D29 matrix remain outside this witness."
+                ],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
 async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighbor() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
@@ -2221,6 +2539,14 @@ async fn full_proxy_h2_partial_reset_fails_while_same_prefix_end_stream_is_clean
 
 fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
