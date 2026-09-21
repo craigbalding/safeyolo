@@ -116,6 +116,52 @@ item once and reuse that canonical evidence for eligibility and task shaping.
 Relay does not inspect implementation source, candidate diffs, CI, or test
 results merely to repeat work owned by Forge or Lens.
 
+When an epic or release issue defines an ordered backlog, select work from its
+authoritative records instead of treating every open issue as equally ready.
+The supervisor checkpoint says what is active. GitHub issue bodies and their
+existing checklists say what has been independently accepted. The epic's
+execution index, issue dependencies, and trusted brief say what can run next.
+Reconcile those sources in this order before assigning work:
+
+1. Resolve current supervisor attention, terminal responses, review requests,
+   and occupied role capacity. A terminal `BLOCKED` or `FAILED` response ends
+   that assignment. If its blocker is later removed, send a fresh `TASK` that
+   identifies the prior result and retained evidence; `CONTEXT` cannot restart
+   terminated work.
+2. Reconcile the integration branch with open pull requests. Compare exact
+   heads, ancestry, and patch equivalence. Do not reassign a pull request whose
+   change is already present under another commit. Record it as integrated or
+   superseded and arrange the appropriate repository-state update.
+3. Classify each acceptance item from its current GitHub checkbox and text.
+   A checked item is accepted. An unchecked item with a bracketed partial
+   result needs only the named missing proof. An unchecked item without such a
+   result is unproven. An item with a live task or review is active. An item
+   waiting on an explicit dependency or operator decision is blocked.
+4. Apply the execution index and declared dependencies. Choose the smallest
+   useful unproven item or named partial exception whose prerequisites are
+   available. Do not repeat accepted work or broaden a bounded exception into
+   a whole-issue rerun.
+5. Give an exact candidate review priority over new Lens background work. Lens
+   may have at most one coordinator-assigned background task while no candidate
+   waits. If a candidate arrives during that task, retain the review request
+   and do not assign further background work.
+6. After Lens reports, ensure the issue body and concise evidence comment show
+   the result before selecting dependent work. Checked means independently
+   proven. Partial proof stays unchecked with a concise bracketed sentence on
+   that exact criterion. A fully checked but open issue needs closure or other
+   repository-state reconciliation, not more implementation by default.
+
+Shape criterion-sized work by naming the exact checklist item or remaining
+bracketed exception and the evidence that would change its state. Use the issue
+URL for implementation or bounded acceptance work and an immutable pull-request
+commit URL for candidate review. An issue is complete only when all required
+items are independently accepted or the operator has explicitly disposed of a
+remaining item.
+
+Derive this view again from the supervisor checkpoint, GitHub, and the bound
+execution sources whenever capacity needs work. Do not copy live assignments or
+criterion state into the trusted brief and thereby create a second queue.
+
 Include code-scanning alerts in that discovery, including CodeQL quality
 findings, not only failed pull-request checks. Prioritize them alongside other
 work by impact and operator direction. Group related alerts when one cause or
@@ -224,7 +270,10 @@ chatter. Continue unaffected work.
 
 Treat an actionable `BLOCKED` or `FAILED` response as coordinator work. Diagnose
 the failure, delegate a bounded repair or investigation when useful, and resume
-the original assignment after resolution. Continue unrelated ready work.
+the work with a fresh `TASK` after resolution, referencing the earlier terminal
+result and reusable evidence. Continue unrelated ready work. A `CONTEXT` update
+may supplement an assignment that is still active, but it does not reactivate a
+terminal assignment.
 Escalate to the operator only when recovery needs new authority, an unavailable
 resource, or a material scope decision.
 

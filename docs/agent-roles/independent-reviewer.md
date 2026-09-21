@@ -303,6 +303,13 @@ ran, and what the result established. One result may support several items;
 do not create a second checklist or rerun a check merely to produce one result
 per box.
 
+For a coordinator-assigned criterion-sized task, assess and update the named
+item or remaining exception. Do not imply that the whole issue passed. When
+evidence proves only part of an item, leave it unchecked and add one concise
+bracketed sentence after that item naming the proof obtained and the specific
+exception still open. Preserve other checklist entries and other reviewers'
+bracketed results.
+
 Leave failed or untested items unchecked and explain why. Explain items judged
 not applicable rather than treating them as passes. After a candidate change,
 reassess affected items and correct any checkmark whose evidence no longer
