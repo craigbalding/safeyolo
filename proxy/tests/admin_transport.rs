@@ -30,6 +30,11 @@ const ALLOW: &str =
 const DENY: &str =
     "[[permissions]]\naction = \"network:request\"\nresource = \"*\"\neffect = \"deny\"\n";
 const TASK_PATH: &str = "/admin/policy/task/alpha";
+// This synthetic bearer has 64 distinct printable characters. It always meets
+// the default credential detector thresholds, unlike a random UUID whose
+// character distribution can accidentally avoid detection.
+const DETECTABLE_BEARER_TOKEN: &str =
+    "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
 
 #[test]
 #[ignore = "actual Python parser/auth hook; set SAFEYOLO_POLICY_PYTHON"]
@@ -824,7 +829,7 @@ async fn occupied_operator_bind_never_publishes_agent_sockets_or_readiness() {
 #[tokio::test]
 async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_usable() {
     let directory = TempDir::new().unwrap();
-    let token = synthetic();
+    let token = DETECTABLE_BEARER_TOKEN.to_owned();
     let secret = synthetic();
     let mut config = config(directory.path(), &token);
     // PUT is rejected before token-file lookup by the agent facade, so this
@@ -844,6 +849,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
         "X-Blocked-By: admin-shield\r\n",
     )
     .await;
+    let different_port_peer = Peer::bind((Ipv4Addr::LOCALHOST, 0), "").await;
     let body =
         serde_json::to_vec(&json!({"policy":{"unknown":{"synthetic_secret":secret}}})).unwrap();
     let aliases = [
@@ -864,8 +870,10 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
             let host = format!("{alias}:{port}");
             let target = format!("http://{host}{TASK_PATH}");
             let reply = agent(&config, id, "PUT", &target, &host, Some(&token), &body).await;
+            assert_eq!(reply.status, REJECTION.status, "{id} PUT {alias}");
             assert_blocked(&reply);
             let reply = agent(&config, id, "CONNECT", &host, &host, Some(&token), b"").await;
+            assert_eq!(reply.status, REJECTION.status, "{id} CONNECT {alias}");
             assert_blocked(&reply);
         }
         let extra_host = format!("2130706433:{}", extra_peer.address.port());
@@ -918,16 +926,31 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
         assert_eq!(reply.status, 200);
         assert_eq!(reply.header("x-blocked-by"), Some("admin-shield"));
         assert!(reply.body == b"owned");
+        let different_port_host = different_port_peer.address.to_string();
+        let reply = agent(
+            &config,
+            id,
+            "GET",
+            &format!("http://{different_port_host}/owned"),
+            &different_port_host,
+            None,
+            b"",
+        )
+        .await;
+        assert_eq!(reply.status, 200);
+        assert!(reply.header("x-blocked-by").is_none());
+        assert!(reply.body == b"owned");
     }
     assert_eq!(admin(port, &token, "GET", TASK_PATH, b"").await.status, 404);
     assert_eq!(peer.accepts.load(Ordering::SeqCst), 2);
+    assert_eq!(different_port_peer.accepts.load(Ordering::SeqCst), 2);
     let recorded = events(&config);
     assert_eq!(
         recorded
             .iter()
             .filter(|row| row["event"] == "proxy.egress")
             .count(),
-        2
+        4
     );
     assert_eq!(
         recorded
@@ -945,33 +968,53 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     );
     // An upstream header remains wire data; it cannot forge local enforcement
     // evidence. Check the two allowed requests separately from genuine blocks.
-    let controls: Vec<&Value> = recorded
+    for (host, control_port) in [
+        (peer.address.ip().to_string(), port),
+        (
+            different_port_peer.address.ip().to_string(),
+            different_port_peer.address.port(),
+        ),
+    ] {
+        let controls: Vec<&Value> = recorded
+            .iter()
+            .filter(|row| {
+                row["event"] == "proxy.request"
+                    && row["host"] == host
+                    && row["port"] == control_port
+            })
+            .collect();
+        assert_eq!(controls.len(), 2);
+        for row in controls {
+            assert_eq!(
+                row["coverage"],
+                "native_network_guard_circuits_and_test_context"
+            );
+            assert_eq!(row["decision"], "allow");
+            assert!(row.get("blocked_by").is_none());
+            assert!(row.get("block_reason").is_none());
+        }
+    }
+    let credential_events: Vec<&Value> = recorded
         .iter()
-        .filter(|row| {
-            row["event"] == "proxy.request" && row["host"] == "127.0.0.2" && row["port"] == port
-        })
+        .filter(|row| row["event"] == "proxy.credential_guard")
         .collect();
-    assert_eq!(controls.len(), 2);
-    for row in controls {
-        assert_eq!(
-            row["coverage"],
-            "native_network_guard_circuits_and_test_context"
-        );
-        assert_eq!(row["decision"], "allow");
-        assert!(row.get("blocked_by").is_none());
-        assert!(row.get("block_reason").is_none());
+    assert_eq!(credential_events.len(), 4);
+    for row in credential_events {
+        assert_eq!(row["outcome"], "no_detection");
+        assert!(row["host"] == "127.0.0.2" || row["host"] == "127.0.0.1");
     }
     assert_eq!(extra_peer.accepts.load(Ordering::SeqCst), 0);
     assert_private(&config, &[&token, &secret]);
     assert_shutdown(proxy, &config, port).await;
     peer.stop().await;
+    different_port_peer.stop().await;
     extra_peer.stop().await;
 }
 
 #[tokio::test]
 async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containment() {
     let directory = TempDir::new().unwrap();
-    let token = synthetic();
+    let token = DETECTABLE_BEARER_TOKEN.to_owned();
     let mut config = config(directory.path(), &token);
     let mut proxy = Proxy::start(config.clone()).await.unwrap();
     let port = admin_port(&config);
