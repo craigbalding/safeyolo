@@ -582,6 +582,28 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
             owner.wait(timeout=5)
 
 
+def test_guest_supervisor_retains_root_transition_caps_only_on_gvisor():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/safeyolo/guest-init-per-run.sh"
+    ).read_text()
+    gvisor_start = source.index("*-gvisor)")
+    gvisor_end = source.index(";;", gvisor_start)
+    hardware_start = source.index("*)", gvisor_end)
+    hardware_end = source.index(";;", hardware_start)
+    gvisor = source[gvisor_start:gvisor_end]
+    hardware = source[hardware_start:hardware_end]
+
+    assert "setpriv --reuid=agent --regid=agent --clear-groups" in gvisor
+    assert (
+        "--inh-caps=+setuid,+setgid --ambient-caps=+setuid,+setgid"
+        in gvisor
+    )
+    assert "su agent -s /bin/bash" not in gvisor
+    assert "su agent -s /bin/bash" in hardware
+    assert "setpriv" not in hardware
+
+
 def test_stop_intent_prevents_restart_after_command_crash(tmp_config_dir):
     _seed_state(tmp_config_dir, "demo", "exec worker")
     platform = _Platform([_Process(143, "terminated")])

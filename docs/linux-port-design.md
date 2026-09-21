@@ -276,7 +276,9 @@ to the agent user. Key fields:
 
 - `process.user`: `{uid: 0, gid: 0}` — init runs as root-in-sandbox
   (mapped to host uid 100000 via the userns); `guest-init-per-run.sh`
-  drops to uid 1000 via `su agent -l` before launching the agent
+  launches the agent as uid 1000. On gVisor it retains only CAP_SETUID and
+  CAP_SETGID so the guest `sudo` shim can enter namespace root; hardware VMs
+  use ordinary setuid `sudo`
 - `process.capabilities`: guest-init receives CAP_CHOWN,
   CAP_DAC_OVERRIDE, CAP_NET_ADMIN, CAP_SETUID, and CAP_SETGID among its
   bounded guest capabilities. CAP_SETUID/CAP_SETGID also provide the

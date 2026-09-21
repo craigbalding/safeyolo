@@ -261,8 +261,22 @@ start_command_supervisor_if_needed() {
     # iteration starts a fresh runtime supervisor. The supervisor records its
     # command PID and start token so a replacement fences an orphan before
     # resuming the preserved checkpoint.
-    setsid su agent -s /bin/bash -c \
-        "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+    case "$(uname -r)" in
+        *-gvisor)
+            # The rootless Linux sudo shim needs only SETUID and SETGID. `su`
+            # clears those capabilities, so retain them for the supervised
+            # agent while leaving the wider guest capability set bounded and
+            # inactive. Hardware VMs use their ordinary setuid sudo binary.
+            setsid setpriv --reuid=agent --regid=agent --clear-groups \
+                --inh-caps=+setuid,+setgid --ambient-caps=+setuid,+setgid \
+                /bin/bash -c \
+                "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+            ;;
+        *)
+            setsid su agent -s /bin/bash -c \
+                "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+            ;;
+    esac
     COMMAND_SUPERVISOR_PID=$!
     echo "[per-run] started guest command supervisor (pid=$COMMAND_SUPERVISOR_PID)" > /dev/console 2>/dev/null || true
 }
