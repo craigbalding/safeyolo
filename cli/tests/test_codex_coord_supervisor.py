@@ -2832,10 +2832,69 @@ def _stage_preflight(monkeypatch, module, tmp_path, *, tool_timeout=330, login="
 def test_preflight_requires_chatgpt_subscription(supervisor_module, tmp_path, monkeypatch):
     module = supervisor_module
     _stage_preflight(monkeypatch, module, tmp_path, login="Logged in using an API key")
-    monkeypatch.setattr(module, "_api_json", lambda *args, **kwargs: {"agent_api": "ok"})
+    def api(path, **_kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        return {"room_id": "room-1", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module, "_api_json", api)
 
     with pytest.raises(module.SupervisorError, match="ChatGPT subscription"):
         module.preflight(_config(module, tmp_path))
+
+
+def test_preflight_accepts_explicit_command_authenticated_external_provider(
+    supervisor_module, tmp_path, monkeypatch
+):
+    module = supervisor_module
+    codex_home = tmp_path / "codex-home"
+    launcher = tmp_path / "coord-launcher"
+    codex_home.mkdir()
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
+    (codex_home / "config.toml").write_text(
+        "forced_chatgpt_auth = false\n"
+        "[mcp_servers.safeyolo-coord]\n"
+        f'command = "{launcher}"\n'
+        "tool_timeout_sec = 330\n"
+    )
+    (codex_home / "opencode-go-review.config.toml").write_text(
+        'model_provider = "opencode_go_review"\n'
+        'model = "deepseek-v4.1-flash"\n'
+        "[model_providers.opencode_go_review]\n"
+        'base_url = "https://opencode.ai/zen/go/v1"\n'
+        'wire_api = "responses"\n'
+        "[model_providers.opencode_go_review.auth]\n"
+        'command = "sh"\n'
+        'args = ["-c", "cat $HOME/.codex/secrets/opencode-go.key"]\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    def api(path, **_kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        return {"room_id": "room-1", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module, "_api_json", api)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("ChatGPT login status must not run for the external provider"),
+    )
+
+    rooms = module.preflight(
+        _config(module, tmp_path),
+        module.empty_state(),
+        [
+            "--profile",
+            "opencode-go-review",
+            "-c",
+            'model_provider="opencode_go_review"',
+            "-c",
+            'model="deepseek-v4.1-flash"',
+        ],
+    )
+
+    assert rooms
 
 
 def test_pi_preflight_checks_the_selected_subscription_and_coord(

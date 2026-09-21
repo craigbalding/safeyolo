@@ -923,6 +923,74 @@ def _bounded_diagnostic(value: Any, limit: int = 300) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def _codex_config_override(
+    arguments: tuple[str, ...] | list[str], key: str
+) -> Any | None:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        name, separator, value = argument.partition("=")
+        width = 1
+        if name in {"-c", "--config"} and not separator and index + 1 < len(arguments):
+            value = arguments[index + 1]
+            width = 2
+        if name in {"-c", "--config"}:
+            config_key, equals, config_value = value.partition("=")
+            if equals and config_key == key:
+                try:
+                    return tomllib.loads(f"value = {config_value}")["value"]
+                except tomllib.TOMLDecodeError as exc:
+                    raise SupervisorError(f"invalid Codex config override for {key}") from exc
+        index += width
+    return None
+
+
+def _external_codex_preflight(
+    codex_home: Path,
+    codex_config: dict[str, Any],
+    harness_args: tuple[str, ...] | list[str],
+) -> None:
+    """Validate an explicit command-authenticated provider without reading its secret."""
+    profile_name = _argument_value(harness_args, "--profile")
+    profile_config: dict[str, Any] = {}
+    if profile_name is not None:
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", profile_name) is None:
+            raise SupervisorError("Codex external-provider profile name is invalid")
+        profile_path = codex_home / f"{profile_name}.config.toml"
+        try:
+            profile_config = tomllib.loads(profile_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise SupervisorError("Codex external-provider profile is missing or invalid") from exc
+
+    provider = _codex_config_override(harness_args, "model_provider")
+    if provider is None:
+        provider = profile_config.get("model_provider", codex_config.get("model_provider"))
+    model = _codex_config_override(harness_args, "model")
+    if model is None:
+        model = _argument_value(harness_args, "--model")
+    if model is None:
+        model = profile_config.get("model", codex_config.get("model"))
+    if not isinstance(provider, str) or not provider or not isinstance(model, str) or not model:
+        raise SupervisorError("Codex external-provider launch requires explicit provider and model")
+
+    providers: dict[str, Any] = {}
+    for source in (codex_config, profile_config):
+        configured = source.get("model_providers", {})
+        if isinstance(configured, dict):
+            providers.update(configured)
+    selected = providers.get(provider)
+    auth = selected.get("auth") if isinstance(selected, dict) else None
+    command = auth.get("command") if isinstance(auth, dict) else None
+    command_args = auth.get("args") if isinstance(auth, dict) else None
+    if (
+        not isinstance(command, str)
+        or not command
+        or not isinstance(command_args, list)
+        or any(not isinstance(item, str) for item in command_args)
+    ):
+        raise SupervisorError("Codex external provider has no command authentication")
+
+
 def preflight(
     config: Config,
     state: dict[str, Any] | None = None,
@@ -951,6 +1019,10 @@ def preflight(
         isinstance(tool_timeout, bool) or not isinstance(tool_timeout, int | float) or tool_timeout <= 0
     ):
         raise SupervisorError("Codex safeyolo-coord MCP timeout must be positive")
+
+    if codex_config.get("forced_chatgpt_auth") is False:
+        _external_codex_preflight(codex_home, codex_config, harness_args)
+        return _coord_preflight(config, state, health=health)
 
     codex = os.environ.get("SAFEYOLO_CODEX_BIN", "codex")
     try:
