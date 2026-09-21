@@ -2615,12 +2615,16 @@ certificate. The controlled configured origin receives the exact request bytes.
 The normal client at the unconfigured port receives a proxy certificate. The
 normal client receives a policy denial after its inner request. A client that
 trusts only the configured origin certificate rejects the proxy certificate. The
-controlled unconfigured origin accepts both connections but receives zero bytes.
-The native egress log records one direct configured dial and two direct
-unconfigured dials. The canonical passthrough log records only the configured
-start/end pair and no passthrough error. This proves that one client-rejected
-interception handshake does not become opaque forwarding. Malformed TLS,
-upstream-verification, parent-route and other invalid-interception cases remain
+same controlled unconfigured origin also accepts a CONNECT whose client sends a
+TLS-handshake record with an invalid record version. The malformed client sees
+a native TLS fatal alert and then an EOF. The controlled unconfigured origin
+receives zero bytes from all three unconfigured connections. The native egress
+log records one direct configured dial and three direct unconfigured dials. The
+canonical passthrough log records only the configured start/end pair and no
+passthrough error. The only `proxy.tunnel` record is the configured opaque
+endpoint. This proves that a client-rejected interception handshake and one
+malformed TLS-handshake record do not become opaque forwarding.
+Upstream-verification, parent-route and other invalid-interception cases remain
 unproven.
 
 The direct matcher remains below local containment: a broad `127.0.0.0/8`

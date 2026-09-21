@@ -748,12 +748,12 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
         stream.shutdown().await.unwrap();
         (peer, request)
     });
-    // Both unconfigured attempts reach this controlled origin because CONNECT
+    // Every unconfigured attempt reaches this controlled origin because CONNECT
     // opens its admitted destination before TLS classification. Neither may
     // deliver client handshake or application bytes to it.
     let intercepted_origin = tokio::spawn(async move {
         let mut observations = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..3 {
             let (mut socket, peer) = intercepted_listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
@@ -857,6 +857,39 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
         "expected a client certificate-verification failure, got {client_error}"
     );
 
+    // The handshake content type deliberately resembles TLS, but its record
+    // version is invalid. CONNECT has already admitted and opened the origin
+    // socket. This must reach the TLS interception failure path, not the
+    // unconfigured opaque relay path.
+    let malformed_tls = b"\x16\x03\x04\x00\x04\x02\x00\x00\x00";
+    let mut malformed_client =
+        connect_raw(&config.listeners[0].socket_path, &intercepted_authority).await;
+    malformed_client.write_all(malformed_tls).await.unwrap();
+    malformed_client.shutdown().await.unwrap();
+    let mut malformed_response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        malformed_client.read_to_end(&mut malformed_response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        malformed_response.len(),
+        7,
+        "malformed TLS returned non-alert bytes: {malformed_response:?}"
+    );
+    assert_eq!(
+        &malformed_response[..5],
+        b"\x15\x03\x03\x00\x02",
+        "malformed TLS must return a TLS alert, not an opaque response"
+    );
+    assert_eq!(
+        malformed_response[5], 2,
+        "malformed TLS must return a fatal alert before EOF"
+    );
+    drop(malformed_client);
+
     let (configured_peer, configured_bytes) =
         tokio::time::timeout(Duration::from_secs(2), configured_origin)
             .await
@@ -868,11 +901,14 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(intercepted_observations.len(), 2);
-    assert!(
+    assert_eq!(intercepted_observations.len(), 3);
+    assert_eq!(
         intercepted_observations
             .iter()
-            .all(|(peer, bytes)| { peer.ip().is_loopback() && bytes.is_empty() })
+            .map(|(peer, bytes)| (peer.ip().is_loopback(), bytes.len()))
+            .collect::<Vec<_>>(),
+        [(true, 0), (true, 0), (true, 0)],
+        "unconfigured origin received intercepted client bytes"
     );
 
     let lifecycle = wait_passthrough_events(&config, 2).await;
@@ -892,7 +928,7 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
         .into_iter()
         .filter(|event| event["event"] == "proxy.egress")
         .collect::<Vec<_>>();
-    assert_eq!(egress.len(), 3, "each CONNECT must retain its own dial");
+    assert_eq!(egress.len(), 4, "each CONNECT must retain its own dial");
     assert!(egress.iter().all(|event| event["route"] == "direct"));
     assert_eq!(
         egress
@@ -906,7 +942,7 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
             .iter()
             .filter(|event| { event["host"] == "localhost" && event["port"] == intercepted_port })
             .count(),
-        2
+        3
     );
     let tunnel_events = events(&config)
         .into_iter()
@@ -951,12 +987,19 @@ async fn unconfigured_tls_interception_failure_never_uses_configured_passthrough
                     "client_handshake": "failed against the untrusted proxy leaf",
                     "client_error": client_error,
                 },
+                "malformed_client_tls": {
+                    "record_hex": hex_bytes(malformed_tls),
+                    "client_response_hex": hex_bytes(&malformed_response),
+                    "client_response_is_fatal_tls_alert": true,
+                    "client_response_eof": true,
+                    "origin_received_byte_count": intercepted_observations.last().unwrap().1.len(),
+                },
                 "proxy_egress": egress,
                 "proxy_tunnel": tunnel_events,
                 "passthrough_events": lifecycle,
                 "limits": [
                     "One direct loopback hostname with one exact configured port and one same-host, different-port control.",
-                    "The failed interception is a client rejection of the proxy certificate; this does not prove every malformed TLS record or upstream-verification failure.",
+                    "The failed interceptions are a client rejection of the proxy certificate and one TLS-handshake record with an invalid record version; this does not prove upstream-verification failure or every malformed TLS record.",
                     "Parent routes, aliases, reserved-name containment, and the remaining D29 matrix remain outside this witness."
                 ],
             }))
