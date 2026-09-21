@@ -15,7 +15,9 @@ SCHEMA = "safeyolo.codex-provenance/v1"
 MARKER_NAME = ".safeyolo-provenance.json"
 AUTH_FILE = "auth.json"
 CONFIG_FILE = "config.toml"
-VALID_STATES = frozenset({"fresh", "agent-local", "legacy-unknown", "reset"})
+VALID_STATES = frozenset(
+    {"fresh", "agent-local", "external-provider", "legacy-unknown", "reset"}
+)
 
 RECOVERY_GUIDANCE = (
     "No credential content was changed. Inside the agent, fresh activation is "
@@ -193,6 +195,14 @@ def _read_config(path: Path) -> str:
     return text
 
 
+def _uses_external_provider_auth(config: str) -> bool:
+    """Return whether this agent explicitly opted out of ChatGPT auth."""
+    if not config:
+        return False
+    tomlkit, _inline_table, _table = _load_tomlkit()
+    return tomlkit.parse(config).unwrap().get("forced_chatgpt_auth") is False
+
+
 def _managed_config(existing: str, launcher: str | None) -> str:
     tomlkit, inline_table_type, table_type = _load_tomlkit()
     try:
@@ -200,7 +210,8 @@ def _managed_config(existing: str, launcher: str | None) -> str:
     except tomlkit.exceptions.TOMLKitError as exc:
         raise CodexStateError(f"invalid Codex config: {exc}") from None
 
-    document["forced_chatgpt_auth"] = True
+    forced_chatgpt_auth = document.get("forced_chatgpt_auth") is not False
+    document["forced_chatgpt_auth"] = forced_chatgpt_auth
     document["cli_auth_credentials_store"] = "file"
 
     if launcher is not None:
@@ -228,7 +239,7 @@ def _managed_config(existing: str, launcher: str | None) -> str:
         raise CodexStateError(f"generated invalid Codex config: {exc}") from None
 
     if (
-        parsed.get("forced_chatgpt_auth") is not True
+        parsed.get("forced_chatgpt_auth") is not forced_chatgpt_auth
         or parsed.get("cli_auth_credentials_store") != "file"
     ):
         raise CodexStateError("generated Codex config lacks required auth settings")
@@ -258,7 +269,24 @@ def _stage(  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
     existing_config = _read_config(config_path)
     marker = _read_marker(marker_path)
 
-    if marker is None:
+    external_provider_auth = _uses_external_provider_auth(existing_config)
+
+    if external_provider_auth and auth_present:
+        raise CodexStateError(
+            "Codex config selects external-provider auth but auth.json is also present; "
+            "reset or re-enable ChatGPT auth before coordinated setup"
+        )
+
+    if external_provider_auth:
+        if marker is not None and marker["state"] == "legacy-unknown":
+            raise CodexStateError(
+                "Codex auth.json has unknown provenance; explicit adopt or reset is required"
+            )
+        if marker is None or marker["state"] != "external-provider":
+            marker = {"state": "external-provider"}
+            _atomic_write(marker_path, _marker_value("external-provider"), 0o600)
+
+    elif marker is None:
         state = "legacy-unknown" if auth_present else "fresh"
         marker = {"state": state}
         _atomic_write(marker_path, _marker_value(state), 0o600)
@@ -279,10 +307,12 @@ def _stage(  # DOC: README.md, contrib/HOST_SCRIPT_GUIDE.md
             "Codex auth.json is missing from an agent-local state; explicit adopt or reset is required"
         )
 
-    if require_agent_local and (marker["state"] != "agent-local" or not auth_present):
+    adopted_chatgpt = marker["state"] == "agent-local" and auth_present
+    adopted_external = marker["state"] == "external-provider" and not auth_present
+    if require_agent_local and not (adopted_chatgpt or adopted_external):
         raise CodexStateError(
-            "Codex coordinated setup requires an adopted agent-local auth.json; "
-            "complete login and adoption in the same agent with normal @codex first"
+            "Codex coordinated setup requires an adopted agent-local auth.json or "
+            "an explicit forced_chatgpt_auth=false external-provider configuration"
         )
 
     managed = _managed_config(existing_config, launcher)

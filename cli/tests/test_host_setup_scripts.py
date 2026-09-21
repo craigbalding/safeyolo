@@ -1588,6 +1588,54 @@ def test_codex_state_rejects_wrong_owner_without_reading_auth(
     assert auth_path.read_bytes() == b"owner-sentinel"
 
 
+def test_codex_state_accepts_explicit_external_provider_without_chatgpt_auth(
+    tmp_path: Path,
+) -> None:
+    state = _load_codex_state_module()
+    home = tmp_path / "agent"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    config_path = codex_home / "config.toml"
+    config_path.write_text('forced_chatgpt_auth = false\nmodel_provider = "local-review"\n')
+    config_path.chmod(0o600)
+    marker_path = codex_home / state.MARKER_NAME
+    marker_path.write_text(state._marker_value("agent-local"))
+    marker_path.chmod(0o600)
+
+    state._stage(
+        home,
+        "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher",
+        require_agent_local=True,
+    )
+
+    assert not (codex_home / "auth.json").exists()
+    assert json.loads(marker_path.read_text())["state"] == "external-provider"
+    managed = config_path.read_text()
+    assert "forced_chatgpt_auth = false" in managed
+    assert 'model_provider = "local-review"' in managed
+    assert "/home/agent/.safeyolo/safeyolo-coord-mcp-launcher" in managed
+
+
+def test_codex_state_rejects_mixed_external_provider_and_chatgpt_auth(
+    tmp_path: Path,
+) -> None:
+    state = _load_codex_state_module()
+    home = tmp_path / "agent"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    codex_home.chmod(0o700)
+    config_path = codex_home / "config.toml"
+    config_path.write_text("forced_chatgpt_auth = false\n")
+    config_path.chmod(0o600)
+    auth_path = codex_home / "auth.json"
+    auth_path.write_text('{}\n')
+    auth_path.chmod(0o600)
+
+    with pytest.raises(state.CodexStateError, match="external-provider auth"):
+        state._stage(home, None, require_agent_local=True)
+
+
 @pytest.mark.parametrize(
     ("script_name", "consumer_dir"),
     [
