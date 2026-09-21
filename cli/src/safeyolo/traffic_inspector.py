@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import json
+import os
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -59,6 +62,18 @@ def body_preview(value: dict) -> str:
     if len(raw) > BODY_PREVIEW_BYTES:
         rendered += f"\n[preview: first {BODY_PREVIEW_BYTES} of {len(raw)} bytes]"
     return rendered
+
+
+def bulk_export_filename(flow_id: str, format_name: str) -> str:
+    """Return a stable, filesystem-safe name for one selected flow export."""
+    safe_id = "".join(
+        char if char.isascii() and (char.isalnum() or char in "-_") else "-"
+        for char in flow_id
+    ).strip("-_")
+    if not safe_id:
+        safe_id = "flow"
+    digest = hashlib.sha256(flow_id.encode("utf-8")).hexdigest()
+    return f"{safe_id[:48]}-{digest}.{format_name}"
 
 
 def websocket_page(value: dict, offset: int) -> str:
@@ -160,14 +175,16 @@ class TrafficInspector:
         self.flows: list[dict] = []
         self.scope: dict = {}
         self.selected: str | None = None
+        self.marked: set[str] = set()
         self.detail: dict | None = None
         self.body = ""
         self.notice = "Connecting…"
         self.pending_scope: dict | None = None
         self.pending_filter: str | None = None
         self.pending_body: tuple[str, str] | None = None
-        self.pending_export: tuple[str, str, Path] | None = None
+        self.pending_export: tuple[str | tuple[str, ...], str, Path] | None = None
         self._export_cancel_event: ExportPublicationState | None = None
+        self.export_report = ""
         self._notice_hold: str | None = None
         self.websocket_mode = False
         self.transcript = WebSocketTranscript()
@@ -199,7 +216,31 @@ class TrafficInspector:
         self.flows = rows
         self.scope = document.get("scope", {})
         ids = [row["id"] for row in rows]
+        # Marks are a view-local convenience, never an authority grant. Drop
+        # anything that a refreshed scope, filter, or retention pass hid.
+        self.marked.intersection_update(ids)
         self._select(self.selected if self.selected in ids else next(iter(ids), None))
+
+    def toggle_mark(self) -> None:
+        """Mark or unmark the focused visible flow for a later bulk export."""
+        if self.websocket_mode:
+            self._hold_notice("Return to the flow list before marking exports")
+        elif self.selected is None:
+            self._hold_notice("Select a flow before marking exports")
+        elif self.selected in self.marked:
+            self.marked.remove(self.selected)
+            self._hold_notice(f"Unmarked flow {plain_text(self.selected)}")
+        else:
+            self.marked.add(self.selected)
+            self._hold_notice(f"Marked flow {plain_text(self.selected)}")
+        self.wake.set()
+
+    def export_flow_ids(self) -> tuple[str, ...]:
+        """Freeze visible marks, or the focused flow when no mark is present."""
+        marked = tuple(row["id"] for row in self.flows if row["id"] in self.marked)
+        if marked:
+            return marked
+        return (self.selected,) if self.selected is not None else ()
 
     def request_body(self, side: str) -> None:
         self.websocket_mode = False
@@ -222,14 +263,30 @@ class TrafficInspector:
 
     def queue_export(self, flow_id: str, format_name: str, destination: str) -> None:
         """Queue one local export using the flow ID selected at confirmation."""
+        self.queue_exports((flow_id,), format_name, destination)
+
+    def queue_exports(self, flow_ids: tuple[str, ...], format_name: str, destination: str) -> None:
+        """Queue a focused or marked selection without widening its scope."""
         if format_name not in EXPORT_FORMATS:
             self._hold_notice("Export format is invalid")
             return
         if not destination.strip():
             self._hold_notice("Export destination is empty")
             return
-        self.pending_export = flow_id, format_name, Path(destination).expanduser()
-        self._hold_notice(f"Export queued for flow {plain_text(flow_id)}")
+        flow_ids = tuple(dict.fromkeys(flow_ids))
+        if not flow_ids:
+            self._hold_notice("Select a flow before exporting")
+            return
+        path = Path(destination).expanduser()
+        if len(flow_ids) > 1 and not path.is_dir():
+            self._hold_notice("Bulk export destination must be an existing directory")
+            return
+        self.pending_export = (flow_ids if len(flow_ids) > 1 else flow_ids[0]), format_name, path
+        self.export_report = ""
+        if len(flow_ids) == 1:
+            self._hold_notice(f"Export queued for flow {plain_text(flow_ids[0])}")
+        else:
+            self._hold_notice(f"Bulk export queued for {len(flow_ids)} marked flows")
         self.wake.set()
 
     def cancel_export(self) -> None:
@@ -246,10 +303,14 @@ class TrafficInspector:
         self._notice_hold = notice
         self.notice = notice
 
-    async def _run_export(self, request: tuple[str, str, Path]) -> None:
-        flow_id, format_name, destination = request
-        cancel_event = ExportPublicationState()
-        self._export_cancel_event = cancel_event
+    async def _export_one(
+        self,
+        flow_id: str,
+        format_name: str,
+        destination: Path,
+        cancel_event: ExportPublicationState,
+    ) -> tuple[str, TrafficExportResult | None, str | None]:
+        """Write one scoped export and retain only categorical failure details."""
         try:
             result = await asyncio.to_thread(
                 self.api.traffic_export,
@@ -259,24 +320,160 @@ class TrafficInspector:
                 cancel_event=cancel_event,
             )
         except ExportCancelled:
-            self._hold_notice("Export canceled; destination unchanged")
+            return "canceled", None, "canceled"
         except asyncio.CancelledError:
             cancel_event.set()
             raise
         except APIError as exc:
             status = f" {exc.status_code}" if exc.status_code is not None else ""
-            self._hold_notice(f"Export unavailable (APIError{status}); destination unchanged")
+            return "failed", None, f"APIError{status}"
         except (OSError, TypeError, ValueError) as exc:
-            self._hold_notice(f"Export failed ({type(exc).__name__}); destination unchanged")
-        else:
-            if not isinstance(result, TrafficExportResult):
-                self._hold_notice("Export failed (invalid result); destination unchanged")
+            return "failed", None, type(exc).__name__
+        if not isinstance(result, TrafficExportResult):
+            return "failed", None, "invalid result"
+        return "exported", result, None
+
+    async def _run_single_export(
+        self,
+        flow_id: str,
+        format_name: str,
+        destination: Path,
+        cancel_event: ExportPublicationState,
+    ) -> None:
+        state, result, reason = await self._export_one(flow_id, format_name, destination, cancel_event)
+        if state == "canceled":
+            self._hold_notice("Export canceled; destination unchanged")
+        elif state == "failed":
+            assert reason is not None
+            if reason.startswith("APIError"):
+                self._hold_notice(f"Export unavailable ({reason}); destination unchanged")
             else:
-                warning = f"; {result.cleanup_warning}" if result.cleanup_warning else ""
-                self._hold_notice(
-                    f"Exported flow {plain_text(flow_id)} to {plain_text(destination)} "
-                    f"({result.bytes_written} bytes){warning}"
+                self._hold_notice(f"Export failed ({reason}); destination unchanged")
+        else:
+            assert result is not None
+            warning = f"; {result.cleanup_warning}" if result.cleanup_warning else ""
+            self._hold_notice(
+                f"Exported flow {plain_text(flow_id)} to {plain_text(destination)} "
+                f"({result.bytes_written} bytes){warning}"
+            )
+
+    async def _bulk_export_outcomes(
+        self,
+        flow_ids: tuple[str, ...],
+        format_name: str,
+        destination: Path,
+        cancel_event: ExportPublicationState,
+    ) -> list[tuple[str, Path, str, TrafficExportResult | None, str | None]]:
+        outcomes: list[tuple[str, Path, str, TrafficExportResult | None, str | None]] = []
+        for index, flow_id in enumerate(flow_ids):
+            path = destination / bulk_export_filename(flow_id, format_name)
+            # A batch never replaces an existing path. A later selected flow
+            # may still export, so a collision is a truthful partial failure.
+            if path.exists() or path.is_symlink():
+                outcomes.append((flow_id, path, "failed", None, "destination exists"))
+                continue
+            state, result, reason = await self._export_bulk_one(
+                flow_id, format_name, path, cancel_event
+            )
+            outcomes.append((flow_id, path, state, result, reason))
+            if state == "canceled":
+                outcomes.extend(
+                    (
+                        remaining,
+                        destination / bulk_export_filename(remaining, format_name),
+                        "not started",
+                        None,
+                        "canceled before export",
+                    )
+                    for remaining in flow_ids[index + 1:]
                 )
+                break
+        return outcomes
+
+    async def _export_bulk_one(
+        self,
+        flow_id: str,
+        format_name: str,
+        destination: Path,
+        cancel_event: ExportPublicationState,
+    ) -> tuple[str, TrafficExportResult | None, str | None]:
+        """Publish one batch result only if its deterministic name stays unused."""
+        result: TrafficExportResult | None = None
+        published = False
+        try:
+            with tempfile.TemporaryDirectory(prefix=".traffic-export-", dir=destination.parent) as temporary:
+                staged = Path(temporary) / "export"
+                state, result, reason = await self._export_one(
+                    flow_id, format_name, staged, cancel_event
+                )
+                if state != "exported":
+                    return state, result, reason
+                try:
+                    # link(2) creates the final name only when it is still absent;
+                    # unlike replace, it cannot overwrite another selected export.
+                    os.link(staged, destination)
+                    published = True
+                except FileExistsError:
+                    return "failed", None, "destination exists"
+                except OSError:
+                    return "failed", None, "destination link failed"
+        except OSError:
+            if published:
+                return "exported", result, None
+            return "failed", None, "destination staging failed"
+        return "exported", result, None
+
+    def _report_bulk_export(
+        self,
+        flow_ids: tuple[str, ...],
+        outcomes: list[tuple[str, Path, str, TrafficExportResult | None, str | None]],
+    ) -> None:
+        exported = sum(state == "exported" for _, _, state, _, _ in outcomes)
+        failed = sum(state == "failed" for _, _, state, _, _ in outcomes)
+        not_started = sum(state == "not started" for _, _, state, _, _ in outcomes)
+        canceled = any(state == "canceled" for _, _, state, _, _ in outcomes)
+        lines = ["Bulk export report:"]
+        for flow_id, path, state, result, reason in outcomes:
+            label = plain_text(flow_id)
+            target = plain_text(path)
+            if state == "exported":
+                assert result is not None
+                warning = f"; {result.cleanup_warning}" if result.cleanup_warning else ""
+                lines.append(f"exported {label} -> {target} ({result.bytes_written} bytes){warning}")
+            else:
+                lines.append(f"{state} {label} -> {target} ({reason}; destination unchanged)")
+        self.export_report = "\n".join(lines)
+        if canceled:
+            self._hold_notice(
+                f"Bulk export canceled: {exported}/{len(flow_ids)} flows exported; "
+                f"{failed} failed; {not_started} not started"
+            )
+        else:
+            self._hold_notice(
+                f"Bulk export complete: {exported}/{len(flow_ids)} flows exported; {failed} failed"
+            )
+
+    async def _run_bulk_export(
+        self,
+        flow_ids: tuple[str, ...],
+        format_name: str,
+        destination: Path,
+        cancel_event: ExportPublicationState,
+    ) -> None:
+        outcomes = await self._bulk_export_outcomes(flow_ids, format_name, destination, cancel_event)
+        self._report_bulk_export(flow_ids, outcomes)
+
+    async def _run_export(self, request: tuple[str | tuple[str, ...], str, Path]) -> None:
+        flow_ids, format_name, destination = request
+        if isinstance(flow_ids, str):
+            flow_ids = (flow_ids,)
+        cancel_event = ExportPublicationState()
+        self._export_cancel_event = cancel_event
+        try:
+            if len(flow_ids) == 1:
+                await self._run_single_export(flow_ids[0], format_name, destination, cancel_event)
+            else:
+                await self._run_bulk_export(flow_ids, format_name, destination, cancel_event)
         finally:
             self._export_cancel_event = None
 
@@ -356,7 +553,9 @@ class TrafficInspector:
                 request, self.pending_export = self.pending_export, None
                 await self._run_export(request)
             if self._notice_hold is None:
-                self.notice = f"{len(self.flows)} visible flows · shared scope · q detaches"
+                self.notice = (
+                    f"{len(self.flows)} visible flows · {len(self.marked)} marked · shared scope · q detaches"
+                )
             else:
                 self.notice = self._notice_hold
                 self._notice_hold = None
@@ -370,18 +569,24 @@ class TrafficInspector:
             return self.transcript.rows_text()
         lines = []
         for row in self.flows:
-            mark = ">" if row["id"] == self.selected else " "
-            text = f"{mark} {row.get('status') or '-'} {row.get('state', '')} {row.get('agent') or '-'} {row.get('method', '')} {row.get('url', '')}"
+            focus = ">" if row["id"] == self.selected else " "
+            marked = "*" if row["id"] in self.marked else " "
+            text = f"{focus}{marked} {row.get('status') or '-'} {row.get('state', '')} {row.get('agent') or '-'} {row.get('method', '')} {row.get('url', '')}"
             lines.append(plain_text(text))
         return "\n".join(lines) or "No matching flows. Scope is shared with other clients."
+
+    def _with_export_report(self, text: str) -> str:
+        return text + (f"\n\n{self.export_report}" if self.export_report else "")
 
     def detail_text(self) -> str:
         if self.websocket_mode:
             error = plain_text((self.detail or {}).get("error"))
-            return f"error: {error}\n\n" + self.transcript.detail_text()
+            text = f"error: {error}\n\n" + self.transcript.detail_text()
+            return self._with_export_report(text)
         row = self.detail
         if row is None:
-            return "Select a flow with Up/Down. Bodies are fetched only with r/s."
+            text = "Select a flow with Up/Down. Bodies are fetched only with r/s."
+            return self._with_export_report(text)
         lines = [f"{key}: {plain_text(row.get(key))}" for key in
                  ("id", "connection_id", "agent", "method", "url", "status", "state", "started", "ended", "error")]
         for side in ("request", "response"):
@@ -395,7 +600,8 @@ class TrafficInspector:
         text = "\n".join(lines)
         if len(text) > DETAIL_PREVIEW_CHARS:
             text = text[:DETAIL_PREVIEW_CHARS] + "\n[detail preview truncated]"
-        return text + ("\n\n" + self.body if self.body else "")
+        text += "\n\n" + self.body if self.body else ""
+        return self._with_export_report(text)
 
     def _show(self, rows: TextArea, detail: TextArea) -> None:
         for area, text in ((rows, self.rows_text()), (detail, self.detail_text())):
@@ -413,7 +619,7 @@ class TrafficInspector:
         self,
         buffer,
         prompt_field: list[str],
-        export_flow: list[str],
+        export_flows: list[tuple[str, ...]],
         export_format: list[str],
         rows: TextArea,
         prompt: TextArea,
@@ -424,11 +630,11 @@ class TrafficInspector:
         elif field in {"agent", "test_id"}:
             self.set_scope(field, buffer.text)
         elif field == "export_format":
-            return self._finish_export_format(buffer, prompt_field, export_flow, export_format, rows, prompt)
+            return self._finish_export_format(buffer, prompt_field, export_flows, export_format, rows, prompt)
         else:
-            flow_id = export_flow.pop()
+            flow_ids = export_flows.pop()
             format_name = export_format.pop()
-            self.queue_export(flow_id, format_name, buffer.text)
+            self.queue_exports(flow_ids, format_name, buffer.text)
         get_app().layout.focus(rows)
         prompt.text, prompt.prompt = "", ""
         return False
@@ -437,24 +643,27 @@ class TrafficInspector:
         self,
         buffer,
         prompt_field: list[str],
-        export_flow: list[str],
+        export_flows: list[tuple[str, ...]],
         export_format: list[str],
         rows: TextArea,
         prompt: TextArea,
     ) -> bool:
         format_name = buffer.text.strip()
-        flow_id = export_flow.pop()
+        flow_ids = export_flows.pop()
         if format_name not in EXPORT_FORMATS:
             self._hold_notice("Export format must be raw, raw_request, raw_response, curl, httpie, har, or zhar")
             get_app().layout.focus(rows)
             prompt.text, prompt.prompt = "", ""
             return False
-        export_flow.append(flow_id)
+        export_flows.append(flow_ids)
         export_format.append(format_name)
         prompt_field.append("export_path")
         prompt.text = ""
         prompt.buffer.cursor_position = 0
-        prompt.prompt = "Local destination path (Escape cancels): "
+        if len(flow_ids) == 1:
+            prompt.prompt = "Local destination path (Escape cancels): "
+        else:
+            prompt.prompt = "Existing destination directory for marked exports (Escape cancels): "
         return False
 
     def _add_export_binding(
@@ -464,14 +673,15 @@ class TrafficInspector:
         rows: TextArea,
         prompt: TextArea,
         prompt_field: list[str],
-        export_flow: list[str],
+        export_flows: list[tuple[str, ...]],
     ) -> None:
         @bindings.add("x", filter=browsing)
         def export(event) -> None:
-            if self.selected is None:
+            flow_ids = self.export_flow_ids()
+            if not flow_ids:
                 self._hold_notice("Select a flow before exporting")
                 return
-            export_flow.append(self.selected)
+            export_flows.append(flow_ids)
             prompt_field.append("export_format")
             prompt.text = ""
             prompt.buffer.cursor_position = 0
@@ -480,12 +690,12 @@ class TrafficInspector:
 
     def _bindings(self, rows: TextArea, detail: TextArea, prompt: TextArea) -> KeyBindings:
         prompt_field: list[str] = []
-        export_flow: list[str] = []
+        export_flows: list[tuple[str, ...]] = []
         export_format: list[str] = []
         bindings = KeyBindings()
 
         def finish_prompt(buffer) -> bool:
-            return self._finish_prompt(buffer, prompt_field, export_flow, export_format, rows, prompt)
+            return self._finish_prompt(buffer, prompt_field, export_flows, export_format, rows, prompt)
 
         prompt.accept_handler = finish_prompt
 
@@ -513,6 +723,11 @@ class TrafficInspector:
         def body(event) -> None:
             self.request_body({"r": "request", "s": "response"}[event.key_sequence[0].key])
 
+        @bindings.add("m", filter=browsing)
+        def mark(event) -> None:
+            self.toggle_mark()
+            self._show(rows, detail)
+
         @bindings.add("c", filter=browsing)
         def clear(event) -> None:
             self.pending_scope = {}
@@ -529,12 +744,12 @@ class TrafficInspector:
             prompt.prompt = "User filter (empty clears filter): " if field == "user_filter" else f"{field} (empty clears): "
             event.app.layout.focus(prompt)
 
-        self._add_export_binding(bindings, browsing, rows, prompt, prompt_field, export_flow)
+        self._add_export_binding(bindings, browsing, rows, prompt, prompt_field, export_flows)
 
         @bindings.add("escape", filter=Condition(lambda: bool(prompt_field)))
         def cancel_prompt(event) -> None:
             prompt_field.clear()
-            export_flow.clear()
+            export_flows.clear()
             export_format.clear()
             prompt.text, prompt.prompt = "", ""
             event.app.layout.focus(rows)
@@ -571,7 +786,10 @@ class TrafficInspector:
 
     def help_text(self) -> str:
         view = "w HTTP · [/] message page · r/s HTTP body" if self.websocket_mode else "r/s body · w WebSocket"
-        return f"↑↓ select · Tab pane · PgUp/PgDn scroll · {view} · x export · f filter · a/t scope · c clear scope · q detach"
+        return (
+            f"↑↓ select · > focus · * marked · Tab pane · PgUp/PgDn scroll · {view} · m mark/unmark · "
+            "x export marked (or focused) · f filter · a/t scope · c clear scope · q detach"
+        )
 
     def application(self) -> Application:
         detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)

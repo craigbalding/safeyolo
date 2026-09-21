@@ -510,8 +510,8 @@ For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector
 reads the proxy's shared live HTTP and WebSocket view. It includes ordinary
 requests without TestContext, pending requests, and terminal responses or errors.
-The first Rust release provides read-only inspection and the selected-flow
-exports described below. It does not provide traffic editing, replay or
+The first Rust release provides read-only inspection and the flow exports
+described below. It does not provide traffic editing, replay or
 interactive interception. See the
 [first-release traffic scope](proxy-parity.md#first-release-traffic-scope).
 The existing scope options, such as `--agent alice --test CASE-1`, update the
@@ -531,16 +531,31 @@ page when selected or requested, rather than fetching the payload on every poll.
 Message rows show direction, type, size, time and the reached inspection drop
 decision. That decision does not establish delivery to the peer.
 
-To export a selected flow, press `x`, enter `raw`, `raw_request`, `raw_response`,
-`curl`, `httpie`, `har` or `zhar`, then enter a local file path. Escape cancels either prompt.
-The selection is fixed when the format prompt opens. Export also works while
-viewing that flow's WebSocket transcript. The destination belongs to the host
-running the inspector; the proxy receives only the flow ID and format.
-The inspector saves the completed download before replacing the destination.
-A failed or canceled download leaves an existing destination unchanged.
-Replacement preserves an existing destination's permissions and follows a final
-symbolic link to its target. It creates a new file inode, so other hard links
-to the previous file keep their previous content.
+The focused flow has a `>` marker. Press `m` to add or remove a `*` marker on a
+visible flow. The marks are local to the inspector. A scope, filter, list, or
+retention refresh removes marks for flows that are no longer visible.
+
+When no flow is marked, press `x` to export the focused flow. When one flow is
+marked, press `x` to export that marked flow. Enter `raw`, `raw_request`,
+`raw_response`, `curl`, `httpie`, `har` or `zhar`, then enter a local file path.
+Escape cancels either prompt. The focused flow or marked selection is fixed when
+the format prompt opens.
+Export also works while viewing that flow's WebSocket transcript.
+
+When two or more flows are marked, press `x`, select a format, and enter an
+existing local directory. The inspector exports each marked flow through the
+same scoped operator API. Each bulk filename is deterministic from the flow ID
+and format. Bulk export does not replace an existing output path. The terminal
+shows one result for each flow and an aggregate result. A failed flow does not
+hide authorized exports for other marked flows.
+
+The destination belongs to the host running the inspector. The proxy receives
+only the flow ID and format. The inspector saves a completed download before it
+replaces a single-flow destination. A failed or canceled download leaves an
+existing single-flow destination unchanged. Replacement preserves an existing
+destination's permissions and follows a final symbolic link to its target. It
+creates a new file inode, so other hard links to the previous file keep their
+previous content.
 
 Raw export reconstructs HTTP messages from retained observations and available
 body content. It does not reproduce original wire bytes. Combined `raw` output can

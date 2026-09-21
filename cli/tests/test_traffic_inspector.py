@@ -16,6 +16,7 @@ from safeyolo.traffic_inspector import (
     BODY_PREVIEW_BYTES,
     TrafficInspector,
     body_preview,
+    bulk_export_filename,
     plain_text,
 )
 
@@ -69,6 +70,42 @@ def test_selection_survives_newest_insert_and_clears_details_on_eviction():
     assert view.detail is None and view.body == ""
     view.snapshot({"flows": [], "scope": {}})
     assert view.selected is None
+
+
+def test_marked_flows_are_distinct_from_focus_and_hidden_marks_are_dropped():
+    view = TrafficInspector(client())
+    view.snapshot({"flows": [flow("one"), flow("two"), flow("three")], "scope": {}})
+    view.toggle_mark()
+    view.select(1)
+    view.toggle_mark()
+
+    assert view.selected == "two"
+    assert view.marked == {"one", "two"}
+    assert view.export_flow_ids() == ("one", "two")
+    assert view.rows_text().splitlines()[:2] == [
+        " * 200 complete alice GET http://owned.invalid/",
+        ">* 200 complete alice GET http://owned.invalid/",
+    ]
+    assert "> focus" in view.help_text()
+    assert "* marked" in view.help_text()
+    assert "m mark/unmark" in view.help_text()
+    assert "x export marked (or focused)" in view.help_text()
+
+    # The refreshed scope/list is authoritative for marks as well as focus.
+    view.snapshot({"flows": [flow("two", agent="bob")], "scope": {"agent": "bob"}})
+    assert view.selected == "two"
+    assert view.marked == {"two"}
+    assert view.export_flow_ids() == ("two",)
+
+
+def test_bulk_export_filename_is_stable_safe_and_distinguishes_normalized_ids():
+    first = bulk_export_filename("flow/one?", "raw_request")
+    second = bulk_export_filename("flow:one?", "raw_request")
+
+    assert first == bulk_export_filename("flow/one?", "raw_request")
+    assert first != second
+    assert "/" not in first and "?" not in first
+    assert first.endswith(".raw_request")
 
 
 def test_detail_retains_duplicate_headers_metadata_and_body_facts():

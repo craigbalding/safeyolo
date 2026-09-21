@@ -15,7 +15,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from safeyolo.api import AdminAPI, APIError, ExportCancelled, ExportPublicationState, TrafficExportResult
-from safeyolo.traffic_inspector import TrafficInspector
+from safeyolo.traffic_inspector import TrafficInspector, bulk_export_filename
 
 
 class _StreamResponse:
@@ -507,6 +507,174 @@ def test_export_ui_freezes_flow_and_uses_local_path_while_websocket_mode(tmp_pat
     api.traffic_export.assert_called_once()
     assert api.traffic_export.call_args.args[:2] == ("one", "raw")
     assert api.traffic_export.call_args.args[2] == Path(tmp_path / "captured.bin")
+
+
+def test_export_ui_marks_multiple_flows_and_uses_a_directory_for_bulk_output(tmp_path):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.traffic_flows.return_value = {
+        "flows": [
+            {"id": "http/one", "agent": "alice"},
+            {"id": "ws:two", "agent": "alice"},
+        ],
+        "scope": {},
+    }
+    api.traffic_flow.return_value = {"id": "http/one"}
+    def write_export(flow_id, _format_name, destination, *, cancel_event):
+        destination.write_bytes(flow_id.encode())
+        return TrafficExportResult(
+            status_code=200,
+            content_type="application/octet-stream",
+            bytes_written=len(flow_id),
+        )
+
+    api.traffic_export.side_effect = write_export
+    view = TrafficInspector(api)
+
+    async def wait_until(predicate):
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    async def run():
+        with create_pipe_input() as keyboard, create_app_session(input=keyboard, output=DummyOutput()):
+            app = view.application()
+            app.ttimeoutlen = 0.01
+
+            async def operator():
+                await wait_until(lambda: view.detail is not None)
+                keyboard.send_text("m\x1b[Bm")
+                await wait_until(lambda: view.marked == {"http/one", "ws:two"})
+                rows_buffer = app.layout.current_buffer
+                keyboard.send_text("x")
+                await wait_until(lambda: app.layout.current_buffer is not rows_buffer)
+                keyboard.send_text("raw\r")
+                await asyncio.sleep(0.03)
+                keyboard.send_text(str(tmp_path) + "\r")
+                await wait_until(
+                    lambda: api.traffic_export.call_count == 2
+                    and view._export_cancel_event is None
+                    and view._notice_hold is None
+                )
+                keyboard.send_text("q")
+
+            app.pre_run_callables.append(lambda: app.create_background_task(operator()))
+            await asyncio.wait_for(app.run_async(), timeout=3)
+
+    asyncio.run(run())
+    assert [call.args[:2] for call in api.traffic_export.call_args_list] == [
+        ("http/one", "raw"),
+        ("ws:two", "raw"),
+    ]
+    assert [call.args[2].name for call in api.traffic_export.call_args_list] == ["export", "export"]
+    assert all(call.args[2].parent.parent == tmp_path for call in api.traffic_export.call_args_list)
+    assert (tmp_path / bulk_export_filename("http/one", "raw")).read_bytes() == b"http/one"
+    assert (tmp_path / bulk_export_filename("ws:two", "raw")).read_bytes() == b"ws:two"
+    assert view.notice == "Bulk export complete: 2/2 flows exported; 0 failed"
+    assert "exported http/one" in view.export_report
+    assert "exported ws:two" in view.export_report
+
+
+def test_bulk_export_retains_authorized_results_when_one_destination_exists(tmp_path):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    def write_export(flow_id, _format_name, destination, *, cancel_event):
+        destination.write_bytes(flow_id.encode())
+        return TrafficExportResult(
+            status_code=200,
+            content_type="application/octet-stream",
+            bytes_written=len(flow_id),
+        )
+
+    api.traffic_export.side_effect = write_export
+    view = TrafficInspector(api)
+    collision = tmp_path / bulk_export_filename("http/one", "raw")
+    collision.write_bytes(b"earlier-export")
+
+    asyncio.run(view._run_export((("http/one", "ws:two"), "raw", tmp_path)))
+
+    assert collision.read_bytes() == b"earlier-export"
+    api.traffic_export.assert_called_once()
+    assert api.traffic_export.call_args.args[:2] == ("ws:two", "raw")
+    assert view.notice == "Bulk export complete: 1/2 flows exported; 1 failed"
+    assert "failed http/one" in view.export_report
+    assert "destination exists; destination unchanged" in view.export_report
+    assert "exported ws:two" in view.export_report
+
+
+def test_bulk_export_does_not_replace_a_destination_created_during_export(tmp_path):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    destination = tmp_path / bulk_export_filename("one", "raw")
+
+    def write_then_create_collision(flow_id, _format_name, staged, *, cancel_event):
+        staged.write_bytes(b"authorized bytes")
+        if flow_id == "one":
+            destination.write_bytes(b"other export")
+        return TrafficExportResult(status_code=200, content_type="application/octet-stream", bytes_written=16)
+
+    api.traffic_export.side_effect = write_then_create_collision
+    view = TrafficInspector(api)
+
+    asyncio.run(view._run_export((("one", "two"), "raw", tmp_path)))
+
+    assert destination.read_bytes() == b"other export"
+    assert (tmp_path / bulk_export_filename("two", "raw")).read_bytes() == b"authorized bytes"
+    assert view.notice == "Bulk export complete: 1/2 flows exported; 1 failed"
+    assert "failed one" in view.export_report
+    assert [call.args[:2] for call in api.traffic_export.call_args_list] == [("one", "raw"), ("two", "raw")]
+
+
+@pytest.mark.parametrize("status_code", [404, 422])
+def test_bulk_export_reports_one_scoped_or_missing_representation_failure_without_hiding_other_successes(
+    tmp_path, status_code
+):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+
+    def first_success(flow_id, _format_name, destination, *, cancel_event):
+        if flow_id == "http-one":
+            destination.write_bytes(b"authorized")
+            return TrafficExportResult(status_code=200, content_type="application/octet-stream", bytes_written=10)
+        raise APIError("private missing flow", status_code)
+
+    api.traffic_export.side_effect = first_success
+    view = TrafficInspector(api)
+
+    asyncio.run(view._run_export((("http-one", "ws-two"), "zhar", tmp_path)))
+
+    assert [call.args[:2] for call in api.traffic_export.call_args_list] == [
+        ("http-one", "zhar"),
+        ("ws-two", "zhar"),
+    ]
+    assert view.notice == "Bulk export complete: 1/2 flows exported; 1 failed"
+    assert "exported http-one" in view.export_report
+    assert "failed ws-two" in view.export_report
+    assert f"APIError {status_code}; destination unchanged" in view.export_report
+    assert "private missing flow" not in view.export_report
+
+
+@pytest.mark.parametrize(
+    "format_name",
+    ["raw", "raw_request", "raw_response", "curl", "httpie", "har", "zhar"],
+)
+def test_bulk_export_keeps_each_retained_format_available(tmp_path, format_name):
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+
+    def write_export(flow_id, _format_name, destination, *, cancel_event):
+        destination.write_bytes(flow_id.encode())
+        return TrafficExportResult(status_code=200, content_type="application/octet-stream", bytes_written=len(flow_id))
+
+    api.traffic_export.side_effect = write_export
+    view = TrafficInspector(api)
+
+    view.queue_exports(("http-one", "ws-two"), format_name, str(tmp_path))
+
+    assert view.pending_export == (("http-one", "ws-two"), format_name, tmp_path)
+    request = view.pending_export
+    assert request is not None
+    asyncio.run(view._run_export(request))
+    assert [call.args[:2] for call in api.traffic_export.call_args_list] == [
+        ("http-one", format_name),
+        ("ws-two", format_name),
+    ]
+    assert (tmp_path / bulk_export_filename("http-one", format_name)).read_bytes() == b"http-one"
+    assert (tmp_path / bulk_export_filename("ws-two", format_name)).read_bytes() == b"ws-two"
 
 
 @pytest.mark.parametrize("format_name", ["har", "zhar"])
