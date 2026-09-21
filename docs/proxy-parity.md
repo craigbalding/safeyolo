@@ -2797,9 +2797,14 @@ filter parity or independent acceptance.
 ### Selected-flow file export
 
 The terminal inspector's `x` action selects `raw`, `raw_request`, `raw_response`,
-`curl`, `httpie`, `har` or `zhar` and saves the selected flow to a local path. The authenticated
-operator route receives the flow ID and format. The destination path stays with
-the client. Command formats produce text and do not execute it.
+`curl`, `httpie`, `har` or `zhar`. With no marks, it saves the focused flow to a
+local path. With one mark, it saves that marked flow to a local path. With two
+or more marks, it saves each marked flow to a deterministic path in an existing
+local directory and reports each result plus the aggregate. A refreshed scope,
+filter, list, or retention result drops marks that are no longer visible. The
+authenticated operator route receives each flow ID and format. The destination
+path stays with the client. Bulk export does not replace an existing output
+path. Command formats produce text and do not execute it.
 
 The bounded runtime witness
 [`live_operator_inspector_browses_scopes_and_exports_native_http`](../proxy/src/traffic_view_runtime_tests.rs)
