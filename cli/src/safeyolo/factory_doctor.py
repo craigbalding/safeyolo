@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -23,7 +24,7 @@ from .platform import AgentPlatform, get_platform
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "03c3c962d786c3c4b8a2d9cafe514e0976d110f926642d3ed2b63184eee6a15c"
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "e77fb807338a5edae7365ebe610bf550f717c56ea2cde20ff4485f5a2d6269d0"
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
@@ -47,6 +48,11 @@ _PI_COMMAND_HEREDOC_END = "\nEOF\n"
 _INTERACTIVE_PI_EXEC = 'exec "$pi_bin" "${args[@]}" "$@"\n'
 _SUPERVISED_PI_EXEC = (
     'export SAFEYOLO_PI_BIN="$pi_bin"\nexec python3 "$HOME/.safeyolo/codex-coord-supervisor.py" -- "${args[@]}" "$@"\n'
+)
+_COMMAND_OBSERVATION_WRAPPER = (
+    "#!/bin/sh\n"
+    "# SafeYolo configured-command observation\n"
+    'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
 )
 _COORD_INSTALL_BLOCK = (
     "# ---- coord-mcp-bootstrap: mcp+httpx install (guarded, idempotent) ----\n"
@@ -628,7 +634,7 @@ def _inspect_staging(
         checks.append(_fail("staging", f"{label} missing or non-executable={','.join(names)}", recovery))
         return
     try:
-        command_text = _bounded_text(command, 512 * 1024)
+        command_text = _staged_command_text(home, command)
         staged = _bounded_json(supervisor_config, 512 * 1024)
         instructions_text = _bounded_text(instructions, 2 * 1024 * 1024)
         expected_command = _expected_supervised_command(harness)
@@ -771,6 +777,25 @@ def _inspect_staging(
                 f"command, supervisor, role, and {harness} Coord binding match",
             )
         )
+
+
+def _staged_command_text(home: Path, command: Path) -> str:
+    """Read the factory command through SafeYolo's owned boot wrapper."""
+    command_text = _bounded_text(command, 512 * 1024)
+    if command_text != _COMMAND_OBSERVATION_WRAPPER:
+        return command_text
+
+    payload = command.with_name(f"{command.name}.payload")
+    info = payload.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("observed command payload is not a regular file")
+    context = _bounded_json(home.parent / "config-share/host-launch-context.json", 512 * 1024)
+    identities = context.get("command_payloads") if isinstance(context, dict) else None
+    expected = identities.get(command.name) if isinstance(identities, dict) else None
+    actual = [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]
+    if expected != actual:
+        raise ValueError("observed command payload identity does not match boot context")
+    return _bounded_text(payload, 512 * 1024)
 
 
 def _bounded_text(path: Path, maximum: int) -> str:
