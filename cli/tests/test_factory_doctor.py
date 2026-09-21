@@ -633,7 +633,7 @@ def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory
     command = (
         f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
         "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
-        f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js exec resume thread\n"
+        f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js --dangerously-bypass-approvals-and-sandbox -c model=x exec resume thread\n"
         f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
     )
     executables = {

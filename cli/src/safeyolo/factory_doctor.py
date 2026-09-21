@@ -1032,7 +1032,7 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
         if Path(executable).name != Path(expected["codex-command"]).name:
             return False
         return _path_is_within_codex_tool_root(executable, expected["codex-command"])
-    if len(tokens) < 3 or Path(tokens[0]).name not in {"node", "nodejs"} or tokens[2] != "exec":
+    if len(tokens) < 2 or Path(tokens[0]).name not in {"node", "nodejs"}:
         return False
     if executable != expected["node-executable"] and not (
         executable is not None
@@ -1045,9 +1045,12 @@ def _is_codex_process(command: str, executable: str | None, expected: dict[str, 
     if entrypoint == command_path:
         return True
     # mise's npm shim resolves `codex` to a shell wrapper, then execs node
-    # with the package's bin/codex.js entrypoint.  The wrapper and resolved
-    # entrypoint stay inside the same per-agent tool root; accepting only that
-    # root preserves the executable identity check for arbitrary paths.
+    # with the package's bin/codex.js entrypoint. CLI flags can precede the
+    # eventual subcommand, so process identity comes from the node executable
+    # and the bounded entrypoint path rather than a fixed argv position. The
+    # wrapper and resolved entrypoint stay inside the same per-agent tool root;
+    # accepting only that root preserves the executable identity check for
+    # arbitrary paths.
     if not entrypoint.startswith("/") or not command_path.startswith("/"):
         return False
     return _path_is_within_codex_tool_root(entrypoint, command_path)
