@@ -1873,7 +1873,19 @@ fn audit_request_values(request_id: &str, agent_name: &str, details: Value) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network_guard::Identity;
+    use crate::{
+        AgentListener, Config, Proxy,
+        audit::{Event, Kind, Severity, Submission},
+        network_guard::Identity,
+    };
+    use std::time::Duration;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpStream, UnixStream},
+    };
+
+    const SHUTDOWN_AGENT_TOKEN: &str = "plumb-shutdown-agent-token";
+    const SHUTDOWN_OPERATOR_TOKEN: &str = "plumb-shutdown-operator-token";
 
     fn text(value: &Value, field: &str) -> String {
         value
@@ -1881,6 +1893,89 @@ mod tests {
             .and_then(Value::as_str)
             .expect("string field")
             .to_owned()
+    }
+
+    fn shutdown_config(root: &Path) -> Config {
+        serde_json::from_value(json!({
+            "listeners": [AgentListener {
+                agent_id: "alice".to_owned(),
+                socket_path: root.join("alice.sock"),
+                source_id: None,
+            }],
+            "data_dir": root.join("data"),
+            "temporary_policy_socket": root.join("policy.sock"),
+            "agent_api_enabled": true,
+            "test_context_block": true,
+            "test_context_inject_declared": false,
+            "test_context_declared_ttl": 900,
+            "sse_streaming_enabled": true,
+            "flow_store_enabled": false,
+            "flow_store_db_path": root.join("flows.sqlite3"),
+            "admin_port": 0,
+            "admin_api_token_file": root.join("operator-token"),
+            "readiness_file": root.join("ready.json"),
+            "audit_log_path": root.join("audit.jsonl"),
+            "event_log": root.join("events.jsonl"),
+            "via_token": "plumb-shutdown-test"
+        }))
+        .unwrap()
+    }
+
+    fn response_status(bytes: &[u8]) -> u16 {
+        std::str::from_utf8(bytes)
+            .unwrap()
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|status| status.parse().ok())
+            .expect("HTTP response status")
+    }
+
+    fn response_json(bytes: &[u8]) -> Value {
+        let body = std::str::from_utf8(bytes)
+            .unwrap()
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("HTTP response body");
+        serde_json::from_str(body).unwrap()
+    }
+
+    async fn raw_agent_request(socket: &Path, body: &[u8]) -> Vec<u8> {
+        let mut stream = UnixStream::connect(socket).await.unwrap();
+        let request = format!(
+            "POST http://_safeyolo.proxy.internal/plumb/request-chat HTTP/1.1\r\n\
+             Host: _safeyolo.proxy.internal\r\nAuthorization: Bearer {SHUTDOWN_AGENT_TOKEN}\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(body).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+            .await
+            .expect("agent request must finish")
+            .unwrap();
+        response
+    }
+
+    async fn raw_admin_approval(port: u16, request_id: &str) -> Vec<u8> {
+        let body =
+            serde_json::to_string(&json!({"request_id":request_id,"ttl_seconds":120})).unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let request = format!(
+            "POST /admin/plumb/approve HTTP/1.1\r\nHost: localhost\r\n\
+             Authorization: Bearer {SHUTDOWN_OPERATOR_TOKEN}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
+            .await
+            .expect("operator approval must finish")
+            .unwrap();
+        response
     }
 
     #[tokio::test]
@@ -2578,6 +2673,202 @@ mod tests {
                 .filter(|row| row["event"] == "plumb.conversation_created")
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[allow(clippy::await_holding_lock)] // Hold the real store boundary until the shutdown owner begins to drain it.
+    async fn shutdown_fence_rejects_later_admin_approval_while_admitted_approval_drains() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let data_dir = root.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("agent_token"), SHUTDOWN_AGENT_TOKEN).unwrap();
+        std::fs::write(root.join("operator-token"), SHUTDOWN_OPERATOR_TOKEN).unwrap();
+
+        let proxy = Proxy::start(shutdown_config(root)).await.unwrap();
+        let admin_port = proxy.admin.as_ref().unwrap().address().port();
+        let agent_socket = root.join("alice.sock");
+
+        // These real accepted-agent requests leave two durable pending rows.
+        // The first will be admitted before the fence and the second gives the
+        // post-fence control a distinct state and audit identity.
+        let control_requested = raw_agent_request(
+            &agent_socket,
+            br#"{"participants":["bob"],"topic":"admitted shutdown control"}"#,
+        )
+        .await;
+        assert_eq!(response_status(&control_requested), 202);
+        let control_request_id = text(&response_json(&control_requested), "request_id");
+        let declined_requested = raw_agent_request(
+            &agent_socket,
+            br#"{"participants":["carol"],"topic":"post-fence decline control"}"#,
+        )
+        .await;
+        assert_eq!(response_status(&declined_requested), 202);
+        let declined_request_id = text(&response_json(&declined_requested), "request_id");
+
+        let runtime = proxy.runtime.read().unwrap().clone();
+        let plumb = runtime.plumb.clone();
+        let writer = runtime.audit.clone();
+        plumb.drain().await;
+        let store = plumb
+            .store
+            .clone()
+            .expect("started proxy has plumb storage");
+        let connection = store.connection.lock().unwrap();
+
+        let control = {
+            let request_id = control_request_id.clone();
+            tokio::spawn(async move { raw_admin_approval(admin_port, &request_id).await })
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while plumb.calls.lock().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("admitted admin approval must reach the owned SQLite call");
+
+        // This is the exact fence Proxy::shutdown invokes before listener
+        // drain. It publishes `closing` before waiting for the control's held
+        // memory/store operation, so a later request cannot acquire an owned
+        // operation slot.
+        let fence = {
+            let plumb = plumb.clone();
+            tokio::spawn(async move { plumb.stop_admission().await })
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !plumb.closing.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shutdown fence must close plumb admission");
+
+        let declined = {
+            let request_id = declined_request_id.clone();
+            tokio::spawn(async move { raw_admin_approval(admin_port, &request_id).await })
+        };
+        let mut shutdown = tokio::spawn(proxy.shutdown());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while root.join("ready.json").exists() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("proxy shutdown must remove readiness before drain completion");
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown must retain the admitted SQLite operation rather than stopping the writer"
+        );
+
+        drop(connection);
+        fence.await.unwrap();
+        let control = tokio::time::timeout(Duration::from_secs(5), control)
+            .await
+            .expect("admitted control must finish after fixture release")
+            .unwrap();
+        let declined = tokio::time::timeout(Duration::from_secs(5), declined)
+            .await
+            .expect("post-fence request must receive a terminal result")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), &mut shutdown)
+            .await
+            .expect("proxy shutdown must join the admitted operation")
+            .unwrap();
+        assert!(
+            plumb.calls.lock().await.is_empty() && plumb.operations.lock().await.is_empty(),
+            "shutdown must join the admitted plumb operation and its SQLite call"
+        );
+
+        assert_eq!(
+            response_status(&control),
+            200,
+            "the admitted control must report its completed approval"
+        );
+        assert_eq!(
+            response_status(&declined),
+            503,
+            "the post-fence request must be declined before it starts"
+        );
+
+        let database = Connection::open(data_dir.join("plumb").join("plumb.db")).unwrap();
+        let control_status: String = database
+            .query_row(
+                "SELECT status FROM plumb_pending WHERE request_id=?1",
+                params![&control_request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let declined_status: String = database
+            .query_row(
+                "SELECT status FROM plumb_pending WHERE request_id=?1",
+                params![&declined_request_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let grants: i64 = database
+            .query_row("SELECT COUNT(*) FROM plumb_grants", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(control_status, "approved");
+        assert_eq!(declined_status, "pending");
+        assert_eq!(grants, 1, "only the admitted request may create a grant");
+
+        let rows: Vec<Value> = std::fs::read_to_string(root.join("audit.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| {
+                    row["event"] == "plumb.approved"
+                        && row["details"]["request_id"] == control_request_id
+                })
+                .count(),
+            1,
+            "the admitted approval must retain one canonical approval attempt"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| {
+                    row["event"] == "plumb.approved"
+                        && row["details"]["request_id"] == declined_request_id
+                })
+                .count(),
+            0,
+            "the declined request must not submit an approval audit"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "plumb.conversation_created")
+                .count(),
+            1,
+            "the admitted approval must retain one canonical conversation audit attempt"
+        );
+
+        // These independent state/audit assertions are detector-sensitive:
+        // admitting the second request would alter its SQLite/audit identity,
+        // and stopping the writer before the control drains leaves the two
+        // required canonical events absent.
+        assert_eq!(
+            writer
+                .emit(Event::new(
+                    "ops.plumb_shutdown_probe",
+                    Kind::Ops,
+                    Severity::Low,
+                    "Plumb shutdown probe",
+                ))
+                .unwrap(),
+            Submission::Stopped,
+            "writer must stop only after the admitted approval's audit attempt"
+        );
+        assert!(!root.join("ready.json").exists());
+        assert!(!agent_socket.exists());
+        assert!(
+            TcpStream::connect(("127.0.0.1", admin_port)).await.is_err(),
+            "shutdown must release the authenticated admin listener"
         );
     }
 }

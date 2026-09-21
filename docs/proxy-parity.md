@@ -3049,7 +3049,17 @@ boundaries. `request_audit_submission_failure_keeps_committed_projection` and
 `admin_audit_submission_failure_keeps_committed_projection` inject writer
 failure and verify that committed state remains durable. The existing
 persistence test opens a second owner on the same state directory and verifies
-the projection; it does not claim a process restart. The separate real-NATS
+the projection; it does not claim a process restart. The real-listener
+`shutdown_fence_rejects_later_admin_approval_while_admitted_approval_drains`
+holds one authenticated `/admin/plumb/approve` at its SQLite boundary, closes
+the same admission fence used by `Proxy::shutdown`, then submits a distinct
+authenticated post-fence approval while full shutdown is draining. After the
+fixture releases, it independently checks the two SQLite request states, the
+single grant, one canonical `plumb.approved` and one
+`plumb.conversation_created` attempt, writer stop, readiness removal and both
+listener releases. Its distinct post-fence request and exact audit counts make
+the witness sensitive to late admission or an early writer stop. This is one
+graceful plumb approval slice, not the full producer matrix. The separate real-NATS
 [`native_attention_wait_is_reclaimed_by_proxy_shutdown`](../proxy/tests/coord_wait_shutdown.rs)
 witness covers one admitted coordination subscription through two graceful
 shutdowns: the same paths reopen with a fresh instance identity, the second
