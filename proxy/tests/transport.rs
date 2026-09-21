@@ -1772,22 +1772,29 @@ async fn two_agents_cannot_spoof_identity_and_denied_requests_never_reach_egress
 async fn reserved_and_invalid_requests_stay_local_even_without_the_adapter() {
     let directory = tempfile::tempdir().unwrap();
     let config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let proxy = Proxy::start(config.clone()).await.unwrap();
     for target in [
         "http://_safeyolo.proxy.internal/not-an-api?token=synthetic",
-        "http://_SAFEYOLO.PROBE.INTERNAL/",
+        "http://_safeyolo.proxy.internal./not-an-api?token=synthetic",
         "https://_safeyolo.proxy.internal/",
     ] {
-        assert!(
-            request(
-                &config.listeners[0].socket_path,
-                target,
-                "Authorization: Bearer synthetic\r\n"
-            )
-            .await
-            .starts_with("HTTP/1.1 503")
-        );
+        let response = request(
+            &config.listeners[0].socket_path,
+            target,
+            "Authorization: Bearer synthetic\r\n",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 503"), "{target}: {response}");
     }
+    let probe = request(
+        &config.listeners[0].socket_path,
+        "http://_SAFEYOLO.PROBE.INTERNAL/",
+        "Authorization: Bearer synthetic\r\n",
+    )
+    .await;
+    assert!(probe.starts_with("HTTP/1.1 200"), "{probe}");
+    assert!(probe.contains("\"probe_ok\": true"), "{probe}");
     let connect = raw(&config.listeners[0].socket_path, "CONNECT _safeyolo.proxy.internal:443 HTTP/1.1\r\nHost: _safeyolo.proxy.internal:443\r\nConnection: close\r\n\r\n").await;
     assert!(connect.starts_with("HTTP/1.1 403"));
     let invalid = raw(
