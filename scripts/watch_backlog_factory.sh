@@ -5,6 +5,13 @@ set -euo pipefail
 repo=${SAFEYOLO_FACTORY_REPO:-/home/agent/safeyolo-rust-620}
 window_name=${SAFEYOLO_FACTORY_WATCH_WINDOW:-factory-watch}
 viewer="$repo/contrib/watch-agent-room.py"
+nested_root=${SAFEYOLO_FACTORY_INSTANCE_ROOT:-/var/lib/nested-safeyolo-lab}
+
+export SAFEYOLO_CONFIG_DIR=${SAFEYOLO_CONFIG_DIR:-$nested_root/state}
+export SAFEYOLO_LOGS_DIR=${SAFEYOLO_LOGS_DIR:-$nested_root/logs}
+export SAFEYOLO_COORD_DATA_DIR=${SAFEYOLO_COORD_DATA_DIR:-$nested_root/state/coord}
+export SAFEYOLO_UPSTREAM_PROXY=${SAFEYOLO_UPSTREAM_PROXY:-http://127.0.0.1:8080}
+export SAFEYOLO_RUNSC_PLATFORM=${SAFEYOLO_RUNSC_PLATFORM:-systrap}
 
 die() { printf 'watch-backlog-factory: %s\n' "$*" >&2; exit 2; }
 
