@@ -1838,7 +1838,7 @@ def test_unavailable_resume_preserves_work_and_starts_fresh_next(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
     )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
@@ -1898,7 +1898,11 @@ def test_recovered_work_preserves_thread_after_successful_handoff(
         }
     ]
     module.save_state(state_path, state)
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
 
     def invoke(config, state, current_path, room_ids, codex_args):
@@ -1938,7 +1942,7 @@ def test_empty_external_wait_does_not_launch_codex(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
     )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     waits = []
@@ -2068,7 +2072,11 @@ def test_actionable_external_attention_launches_one_codex_turn(
     attention_id = "attn-" + "5" * 32
     state_path = tmp_path / "state.json"
     module.save_state(state_path, module.empty_state())
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2108,7 +2116,11 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
     state["thread_id"] = "healthy-thread"
     module.save_state(state_path, state)
     config = _factory_config(module, tmp_path, "owner")
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2218,7 +2230,11 @@ def test_brief_only_external_attention_does_not_launch_codex(
     attention_id = "attn-" + "6" * 32
     state_path = tmp_path / "state.json"
     module.save_state(state_path, module.empty_state())
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2512,7 +2528,7 @@ def test_successful_initial_preflight_avoids_rechecking_login_each_cycle(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: calls.append("initial") or {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): calls.append("initial") or {"room-1": "backlog"},
     )
     monkeypatch.setattr(
         module,
@@ -2895,6 +2911,31 @@ def test_preflight_accepts_explicit_command_authenticated_external_provider(
     )
 
     assert rooms
+
+
+def test_supervisor_passes_codex_launch_arguments_to_initial_preflight(
+    supervisor_module, tmp_path, monkeypatch
+):
+    module = supervisor_module
+    state_path = tmp_path / "state.json"
+    module.save_state(state_path, module.empty_state())
+    launch_args = ["--profile", "external-review", "-c", 'model_provider="external"']
+    observed = []
+
+    def checked_preflight(config, state, harness_args):
+        observed.append((config.harness, list(harness_args)))
+        return {"room-1": "backlog"}
+
+    monkeypatch.setattr(module, "preflight", checked_preflight)
+    monkeypatch.setattr(
+        module,
+        "wait_for_attention_page",
+        lambda _config, state: {"objects": [], "next_cursor": state["safe_cursor"]},
+    )
+    supervisor = module.Supervisor(_config(module, tmp_path), state_path, launch_args)
+
+    assert supervisor.cycle() is True
+    assert observed == [("codex", launch_args)]
 
 
 def test_pi_preflight_checks_the_selected_subscription_and_coord(

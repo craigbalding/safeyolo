@@ -2795,11 +2795,7 @@ class Supervisor:
         if self._initial_preflight_complete:
             room_ids = _coord_preflight(self.config, self.state)
         else:
-            room_ids = (
-                preflight(self.config, self.state, self.harness_args)
-                if self.config.harness == "pi"
-                else preflight(self.config, self.state)
-            )
+            room_ids = preflight(self.config, self.state, self.harness_args)
             self._initial_preflight_complete = True
         save_state(self.state_path, self.state)
 
