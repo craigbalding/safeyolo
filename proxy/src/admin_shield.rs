@@ -100,6 +100,17 @@ impl AdminShield {
         self.protects_port(port) && is_local(host)
     }
 
+    /// Claim numeric spellings of the protected local endpoints during request
+    /// admission. The egress owner still checks every resolved address. This
+    /// earlier check covers only the historical IPv4 numeric grammar that the
+    /// system resolver accepts, so credential admission cannot win before the
+    /// bound-port shield for an equivalent local authority.
+    pub(crate) fn blocks_request_destination(&self, host: &str, port: u16) -> bool {
+        self.blocks_host(host, port)
+            || self.protects_port(port)
+                && numeric_address(host).is_some_and(is_protected_local_address)
+    }
+
     /// Whether this route's port needs the configured local-endpoint check.
     /// The actual listener's bound port remains independently protected even
     /// when startup port zero or later option changes differ from this set.
@@ -119,11 +130,7 @@ impl AdminShield {
     /// This closes their alias hole without classifying all loopback IPs or
     /// remote addresses on these ports as local.
     pub fn blocks_address(&self, address: SocketAddr) -> bool {
-        self.protects_port(address.port())
-            && match normalize_mapped(address.ip()) {
-                IpAddr::V4(ip) => ip == Ipv4Addr::LOCALHOST || ip == Ipv4Addr::UNSPECIFIED,
-                IpAddr::V6(ip) => ip == std::net::Ipv6Addr::LOCALHOST,
-            }
+        self.protects_port(address.port()) && is_protected_local_address(address.ip())
     }
 }
 
@@ -137,6 +144,70 @@ fn is_local(host: &str) -> bool {
             .as_bytes()
             .get(host.len().saturating_sub(10)..)
             .is_some_and(|tail| tail.eq_ignore_ascii_case(b".localhost"))
+}
+
+fn is_protected_local_address(address: IpAddr) -> bool {
+    match normalize_mapped(address) {
+        IpAddr::V4(ip) => ip == Ipv4Addr::LOCALHOST || ip == Ipv4Addr::UNSPECIFIED,
+        IpAddr::V6(ip) => ip == std::net::Ipv6Addr::LOCALHOST,
+    }
+}
+
+fn numeric_address(host: &str) -> Option<IpAddr> {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse()
+        .ok()
+        .or_else(|| legacy_ipv4_address(host).map(IpAddr::V4))
+}
+
+/// Parse the single-, two-, three-, and four-part IPv4 forms accepted by the
+/// system resolver. A leading `0x` selects hexadecimal and a leading zero
+/// selects octal, matching the forms that can otherwise resolve to the bound
+/// local listener after credential admission.
+fn legacy_ipv4_address(host: &str) -> Option<Ipv4Addr> {
+    let parts = host
+        .split('.')
+        .map(legacy_ipv4_component)
+        .collect::<Option<Vec<_>>>()?;
+    let value = match parts.as_slice() {
+        [value] => *value,
+        [first, rest] if *first <= u8::MAX.into() && *rest <= 0x00ff_ffff => first << 24 | rest,
+        [first, second, rest]
+            if *first <= u8::MAX.into()
+                && *second <= u8::MAX.into()
+                && *rest <= u16::MAX.into() =>
+        {
+            first << 24 | second << 16 | rest
+        }
+        [first, second, third, fourth]
+            if [first, second, third, fourth]
+                .into_iter()
+                .all(|part| *part <= u8::MAX.into()) =>
+        {
+            first << 24 | second << 16 | third << 8 | fourth
+        }
+        _ => return None,
+    };
+    Some(Ipv4Addr::from(value.to_be_bytes()))
+}
+
+fn legacy_ipv4_component(value: &str) -> Option<u32> {
+    let (digits, radix) = if let Some(digits) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        (digits, 16)
+    } else if value.len() > 1 && value.starts_with('0') {
+        (&value[1..], 8)
+    } else {
+        (value, 10)
+    };
+    (!digits.is_empty())
+        .then(|| u32::from_str_radix(digits, radix).ok())
+        .flatten()
 }
 
 /// Check each selected socket address before connecting, against the actual
@@ -214,6 +285,27 @@ const NONDECIMAL_DIGITS: &[(u32, u32)] = &[
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn numeric_local_aliases_are_claimed_before_credential_admission() {
+        let shield = AdminShield::new(43123, "").unwrap();
+        for host in [
+            "127.1",
+            "2130706433",
+            "0x7f000001",
+            "0177.0.0.1",
+            "[::ffff:127.0.0.1]",
+        ] {
+            assert!(!shield.blocks_host(host, 43123));
+            assert!(shield.blocks_request_destination(host, 43123));
+        }
+        for host in ["127.0.0.2", "0x7f000002", "0177.0.0.2"] {
+            assert!(!shield.blocks_request_destination(host, 43123));
+        }
+        assert!(!shield.blocks_request_destination("127.1", 43124));
+    }
+
     #[test]
     fn nondecimal_digits_match_every_pinned_python_scalar() {
         let fixture: serde_json::Value =

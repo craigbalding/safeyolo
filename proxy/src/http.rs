@@ -2083,9 +2083,14 @@ where
     }
     let traffic = (request.method() != Method::CONNECT)
         .then(|| traffic::Traffic::new(state.clone(), identity, request_id, &request, destination));
+    let protected_parent = runtime.parent.as_ref().is_some_and(|parent| {
+        runtime
+            .admin_shield
+            .blocks_request_destination(&parent.host, parent.port)
+    });
     if runtime
         .admin_shield
-        .blocks_host(&destination.host, destination.port)
+        .blocks_request_destination(&destination.host, destination.port)
     {
         let mut reply = prior_block(admin_rejection());
         traffic::local_reply(
@@ -2261,6 +2266,9 @@ where
         return Ok((prior_block(denied), decision.decision));
     }
     if request.method() == Method::CONNECT {
+        if protected_parent {
+            return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
+        }
         // Admission precedes DNS/dial. Eager connection supports protocols whose
         // server greets the client before receiving any client bytes.
         // Source logging selects a destination before DNS. Keep the existing
@@ -2434,6 +2442,20 @@ where
             trace.as_ref(),
         )?;
         return Ok((prior_block(reply), "deny".into()));
+    }
+    if protected_parent {
+        let mut reply = prior_block(admin_rejection());
+        traffic::local_reply(
+            traffic.as_ref(),
+            &mut request,
+            &mut reply,
+            Some(json!("admin-shield")),
+            Some(json!("admin_port_access")),
+            destination,
+            true,
+            trace.as_ref(),
+        )?;
+        return Ok((reply, "admin_port_access".into()));
     }
     // Credential enforcement is deliberately after network and circuit
     // admission, but before test-context observation, body buffering, or any
