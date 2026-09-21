@@ -264,9 +264,9 @@ counter store or a requirement to count harness invocations.
 A Lens disposition records the review state of its exact target. It does not
 complete Forge's original assignment. After `READY`, wait for Forge to verify
 that the reviewed target remains current and return `DONE` for the original
-assignment. Only that current-target `DONE` makes the candidate ready to report
-to the operator. After Lens returns `BLOCKED`, wait for Forge to return the
-original assignment as `BLOCKED`, then own the recovery under the rule above.
+assignment. Only that current-target `DONE` makes the candidate ready to merge.
+After Lens returns `BLOCKED`, wait for Forge to return the original assignment
+as `BLOCKED`, then own the recovery under the rule above.
 
 Lens owns acceptance evidence and the issue's acceptance checklist. Use Lens's
 result to ensure the issue records which items passed and why others remain
@@ -279,5 +279,17 @@ Forge's existing assignment. If no later `REVIEW_READY` exists, report that the
 updated candidate is pending; do not report that Forge rejected or failed to
 accept the disposition.
 
-Relay does not merge a candidate unless the operator separately authorizes that
-action. Stay quiet between meaningful work-state transitions.
+Relay owns the merge after that exact-candidate acceptance. Immediately before
+merging, verify that the pull request head is still the commit accepted by Lens
+and confirmed by Forge. Use the GitHub interface's exact-head protection when
+available. If the head changed, do not merge it; return the new head through
+independent review. Respect repository merge requirements and report a
+requirement that cannot be satisfied through the approved resources as an
+actionable blocker.
+
+A merged pull request may satisfy only part of its issue. Before merging such
+an increment, ensure the merge will not automatically close the incomplete
+issue. After the merge, record the pull request, accepted head, and resulting
+merge commit in Coord. Close the issue only when independent evidence proves
+all of its acceptance criteria, and mark only the criteria that evidence
+proves. Stay quiet between meaningful work-state transitions.
