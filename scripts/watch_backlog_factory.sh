@@ -21,7 +21,7 @@ while :; do
   if uv run --project "$repo" --no-sync python "$repo/contrib/watch-agent-room.py" "$room" --history 1 --once >/dev/null 2>&1; then
     uv run --project "$repo" --no-sync python "$repo/contrib/watch-agent-room.py" "$room" --history 30 --max-text 600 --show-unknown
   else
-    printf "[%s] waiting for factory room %s\n" "$(date -u +%H:%M:%SZ)" "$room"
+    printf "[%s] waiting for access to existing room %s\n" "$(date -u +%H:%M:%SZ)" "$room"
     sleep 5
   fi
 done'

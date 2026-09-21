@@ -46,5 +46,6 @@ gate.
 Run `scripts/watch_backlog_factory.sh start` from an existing tmux session to
 open one `factory-watch` window with equal-width Relay, Forge and Lens panes.
 Each pane runs `contrib/watch-agent-room.py` against the corresponding retained
-agent room. The launcher waits for rooms to be provisioned and restarts a
-viewer if it exits. It does not start or resume the factory.
+agent room. The launcher waits until each existing room is available through
+the current Coord connection and restarts a viewer if it exits. It does not
+start or resume the factory.
