@@ -7,7 +7,10 @@ use serde_json::{Value, json};
 use std::{
     convert::Infallible,
     io::Write,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -134,6 +137,102 @@ fn config(
         inspection: None,
         plumb: Default::default(),
     }
+}
+
+struct H2TestTls {
+    proxy_ca: rustls::pki_types::CertificateDer<'static>,
+    origin_certificate: rustls::pki_types::CertificateDer<'static>,
+    origin_private_key: Vec<u8>,
+}
+
+fn configure_h2_test_tls(
+    directory: &TempDir,
+    proxy_config: &mut Config,
+    server_name: &str,
+) -> H2TestTls {
+    let proxy_ca = {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::default();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+        let ca = params.self_signed(&key).unwrap();
+        std::fs::write(
+            directory.path().join("mitmproxy-ca.pem"),
+            format!("{}{}", key.serialize_pem(), ca.pem()),
+        )
+        .unwrap();
+        proxy_config.tls_ca_file = Some(directory.path().join("mitmproxy-ca.pem"));
+        ca.der().clone()
+    };
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec![server_name.into()]).unwrap();
+    std::fs::write(directory.path().join("upstream.pem"), cert.pem()).unwrap();
+    proxy_config.upstream_ca_file = Some(directory.path().join("upstream.pem"));
+    H2TestTls {
+        proxy_ca,
+        origin_certificate: cert.der().clone(),
+        origin_private_key: signing_key.serialize_der(),
+    }
+}
+
+fn h2_origin_tls(tls: &H2TestTls) -> rustls::ServerConfig {
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![tls.origin_certificate.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(tls.origin_private_key.clone()).into(),
+    )
+    .unwrap();
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    config
+}
+
+async fn connect_h2_through_proxy(
+    socket: &std::path::Path,
+    authority: &str,
+    server_name: &str,
+    proxy_ca: rustls::pki_types::CertificateDer<'static>,
+) -> tokio_rustls::client::TlsStream<UnixStream> {
+    let mut upstream = UnixStream::connect(socket).await.unwrap();
+    upstream
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut connect_reply = Vec::new();
+    while !connect_reply.ends_with(b"\r\n\r\n") {
+        connect_reply.push(upstream.read_u8().await.unwrap());
+    }
+    assert!(
+        connect_reply.starts_with(b"HTTP/1.1 200"),
+        "{connect_reply:?}"
+    );
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(proxy_ca).unwrap();
+    let mut client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    client_config.alpn_protocols = vec![b"h2".to_vec()];
+    let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
+        .connect(
+            rustls::pki_types::ServerName::try_from(server_name.to_owned()).unwrap(),
+            upstream,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        tls_stream.get_ref().1.alpn_protocol(),
+        Some(b"h2".as_slice())
+    );
+    tls_stream
 }
 
 async fn stats(directory: &TempDir) -> Value {
@@ -1671,6 +1770,279 @@ async fn native_pattern_scanner_rejects_unsupported_response_encoding_on_real_h2
     .await;
 }
 
+#[tokio::test]
+async fn native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    let data_dir = directory.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("hmac_secret"), b"h2-request-key").unwrap();
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [
+                {"action":"network:request", "resource":"*", "effect":"allow"},
+                {"action":"credential:use", "resource":"localhost/*", "effect":"allow"}
+            ],
+            "credential_rules": [{
+                "name":"h2-request-credential",
+                "patterns":["key-h2-request"],
+                "allowed_hosts":["localhost"],
+                "header_names":["authorization"]
+            }],
+            "scan_patterns": [{
+                "name":"h2-request-body",
+                "pattern":"h2-request-secret",
+                "scope":["body"],
+                "target":"request",
+                "action":"block"
+            }],
+            "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // `localhost` is the admitted authority and TLS name, while the listener
+    // is bound to its resolved physical peer `127.0.0.1`. Record those roles
+    // separately so the positive control does not hide its dial target.
+    let logical_host = "localhost";
+    let mut proxy_config = config(&directory, &policy_path, &socket, true);
+    let tls = configure_h2_test_tls(&directory, &mut proxy_config, logical_host);
+
+    let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let physical_origin = origin_listener.local_addr().unwrap();
+    let authority = format!("{logical_host}:{}", physical_origin.port());
+    let origin_tls = h2_origin_tls(&tls);
+
+    let origin_accepts = Arc::new(AtomicUsize::new(0));
+    let origin_alpns = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let origin_snis = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
+    let origin_peers = Arc::new(Mutex::new(Vec::<std::net::SocketAddr>::new()));
+    let origin_seen = Arc::new(Mutex::new(Vec::<(String, Vec<u8>, Vec<u8>, Vec<u8>)>::new()));
+    let origin_task = tokio::spawn({
+        let origin_accepts = origin_accepts.clone();
+        let origin_alpns = origin_alpns.clone();
+        let origin_snis = origin_snis.clone();
+        let origin_peers = origin_peers.clone();
+        let origin_seen = origin_seen.clone();
+        let origin_tls = Arc::new(origin_tls);
+        async move {
+            loop {
+                let Ok((socket, peer)) = origin_listener.accept().await else {
+                    return;
+                };
+                origin_accepts.fetch_add(1, Ordering::SeqCst);
+                origin_peers.lock().unwrap().push(peer);
+                let origin_tls = origin_tls.clone();
+                let origin_alpns = origin_alpns.clone();
+                let origin_snis = origin_snis.clone();
+                let origin_seen = origin_seen.clone();
+                tokio::spawn(async move {
+                    let socket = tokio_rustls::TlsAcceptor::from(origin_tls)
+                        .accept(socket)
+                        .await
+                        .unwrap();
+                    origin_alpns.lock().unwrap().push(
+                        socket
+                            .get_ref()
+                            .1
+                            .alpn_protocol()
+                            .unwrap_or_default()
+                            .to_vec(),
+                    );
+                    origin_snis
+                        .lock()
+                        .unwrap()
+                        .push(socket.get_ref().1.server_name().map(str::to_owned));
+                    let service = service_fn(move |request: Request<Incoming>| {
+                        let origin_seen = origin_seen.clone();
+                        async move {
+                            let (parts, body) = request.into_parts();
+                            let body = body.collect().await.unwrap().to_bytes().to_vec();
+                            origin_seen.lock().unwrap().push((
+                                parts.uri.path().to_owned(),
+                                parts
+                                    .headers
+                                    .get("authorization")
+                                    .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+                                parts
+                                    .headers
+                                    .get("content-encoding")
+                                    .map_or_else(Vec::new, |value| value.as_bytes().to_vec()),
+                                body,
+                            ));
+                            Ok::<_, Infallible>(
+                                hyper::Response::builder()
+                                    .status(200)
+                                    .body(Full::new(Bytes::from_static(b"h2-origin-ok")))
+                                    .unwrap(),
+                            )
+                        }
+                    });
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(socket), service)
+                        .await;
+                });
+            }
+        }
+    });
+
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path.clone(),
+        block_request: true,
+        block_response: true,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+    let tls_stream =
+        connect_h2_through_proxy(&socket, &authority, logical_host, tls.proxy_ca).await;
+    let (mut sender, connection) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls_stream))
+            .await
+            .unwrap();
+    let connection_task = tokio::spawn(connection);
+
+    let allowed_body = gzip_bytes(b"h2-request-clear");
+    let allowed = sender
+        .send_request(
+            Request::builder()
+                .method("POST")
+                .uri(format!("https://{authority}/h2-request-allowed"))
+                .header("authorization", "Bearer key-h2-request")
+                .header("content-encoding", "gzip")
+                .header("content-type", "text/plain")
+                .body(Full::new(Bytes::from(allowed_body.clone())))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(allowed.status(), 200);
+    assert_eq!(
+        allowed.collect().await.unwrap().to_bytes(),
+        b"h2-origin-ok"[..]
+    );
+    assert_eq!(
+        origin_seen.lock().unwrap().as_slice(),
+        &[(
+            "/h2-request-allowed".to_owned(),
+            b"Bearer key-h2-request".to_vec(),
+            b"gzip".to_vec(),
+            allowed_body,
+        )]
+    );
+
+    let blocked_body = b"h2-request-secret";
+    let blocked = sender
+        .send_request(
+            Request::builder()
+                .method("POST")
+                .uri(format!("https://{authority}/h2-request-blocked"))
+                .header("authorization", "Bearer key-h2-request")
+                .header("content-encoding", "rot13")
+                .header("content-type", "text/plain")
+                .body(Full::new(Bytes::from_static(blocked_body)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), 403);
+    assert_eq!(
+        blocked.headers().get("x-blocked-by").unwrap(),
+        "pattern-scanner"
+    );
+    let request_id = response_request_id(&blocked);
+    let blocked_response = blocked.collect().await.unwrap().to_bytes();
+    assert!(
+        blocked_response
+            .windows(b"content_decode".len())
+            .any(|window| window == b"content_decode")
+    );
+    assert!(
+        !blocked_response
+            .windows(blocked_body.len())
+            .any(|window| window == blocked_body)
+    );
+    assert!(
+        !blocked_response
+            .windows(b"key-h2-request".len())
+            .any(|window| window == b"key-h2-request")
+    );
+
+    drop(sender);
+    let _ = connection_task.await;
+    proxy.shutdown().await;
+    origin_task.abort();
+    let _ = origin_task.await;
+
+    assert_eq!(origin_accepts.load(Ordering::SeqCst), 1);
+    assert_eq!(origin_alpns.lock().unwrap().as_slice(), &[b"h2".to_vec()]);
+    assert_eq!(
+        origin_snis.lock().unwrap().as_slice(),
+        &[Some(logical_host.to_owned())]
+    );
+    assert_eq!(origin_peers.lock().unwrap().len(), 1);
+    assert_eq!(
+        origin_peers.lock().unwrap()[0].ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_eq!(
+        origin_seen.lock().unwrap().as_slice(),
+        &[(
+            "/h2-request-allowed".to_owned(),
+            b"Bearer key-h2-request".to_vec(),
+            b"gzip".to_vec(),
+            gzip_bytes(b"h2-request-clear"),
+        )]
+    );
+
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .collect::<Vec<_>>();
+    let credential = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "proxy.credential_guard" && event["request_id"] == request_id
+        })
+        .expect("H2 request credential guard event missing");
+    let scanner = rows
+        .iter()
+        .position(|event| {
+            event["event"] == "security.pattern_scanner"
+                && event["request_id"] == request_id
+                && event["direction"] == "request"
+        })
+        .expect("H2 request scanner event missing");
+    assert!(
+        credential < scanner,
+        "request scan ran before credential guard"
+    );
+    assert_eq!(rows[credential]["outcome"], "allowed");
+    assert_eq!(rows[scanner]["decision"], "deny");
+    assert_eq!(rows[scanner]["failure"], "content_decode");
+    assert_eq!(rows[scanner]["error_type"], "ContentDecode");
+    assert!(
+        !rows
+            .iter()
+            .any(|event| { event["event"] == "proxy.egress" && event["request_id"] == request_id }),
+        "unsupported H2 request reached the egress path"
+    );
+    assert!(!events.contains("key-h2-request"));
+    assert!(!events.contains("h2-request-secret"));
+
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    assert!(!audit.contains("key-h2-request"));
+    assert!(!audit.contains("h2-request-secret"));
+    eprintln!(
+        "h2 request observer: client_alpn=h2 origin_alpn=h2 logical_authority={authority} origin_sni={logical_host} physical_origin={physical_origin} origin_tcp_accepts=1 origin_requests=1 allowed_origin_body_hex={} blocked_status=403 credential_before_request_scanner=true scanner_failure=content_decode scanner_error_type=ContentDecode raw_canary_retained=false",
+        hex_encode(&gzip_bytes(b"h2-request-clear")),
+    );
+}
+
 async fn run_h2_response_content_case(
     content_encoding: &'static str,
     response_body: Vec<u8>,
@@ -1709,39 +2081,11 @@ async fn run_h2_response_content_case(
     .unwrap();
 
     let mut proxy_config = config(&directory, &policy_path, &socket, true);
-    let proxy_ca = {
-        let key = rcgen::KeyPair::generate().unwrap();
-        let mut params = rcgen::CertificateParams::default();
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
-        let ca = params.self_signed(&key).unwrap();
-        std::fs::write(
-            directory.path().join("mitmproxy-ca.pem"),
-            format!("{}{}", key.serialize_pem(), ca.pem()),
-        )
-        .unwrap();
-        proxy_config.tls_ca_file = Some(directory.path().join("mitmproxy-ca.pem"));
-        ca.der().clone()
-    };
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
-    std::fs::write(directory.path().join("upstream.pem"), cert.pem()).unwrap();
-    proxy_config.upstream_ca_file = Some(directory.path().join("upstream.pem"));
+    let tls = configure_h2_test_tls(&directory, &mut proxy_config, "127.0.0.2");
 
     let origin_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
     let authority = format!("127.0.0.2:{}", origin_listener.local_addr().unwrap().port());
-    let mut origin_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![cert.der().clone()],
-        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
-    )
-    .unwrap();
-    origin_tls.alpn_protocols = vec![b"h2".to_vec()];
+    let origin_tls = h2_origin_tls(&tls);
     let origin_seen = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
     let origin_seen_task = origin_seen.clone();
     let origin_response_body = response_body.clone();
@@ -1787,37 +2131,7 @@ async fn run_h2_response_content_case(
         block_websocket_response: false,
     });
     let proxy = Proxy::start(proxy_config).await.unwrap();
-    let mut upstream = UnixStream::connect(&socket).await.unwrap();
-    upstream
-        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
-    let mut connect_reply = Vec::new();
-    while !connect_reply.ends_with(b"\r\n\r\n") {
-        connect_reply.push(upstream.read_u8().await.unwrap());
-    }
-    assert!(
-        connect_reply.starts_with(b"HTTP/1.1 200"),
-        "{connect_reply:?}"
-    );
-
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(proxy_ca).unwrap();
-    let mut client_config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"h2".to_vec()];
-    let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
-        .connect(
-            rustls::pki_types::ServerName::try_from("127.0.0.2".to_owned()).unwrap(),
-            upstream,
-        )
-        .await
-        .unwrap();
+    let tls_stream = connect_h2_through_proxy(&socket, &authority, "127.0.0.2", tls.proxy_ca).await;
     let (mut sender, connection) =
         hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls_stream))
             .await
