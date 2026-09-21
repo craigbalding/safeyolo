@@ -2099,6 +2099,13 @@ client or event/audit text. Its paired
 [`native_pattern_scanner_rejects_unsupported_response_encoding_on_real_h2`](../proxy/tests/credential_http.rs)
 control uses a real H2 `rot13` response, records `content_decode`/
 `ContentDecode` after the guard event, and applies the same canary redaction.
+The complementary
+[`native_pattern_scanner_rejects_unsupported_request_encoding_on_real_h2`](../proxy/tests/credential_http.rs)
+control first delivers a gzip request to a TLS/H2 origin, then rejects a
+`rot13` request locally with `403` and `content_decode`/`ContentDecode` after
+the guard; it records both ALPNs, the authority, SNI and physical-origin
+identities, the allowed origin headers/body, no second origin TCP or
+request, and no canary or credential in event/audit text.
 Opaque delegated-search cancellation and streamed HTTP bodies remain explicit
 coverage limits. Python 3.12 accepts
 both `(` and `(?:` nesting through depth 495 and rejects depth 496 with
