@@ -2605,7 +2605,23 @@ records exactly one `traffic.passthrough_error` with `connection cancelled`,
 without a start or end event, and the client receives no origin bytes. This
 proves terminal ownership for cancellation before the operating-system TCP
 connect begins; an in-flight kernel connect cancellation and the remaining
-reserved-name/invalid-interception matrix remain unproven.
+reserved-name matrix remain unproven.
+
+The native
+[`unconfigured_tls_interception_failure_never_uses_configured_passthrough`](../proxy/tests/transport.rs)
+control configures one direct `localhost:<port>` endpoint and uses a different
+port for the same hostname. The configured client receives the origin
+certificate. The controlled configured origin receives the exact request bytes.
+The normal client at the unconfigured port receives a proxy certificate. The
+normal client receives a policy denial after its inner request. A client that
+trusts only the configured origin certificate rejects the proxy certificate. The
+controlled unconfigured origin accepts both connections but receives zero bytes.
+The native egress log records one direct configured dial and two direct
+unconfigured dials. The canonical passthrough log records only the configured
+start/end pair and no passthrough error. This proves that one client-rejected
+interception handshake does not become opaque forwarding. Malformed TLS,
+upstream-verification, parent-route and other invalid-interception cases remain
+unproven.
 
 The direct matcher remains below local containment: a broad `127.0.0.0/8`
 CIDR installed in the live runtime cannot select the protected operator port.
