@@ -1,7 +1,11 @@
 use super::*;
 
-use crate::Proxy;
-use serde_json::json;
+use crate::{
+    Proxy,
+    audit::{Event, Kind, Severity, Submission},
+};
+use serde_json::{Value, json};
+use std::{fs, sync::Arc};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -14,6 +18,11 @@ action = "network:request"
 resource = "*"
 effect = "allow"
 "#;
+const SERVICE_POLICY: &str = "version = '2.0'\n[agents.alice]\nimage = 'owned-image'\n";
+const CONTROL_BODY: &[u8] =
+    br#"{"service":"mail","capability":"read","credential":"control-entry"}"#;
+const DECLINED_BODY: &[u8] =
+    br#"{"service":"mail","capability":"read","credential":"declined-entry"}"#;
 
 #[tokio::test]
 async fn synchronous_audit_submission_failure_commits_mutations_then_closes_connection() {
@@ -96,6 +105,101 @@ async fn synchronous_audit_submission_failure_commits_mutations_then_closes_conn
     }
 }
 
+#[tokio::test]
+async fn closed_service_admission_rejects_authenticated_mutation_without_commit_or_audit() {
+    let directory = TempDir::new().unwrap();
+    let config = service_config(directory.path());
+    let policy_path = directory.path().join("policy.toml");
+    let audit_path = directory.path().join("audit.jsonl");
+    let proxy = Proxy::start(config).await.unwrap();
+    let port = proxy.admin.as_ref().unwrap().address().port();
+    let runtime = proxy.runtime.read().unwrap().clone();
+    let writer = runtime.audit.clone();
+
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.path().join(".policy.toml.lock"))
+        .unwrap();
+    lock.lock().unwrap();
+
+    let writer_references = Arc::strong_count(&writer);
+    let control = tokio::spawn(raw_admin_request(
+        port,
+        "POST",
+        "/admin/agents/alice/services",
+        CONTROL_BODY,
+    ));
+    // The service worker retains this writer reference before waiting on the
+    // held file lock, so admission is observable without a timing sleep.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while Arc::strong_count(&writer) < writer_references + 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // Proxy::shutdown calls this same admission fence before it stops the
+    // listener. Keeping the listener live here lets an authenticated request
+    // demonstrate that its mutation cannot start after that fence closes.
+    runtime.service_mutations.stop_admission().await;
+    let declined =
+        raw_admin_request(port, "POST", "/admin/agents/alice/services", DECLINED_BODY).await;
+    assert!(
+        !declined.starts_with(b"HTTP/1.1 2"),
+        "closed admission must not report a committed mutation: {}",
+        String::from_utf8_lossy(&declined)
+    );
+    let before_release = fs::read_to_string(&policy_path).unwrap();
+    assert!(!before_release.contains("control-entry"));
+    assert!(!before_release.contains("declined-entry"));
+
+    lock.unlock().unwrap();
+    let control = control.await.unwrap();
+    assert!(
+        control.starts_with(b"HTTP/1.1 200"),
+        "admitted control must report its committed mutation: {}",
+        String::from_utf8_lossy(&control)
+    );
+    assert!(writer.wait_for_drain(Duration::from_secs(3)).unwrap());
+
+    let policy = fs::read_to_string(&policy_path).unwrap();
+    assert!(policy.contains("control-entry"));
+    assert!(!policy.contains("declined-entry"));
+    let audit_rows: Vec<Value> = fs::read_to_string(&audit_path)
+        .unwrap()
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let authorization_events: Vec<_> = audit_rows
+        .iter()
+        .filter(|row| row["event"] == "admin.agent_service_authorized")
+        .collect();
+    assert_eq!(authorization_events.len(), 1);
+    assert_eq!(
+        authorization_events[0]["details"]["credential"],
+        "control-entry"
+    );
+
+    proxy.shutdown().await;
+    assert_eq!(
+        writer
+            .emit(Event::new(
+                "ops.service_mutation_shutdown_probe",
+                Kind::Ops,
+                Severity::Low,
+                "Service mutation shutdown probe",
+            ))
+            .unwrap(),
+        Submission::Stopped,
+        "proxy shutdown must stop the writer after the admitted control's audit attempt"
+    );
+}
+
 fn config(directory: &Path) -> Config {
     std::fs::write(directory.join("policy.toml"), POLICY).unwrap();
     std::fs::write(directory.join("operator-token"), TOKEN).unwrap();
@@ -108,6 +212,38 @@ fn config(directory: &Path) -> Config {
         "admin_api_token_file": directory.join("operator-token"),
         "readiness_file": directory.join("ready.json"),
         "flow_store_enabled": false,
+        "audit_log_path": directory.join("audit.jsonl"),
+        "event_log": directory.join("events.jsonl")
+    }))
+    .unwrap()
+}
+
+fn service_config(directory: &Path) -> Config {
+    let policy_path = directory.join("policy.toml");
+    let token_path = directory.join("operator-token");
+    let builtin_services = directory.join("builtin-services");
+    let services = directory.join("services");
+    fs::write(&policy_path, SERVICE_POLICY).unwrap();
+    fs::create_dir(&builtin_services).unwrap();
+    fs::create_dir(&services).unwrap();
+    fs::write(
+        services.join("mail.yaml"),
+        "schema_version: 1\nname: mail\nauth: {type: bearer}\ncapabilities:\n  read:\n    routes: []\n",
+    )
+    .unwrap();
+    fs::write(&token_path, TOKEN).unwrap();
+    serde_json::from_value(json!({
+        "listeners": [],
+        "policy_file": policy_path,
+        "data_dir": directory.join("data"),
+        "gateway_builtin_services_dir": builtin_services,
+        "gateway_services_dir": services,
+        "agent_api_enabled": false,
+        "admin_port": 0,
+        "admin_api_token_file": token_path,
+        "readiness_file": directory.join("ready.json"),
+        "flow_store_enabled": false,
+        "circuit_breaker_enabled": false,
         "audit_log_path": directory.join("audit.jsonl"),
         "event_log": directory.join("events.jsonl")
     }))
