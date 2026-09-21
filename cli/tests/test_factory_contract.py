@@ -140,6 +140,19 @@ def test_acceptance_checklist_has_evidence_owner_and_publication_recovery():
     assert "GitHub findings are an optional additional record" not in reviewer
 
 
+def test_coordinator_owns_exact_candidate_merge_without_closing_partial_issue():
+    contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
+    reviewer = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
+
+    assert "Relay owns the merge after that exact-candidate acceptance." in contract
+    assert "verify that the pull request head is still the commit accepted by Lens" in contract
+    assert "If the head changed, do not merge it" in contract
+    assert "ensure the merge will not automatically close the incomplete issue" in contract
+    assert "Close the issue only when independent evidence proves all" in contract
+    assert "The pull request can be a bounded increment that proves only part of the issue." in reviewer
+    assert "does not claim that every acceptance criterion in the issue is complete" in reviewer
+
+
 def test_reviewer_repairs_execution_failures_and_escalates_without_false_blocked():
     contract = " ".join(BACKLOG_REVIEWER_CONTRACT.read_text().split())
 
