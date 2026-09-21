@@ -38,6 +38,11 @@ start_pane() {
   tmux set-option -p -t "$pane" pane-border-status top
   tmux select-pane -t "$pane" -T "$label"
   tmux respawn-pane -k -t "$pane" -c "$repo" \
+    env SAFEYOLO_CONFIG_DIR="$SAFEYOLO_CONFIG_DIR" \
+    SAFEYOLO_LOGS_DIR="$SAFEYOLO_LOGS_DIR" \
+    SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_COORD_DATA_DIR" \
+    SAFEYOLO_UPSTREAM_PROXY="$SAFEYOLO_UPSTREAM_PROXY" \
+    SAFEYOLO_RUNSC_PLATFORM="$SAFEYOLO_RUNSC_PLATFORM" \
     bash -lc "$watch_command" watch-factory "$room" "$repo" "$label"
 }
 
