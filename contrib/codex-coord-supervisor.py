@@ -2536,16 +2536,19 @@ def run_invocation(
     else:
         codex = os.environ.get("SAFEYOLO_CODEX_BIN", "codex")
         if resuming:
-            command = [codex, "exec", "resume", "--json", *harness_args, state["thread_id"], "-"]
+            # Launcher arguments are Codex-wide settings. Keep them before the
+            # subcommand so options such as --profile survive a resume; recent
+            # Codex versions do not accept --profile on `exec resume` itself.
+            command = [codex, *harness_args, "exec", "resume", "--json", state["thread_id"], "-"]
         else:
             command = [
                 codex,
+                *harness_args,
                 "exec",
                 "--json",
                 "--cd",
                 config.workspace,
                 "--skip-git-repo-check",
-                *harness_args,
                 "-",
             ]
     try:

@@ -3365,6 +3365,50 @@ def test_recovery_object_uses_stdin_not_process_arguments(supervisor_module, tmp
     assert secret_task_text in stdin_file.read_text()
 
 
+@pytest.mark.parametrize("thread_id", [None, "0199c1e6-1234-7000-8000-000000000001"])
+def test_codex_launcher_options_precede_exec_for_fresh_and_resumed_turns(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+    thread_id,
+):
+    module = supervisor_module
+    argv_file = tmp_path / "argv.json"
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['TEST_ARGV']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.stdin.read()\n"
+        f"print(json.dumps({{'type':'thread.started','thread_id':'{thread_id or 'new-thread'}'}}), flush=True)\n"
+        "print(json.dumps({'type':'turn.started'}), flush=True)\n"
+        "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
+    monkeypatch.setenv("TEST_ARGV", str(argv_file))
+    state = module.empty_state()
+    state["thread_id"] = thread_id
+
+    result = module.run_invocation(
+        _config(module, tmp_path),
+        state,
+        tmp_path / "state.json",
+        {"room-1": "backlog"},
+        ["--profile", "opencode-go-review", "-c", "model_reasoning_effort=max"],
+    )
+
+    assert result.saw_turn_completed is True
+    argv = json.loads(argv_file.read_text())
+    assert argv[:4] == ["--profile", "opencode-go-review", "-c", "model_reasoning_effort=max"]
+    assert argv[4] == "exec"
+    if thread_id is None:
+        assert argv[5:7] == ["--json", "--cd"]
+    else:
+        assert argv[5:8] == ["resume", "--json", thread_id]
+
+
 def test_agent_room_receives_each_codex_stdout_event_and_coalesces_stderr_chunk(
     supervisor_module,
     tmp_path,
