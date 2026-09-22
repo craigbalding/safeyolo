@@ -102,8 +102,14 @@ jobs:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
           if [ "$RUNNER_OS" = Linux ]; then
-            export SAFEYOLO_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
-            export SAFEYOLO_NATS_TEST_INSTANCE=proxy-rust-fixture
+            export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+            export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
+            host_target="$(rustc -vV | sed -n 's/^host: //p')"
+            test -n "$host_target"
+            runner_variable="CARGO_TARGET_${host_target^^}_RUNNER"
+            runner_variable="${runner_variable//-/_}"
+            export CARGO_BUILD_TARGET="$host_target"
+            export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
           fi
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked

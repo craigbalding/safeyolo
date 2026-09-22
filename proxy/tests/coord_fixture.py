@@ -172,10 +172,10 @@ def pause_before_deadline(deadline: float, message: str) -> None:
     time.sleep(0.05)
 
 
-def wait_for_stop(stop_path: Path, deadline: float) -> None:
+def wait_for_stop(stop_path: Path) -> None:
     """Keep the fixture alive until its workflow owner requests teardown."""
     while not stop_path.exists():
-        pause_before_deadline(deadline, "fixture caller did not request teardown")
+        time.sleep(0.05)
 
 
 def wait_for_native_generation(root: Path, nats_runtime: Any, api: Any) -> None:
@@ -207,7 +207,7 @@ def wait_for_native_generation(root: Path, nats_runtime: Any, api: Any) -> None:
         },
     )
     print(json.dumps({"fixture": "updated"}), flush=True)
-    wait_for_stop(stop_path, deadline)
+    wait_for_stop(stop_path)
 
 
 def stop_fixture(root: Path) -> None:

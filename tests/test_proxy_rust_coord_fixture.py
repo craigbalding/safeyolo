@@ -16,6 +16,7 @@ import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPOSITORY_ROOT / "proxy" / "tests" / "coord_fixture.py"
+RUNNER = REPOSITORY_ROOT / "proxy" / "tests" / "coord_test_runner.sh"
 WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "proxy-rust.yml"
 
 
@@ -256,6 +257,67 @@ def test_fixture_rejects_a_mismatched_native_generation(tmp_path: Path) -> None:
     assert not (root / "nats" / "nats.pid.json").exists()
 
 
+def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) -> None:
+    """The ordinary suite keeps its own Coord state outside the two witnesses."""
+    probe = tmp_path / "probe"
+    probe.write_text(
+        '#!/bin/sh\nprintf \'%s\\n%s\\n\' "${SAFEYOLO_COORD_DATA_DIR-}" "${SAFEYOLO_NATS_TEST_INSTANCE-}"\n',
+        encoding="utf-8",
+    )
+    probe.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SAFEYOLO_COORD_DATA_DIR": "must-not-reach-unrelated-tests",
+            "SAFEYOLO_NATS_TEST_INSTANCE": "must-not-reach-unrelated-tests",
+            "SAFEYOLO_PROXY_COORD_DATA_DIR": "/workflow-coord-fixture",
+            "SAFEYOLO_PROXY_NATS_TEST_INSTANCE": "workflow-fixture",
+        }
+    )
+
+    coord_probe = tmp_path / "coord_state_cross_version-probe"
+    probe.rename(coord_probe)
+    coord_result = subprocess.run(
+        [str(RUNNER), str(coord_probe)],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=15,
+    )
+    assert coord_result.returncode == 0, coord_result.stderr
+    assert coord_result.stdout == "/workflow-coord-fixture\nworkflow-fixture\n"
+
+    unrelated_probe = tmp_path / "gateway_workflow-probe"
+    coord_probe.rename(unrelated_probe)
+    unrelated_result = subprocess.run(
+        [str(RUNNER), str(unrelated_probe)],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=15,
+    )
+    assert unrelated_result.returncode == 0, unrelated_result.stderr
+    assert unrelated_result.stdout == "\n\n"
+
+    missing_probe = tmp_path / "coord_wait_shutdown-missing-fixture"
+    unrelated_probe.rename(missing_probe)
+    missing_environment = environment.copy()
+    missing_environment.pop("SAFEYOLO_PROXY_COORD_DATA_DIR")
+    missing_environment.pop("SAFEYOLO_PROXY_NATS_TEST_INSTANCE")
+    missing_result = subprocess.run(
+        [str(RUNNER), str(missing_probe)],
+        capture_output=True,
+        check=False,
+        env=missing_environment,
+        text=True,
+        timeout=15,
+    )
+    assert missing_result.returncode != 0
+    assert "missing workflow Coord fixture directory" in missing_result.stderr
+
+
 def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     """The ordinary Rust test step must run between fixture ownership steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -271,7 +333,14 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     assert "teardown failed after startup failure" in setup_block
     test_block = workflow[test:teardown]
     assert 'if [ "$RUNNER_OS" = Linux ]; then' in test_block
-    assert "export SAFEYOLO_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
+    assert "export SAFEYOLO_PROXY_COORD_DATA_DIR" in test_block
+    assert "export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
+    assert 'host_target="$(rustc -vV' in test_block
+    assert "runner_variable=" in test_block
+    assert "export CARGO_BUILD_TARGET" in test_block
+    assert "coord_test_runner.sh" in test_block
+    assert "export SAFEYOLO_COORD_DATA_DIR" not in test_block
+    assert "export SAFEYOLO_NATS_TEST_INSTANCE" not in test_block
     teardown_block = workflow[teardown:]
     assert "if: always() && matrix.os == 'ubuntu-latest'" in teardown_block
     assert "coord_fixture.py --teardown" in teardown_block
