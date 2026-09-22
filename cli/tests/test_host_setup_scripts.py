@@ -1911,6 +1911,8 @@ def test_factory_skill_is_codex_scoped_and_self_contained() -> None:
     assert set(metadata) == {"name", "description"}
     assert metadata["name"] == "safeyolo-factory"
     assert "SafeYolo supervised factories" in metadata["description"]
+    assert "before changing a running factory" in metadata["description"]
+    assert "sym.runtime_operator_intervention" in body
     for reference in (
         "design.md",
         "contract-review.md",
