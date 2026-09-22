@@ -795,20 +795,20 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(full_sink: bool) -> Self {
+        fn new(read_only_event_log: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let policy = directory.path().join("policy.json");
+            let event_log = directory.path().join("events.jsonl");
             std::fs::write(&policy, "{}").unwrap();
             let config = serde_json::from_value(json!({
                 "listeners": [], "policy_file": policy, "data_dir": directory.path().join("data"),
                 "readiness_file": directory.path().join("ready"),
                 "flow_store_enabled": false,
                 "audit_log_path": directory.path().join("audit.jsonl"),
-                "event_log": if full_sink { std::path::PathBuf::from("/dev/full") }
-                    else { directory.path().join("events.jsonl") },
+                "event_log": event_log.clone(),
             }))
             .unwrap();
-            let runtime = Runtime::new(
+            let mut runtime = Runtime::new(
                 config,
                 "capture-fixture",
                 Arc::new(tokio::sync::Mutex::new(())),
@@ -816,6 +816,12 @@ mod tests {
                 None,
             )
             .unwrap();
+            if read_only_event_log {
+                // Fail only the completed-response evidence write. The owned
+                // log opens normally, then this read-only handle makes the
+                // real writer fail on both Linux and macOS.
+                runtime.events = Arc::new(Mutex::new(std::fs::File::open(event_log).unwrap()));
+            }
             Self {
                 directory,
                 state: Arc::new(RwLock::new(Arc::new(runtime))),
@@ -1081,7 +1087,14 @@ mod tests {
                 .unwrap()
         );
         let capture = fixture.capture(provenance, &[], true);
-        assert!(capture.finish(true));
+        assert!(
+            capture.finish(true),
+            "a successful response must report the injected evidence-write failure"
+        );
+        assert!(
+            fixture.events().is_empty(),
+            "a failed evidence write must not be reported as durable"
+        );
     }
 
     #[tokio::test]
