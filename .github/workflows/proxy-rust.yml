@@ -2,21 +2,20 @@ name: Rust proxy migration
 
 on:
   pull_request:
+    types: [opened, reopened, synchronize, converted_to_draft, ready_for_review]
     paths:
       - "proxy/**"
       - "tests/proxy_migration/**"
+      - "tests/test_proxy_rust_coord_fixture.py"
+      - "tests/test_proxy_rust_ci_events.py"
+      - "tests/test_proxy_cutover_deletion_map.py"
       - "tests/test_rust_temporary_policy.py"
+      - "tests/test_workflow_action_pins.py"
       - "tools/proxy_migration/**"
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
-    branches: [master, main]
-    paths:
-      - "proxy/**"
-      - "tests/proxy_migration/**"
-      - "tools/proxy_migration/**"
-      - ".github/workflows/proxy-rust.yml"
-      - "scripts/cargo_with_space.sh"
+    branches: [master, main, feat/rust-proxy-620]
 
 permissions:
   contents: read
@@ -26,8 +25,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  focused-pr:
+    name: Focused Rust proxy (Ubuntu)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify the exact pull-request head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: rustup show active-toolchain
+
+      - name: Check Rust formatting and lint
+        working-directory: proxy
+        run: |
+          ../scripts/cargo_with_space.sh fmt --all -- --check
+          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Install the historical comparator and temporary policy adapter
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group dev --python 3.12
+
+      - name: Test workflow, fixture, deletion, and adapter boundaries
+        run: |
+          uv run --frozen pytest -q \
+            tests/test_proxy_rust_coord_fixture.py \
+            tests/test_proxy_rust_ci_events.py \
+            tests/test_proxy_cutover_deletion_map.py \
+            tests/test_rust_temporary_policy.py \
+            tests/test_workflow_action_pins.py
+
+      - name: Test focused native boundaries
+        timeout-minutes: 10
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
+          ../scripts/cargo_with_space.sh test --locked --test gateway_workflow
+
   http-slice:
     name: HTTP migration (${{ matrix.os }})
+    # A ready-for-review event is the explicit final-candidate transition.
+    # Skipped jobs are not evidence that the full matrix ran.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'ready_for_review' &&
+       github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +96,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify the event's exact head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
 
       - name: Install the pinned Rust toolchain
         working-directory: proxy
