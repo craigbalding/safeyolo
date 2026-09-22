@@ -1184,8 +1184,45 @@ async fn accept_agents(
 /// Hyper cannot poll an HTTP/1 read side while the current service future is
 /// pending. Keep a duplicated descriptor solely for peer-close notification so
 /// a long coordination wait observes a client that abandoned its connection.
-/// The duplicate never consumes request bytes; POLLHUP is reported
-/// independently of the requested poll events on Unix.
+/// The duplicate never consumes request bytes. Some Unix platforms report a
+/// closed peer as readable rather than with POLLHUP, so a readable event is
+/// confirmed with a non-consuming peek before cancellation.
+fn peer_closed_after_readable_event(descriptor: libc::c_int) -> bool {
+    let mut byte = 0_u8;
+    unsafe {
+        libc::recv(
+            descriptor,
+            std::ptr::addr_of_mut!(byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        ) == 0
+    }
+}
+
+fn poll_agent_disconnect(descriptor: libc::c_int) -> std::io::Result<bool> {
+    let close_events = libc::POLLHUP | libc::POLLERR;
+    let readable_event = libc::POLLIN;
+    let mut descriptor_poll = libc::pollfd {
+        fd: descriptor,
+        events: readable_event,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let peer_closed =
+        descriptor_poll.revents & close_events != 0 || peer_closed_after_readable_event(descriptor);
+    if !peer_closed && descriptor_poll.revents & readable_event != 0 {
+        // Hyper may leave a request byte unread while its service future is
+        // pending. Preserve the poll timeout's cadence instead of spinning on
+        // the byte, while continuing to request POLLIN so macOS reports a
+        // later peer close that follows buffered data.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(peer_closed)
+}
+
 fn monitor_agent_disconnect(
     socket: &UnixStream,
     tasks: &Arc<connection_tasks::ConnectionTasks>,
@@ -1218,27 +1255,20 @@ fn monitor_agent_disconnect(
             // Move the guard itself into the blocking closure. Capturing only
             // its raw field would drop the duplicate before poll starts.
             let descriptor = descriptor;
-            let close_events = libc::POLLHUP | libc::POLLERR;
-            let mut descriptor_poll = libc::pollfd {
-                fd: descriptor.0,
-                events: 0,
-                revents: 0,
-            };
             loop {
                 if worker_stopped.load(Ordering::Acquire) {
                     break;
                 }
-                let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
-                if result < 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.kind() == std::io::ErrorKind::Interrupted {
+                match poll_agent_disconnect(descriptor.0) {
+                    Ok(true) => {
+                        cancellation.send_replace(true);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                         continue;
                     }
-                    break;
-                }
-                if descriptor_poll.revents & close_events != 0 {
-                    cancellation.send_replace(true);
-                    break;
+                    Err(_) => break,
                 }
             }
         })
