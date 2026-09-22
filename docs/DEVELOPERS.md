@@ -391,9 +391,34 @@ CARGO_TARGET_DIR=/path/to/candidate/proxy/target \
   scripts/cargo_with_space.sh --manifest-path proxy/Cargo.toml clippy --locked --all-targets -- -D warnings
 ```
 
-Reuse one target directory per active candidate through coding and Sol repair
-rounds. Give concurrent candidates distinct target directories. After Sol has
-accepted the exact candidate, retire its target with a receipt naming that exact commit:
+For candidate-versus-mutant sensitivity tests, create one scratch source tree
+at the exact candidate commit and reuse it for the complete batch. Reuse one
+Cargo target for that batch. Do not recreate the full source tree or allocate a
+target for each mutant. Bind the target to the stable scratch path on every
+Cargo call:
+
+```sh
+export CARGO_TARGET_DIR=/path/to/review-mutant-target
+export SAFEYOLO_CARGO_SOURCE_BATCH=issue-123-review-mutants
+export SAFEYOLO_CARGO_SOURCE_ROOT=/path/to/stable-scratch
+cd "$SAFEYOLO_CARGO_SOURCE_ROOT"
+```
+
+Build and hash the exact candidate first. Before each mutant, restore the
+changed files, apply the mutation, and run `cargo clean -p` for every locally
+changed package through the same wrapper. Build and hash the mutant, then
+repeat. Finally restore the candidate, clean the changed packages, rebuild it,
+and require its hash to match the first candidate build. Mutant hashes must be
+distinct. The wrapper records the batch, canonical source path, and source
+directory identity in the target. The wrapper refuses a target from another
+source tree, including a replacement tree at the same scratch path. Retire the
+disposable target after acceptance; keep the commands, patches, hashes, and
+required executables as evidence.
+
+Reuse one target directory per active candidate through coding and reviewer
+correction rounds. Give concurrent candidates distinct target directories.
+After the independent reviewer has accepted the exact candidate, retire its
+target with a receipt naming that exact commit:
 
 ```sh
 scripts/retire_cargo_target.py \
