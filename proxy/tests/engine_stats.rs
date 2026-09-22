@@ -1,10 +1,12 @@
 use std::{path::Path, process::Command, thread};
 
 use safeyolo_proxy::policy::{
-    CredentialRequest, Effect, EngineStatsError, Format, GatewayRequest, NetworkRequest, Policy,
-    RiskyRouteRequest,
+    CredentialRequest, Effect, Format, GatewayRequest, NetworkRequest, Policy, RiskyRouteRequest,
 };
 use serde_json::{Value, json};
+
+#[cfg(target_os = "linux")]
+use safeyolo_proxy::policy::EngineStatsError;
 
 const NOW: f64 = 1_000_000.;
 
@@ -289,7 +291,7 @@ fn failed_file_reload_and_task_reload_preserve_observed_state() {
     assert_eq!(reloaded.engine_stats().unwrap()["evaluations"], 2);
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn admitted_non_unicode_file_path_has_explicit_reporting_failure() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
