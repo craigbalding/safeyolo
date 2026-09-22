@@ -57,14 +57,91 @@ jobs:
           uv python install 3.12
           uv sync --frozen --group dev --python 3.12
 
+      - name: Start the Python-owned Coord fixture
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
+        run: |
+          fixture_root="$SAFEYOLO_COORD_DATA_DIR"
+          fixture_ready="$fixture_root/fixture.ready"
+          fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
+          test ! -e "$fixture_root" || {
+            echo "Coord fixture path already exists: $fixture_root" >&2
+            exit 1
+          }
+          uv run --frozen python proxy/tests/coord_fixture.py \
+            --ready-file "$fixture_ready" > "$fixture_log" 2>&1 &
+          fixture_pid=$!
+          for attempt in $(seq 1 100); do
+            if test -f "$fixture_ready"; then
+              exit 0
+            fi
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then
+              teardown_status=0
+              uv run --frozen python proxy/tests/coord_fixture.py --teardown || teardown_status=$?
+              cat "$fixture_log"
+              if test "$teardown_status" -ne 0; then
+                echo "Coord fixture teardown failed after startup failure" >&2
+              fi
+              exit 1
+            fi
+            sleep 0.1
+          done
+          teardown_status=0
+          uv run --frozen python proxy/tests/coord_fixture.py --teardown || teardown_status=$?
+          cat "$fixture_log"
+          if test "$teardown_status" -ne 0; then
+            echo "Coord fixture teardown failed after startup timeout" >&2
+          fi
+          exit 1
+
       - name: Test and build the Rust proxy
         timeout-minutes: 10
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+            export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
+            host_target="$(rustc -vV | sed -n 's/^host: //p')"
+            test -n "$host_target"
+            runner_variable="CARGO_TARGET_${host_target^^}_RUNNER"
+            runner_variable="${runner_variable//-/_}"
+            export CARGO_BUILD_TARGET="$host_target"
+            export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
+          fi
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked
+          if [ "$RUNNER_OS" = Linux ]; then
+            rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+            test -x "$rust_proxy"
+            printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+          fi
+
+      - name: Stop the Python-owned Coord fixture
+        if: always() && matrix.os == 'ubuntu-latest'
+        env:
+          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
+        run: |
+          fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
+          fixture_stopped="$SAFEYOLO_COORD_DATA_DIR/fixture.stopped"
+          if test ! -e "$SAFEYOLO_COORD_DATA_DIR"; then
+            exit 0
+          fi
+          uv run --frozen python proxy/tests/coord_fixture.py --teardown
+          for attempt in $(seq 1 100); do
+            if test -f "$fixture_stopped"; then
+              cat "$fixture_log"
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat "$fixture_log"
+          echo "Coord fixture did not finish its ownership-verified teardown" >&2
+          exit 1
 
       - name: Run shared HTTP contracts against the historical Python comparator
         run: |
