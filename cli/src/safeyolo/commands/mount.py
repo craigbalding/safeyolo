@@ -8,7 +8,6 @@ from rich.table import Table
 
 from ..config import load_config, save_config
 from ..mount_protection import get_protected_paths
-from ..mount_protection import is_path_protected as is_path_protected
 
 console = Console()
 

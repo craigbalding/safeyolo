@@ -285,6 +285,7 @@ def _open_safe_setup_directory(path: Path, name: str) -> int:
         try:
             path.mkdir(mode=0o700)
         except FileExistsError:
+            # Concurrent setup may create it after lstat; the safe open below verifies it.
             pass
     except OSError as exc:
         raise RuntimeError(f"unsafe host setup directory for agent {name!r}: {exc}") from None
@@ -555,7 +556,8 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
         console.print(f"Agent {name}: launch requested. Use {followup}.")
     # Launcher is frozen: the complementary interactive/non-interactive paths
     # above always assign result. CodeQL does not correlate these two checks.
-    return result  # lgtm[py/uninitialized-local-variable]
+    # codeql[py/uninitialized-local-variable]
+    return result
 
 
 def _run_agent_impl(
@@ -846,12 +848,10 @@ def _run_agent_impl(
         if snapshot_mode == "restore":
             console.print("  Restoring agent...", end="")
             restore_src = snapshot_path(name)
-            # Capture helper_pid so the post-session os.waitpid() call
-            # on macOS can block on the actual child instead of polling.
-            # Restore doesn't need SIGUSR1 (that's capture-mode only),
-            # but liveness still needs the pid.
+            # Restore does not need a helper PID: failed restores fall through
+            # to cold boot, which obtains the PID for its capture/error paths.
             _t("start_sandbox (restore: spawn helper + VZ.restore)")
-            helper_pid = plat.start_sandbox(
+            plat.start_sandbox(
                 name=name,
                 workspace_path=str(workspace_path),
                 config_share=config_share,
