@@ -328,7 +328,7 @@ def _reap_timed_out_process(process: Any) -> None:
 
 
 def _start_agent(name: str, *, allow_unowned: bool = False) -> None:
-    from .agent import _run_agent
+    from ..agent_lifecycle import _run_agent
 
     result = _run_agent(
         name,

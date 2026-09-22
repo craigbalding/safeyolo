@@ -48,7 +48,7 @@ def test_start_agent_uses_only_fixed_configured_options():
         ),
         patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
         patch(
-            "safeyolo.commands.agent._run_agent",
+            "safeyolo.agent_lifecycle._run_agent",
             return_value=0,
             autospec=True,
         ) as run,
@@ -92,7 +92,7 @@ def test_start_agent_preserves_failure_detail_for_operator(caplog):
         ),
         patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
         patch(
-            "safeyolo.commands.agent._run_agent",
+            "safeyolo.agent_lifecycle._run_agent",
             side_effect=RuntimeError("configured workspace is unavailable"),
             autospec=True,
         ),

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 from rich.console import Console
 
+from ..agent_lifecycle import _agent_host_setup_lock, _run_agent
 from ..agents_store import get_or_mint_agent_id, load_agent, mutate_agent
 from ..config import find_config_dir
 from ..factory_contract import (
@@ -23,10 +24,8 @@ from ..factory_contract import (
     load_factory_file,
 )
 from .agent import (
-    _agent_host_setup_lock,
     _check_project_ownership,
     _resolve_host_script_path,
-    _run_agent,
     _run_host_script_for_agent,
 )
 
