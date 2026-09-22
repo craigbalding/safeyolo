@@ -415,7 +415,7 @@ silently reduce accepted message sizes to a library default.
 | D26 | Production TLS protocol negotiation depends on the origin. Rust negotiates HTTP/2 with a capable client before negotiating origin TLS and can translate that request to an HTTP/1 origin. | Paired tests verify delivered requests for HTTP/2-only and HTTP/1-only origins. The negotiation difference is explicit; no-ALPN traffic and cleartext UDS still use HTTP/1. Upstream protocol selection follows verified TLS negotiation, without fallback after a TLS or parser error. |
 | D27 | Python's vault mutates live state before saving and can partially replace it during malformed reload. It also ignores an altered salt on live reload. | Native vault mutations and reload publish only a complete valid candidate, with encrypted-file rollback on activation failure. A changed salt requires unlock. Cross-runtime tests preserve existing encrypted data and no-TTL Fernet behavior. Independent writers still have no cross-process merge guarantee. |
 | D28 | Independent full-production tests allow CONNECT but deny the inner GET. A complete HTTP request or TLS ClientHello stays inspected and returns 403. Sending a short first fragment can instead select raw TCP, delivering the same forbidden GET to the origin. One- or two-byte ClientHello fragments and several incomplete HTTP prefixes reproduce the bypass. | The native classifier retains undecidable prefixes across reads. Fragmented plaintext tests and paired TLS tests enforce the inner denial; the two old TLS cases remain strict expected failures. Classification and raw relay retain the production 600-second inactivity timeout, which closes rather than reclassifies. A method-like opaque prefix can remain undecided until a delimiter; an explicit passthrough entry can select uninspected transport for such an endpoint. |
-| D29 | The dependency's ignore matcher considers the target, connected address, inner Host and TLS SNI. The native development path matches configured target entries and direct destination IPv4 ranges. | The existing CLI and native configuration boundary now normalize supported exact host forms (trimmed ASCII/IDNA2003 lowercase, explicit ports and deduplication). Exact-host/port, host-only address, builtin and constrained CIDR selection, original TLS certificates, canonical direct lifecycle events and removal at reload are covered by focused witnesses. A direct connection matched only by its resolved IPv4 peer now receives the same lifecycle owner after TCP succeeds, while the logical authority remains in the event. SNI/Host alias matching, parent-address exemption semantics and the remaining D29 matrix remain unresolved; this narrower development matcher is not full passthrough acceptance. |
+| D29 | The dependency's ignore matcher considers the target, connected address, inner Host and TLS SNI. The native path matches configured logical target entries and direct destination IPv4 ranges. | The existing CLI and native configuration boundary normalizes supported exact host forms (trimmed ASCII/IDNA2003 lowercase, explicit ports and deduplication). Focused witnesses cover exact-host/port, host-only address, builtin and constrained CIDR selection, original TLS certificates, canonical direct lifecycle events and removal at reload. A direct connection matched only by its resolved IPv4 peer receives the lifecycle owner after TCP succeeds, while the event retains the logical authority. A logical target or captured SNI entry selects opaque transport through a configured plain or verified TLS parent without bypassing that parent. The parent address and CIDR never match an unrelated logical destination. Inner-Host alias semantics and the remaining D29 matrix remain unresolved; this narrower matcher is not full passthrough acceptance. |
 | D30 | Independent review at `d2f154b3` found that native vault decoding rejects Python's accepted empty `credentials` mapping/string and floating-zero root values. A live reload therefore retains a credential that Python removes. | The decoder now accepts those empty representations and clears the active snapshot. A ten-case Python unlock/reload comparison also retains errors for null, numeric and nonempty invalid credential containers. Independent recheck passed at `682f622c`. |
 | D31 | Independent review at `682f622c` found that both implementations classify any client prefix `SSH` as opaque. Valid HTTP methods such as `SSH`, `SSHGET` and `SSH-EXT` therefore bypass an explicit inner denial. | Native classification no longer treats three letters as a protocol exemption. Fragmented extension methods stay inspected. An identification line with a comment remains undecided until its first line finishes; HTTP request-line syntax takes precedence when ambiguous. Independent recheck passed at `06d7282c`, including 20 denied requests, 12 identification-line cases and real SSH. D35 records a separate whitespace finding. |
 | D32 | Independent full-production WebSocket tests found that a control frame between compressed fragments resets the Python dependency's message compression flag. All 24 direct controls deliver exact bytes; eight proxy cases fail, covering Ping/Pong in both text/binary directions. Text closes with 1007; binary silently delivers incorrect bytes. | The native message reader keeps compression state until the data message finishes. Independent codec recheck at `19ff784e` passed all 24 wire cases, including exact re-encoding. The owner-run paired WS/WSS fixture now reproduces 16 old-proxy failures and passes every native counterpart. Complete native production-chain evidence remains required; this source defect is not a compatibility requirement. |
@@ -1562,7 +1562,10 @@ single supported negotiation path.
 `ignore_hosts` accepts canonical exact entries produced by the existing CLI
 normalizer. `SAFEYOLO_IGNORE_CIDRS` supplies the existing constrained IPv4 ranges;
 the builtin endpoint remains included. These exemptions select passthrough only
-after network admission. Other recognized opaque traffic also retains arbitrary
+after network admission. For CONNECT, an authored logical destination or SNI
+entry can select opaque transport through a configured parent. The physical
+connection still uses that parent. The builtin `api.asterfold.ai:7000` entry
+uses the same matcher. Other recognized opaque traffic also retains arbitrary
 permitted destination ports, full duplex and independent half-close. Tunnel
 events report transferred bytes and actual termination, without claiming SSH
 authentication or inspected payloads. Fragmented protocol prefixes remain on
@@ -1576,12 +1579,13 @@ or host:port list, replaces the live matcher, and reports
 `admin.proxy_ignore_hosts_update`. Existing admitted connections keep their
 match; connections opened after an empty replacement are inspected again. The
 route does not persist configuration or extend matching to inner Host or parent
-routes. A configured exact `SNI:port` alias is selected only after a complete
-TLS ClientHello is buffered; the CONNECT authority remains the egress
-destination while the passthrough lifecycle event records the matched SNI.
-Direct IPv4 range matches discovered from the connected peer retain the same
-lifecycle owner; parent-route addresses remain outside this direct passthrough
-path. The native [inner-Host control](../proxy/tests/transport.rs) keeps a
+addresses. A configured exact logical destination or `SNI:port` alias can be
+selected on a direct or parent CONNECT route. The proxy sends the original
+CONNECT authority to the parent, and the lifecycle event records the matched
+SNI when an alias selected the connection. Direct IPv4 range matches discovered
+from the connected peer retain the same lifecycle owner. A parent address or
+CIDR never becomes a matching input for an unrelated logical destination. The
+native [inner-Host control](../proxy/tests/transport.rs) keeps a
 request whose decrypted Host matches a configured alias on the inspected TLS
 path: it rejects the changed authority before application bytes reach the
 origin and emits no passthrough event. The opaque decision is made before
@@ -2553,19 +2557,23 @@ acceptance or full production-chain equivalence.
 
 ### Configured passthrough connection events
 
-For admitted direct CONNECT requests, the native proxy now emits canonical
+For admitted CONNECT requests, the native proxy emits canonical
 `traffic.passthrough_start`, `traffic.passthrough_error` and
 `traffic.passthrough_end` events when the logical destination matches the
-existing passthrough configuration before dialing, or when a direct configured
-IPv4 range matches the resolved peer after TCP succeeds. The [connection component](../proxy/src/ignored_host_logger.rs)
-uses the shared audit writer. The events retain the source host, port, transport
-and trusted listener agent/client facts. They contain no request ID, explicit
+existing passthrough configuration, including through a configured parent. A
+direct configured IPv4 range can also match the resolved peer after TCP
+succeeds. The [connection component](../proxy/src/ignored_host_logger.rs) uses
+the shared audit writer. The events retain the source host, port, transport and
+trusted listener agent/client facts. They contain no request ID, explicit
 attribution, byte count or claim about inspected application content.
 
-Logical matching happens before DNS and is retained for that physical
-connection. A resolved-peer-only match is selected only after the successful
-TCP connection; its event keeps the logical destination while the matcher uses
-the physical IPv4 peer. Start follows successful TCP connection, before later protocol processing.
+Logical matching happens before direct DNS or parent connection setup and is
+retained for that physical connection. A resolved-peer-only match is selected
+only after a direct TCP connection succeeds; its event keeps the logical
+destination while the matcher uses the physical IPv4 peer. A direct logical
+match starts after TCP succeeds. A parent logical match starts only after the
+parent accepts CONNECT. If the parent rejects CONNECT before destination
+transport starts, the pending owner records one error without a start/end pair.
 A final connection-attempt failure consumes the observation before reporting
 the error. End follows release of the physical socket; one EOF or write
 half-close does not end the session. Duration includes connection setup and
@@ -2581,13 +2589,15 @@ body reader or permission decision. Legacy `proxy.tunnel` diagnostics remain
 separate from these canonical events.
 Abrupt task teardown has no final-event drain guarantee.
 
-The initial runtime scope excludes parent routes, ordinary HTTP connections and
-inner-Host aliases. The native [SNI alias transport control](../proxy/tests/transport.rs)
-now covers one exact configured `SNI:port` alias with origin certificate and
-initial-record evidence plus an intercepted neighboring SNI. Parent-address
-exemption semantics, the remaining lifecycle matrix and full D29 acceptance
-remain unresolved. Earlier native reserved/admin containment can also
-omit source connection observations; enforcement order remains unchanged.
+The current runtime scope excludes ordinary HTTP connections and inner-Host
+aliases. The native [SNI alias transport controls](../proxy/tests/transport.rs)
+cover one exact configured `SNI:port` alias through direct and parent routes,
+with origin-certificate and initial-record evidence plus an intercepted
+neighboring SNI. Exact parent-address and parent-CIDR entries leave an
+unrelated logical destination intercepted. The remaining lifecycle matrix and
+full D29 acceptance remain unresolved. Earlier native reserved/admin
+containment can also omit source connection observations; enforcement order
+remains unchanged.
 Native connection-error wording and cancellation reasons can differ from the
 Python stack. A canceled pending native attempt uses `connection cancelled`;
 this does not establish source hook/semaphore cancellation equivalence.
@@ -2597,13 +2607,17 @@ identical diagnostic stage.
 
 The focused `configured_passthrough_entry_does_not_bypass_parent_route` control
 adds one real parent-parity witness: an exact `127.0.0.1:<origin-port>`
-passthrough entry still sends the CONNECT and client payload to the configured
-parent, while an independently listening origin accepts zero connections. The
-parent records the logical authority and its loopback peer, and the single
-`proxy.egress` event keeps the logical host and port with `route: "parent"`;
-no direct passthrough lifecycle event is emitted. This proves one direct IPv4
-match with one configured parent and does not establish parent-address matching,
-aliases, reserved-name controls or same-request retry.
+passthrough entry selects opaque transport while still sending the CONNECT and
+client payload to the configured parent. An independently listening origin
+accepts zero connections. The parent records the logical authority and its
+loopback peer. The single `proxy.egress` event keeps the logical host and port
+with `route: "parent"`, and the canonical start/end pair uses the logical
+destination. Companion controls cover a verified TLS parent, a configured SNI
+alias through a parent, a same-host different-port neighbor, and exact
+parent-address/CIDR entries for an unrelated destination. A parent refusal
+records one error without a direct fallback or start/end pair. These are focused
+native witnesses. They do not establish reserved-name controls, same-request
+retry, alternate-parent behavior or full D29 acceptance.
 
 The native `http::tests::pending_passthrough_connect_cancellation_records_one_error`
 control drives a real CONNECT through the production matcher and egress owner,
