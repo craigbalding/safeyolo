@@ -507,6 +507,7 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
         console.print("Run [bold]safeyolo agent add <name> <folder>[/bold] first.")
         raise typer.Exit(1)
     record = None
+    result: int | None = None
     with _agent_host_setup_lock(name):
         with launch_lock(name):
             metadata = _load_agent_metadata(name)
@@ -540,7 +541,7 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
         # and stop ordered; release the record lock so the child can claim it.
         if selection.kind != "interactive":
             result = invoke_launcher(record)
-    if selection.kind == "interactive":
+    if result is None:
         result = invoke_launcher(record)
         if result == 0:
             # Preserve the ordinary foreground lifecycle. Failed/interrupted
@@ -554,9 +555,9 @@ def _run_agent(*args, launch_mode="foreground", interactive=False, **kwargs) -> 
     if launch_mode == "background":
         followup = f"safeyolo agent diag {name}" if selection.kind == "supervisor" else f"safeyolo agent attach {name}"
         console.print(f"Agent {name}: launch requested. Use {followup}.")
-    # Launcher is frozen: the complementary interactive/non-interactive paths
-    # above always assign result. CodeQL does not correlate these two checks.
-    # codeql[py/uninitialized-local-variable]
+    # A non-interactive launch occurs under the host setup lock; interactive
+    # launch and its stop remain outside both locks.
+    assert result is not None
     return result
 
 
