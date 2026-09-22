@@ -1199,6 +1199,30 @@ fn peer_closed_after_readable_event(descriptor: libc::c_int) -> bool {
     }
 }
 
+fn poll_agent_disconnect(descriptor: libc::c_int) -> std::io::Result<bool> {
+    let close_events = libc::POLLHUP | libc::POLLERR;
+    let readable_event = libc::POLLIN;
+    let mut descriptor_poll = libc::pollfd {
+        fd: descriptor,
+        events: readable_event,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let peer_closed =
+        descriptor_poll.revents & close_events != 0 || peer_closed_after_readable_event(descriptor);
+    if !peer_closed && descriptor_poll.revents & readable_event != 0 {
+        // Hyper may leave a request byte unread while its service future is
+        // pending. Preserve the poll timeout's cadence instead of spinning on
+        // the byte, while continuing to request POLLIN so macOS reports a
+        // later peer close that follows buffered data.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(peer_closed)
+}
+
 fn monitor_agent_disconnect(
     socket: &UnixStream,
     tasks: &Arc<connection_tasks::ConnectionTasks>,
@@ -1231,31 +1255,20 @@ fn monitor_agent_disconnect(
             // Move the guard itself into the blocking closure. Capturing only
             // its raw field would drop the duplicate before poll starts.
             let descriptor = descriptor;
-            let close_events = libc::POLLHUP | libc::POLLERR;
-            let readable_event = libc::POLLIN;
-            let mut descriptor_poll = libc::pollfd {
-                fd: descriptor.0,
-                events: readable_event,
-                revents: 0,
-            };
             loop {
                 if worker_stopped.load(Ordering::Acquire) {
                     break;
                 }
-                let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
-                if result < 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.kind() == std::io::ErrorKind::Interrupted {
+                match poll_agent_disconnect(descriptor.0) {
+                    Ok(true) => {
+                        cancellation.send_replace(true);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                         continue;
                     }
-                    break;
-                }
-                let peer_closed = descriptor_poll.revents & close_events != 0
-                    || (descriptor_poll.revents & readable_event != 0
-                        && peer_closed_after_readable_event(descriptor.0));
-                if peer_closed {
-                    cancellation.send_replace(true);
-                    break;
+                    Err(_) => break,
                 }
             }
         })

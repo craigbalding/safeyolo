@@ -318,3 +318,30 @@ async fn readable_agent_socket_does_not_report_peer_close_until_eof() {
         "EOF after peer close must be distinguishable from readable request bytes"
     );
 }
+
+#[tokio::test]
+async fn unread_agent_byte_keeps_disconnect_probe_on_bounded_cadence() {
+    use tokio::io::AsyncWriteExt;
+
+    let (server, mut client) = UnixStream::pair().unwrap();
+    client.write_all(b"x").await.unwrap();
+    server.readable().await.unwrap();
+
+    let started = std::time::Instant::now();
+    for _ in 0..3 {
+        assert!(
+            !poll_agent_disconnect(server.as_raw_fd()).unwrap(),
+            "an unread byte must not be treated as peer EOF"
+        );
+    }
+    assert!(
+        started.elapsed() >= Duration::from_millis(250),
+        "an unread byte must not make the disconnect probe busy-spin"
+    );
+
+    drop(client);
+    assert!(
+        (0..10).any(|_| poll_agent_disconnect(server.as_raw_fd()).unwrap()),
+        "later peer EOF must still be observed within one second"
+    );
+}
