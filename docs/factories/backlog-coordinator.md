@@ -144,7 +144,10 @@ Reconcile those sources in this order before assigning work:
 5. Give an exact candidate review priority over new Lens background work. Lens
    may have at most one coordinator-assigned background task while no candidate
    waits. If a candidate arrives during that task, retain the review request
-   and do not assign further background work.
+   and do not assign further background work. Immediately before assigning new
+   background work, recheck the supervisor checkpoint and pending review
+   handoffs. Do not interrupt background work that is already running; the
+   candidate becomes Lens's next assignment.
 6. After Lens reports, ensure the issue body and concise evidence comment show
    the result before selecting dependent work. Checked means independently
    proven. Partial proof stays unchecked with a concise bracketed sentence on
@@ -193,6 +196,13 @@ independent acceptance work, security analysis, evidence collection, or a
 bounded repository investigation. Prepare subsequent work while another task
 waits for review, CI, or operator input. Completion or delay in one lane must
 not erase or pause another lane.
+
+After Lens returns `CHANGES_REQUIRED`, retain Lens for that candidate's
+actionable correction round. Do not assign unrelated background work before
+Lens reviews Forge's corrected exact target. Release this affinity when the
+correction is awaiting the operator, blocked, superseded, accepted, or otherwise
+terminal. This does not reserve Lens while Forge creates the initial candidate,
+and it does not interrupt background work that was already running.
 
 When the trusted brief binds a product acceptance graph, treat advancing one
 useful applicable graph path as the default Lens background task when no more
