@@ -761,9 +761,9 @@ mod tests {
             8443,
             Some("10.2.9.1".parse().unwrap())
         ));
-        // SNI/inner-Host values are not alternate destinations for this
-        // matcher, and a configured parent disables direct passthrough at the
-        // CONNECT owner (covered by the parent wire control).
+        // SNI and inner-Host values are not alternate destinations for this
+        // matcher. Parent routes retain logical matching while omitting the
+        // physical parent address from matcher inputs.
     }
 
     #[test]

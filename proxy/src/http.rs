@@ -975,11 +975,11 @@ async fn open_egress_for_flow(
         None
     };
     // A configured IPv4 range can match only after DNS has selected the
-    // physical peer.  Create the lifecycle owner at that point, after the
+    // physical peer. Create the lifecycle owner at that point, after the
     // successful TCP connect, while retaining the logical destination in the
-    // canonical event.  Parent routes never receive this matcher, and a
-    // logical host/port match still creates its owner before dialing so
-    // refusal/cancellation retains the existing error event.
+    // canonical event. Parent routes pass no physical peer to this matcher;
+    // a logical host/port match remains Connecting until parent CONNECT
+    // acceptance, so a failed parent phase records one error instead.
     if connection_audit.is_none()
         && direct
         && passthrough_matcher
@@ -994,68 +994,89 @@ async fn open_egress_for_flow(
             },
         ));
     }
-    if let Some(observation) = &mut connection_audit {
+    if direct && let Some(observation) = &mut connection_audit {
         observation.connected();
     }
-    let socket: BoxStream = match connection_audit {
-        Some(observation) => ignored_host::observe(socket, observation),
-        None => Box::new(socket),
+    let socket: BoxStream = if direct {
+        match connection_audit.take() {
+            Some(observation) => ignored_host::observe(socket, observation),
+            None => Box::new(socket),
+        }
+    } else {
+        Box::new(socket)
     };
     if let Some(live) = live {
         live.upstream_connection(observation.clone());
     }
-    let mut stream: BoxStream = if tls {
-        let name = ServerName::try_from(host.to_owned())?;
-        let tls = runtime
-            .tls
-            .clone()
-            .ok_or("HTTPS parent TLS was not configured")?;
-        Box::new(
-            refresh_parent_tls_phase(phase_timeout, async {
-                TlsConnector::from(tls)
-                    .connect(name, socket)
+    let parent_connection: Result<BoxStream, Error> = async {
+        let mut stream: BoxStream = if tls {
+            let name = ServerName::try_from(host.to_owned())?;
+            let tls = runtime
+                .tls
+                .clone()
+                .ok_or("HTTPS parent TLS was not configured")?;
+            Box::new(
+                refresh_parent_tls_phase(phase_timeout, async {
+                    TlsConnector::from(tls)
+                        .connect(name, socket)
+                        .await
+                        .map_err(Into::into)
+                })
+                .await?,
+            )
+        } else {
+            socket
+        };
+        if tunnel && runtime.parent.is_some() {
+            let (mut sender, connection) = refresh_connect_phase(phase_timeout, async {
+                hyper::client::conn::http1::handshake(TokioIo::new(stream))
                     .await
                     .map_err(Into::into)
             })
-            .await?,
-        )
-    } else {
-        socket
-    };
-    if tunnel && runtime.parent.is_some() {
-        let (mut sender, connection) = refresh_connect_phase(phase_timeout, async {
-            hyper::client::conn::http1::handshake(TokioIo::new(stream))
-                .await
-                .map_err(Into::into)
-        })
-        .await?;
-        let task = HttpTask::unobserved(allowed.tasks.spawn(async move {
-            let _ = connection.with_upgrades().await;
-        }));
-        let target = if destination.host.contains(':') {
-            format!("[{}]:{}", destination.host, destination.port)
-        } else {
-            format!("{}:{}", destination.host, destination.port)
-        };
-        let request = Request::builder()
-            .method(Method::CONNECT)
-            .uri(&target)
-            .header(header::HOST, &target)
-            .header(header::VIA, format!("1.1 {}", runtime.via_token))
-            .body(full(Bytes::new()))?;
-        let response = refresh_connect_phase(phase_timeout, async {
-            sender.send_request(request).await.map_err(Into::into)
-        })
-        .await?;
-        if !response.status().is_success() {
-            return Err("parent proxy refused CONNECT".into());
+            .await?;
+            let task = HttpTask::unobserved(allowed.tasks.spawn(async move {
+                let _ = connection.with_upgrades().await;
+            }));
+            let target = if destination.host.contains(':') {
+                format!("[{}]:{}", destination.host, destination.port)
+            } else {
+                format!("{}:{}", destination.host, destination.port)
+            };
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(&target)
+                .header(header::HOST, &target)
+                .header(header::VIA, format!("1.1 {}", runtime.via_token))
+                .body(full(Bytes::new()))?;
+            let response = refresh_connect_phase(phase_timeout, async {
+                sender.send_request(request).await.map_err(Into::into)
+            })
+            .await?;
+            if !response.status().is_success() {
+                return Err("parent proxy refused CONNECT".into());
+            }
+            let upgraded = refresh_connect_phase(phase_timeout, async {
+                hyper::upgrade::on(response).await.map_err(Into::into)
+            })
+            .await?;
+            drop(task);
+            stream = Box::new(TokioIo::new(upgraded));
         }
-        let upgraded = refresh_connect_phase(phase_timeout, async {
-            hyper::upgrade::on(response).await.map_err(Into::into)
-        })
-        .await?;
-        drop(task);
-        stream = Box::new(TokioIo::new(upgraded));
+        Ok(stream)
+    }
+    .await;
+    let mut stream = match parent_connection {
+        Ok(stream) => stream,
+        Err(error) => {
+            if let Some(observation) = &mut connection_audit {
+                observation.failed(&error.to_string());
+            }
+            return Err(error);
+        }
+    };
+    if !direct && let Some(mut observation) = connection_audit {
+        observation.connected();
+        stream = ignored_host::observe_stream(stream, observation);
     }
     Ok(Connected {
         stream,
@@ -2282,12 +2303,12 @@ where
             .read()
             .map_err(|_| "passthrough configuration unavailable")?
             .clone();
-        let ignored = (runtime.parent.is_none()
-            && passthrough_matcher.matches(&destination.host, destination.port, None))
-        .then_some(crate::ignored_host_logger::SelectedDestination {
-            host: &destination.host,
-            port: destination.port,
-        });
+        let ignored = passthrough_matcher
+            .matches(&destination.host, destination.port, None)
+            .then_some(crate::ignored_host_logger::SelectedDestination {
+                host: &destination.host,
+                port: destination.port,
+            });
         let connected = open_egress_for_flow(
             &runtime,
             &AllowedRequest {
@@ -2308,8 +2329,7 @@ where
             peer,
             observation,
         } = connected;
-        let passthrough = runtime.parent.is_none()
-            && passthrough_matcher.matches(&destination.host, destination.port, peer);
+        let passthrough = passthrough_matcher.matches(&destination.host, destination.port, peer);
         let upgrade = hyper::upgrade::on(&mut request);
         let identity = identity.clone();
         let destination = destination.clone();
@@ -2346,7 +2366,6 @@ where
                 } = classification;
                 let protocol = classified_protocol;
                 let sni_passthrough = !passthrough
-                    && runtime.parent.is_none()
                     && protocol == Protocol::Tls
                     && tls_server_name.as_deref().is_some_and(|name| {
                         passthrough_matcher.matches(name, destination.port, None)
@@ -4126,6 +4145,145 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_address_matchers_do_not_select_an_unrelated_logical_destination() {
+        for cidr_matcher in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let parent = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .await
+                .unwrap();
+            let parent_address = parent.local_addr().unwrap();
+            let configured_entry = if cidr_matcher {
+                "unmatched.invalid".to_owned()
+            } else {
+                parent_address.to_string()
+            };
+            let mut config = race_config(directory.path(), "parent-address", &configured_entry);
+            config.parent_proxy = Some(format!("http://{parent_address}"));
+
+            let key = rcgen::KeyPair::generate().unwrap();
+            let mut params = rcgen::CertificateParams::default();
+            params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            params.key_usages = vec![rcgen::KeyUsagePurpose::KeyCertSign];
+            let certificate = params.self_signed(&key).unwrap();
+            let ca_path = directory.path().join("interception-ca.pem");
+            std::fs::write(
+                &ca_path,
+                format!("{}{}", key.serialize_pem(), certificate.pem()),
+            )
+            .unwrap();
+            config.tls_ca_file = Some(ca_path);
+
+            let authority = "unrelated.invalid:443".to_owned();
+            let parent_authority = authority.clone();
+            let parent_task = tokio::spawn(async move {
+                let (mut socket, _) = parent.accept().await.unwrap();
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(socket.read_u8().await.unwrap());
+                }
+                assert!(
+                    head.starts_with(format!("CONNECT {parent_authority} HTTP/1.1\r\n").as_bytes())
+                );
+                socket
+                    .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    .await
+                    .unwrap();
+                let mut bytes = Vec::new();
+                tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (head, bytes)
+            });
+
+            let proxy = crate::Proxy::start(config.clone()).await.unwrap();
+            let runtime = proxy.runtime.read().unwrap().clone();
+            if cidr_matcher {
+                *runtime.passthrough.write().unwrap() =
+                    crate::tunnels::Passthrough::new(&[], "127.0.0.0/8").unwrap();
+            }
+
+            let mut client = UnixStream::connect(directory.path().join("alice.sock"))
+                .await
+                .unwrap();
+            client
+                .write_all(
+                    format!(
+                        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\n") {
+                response.push(client.read_u8().await.unwrap());
+            }
+            assert!(response.starts_with(b"HTTP/1.1 200"), "{response:?}");
+
+            let mut roots = RootCertStore::empty();
+            roots.add(certificate.der().clone()).unwrap();
+            let client_tls = ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+            let intercepted = tokio::time::timeout(
+                Duration::from_secs(2),
+                TlsConnector::from(Arc::new(client_tls)).connect(
+                    ServerName::try_from("unrelated.invalid".to_owned()).unwrap(),
+                    client,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            drop(intercepted);
+
+            let (head, bytes) = tokio::time::timeout(Duration::from_secs(2), parent_task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(head.starts_with(format!("CONNECT {authority} HTTP/1.1\r\n").as_bytes()));
+            assert!(
+                bytes.is_empty(),
+                "{} parent-address matcher forwarded opaque bytes: {bytes:?}",
+                if cidr_matcher { "CIDR" } else { "exact" }
+            );
+            assert!(
+                runtime
+                    .audit
+                    .wait_for_drain(Duration::from_secs(2))
+                    .unwrap()
+            );
+            let lifecycle = std::fs::read_to_string(directory.path().join("audit.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|event| event["addon"] == "ignored-host-logger")
+                .collect::<Vec<_>>();
+            assert!(
+                lifecycle.is_empty(),
+                "{} parent-address matcher created passthrough lifecycle: {lifecycle:?}",
+                if cidr_matcher { "CIDR" } else { "exact" }
+            );
+            let egress = std::fs::read_to_string(&config.event_log)
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|event| event["event"] == "proxy.egress")
+                .collect::<Vec<_>>();
+            assert_eq!(egress.len(), 1);
+            assert_eq!(egress[0]["host"], "unrelated.invalid");
+            assert_eq!(egress[0]["port"], 443);
+            assert_eq!(egress[0]["route"], "parent");
+            proxy.shutdown().await;
         }
     }
 

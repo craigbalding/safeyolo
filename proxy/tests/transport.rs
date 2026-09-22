@@ -258,7 +258,7 @@ async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
     // A configured logical destination still travels through the physical
-    // parent route; parent connections are outside direct passthrough.
+    // parent route while selecting configured opaque transport.
     config.ignore_hosts = vec!["destination.invalid:23456".into()];
     let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -308,7 +308,14 @@ async fn opaque_connect_uses_parent_tunnel_and_denial_never_dials() {
         .unwrap()
         .unwrap();
     assert_eq!(contacts.load(Ordering::SeqCst), 1);
-    assert!(passthrough_events(&config).is_empty());
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "destination.invalid"
+            && event["details"]["port"] == 23456
+            && event["details"]["transport"] == "tcp"
+    }));
     proxy.shutdown().await;
 }
 
@@ -405,7 +412,20 @@ async fn configured_passthrough_entry_does_not_bypass_parent_route() {
     assert_eq!(egress[0]["host"], "127.0.0.1");
     assert_eq!(egress[0]["port"], origin_port);
     assert_eq!(egress[0]["route"], "parent");
-    assert!(passthrough_events(&config).is_empty());
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "127.0.0.1"
+            && event["details"]["port"] == origin_port
+            && event["details"]["transport"] == "tcp"
+    }));
+    let tunnels = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.tunnel")
+        .collect::<Vec<_>>();
+    assert_eq!(tunnels.len(), 1);
+    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
 
     if let Ok(path) = std::env::var("SAFEYOLO_PARENT_PARITY_EVIDENCE") {
         let witness = json!({
@@ -417,10 +437,374 @@ async fn configured_passthrough_entry_does_not_bypass_parent_route() {
             "parent_payload": String::from_utf8_lossy(&parent_payload),
             "origin_accepts": origin_contacts.load(Ordering::SeqCst),
             "proxy_egress": egress[0],
-            "passthrough_events": passthrough_events(&config),
+            "passthrough_events": lifecycle,
         });
         std::fs::write(path, serde_json::to_vec_pretty(&witness).unwrap()).unwrap();
     }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_parent_passthrough_refusal_records_one_error_without_direct_fallback() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+
+    // The configured logical origin is a direct-fallback canary. A parent
+    // refusal must terminate the request instead of reaching this listener.
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let authority = format!("127.0.0.1:{origin_port}");
+    config.ignore_hosts = vec![authority.clone()];
+    let origin_contacts = Arc::new(AtomicUsize::new(0));
+    let origin_seen = origin_contacts.clone();
+    let origin_task = tokio::spawn(async move {
+        if let Ok(Ok((_socket, _peer))) =
+            tokio::time::timeout(Duration::from_secs(2), origin.accept()).await
+        {
+            origin_seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.parent_proxy = Some(format!("http://{}", parent.local_addr().unwrap()));
+    let parent_authority = authority.clone();
+    let parent_task = tokio::spawn(async move {
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), parent.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(format!("CONNECT {parent_authority} HTTP/1.1\r\n").as_bytes()));
+        socket
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        socket.shutdown().await.unwrap();
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let response = raw(
+        &config.listeners[0].socket_path,
+        &format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    parent_task.await.unwrap();
+    origin_task.await.unwrap();
+    assert_eq!(origin_contacts.load(Ordering::SeqCst), 0);
+
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 1);
+    assert_eq!(egress[0]["host"], "127.0.0.1");
+    assert_eq!(egress[0]["port"], origin_port);
+    assert_eq!(egress[0]["route"], "parent");
+    let lifecycle = wait_passthrough_events(&config, 1).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_error");
+    assert_eq!(lifecycle[0]["host"], "127.0.0.1");
+    assert_eq!(lifecycle[0]["details"]["port"], origin_port);
+    assert_eq!(
+        lifecycle[0]["details"]["error"],
+        "parent proxy refused CONNECT"
+    );
+    assert!(lifecycle.iter().all(|event| {
+        event["event"] != "traffic.passthrough_start" && event["event"] != "traffic.passthrough_end"
+    }));
+    assert!(
+        events(&config)
+            .iter()
+            .all(|event| event["event"] != "proxy.tunnel")
+    );
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_passthrough_entry_uses_verified_tls_parent() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    let authority = format!("127.0.0.1:{origin_port}");
+    config.ignore_hosts = vec![authority.clone()];
+    let origin_contacts = Arc::new(AtomicUsize::new(0));
+    let origin_seen = origin_contacts.clone();
+    let origin_task = tokio::spawn(async move {
+        if let Ok(Ok((_socket, _peer))) =
+            tokio::time::timeout(Duration::from_secs(2), origin.accept()).await
+        {
+            origin_seen.fetch_add(1, Ordering::SeqCst);
+        }
+    });
+
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let parent_ca = directory.path().join("parent-ca.pem");
+    std::fs::write(&parent_ca, cert.pem()).unwrap();
+    config.upstream_ca_file = Some(parent_ca);
+    let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let parent_address = parent.local_addr().unwrap();
+    config.parent_proxy = Some(format!("https://localhost:{}", parent_address.port()));
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let parent_authority = authority.clone();
+    let parent_task = tokio::spawn(async move {
+        let (socket, peer) = tokio::time::timeout(Duration::from_secs(2), parent.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut socket = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(head.starts_with(format!("CONNECT {parent_authority} HTTP/1.1\r\n").as_bytes()));
+        socket
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nparent-first")
+            .await
+            .unwrap();
+        let mut payload = Vec::new();
+        socket.read_to_end(&mut payload).await.unwrap();
+        assert_eq!(payload, b"client");
+        socket.write_all(b"parent-final").await.unwrap();
+        socket.shutdown().await.unwrap();
+        (peer, head, payload)
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut client = connect_raw(&config.listeners[0].socket_path, &authority).await;
+    let mut first = [0; 12];
+    client.read_exact(&mut first).await.unwrap();
+    assert_eq!(&first, b"parent-first");
+    client.write_all(b"client").await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    assert_eq!(response, b"parent-final");
+
+    let (parent_peer, parent_head, parent_payload) =
+        tokio::time::timeout(Duration::from_secs(2), parent_task)
+            .await
+            .unwrap()
+            .unwrap();
+    origin_task.await.unwrap();
+    assert_eq!(
+        parent_peer.ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_eq!(origin_contacts.load(Ordering::SeqCst), 0);
+    assert!(parent_head.starts_with(format!("CONNECT {authority} HTTP/1.1\r\n").as_bytes()));
+    assert_eq!(parent_payload, b"client");
+
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 1);
+    assert_eq!(egress[0]["host"], "127.0.0.1");
+    assert_eq!(egress[0]["port"], origin_port);
+    assert_eq!(egress[0]["route"], "parent");
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "127.0.0.1"
+            && event["details"]["port"] == origin_port
+            && event["details"]["transport"] == "tcp"
+    }));
+    let tunnels = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.tunnel")
+        .collect::<Vec<_>>();
+    assert_eq!(tunnels.len(), 1);
+    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
+
+    if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(
+            path.join("tls-parent.json"),
+            serde_json::to_vec_pretty(&json!({
+                "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT")
+                    .unwrap_or_else(|_| "unrecorded-test-binary".into()),
+                "logical_authority": authority,
+                "parent_listener": parent_address.to_string(),
+                "parent_peer": parent_peer.to_string(),
+                "parent_connect": String::from_utf8_lossy(&parent_head),
+                "parent_payload": String::from_utf8_lossy(&parent_payload),
+                "origin_accepts": origin_contacts.load(Ordering::SeqCst),
+                "proxy_egress": egress,
+                "passthrough_events": lifecycle,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_parent_passthrough_respects_same_host_different_port() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let configured = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let configured_port = configured.local_addr().unwrap().port();
+    drop(configured);
+    let neighbor = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let neighbor_port = neighbor.local_addr().unwrap().port();
+    drop(neighbor);
+    let configured_authority = format!("localhost:{configured_port}");
+    let neighbor_authority = format!("localhost:{neighbor_port}");
+    config.ignore_hosts = vec![configured_authority.clone()];
+
+    let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.parent_proxy = Some(format!("http://{}", parent.local_addr().unwrap()));
+    let parent_configured_authority = configured_authority.clone();
+    let parent_neighbor_authority = neighbor_authority.clone();
+    let parent_task =
+        tokio::spawn(async move {
+            let (mut socket, _) = parent.accept().await.unwrap();
+            let mut first_head = Vec::new();
+            while !first_head.ends_with(b"\r\n\r\n") {
+                first_head.push(socket.read_u8().await.unwrap());
+            }
+            assert!(first_head.starts_with(
+                format!("CONNECT {parent_configured_authority} HTTP/1.1\r\n").as_bytes()
+            ));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\nconfigured-first")
+                .await
+                .unwrap();
+            let mut payload = Vec::new();
+            socket.read_to_end(&mut payload).await.unwrap();
+            assert_eq!(payload, b"configured-client");
+            socket.write_all(b"configured-final").await.unwrap();
+            socket.shutdown().await.unwrap();
+
+            let (mut socket, _) = parent.accept().await.unwrap();
+            let mut second_head = Vec::new();
+            while !second_head.ends_with(b"\r\n\r\n") {
+                second_head.push(socket.read_u8().await.unwrap());
+            }
+            assert!(second_head.starts_with(
+                format!("CONNECT {parent_neighbor_authority} HTTP/1.1\r\n").as_bytes()
+            ));
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+            let mut bytes = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                bytes.is_empty(),
+                "same-host different-port neighbor leaked parent bytes: {bytes:?}"
+            );
+            (first_head, second_head)
+        });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut configured_client =
+        connect_raw(&config.listeners[0].socket_path, &configured_authority).await;
+    let mut first = [0; 16];
+    configured_client.read_exact(&mut first).await.unwrap();
+    assert_eq!(&first, b"configured-first");
+    configured_client
+        .write_all(b"configured-client")
+        .await
+        .unwrap();
+    configured_client.shutdown().await.unwrap();
+    let mut configured_response = Vec::new();
+    configured_client
+        .read_to_end(&mut configured_response)
+        .await
+        .unwrap();
+    assert_eq!(configured_response, b"configured-final");
+
+    let mut neighbor_client = connect_tls(
+        &config.listeners[0].socket_path,
+        &neighbor_authority,
+        "localhost",
+        proxy_ca,
+    )
+    .await
+    .unwrap();
+    neighbor_client
+        .write_all(
+            format!(
+                "GET /deny-inner HTTP/1.1\r\nHost: {neighbor_authority}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut denied = Vec::new();
+    neighbor_client.read_to_end(&mut denied).await.unwrap();
+    assert!(denied.starts_with(b"HTTP/1.1 403"));
+    drop(neighbor_client);
+
+    let (first_head, second_head) = tokio::time::timeout(Duration::from_secs(2), parent_task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        first_head.starts_with(format!("CONNECT {configured_authority} HTTP/1.1\r\n").as_bytes())
+    );
+    assert!(
+        second_head.starts_with(format!("CONNECT {neighbor_authority} HTTP/1.1\r\n").as_bytes())
+    );
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "localhost"
+            && event["details"]["port"] == configured_port
+            && event["details"]["transport"] == "tcp"
+    }));
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 2);
+    assert!(egress.iter().all(|event| event["route"] == "parent"));
+    let tunnels = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.tunnel")
+        .collect::<Vec<_>>();
+    assert_eq!(tunnels.len(), 1);
+    assert_eq!(tunnels[0]["host"], "localhost");
+    assert_eq!(tunnels[0]["port"], configured_port);
+    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
+    assert!(
+        policy
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["path"] == "/deny-inner")
+    );
     proxy.shutdown().await;
 }
 
@@ -1200,6 +1584,248 @@ async fn configured_sni_alias_passthrough_keeps_origin_tls_and_intercepts_neighb
                     "The protected-admin and parent-route controls remain inherited from accepted #631 evidence; this slice does not broaden either scope.",
                     "No IPv6, parent, invalid-interception or long-duration claim is made."
                 ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    proxy.shutdown().await;
+}
+
+#[tokio::test]
+async fn configured_sni_alias_passthrough_through_parent_keeps_origin_tls_and_intercepts_neighbor()
+{
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = config(&directory);
+    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let proxy_ca = interception_ca(&directory, &mut config);
+    let rcgen::CertifiedKey { cert, signing_key } =
+        rcgen::generate_simple_self_signed(vec!["sni.alias.invalid".into()]).unwrap();
+    let origin_ca = cert.der().clone();
+    let parent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = parent.local_addr().unwrap().port();
+    let authority = format!("localhost:{port}");
+    let alias = format!("sni.alias.invalid:{port}");
+    config.ignore_hosts = vec![alias.clone()];
+    config.parent_proxy = Some(format!("http://{}", parent.local_addr().unwrap()));
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![origin_ca.clone()],
+        rustls::pki_types::PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into(),
+    )
+    .unwrap();
+    let expected_request =
+        format!("GET /sni-alias-parent HTTP/1.1\r\nHost: {alias}\r\nConnection: close\r\n\r\n");
+    let parent_authority = authority.clone();
+    let parent_expected_request = expected_request.clone();
+    let parent_task = tokio::spawn(async move {
+        let (mut socket, _) = parent.accept().await.unwrap();
+        let mut first_head = Vec::new();
+        while !first_head.ends_with(b"\r\n\r\n") {
+            first_head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(
+            first_head.starts_with(format!("CONNECT {parent_authority} HTTP/1.1\r\n").as_bytes())
+        );
+        socket
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .unwrap();
+        let mut record_header = [0_u8; 5];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if socket.peek(&mut record_header).await.unwrap() == record_header.len() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(record_header[0], 0x16, "parent did not receive TLS");
+        let record_length = u16::from_be_bytes([record_header[3], record_header[4]]) as usize;
+        let mut initial_record = vec![0_u8; record_header.len() + record_length];
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if socket.peek(&mut initial_record).await.unwrap() == initial_record.len() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
+            .accept(socket)
+            .await
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+        }
+        assert_eq!(request, parent_expected_request.as_bytes());
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nparent-alias",
+            )
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+
+        let (mut socket, _) = parent.accept().await.unwrap();
+        let mut second_head = Vec::new();
+        while !second_head.ends_with(b"\r\n\r\n") {
+            second_head.push(socket.read_u8().await.unwrap());
+        }
+        assert!(
+            second_head.starts_with(format!("CONNECT {parent_authority} HTTP/1.1\r\n").as_bytes())
+        );
+        socket
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .unwrap();
+        let mut bytes = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            bytes.is_empty(),
+            "intercepted neighboring SNI leaked parent bytes: {bytes:?}"
+        );
+        (first_head, second_head, initial_record, request)
+    });
+
+    let proxy = Proxy::start(config.clone()).await.unwrap();
+    let mut passthrough = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "sni.alias.invalid",
+        origin_ca.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        passthrough
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref(),
+        "configured SNI alias through the parent must receive the origin certificate"
+    );
+    passthrough
+        .write_all(expected_request.as_bytes())
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    passthrough.read_to_end(&mut received).await.unwrap();
+    assert!(received.ends_with(b"parent-alias"));
+    drop(passthrough);
+
+    let mut intercepted = connect_tls(
+        &config.listeners[0].socket_path,
+        &authority,
+        "localhost",
+        proxy_ca,
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        intercepted
+            .get_ref()
+            .1
+            .peer_certificates()
+            .unwrap()
+            .first()
+            .unwrap()
+            .as_ref(),
+        origin_ca.as_ref(),
+        "neighboring unconfigured SNI through the parent must receive the proxy certificate"
+    );
+    intercepted
+        .write_all(
+            format!("GET /deny-inner HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut denied = Vec::new();
+    intercepted.read_to_end(&mut denied).await.unwrap();
+    assert!(denied.starts_with(b"HTTP/1.1 403"));
+    drop(intercepted);
+
+    let (first_head, second_head, initial_record, request) =
+        tokio::time::timeout(Duration::from_secs(2), parent_task)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(first_head.starts_with(format!("CONNECT {authority} HTTP/1.1\r\n").as_bytes()));
+    assert!(second_head.starts_with(format!("CONNECT {authority} HTTP/1.1\r\n").as_bytes()));
+    let lifecycle = wait_passthrough_events(&config, 2).await;
+    assert_eq!(lifecycle[0]["event"], "traffic.passthrough_start");
+    assert_eq!(lifecycle[1]["event"], "traffic.passthrough_end");
+    assert!(lifecycle.iter().all(|event| {
+        event["host"] == "sni.alias.invalid"
+            && event["details"]["port"] == port
+            && event["details"]["transport"] == "tcp"
+    }));
+    let egress = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.egress")
+        .collect::<Vec<_>>();
+    assert_eq!(egress.len(), 2);
+    assert!(egress.iter().all(|event| {
+        event["host"] == "localhost" && event["port"] == port && event["route"] == "parent"
+    }));
+    let tunnels = events(&config)
+        .into_iter()
+        .filter(|event| event["event"] == "proxy.tunnel")
+        .collect::<Vec<_>>();
+    assert_eq!(tunnels.len(), 1);
+    assert_eq!(tunnels[0]["coverage"], "configured_passthrough");
+    assert!(
+        policy
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request["path"] == "/deny-inner")
+    );
+
+    if let Some(path) = std::env::var_os("SAFEYOLO_631_EVIDENCE_DIR") {
+        let path = Path::new(&path);
+        std::fs::create_dir_all(path).unwrap();
+        std::fs::write(
+            path.join("parent-sni-alias.json"),
+            serde_json::to_vec_pretty(&json!({
+                "candidate": std::env::var("SAFEYOLO_CANDIDATE_COMMIT")
+                    .unwrap_or_else(|_| "unrecorded-test-binary".into()),
+                "configured_alias": alias,
+                "connect_authority": authority,
+                "parent_connect_heads": [
+                    String::from_utf8_lossy(&first_head),
+                    String::from_utf8_lossy(&second_head),
+                ],
+                "initial_tls_record_hex": hex_bytes(&initial_record),
+                "origin_request": String::from_utf8_lossy(&request),
+                "origin_certificate_matches": true,
+                "neighbor": {
+                    "sni": "localhost",
+                    "certificate_is_origin": false,
+                    "status": String::from_utf8_lossy(&denied[..denied.iter().position(|byte| *byte == b'\r').unwrap_or(0)]),
+                    "parent_bytes": 0,
+                },
+                "proxy_egress": egress,
+                "passthrough_events": lifecycle,
             }))
             .unwrap(),
         )
