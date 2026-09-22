@@ -462,6 +462,12 @@ impl Policy {
         Self::parse_at(source, format, current_time_ms())
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_baseline_path_for_test(mut self, path: PathBuf) -> Self {
+        self.baseline_path = Some(path);
+        self
+    }
+
     pub fn parse_at(source: &str, format: Format, now_ms: f64) -> Result<Self> {
         Self::parse_with_registry_at(source, format, None, now_ms)
     }

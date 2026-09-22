@@ -183,16 +183,20 @@ fn failure(name: &str, message: &str) -> CircuitValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt, sync::Arc};
+    use std::sync::Arc;
 
+    #[cfg(unix)]
     #[test]
     fn policy_wrapper_hides_its_own_reporting_error() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
         let directory = tempfile::tempdir().unwrap();
         let path = directory
             .path()
             .join(OsString::from_vec(b"policy-\xff.json".to_vec()));
-        std::fs::write(&path, b"{}").unwrap();
-        let policy = Policy::from_path(&path).unwrap();
+        let policy = Policy::parse("{}", crate::policy::Format::Json)
+            .unwrap()
+            .with_baseline_path_for_test(path);
         assert_eq!(
             policy.engine_stats().unwrap_err(),
             crate::policy::EngineStatsError::PathEncoding
