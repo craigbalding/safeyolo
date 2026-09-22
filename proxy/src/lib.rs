@@ -1184,8 +1184,21 @@ async fn accept_agents(
 /// Hyper cannot poll an HTTP/1 read side while the current service future is
 /// pending. Keep a duplicated descriptor solely for peer-close notification so
 /// a long coordination wait observes a client that abandoned its connection.
-/// The duplicate never consumes request bytes; POLLHUP is reported
-/// independently of the requested poll events on Unix.
+/// The duplicate never consumes request bytes. Some Unix platforms report a
+/// closed peer as readable rather than with POLLHUP, so a readable event is
+/// confirmed with a non-consuming peek before cancellation.
+fn peer_closed_after_readable_event(descriptor: libc::c_int) -> bool {
+    let mut byte = 0_u8;
+    unsafe {
+        libc::recv(
+            descriptor,
+            std::ptr::addr_of_mut!(byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        ) == 0
+    }
+}
+
 fn monitor_agent_disconnect(
     socket: &UnixStream,
     tasks: &Arc<connection_tasks::ConnectionTasks>,
@@ -1219,9 +1232,10 @@ fn monitor_agent_disconnect(
             // its raw field would drop the duplicate before poll starts.
             let descriptor = descriptor;
             let close_events = libc::POLLHUP | libc::POLLERR;
+            let readable_event = libc::POLLIN;
             let mut descriptor_poll = libc::pollfd {
                 fd: descriptor.0,
-                events: 0,
+                events: readable_event,
                 revents: 0,
             };
             loop {
@@ -1236,7 +1250,10 @@ fn monitor_agent_disconnect(
                     }
                     break;
                 }
-                if descriptor_poll.revents & close_events != 0 {
+                let peer_closed = descriptor_poll.revents & close_events != 0
+                    || (descriptor_poll.revents & readable_event != 0
+                        && peer_closed_after_readable_event(descriptor.0));
+                if peer_closed {
                     cancellation.send_replace(true);
                     break;
                 }

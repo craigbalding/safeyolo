@@ -291,3 +291,30 @@ async fn closing_agent_socket_cancels_connection_coordination_waits() {
     let _ = monitor.await;
     drop(server);
 }
+
+#[tokio::test]
+async fn readable_agent_socket_does_not_report_peer_close_until_eof() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut server, mut client) = UnixStream::pair().unwrap();
+    client.write_all(b"request").await.unwrap();
+    server.readable().await.unwrap();
+    assert!(
+        !peer_closed_after_readable_event(server.as_raw_fd()),
+        "buffered request bytes must not be treated as a closed peer"
+    );
+
+    let mut request = [0; 7];
+    server.read_exact(&mut request).await.unwrap();
+    assert_eq!(
+        &request, b"request",
+        "the close probe must not consume bytes"
+    );
+
+    drop(client);
+    server.readable().await.unwrap();
+    assert!(
+        peer_closed_after_readable_event(server.as_raw_fd()),
+        "EOF after peer close must be distinguishable from readable request bytes"
+    );
+}
