@@ -2603,10 +2603,7 @@ token = "other-secret"
     // complete replacement snapshot.
     let revoke = admin_http(
         admin_port,
-        format!(
-            "DELETE /admin/agents/alice/services/simple HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        )
-        .as_bytes(),
+        b"DELETE /admin/agents/alice/services/simple HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     )
     .await;
     status(&revoke, "200");
@@ -3062,7 +3059,6 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() 
             std::env::var_os("SAFEYOLO_639_ACTIVITY_EVIDENCE").map(std::path::PathBuf::from)
         });
     if let Some(path) = evidence_path {
-        let path = std::path::PathBuf::from(path);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }

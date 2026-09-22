@@ -2211,7 +2211,7 @@ async fn admin_ignore_hosts_replaces_live_match_and_keeps_admitted_session() {
     drop(removed);
     removed_origin.await.unwrap();
     assert!(
-        std::fs::read_to_string(&config.audit_log_path.as_ref().unwrap())
+        std::fs::read_to_string(config.audit_log_path.as_ref().unwrap())
             .unwrap()
             .contains("admin.proxy_ignore_hosts_update")
     );

@@ -131,10 +131,10 @@ async fn wait_for_path(path: &Path) {
 async fn wait_for_file(path: &Path) -> Value {
     timeout(Duration::from_secs(40), async {
         loop {
-            if let Ok(bytes) = fs::read(path) {
-                if let Ok(value) = serde_json::from_slice(&bytes) {
-                    return value;
-                }
+            if let Ok(bytes) = fs::read(path)
+                && let Ok(value) = serde_json::from_slice(&bytes)
+            {
+                return value;
             }
             sleep(Duration::from_millis(25)).await;
         }
