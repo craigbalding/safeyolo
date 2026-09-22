@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
+import textwrap
 import types
 from types import SimpleNamespace
 
@@ -49,11 +51,7 @@ def test_daemon_keeps_one_presenter_owner_until_shutdown(monkeypatch):
     output = io.StringIO()
     assert (
         desktop_presenter_rpc.daemon_main(
-            io.StringIO(
-                '{"agent_id":"alice"}\n'
-                '{"agent_id":"alice"}\n'
-                '{"shutdown":true}\n'
-            ),
+            io.StringIO('{"agent_id":"alice"}\n{"agent_id":"alice"}\n{"shutdown":true}\n'),
             output,
         )
         == 0
@@ -65,3 +63,59 @@ def test_daemon_keeps_one_presenter_owner_until_shutdown(monkeypatch):
     assert len(Presenter.instances) == 1
     assert Presenter.instances[0].calls == ["alice", "alice"]
     assert Presenter.instances[0].closed
+
+
+def test_daemon_keeps_inherited_guest_output_off_protocol_stdout():
+    # Use a separate interpreter because guest commands inherit fd 1 rather
+    # than Python's sys.stdout object. A string-stream unit test misses the
+    # actual Rust-facing corruption boundary.
+    fixture = textwrap.dedent(
+        """
+        import subprocess
+        import sys
+        from types import SimpleNamespace
+        from safeyolo import desktop_presenter_rpc as rpc
+
+        class PresentationError(RuntimeError):
+            pass
+
+        class Presenter:
+            def present(self, agent_id):
+                subprocess.run(
+                    [sys.executable, "-c", "print('desktop already ready')"],
+                    check=True,
+                )
+                if agent_id == "failed":
+                    raise ValueError("preview unavailable")
+                if agent_id == "missing":
+                    raise PresentationError("Agent not found")
+                return SimpleNamespace(to_dict=lambda: {
+                    "agent_id": "ag-alice",
+                    "agent": agent_id,
+                    "url": "http://127.0.0.1:12345/vnc.html",
+                    "unlock_code": "1234-5678",
+                    "reused": False,
+                })
+
+            def close_all(self):
+                pass
+
+        rpc._load_dependencies = lambda: (PresentationError, Presenter, lambda value: value, None)
+        raise SystemExit(rpc.main())
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", fixture, "--daemon"],
+        input=('{"agent_id":"alice"}\n{"agent_id":"failed"}\n{"agent_id":"missing"}\n{"shutdown":true}\n'),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    responses = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert len(responses) == 4
+    assert responses[0]["agent"] == "alice"
+    assert responses[1] == {"error": "ValueError", "kind": "failed"}
+    assert responses[2] == {"error": "Agent not found", "kind": "not_found"}
+    assert responses[3] == {"status": "stopped"}
+    assert completed.stderr.count("desktop already ready") == 4

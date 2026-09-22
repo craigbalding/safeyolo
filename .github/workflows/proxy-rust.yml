@@ -12,6 +12,10 @@ on:
       - "tests/test_rust_temporary_policy.py"
       - "tests/test_workflow_action_pins.py"
       - "tools/proxy_migration/**"
+      - "cli/src/safeyolo/desktop_presenter*.py"
+      - "cli/src/safeyolo/preview.py"
+      - "cli/tests/test_agent_preview.py"
+      - "cli/tests/test_desktop_presenter*.py"
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
@@ -70,6 +74,13 @@ jobs:
             tests/test_proxy_cutover_deletion_map.py \
             tests/test_rust_temporary_policy.py \
             tests/test_workflow_action_pins.py
+
+      - name: Test the desktop presenter protocol
+        run: |
+          uv run --frozen pytest -q \
+            cli/tests/test_desktop_presenter.py \
+            cli/tests/test_desktop_presenter_rpc.py \
+            cli/tests/test_agent_preview.py
 
       - name: Test focused native boundaries
         timeout-minutes: 10

@@ -16,9 +16,10 @@ from safeyolo.vm import stage_guest_desktop_launcher
 
 
 class FakePlatform:
-    def __init__(self, *, running: bool = True, exit_code: int = 0) -> None:
+    def __init__(self, *, running: bool = True, exit_code: int = 0, desktop_ready: bool = False) -> None:
         self.running = running
         self.exit_code = exit_code
+        self.desktop_ready = desktop_ready
         self.commands = []
 
     def is_sandbox_running(self, name: str) -> bool:
@@ -26,6 +27,13 @@ class FakePlatform:
 
     def exec_in_sandbox(self, name, command, *, user, interactive):
         self.commands.append((name, command, user, interactive))
+        if "/safeyolo/guest-desktop status" in command:
+            return 0 if self.desktop_ready else 1
+        if "/safeyolo/guest-desktop stop" in command:
+            self.desktop_ready = False
+            return 0
+        # A failed launcher can still leave partially started guest processes.
+        self.desktop_ready = True
         return self.exit_code
 
 
@@ -76,10 +84,16 @@ def test_present_starts_desktop_once_and_reuses_preview(monkeypatch):
     assert platform.commands == [
         (
             "forge",
+            "/safeyolo/guest-desktop status >/dev/null 2>&1",
+            "agent",
+            False,
+        ),
+        (
+            "forge",
             "SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start 1280x800",
             "agent",
             False,
-        )
+        ),
     ]
     staged.assert_called_once_with("forge", preferred_size="1280x800")
     start_preview.assert_called_once()
@@ -165,6 +179,40 @@ def test_present_rolls_back_new_tailnet_port_when_preview_start_fails(monkeypatc
         DesktopPresenter().present("ag-forge")
 
     restore.assert_called_once_with("forge", 8443, None)
+    assert not platform.desktop_ready
+    assert platform.commands[-1][1] == "/safeyolo/guest-desktop stop >/dev/null 2>&1"
+
+
+@pytest.mark.parametrize("already_ready", [False, True])
+def test_failed_preview_cleans_only_desktop_started_by_this_attempt(monkeypatch, already_ready):
+    monkeypatch.delenv("SAFEYOLO_COMMAND_CENTRE_SHARE", raising=False)
+    platform = FakePlatform(desktop_ready=already_ready)
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.get_agent_by_id",
+        lambda agent_id: ("forge", {"agent_id": agent_id}),
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_platform", lambda: platform)
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_desktop_size", lambda: "1280x800")
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.resolve_vnc_geometry",
+        lambda size: (size, None),
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.stage_guest_desktop_launcher",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.start_managed_preview",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("preview unavailable")),
+    )
+    presenter = DesktopPresenter()
+
+    with pytest.raises(RuntimeError, match="preview unavailable"):
+        presenter.present("ag-forge")
+
+    assert platform.desktop_ready is already_ready
+    assert not presenter._sessions
+    assert (platform.commands[-1][1] == "/safeyolo/guest-desktop stop >/dev/null 2>&1") is (not already_ready)
 
 
 def test_present_requires_configured_running_agent(monkeypatch):
