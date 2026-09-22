@@ -6,7 +6,7 @@ use crate::{
 use std::{io::Write, path::Path, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::UnixStream,
     time::timeout,
 };
 
@@ -254,14 +254,14 @@ fn record_builder_matches_fourteen_actual_source_projections() {
     }
 }
 
-fn config(directory: &Path) -> Config {
+fn config(directory: &Path, target_host: &str) -> Config {
     let policy = directory.join("policy.json");
-    std::fs::write(&policy,json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}],"addons":{"test_context":{"target_hosts":["127.0.0.2"]},"flow_store":{"max_request_body_bytes":5,"max_response_body_bytes":6,"compress_bodies":false}}}).to_string()).unwrap();
+    std::fs::write(&policy,json!({"permissions":[{"action":"network:request","resource":"*","effect":"allow"}],"addons":{"test_context":{"target_hosts":[target_host]},"flow_store":{"max_request_body_bytes":5,"max_response_body_bytes":6,"compress_bodies":false}}}).to_string()).unwrap();
     serde_json::from_value(json!({"listeners":[{"agent_id":"alice","socket_path":directory.join("alice.sock"),"source_id":"192.0.2.20"},{"agent_id":"bob","socket_path":directory.join("bob.sock"),"source_id":"192.0.2.21"}],"policy_file":policy,"data_dir":directory.join("data"),"readiness_file":directory.join("ready"),"audit_log_path":directory.join("audit.jsonl"),"event_log":directory.join("events"),"flow_store_enabled":true,"flow_store_db_path":directory.join("flows.sqlite3"),"test_context_block":true,"circuit_breaker_enabled":false})).unwrap()
 }
 async fn send(
     path: &Path,
-    port: u16,
+    origin: std::net::SocketAddr,
     route: &str,
     claim: bool,
     body: &[u8],
@@ -274,8 +274,9 @@ async fn send(
         ""
     };
     let head = format!(
-        "POST http://127.0.0.2:{port}{route} HTTP/1.1\r\nHost: logical.invalid:{port}\r\nX-Repeat: first\r\nX-Middle: middle\r\nx-repeat: second\r\nConnection: close, X-Remove\r\nX-Remove: private-hop\r\nContent-Type: text/plain\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\n{context}\r\n",
-        body.len()
+        "POST http://{origin}{route} HTTP/1.1\r\nHost: logical.invalid:{}\r\nX-Repeat: first\r\nX-Middle: middle\r\nx-repeat: second\r\nConnection: close, X-Remove\r\nX-Remove: private-hop\r\nContent-Type: text/plain\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\n{context}\r\n",
+        origin.port(),
+        body.len(),
     );
     stream.write_all(head.as_bytes()).await.unwrap();
     stream.write_all(body).await.unwrap();
@@ -311,15 +312,13 @@ async fn origin_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
 #[tokio::test]
 async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_origin_status() {
     let directory = tempfile::tempdir().unwrap();
-    let configuration = config(directory.path());
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let host = address.ip().to_string();
+    let configuration = config(directory.path(), &host);
     let proxy = Proxy::start(configuration).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let recorder = runtime.flow_recorder.clone();
     let store = recorder.store().unwrap().clone();
-    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap();
-    let port = listener.local_addr().unwrap().port();
     let peer = tokio::spawn(async move {
         let mut observed = Vec::new();
         for index in 0..6 {
@@ -356,7 +355,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     assert!(
         send(
             &alice,
-            port,
+            address,
             "/a?bad=%FF",
             true,
             &gzip(b"request body"),
@@ -366,20 +365,34 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         .starts_with(b"HTTP/1.1 200")
     );
     assert!(
-        send(&bob, port, "/sse", true, b"request body", "identity")
+        send(&bob, address, "/sse", true, b"request body", "identity")
             .await
             .starts_with(b"HTTP/1.1 200")
     );
     assert!(
-        send(&alice, port, "/invalid-gzip", true, b"invalid gzip", "gzip")
-            .await
-            .starts_with(b"HTTP/1.1 200")
+        send(
+            &alice,
+            address,
+            "/invalid-gzip",
+            true,
+            b"invalid gzip",
+            "gzip"
+        )
+        .await
+        .starts_with(b"HTTP/1.1 200")
     );
     let streamed = vec![b'x'; 10 * 1024 * 1024 + 1];
     assert!(
-        send(&bob, port, "/streamed-request", true, &streamed, "identity")
-            .await
-            .starts_with(b"HTTP/1.1 200")
+        send(
+            &bob,
+            address,
+            "/streamed-request",
+            true,
+            &streamed,
+            "identity"
+        )
+        .await
+        .starts_with(b"HTTP/1.1 200")
     );
     // Production dispatch stops at TestContext's response decode error. The
     // later recorder is not called, even when request decoding also failed.
@@ -387,7 +400,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
         ("/invalid-response", b"request body".as_slice(), "identity"),
         ("/both-invalid", b"invalid gzip".as_slice(), "gzip"),
     ] {
-        let response = send(&alice, port, route, true, body, encoding).await;
+        let response = send(&alice, address, route, true, body, encoding).await;
         assert!(response.starts_with(b"HTTP/1.1 200"));
         assert!(response.ends_with(b"streamed response"));
     }
@@ -404,14 +417,28 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     // This owned listener is now closed. A valid buffered request has applied
     // context before the real failed dial, so it records a status-less error.
     assert!(
-        send(&alice, port, "/refused", true, b"request body", "identity")
-            .await
-            .starts_with(b"HTTP/1.1 502")
+        send(
+            &alice,
+            address,
+            "/refused",
+            true,
+            b"request body",
+            "identity"
+        )
+        .await
+        .starts_with(b"HTTP/1.1 502")
     );
     assert!(
-        send(&alice, port, "/missing", false, b"request body", "identity")
-            .await
-            .starts_with(b"HTTP/1.1 428")
+        send(
+            &alice,
+            address,
+            "/missing",
+            false,
+            b"request body",
+            "identity"
+        )
+        .await
+        .starts_with(b"HTTP/1.1 428")
     );
     proxy.shutdown().await;
     assert!(!alice.exists() && !bob.exists() && !directory.path().join("ready").exists());
@@ -432,7 +459,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
     assert!(
         egress
             .iter()
-            .all(|event| event["host"] == "127.0.0.2" && event["port"] == port)
+            .all(|event| event["host"] == host && event["port"] == address.port())
     );
     assert!(runtime.policy.is_some() && runtime.config.temporary_policy_socket.is_none());
 
@@ -584,7 +611,7 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
     use hyper_util::rt::{TokioExecutor, TokioIo};
     for (applied_before_response, response_error) in [(true, false), (false, false), (true, true)] {
         let directory = tempfile::tempdir().unwrap();
-        let mut configuration = config(directory.path());
+        let mut configuration = config(directory.path(), "127.0.0.2");
         configuration.listeners.clear();
         let runtime = Arc::new(
             Runtime::new(
@@ -804,16 +831,11 @@ fn scalar_encoding_failure_stays_a_writer_error_after_both_body_decodes() {
 #[tokio::test]
 async fn cancelled_buffered_request_before_driver_records_one_error() {
     let directory = tempfile::tempdir().unwrap();
-    let parent = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap();
-    let parent_port = parent.local_addr().unwrap().port();
-    let origin = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    let mut configuration = config(directory.path());
-    configuration.parent_proxy = Some(format!("https://127.0.0.2:{parent_port}"));
+    let (parent, parent_address) = crate::test_owned_endpoint::bind().await;
+    let (origin, origin_address) = crate::test_owned_endpoint::bind().await;
+    let origin_host = origin_address.ip().to_string();
+    let mut configuration = config(directory.path(), &origin_host);
+    configuration.parent_proxy = Some(format!("https://{parent_address}"));
     let proxy = Proxy::start(configuration).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let recorder = runtime.flow_recorder.clone();
@@ -833,7 +855,7 @@ async fn cancelled_buffered_request_before_driver_records_one_error() {
     let alice = directory.path().join("alice.sock");
     let mut client = UnixStream::connect(&alice).await.unwrap();
     let request = format!(
-        "POST http://127.0.0.2:{origin_port}/held HTTP/1.1\r\nHost: logical.invalid\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nX-SafeYolo-Test-Context: run=owned-run;agent=declared-tool;test=t1\r\n\r\nbody"
+        "POST http://{origin_address}/held HTTP/1.1\r\nHost: logical.invalid\r\nContent-Length: 4\r\nContent-Type: text/plain\r\nX-SafeYolo-Test-Context: run=owned-run;agent=declared-tool;test=t1\r\n\r\nbody"
     );
     client.write_all(request.as_bytes()).await.unwrap();
     timeout(LIMIT, head_seen).await.unwrap().unwrap();
@@ -871,8 +893,8 @@ async fn cancelled_buffered_request_before_driver_records_one_error() {
         .collect();
     assert_eq!(egress.len(), 1);
     assert_eq!(egress[0]["route"], "parent");
-    assert_eq!(egress[0]["host"], "127.0.0.2");
-    assert_eq!(egress[0]["port"], origin_port);
+    assert_eq!(egress[0]["host"], origin_host);
+    assert_eq!(egress[0]["port"], origin_address.port());
     assert!(
         recorded.is_ok(),
         "cancelled applied request lost its recording terminal"
@@ -949,7 +971,9 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         ),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let mut configuration = config(directory.path());
+        let (listener, address) = crate::test_owned_endpoint::bind().await;
+        let host = address.ip().to_string();
+        let mut configuration = config(directory.path(), &host);
         configuration.circuit_breaker_enabled = true;
         let policy_path = configuration.policy_file.as_ref().unwrap();
         let mut policy: Value =
@@ -959,10 +983,6 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         let proxy = Proxy::start(configuration).await.unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         let peer_runtime = runtime.clone();
-        let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
         let peer = tokio::spawn(async move {
             let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
             let request = origin_request(&mut stream).await;
@@ -983,7 +1003,7 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
         });
         let reply = send(
             &directory.path().join("alice.sock"),
-            port,
+            address,
             "/circuit-error",
             true,
             b"request",
@@ -1020,9 +1040,10 @@ async fn circuit_response_exception_stops_later_hooks_but_keeps_wire_and_committ
             .snapshot(crate::circuit_runtime::now())
             .unwrap();
         if committed {
-            assert_eq!(snapshot["states"]["127.0.0.2"]["state"], "open", "{name}");
+            assert_eq!(snapshot["states"][host.as_str()]["state"], "open", "{name}");
             assert_eq!(
-                snapshot["states"]["127.0.0.2"]["failure_count"], 1,
+                snapshot["states"][host.as_str()]["failure_count"],
+                1,
                 "{name}"
             );
         } else {

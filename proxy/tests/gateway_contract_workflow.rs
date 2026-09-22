@@ -20,6 +20,8 @@ use tokio::{
     sync::{Notify, oneshot},
 };
 
+mod test_owned_endpoint;
+
 const PASS: &str = "contract-workflow-pass";
 const COMPARATOR_COMMIT: &str = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a";
 const SERVICE: &str = r#"
@@ -301,17 +303,16 @@ fn agent_api(path: &str, body: &[u8]) -> Vec<u8> {
     format!("POST http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
 }
 fn gateway_request_at(
-    host: &str,
-    port: u16,
+    authority: &str,
     token: &str,
     method: &str,
     path: &str,
     body: &[u8],
 ) -> Vec<u8> {
-    format!("{method} http://{host}:{port}{path} HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
+    format!("{method} http://{authority}{path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
 }
 fn gateway_request(port: u16, token: &str, method: &str, path: &str, body: &[u8]) -> Vec<u8> {
-    gateway_request_at("127.0.0.1", port, token, method, path, body)
+    gateway_request_at(&format!("127.0.0.1:{port}"), token, method, path, body)
 }
 fn admin_request(path: &str, body: &[u8]) -> Vec<u8> {
     format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer operator-token\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), String::from_utf8_lossy(body)).into_bytes()
@@ -337,14 +338,13 @@ async fn gateway_call(
 
 async fn gateway_call_at(
     socket: &Path,
-    host: &str,
-    port: u16,
+    address: std::net::SocketAddr,
     token: &str,
     method: &str,
     path: &str,
     payload: &[u8],
 ) -> Vec<u8> {
-    let request = gateway_request_at(host, port, token, method, path, payload);
+    let request = gateway_request_at(&address.to_string(), token, method, path, payload);
     raw(socket, &request).await
 }
 
@@ -926,7 +926,6 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    std::fs::write(root_path.join("services/other.yaml"), OTHER_SERVICE).unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
     let vault_path = root_path.join("data/vault.yaml.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
@@ -946,11 +945,24 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
         .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let other_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let other_port = other_listener.local_addr().unwrap().port();
+    let (other_listener, other_address) = test_owned_endpoint::bind().await;
+    let other_host = other_address.ip().to_string();
+    assert_ne!(
+        listener.local_addr().unwrap().ip(),
+        other_address.ip(),
+        "the contract and other services must remain distinct hosts"
+    );
+    std::fs::write(
+        root_path.join("services/other.yaml"),
+        OTHER_SERVICE.replace(
+            "default_host: 127.0.0.1",
+            &format!("default_host: {other_host}"),
+        ),
+    )
+    .unwrap();
     let mut source = policy(port);
     source.push_str(&format!(
-        "\n[hosts.\"127.0.0.2\"]\nservice = \"other\"\ncredentials = [\"unknown:*\"]\n[hosts.\"127.0.0.2:{other_port}\"]\negress = \"allow\"\n[agents.alice.services.other]\ncapability = \"reader\"\ntoken = \"other-secret\"\n"
+        "\n[hosts.\"{other_host}\"]\nservice = \"other\"\ncredentials = [\"unknown:*\"]\n[hosts.\"{other_address}\"]\negress = \"allow\"\n[agents.alice.services.other]\ncapability = \"reader\"\ntoken = \"other-secret\"\n"
     ));
     std::fs::write(root_path.join("policy.toml"), source).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -1035,8 +1047,7 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     let other_token = current_service_token(&root_path.join("alice.sock"), "other").await;
     let other_allowed = gateway_call_at(
         &root_path.join("alice.sock"),
-        "127.0.0.2",
-        other_port,
+        other_address,
         &other_token,
         "GET",
         "/v1/other",
@@ -1057,8 +1068,7 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     // capability route. Both deny before a second origin observes bytes.
     let wrong_service = gateway_call_at(
         &root_path.join("alice.sock"),
-        "127.0.0.2",
-        other_port,
+        other_address,
         &gateway_token,
         "GET",
         "/v1/other",
@@ -1068,8 +1078,7 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     status(&wrong_service, 403);
     let wrong_capability = gateway_call_at(
         &root_path.join("alice.sock"),
-        "127.0.0.2",
-        other_port,
+        other_address,
         &other_token,
         "GET",
         "/v1/undeclared",

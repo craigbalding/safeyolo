@@ -87,10 +87,8 @@ fn diagnostic_events(directory: &Path) -> Vec<Value> {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
 }
-async fn origin() -> TcpListener {
-    TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap()
+async fn origin() -> (TcpListener, std::net::SocketAddr) {
+    crate::test_owned_endpoint::bind().await
 }
 async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     timeout(LIMIT, async {
@@ -130,8 +128,9 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let listener = origin().await;
-    let port = listener.local_addr().unwrap().port();
+    let (listener, address) = origin().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
         let head = read_head(&mut stream).await;
@@ -160,7 +159,7 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
     let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await
         .unwrap();
-    client.write_all(format!("GET http://127.0.0.2:{port}/socket?private=query HTTP/1.1\r\nHost: logical.invalid:{port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
+    client.write_all(format!("GET http://{address}/socket?private=query HTTP/1.1\r\nHost: logical.invalid:{port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
     let head = read_head(&mut client).await;
     assert!(head.starts_with(b"HTTP/1.1 101"));
     let initial = drained_records(&runtime, directory.path());
@@ -225,7 +224,7 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
         .filter(|row| row["event"] == "proxy.egress")
         .collect();
     assert_eq!(egress.len(), 1);
-    assert_eq!(egress[0]["host"], "127.0.0.2");
+    assert_eq!(egress[0]["host"], host);
     assert_eq!(egress[0]["port"], port);
     assert_eq!(
         events
@@ -336,8 +335,9 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
     assert_unauthorized(operator_stats(admin_port, None).await);
     assert_unauthorized(operator_stats(admin_port, Some("wrong-owned-fixture-token")).await);
     assert_stats(operator_stats(admin_port, Some(&token)).await, 0);
-    let listener = origin().await;
-    let port = listener.local_addr().unwrap().port();
+    let (listener, address) = origin().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
         let _ = read_head(&mut stream).await;
@@ -350,7 +350,7 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
             .unwrap();
     });
     let request = format!(
-        "POST http://127.0.0.2:{port}/stats-control HTTP/1.1\r\nHost: logical.invalid\r\nContent-Length: 3\r\nConnection: close\r\n\r\nreq"
+        "POST http://{address}/stats-control HTTP/1.1\r\nHost: logical.invalid\r\nContent-Length: 3\r\nConnection: close\r\n\r\nreq"
     );
     let reply = exchange(
         UnixStream::connect(directory.path().join("alice.sock"))
@@ -388,7 +388,7 @@ async fn authenticated_operator_stats_exposes_shared_counters_without_public_lea
         .filter(|row| row["event"] == "proxy.egress")
         .collect();
     assert_eq!(egress.len(), 1);
-    assert_eq!(egress[0]["host"], "127.0.0.2");
+    assert_eq!(egress[0]["host"], host);
     assert_eq!(egress[0]["port"], port);
     assert_eq!(
         events
@@ -422,8 +422,8 @@ async fn active_websocket_shutdown_joins_direct_and_connect_owners_across_reload
         let configuration = config(directory.path());
         let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
-        let listener = origin().await;
-        let port = listener.local_addr().unwrap().port();
+        let (listener, address) = origin().await;
+        let host = address.ip().to_string();
         let peer = tokio::spawn(async move {
             let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
             let head = read_head(&mut stream).await;
@@ -458,8 +458,7 @@ async fn active_websocket_shutdown_joins_direct_and_connect_owners_across_reload
         if nested {
             client
                 .write_all(
-                    format!("CONNECT 127.0.0.2:{port} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\n\r\n")
-                        .as_bytes(),
+                    format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes(),
                 )
                 .await
                 .unwrap();
@@ -469,9 +468,9 @@ async fn active_websocket_shutdown_joins_direct_and_connect_owners_across_reload
         let target = if nested {
             "/shutdown".to_owned()
         } else {
-            format!("http://127.0.0.2:{port}/shutdown")
+            format!("http://{address}/shutdown")
         };
-        client.write_all(format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
+        client.write_all(format!("GET {target} HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").as_bytes()).await.unwrap();
         assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 101"));
         client
             .write_all(&client_frame(OpCode::Data(Data::Text), b"before shutdown"))
@@ -541,8 +540,8 @@ async fn active_websocket_shutdown_joins_direct_and_connect_owners_across_reload
         );
         assert_eq!(memory[1]["details"]["message_count"], 2);
         assert_eq!(memory[2]["details"]["flow_count"], 1);
-        assert_eq!(memory[1]["host"], "127.0.0.2");
-        assert_eq!(memory[2]["host"], "127.0.0.2");
+        assert_eq!(memory[1]["host"], host);
+        assert_eq!(memory[2]["host"], host);
         assert_eq!(runtime.audit.pending_count().unwrap(), 0);
         assert_eq!(
             runtime
@@ -589,8 +588,7 @@ async fn shutdown_drains_active_connect_response_before_client_cleanup() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let listener = origin().await;
-    let port = listener.local_addr().unwrap().port();
+    let (listener, address) = origin().await;
     let (release, released) = tokio::sync::oneshot::channel();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
@@ -610,16 +608,13 @@ async fn shutdown_drains_active_connect_response_before_client_cleanup() {
         .await
         .unwrap();
     client
-        .write_all(
-            format!("CONNECT 127.0.0.2:{port} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\n\r\n")
-                .as_bytes(),
-        )
+        .write_all(format!("CONNECT {address} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
         .await
         .unwrap();
     assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
     client
         .write_all(
-            format!("GET /drain HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\nConnection: close\r\n\r\n")
+            format!("GET /drain HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
                 .as_bytes(),
         )
         .await

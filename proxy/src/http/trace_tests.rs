@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::UnixStream,
     time::timeout,
 };
 
@@ -103,11 +103,10 @@ async fn trace(directory: &Path, agent: &str, request_id: &str) -> (u16, Value) 
     (status, serde_json::from_slice(body(&response)).unwrap())
 }
 
-async fn origin() -> (u16, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind((HOST, 0)).await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+async fn origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
     (
-        port,
+        address,
         tokio::spawn(async move {
             let (mut stream, _) = timeout(LIMIT, listener.accept()).await.unwrap().unwrap();
             let request = head(&mut stream).await;
@@ -120,14 +119,14 @@ async fn origin() -> (u16, tokio::task::JoinHandle<()>) {
     )
 }
 
-async fn fetch(directory: &Path, port: u16, traced: bool) -> Vec<u8> {
+async fn fetch(directory: &Path, origin: std::net::SocketAddr, traced: bool) -> Vec<u8> {
     let marker = if traced {
         "X-SafeYolo-Trace: 0\r\n"
     } else {
         ""
     };
     exchange(directory, "alice", &format!(
-        "GET http://{HOST}:{port}/owned?trace-secret-query HTTP/1.1\r\nHost: {HOST}:{port}\r\n{marker}X-SafeYolo-Agent: forged\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
+        "GET http://{origin}/owned?trace-secret-query HTTP/1.1\r\nHost: {origin}\r\n{marker}X-SafeYolo-Agent: forged\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
     )).await
 }
 
@@ -149,7 +148,7 @@ fn steps(report: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn ordinary_step(report: &Value, outcome: &str) {
+fn ordinary_step(report: &Value, outcome: &str, host: &str) {
     assert_eq!(report["agent_id"], "alice");
     let mut expected = vec![json!(["network-guard", "request", "evaluated", outcome])];
     if outcome != "blocked" {
@@ -168,7 +167,7 @@ fn ordinary_step(report: &Value, outcome: &str) {
     assert_eq!(step["addon"], "network-guard");
     assert_eq!(step["hook"], "request");
     assert_eq!(step["outcome"], outcome);
-    assert_eq!(step["host"], HOST);
+    assert_eq!(step["host"], host);
     assert!(step["duration_us"].as_u64().is_some());
     let expected_not_loaded = if outcome == "blocked" {
         json!([
@@ -461,17 +460,18 @@ async fn owned_workflow(directory: &Path) {
     let mut configured = config(directory, "allow");
     let mut proxy = Proxy::start(configured.clone()).await.unwrap();
     let store = proxy.runtime.read().unwrap().traces.clone();
-    let (port, peer) = origin().await;
-    let response = fetch(directory, port, true).await;
+    let (origin_address, peer) = origin().await;
+    let host = origin_address.ip().to_string();
+    let response = fetch(directory, origin_address, true).await;
     assert!(response.starts_with(b"HTTP/1.1 200") && response.ends_with(b"owned-body"));
     timeout(LIMIT, peer).await.unwrap().unwrap();
     let rid = request_id(&response);
     let (status, first) = trace(directory, "alice", &rid).await;
     assert_eq!(status, 200);
-    ordinary_step(&first, "allowed");
+    ordinary_step(&first, "allowed", &host);
     assert_eq!(trace(directory, "bob", &rid).await.0, 404);
-    let (port, peer) = origin().await;
-    let untraced = fetch(directory, port, false).await;
+    let (untraced_origin, peer) = origin().await;
+    let untraced = fetch(directory, untraced_origin, false).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert_eq!(
         trace(directory, "alice", &request_id(&untraced)).await.0,
@@ -483,14 +483,15 @@ async fn owned_workflow(directory: &Path) {
     assert!(Arc::ptr_eq(&store, &proxy.runtime.read().unwrap().traces));
     assert_eq!(trace(directory, "alice", &rid).await, (200, first));
 
-    let (port, peer) = origin().await;
+    let (connect_origin, peer) = origin().await;
+    let connect_host = connect_origin.ip().to_string();
     let mut client = UnixStream::connect(directory.join("alice.sock"))
         .await
         .unwrap();
-    client.write_all(format!("CONNECT {HOST}:{port} HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace: 1\r\n\r\n").as_bytes()).await.unwrap();
+    client.write_all(format!("CONNECT {connect_origin} HTTP/1.1\r\nHost: {connect_origin}\r\nX-SafeYolo-Trace: 1\r\n\r\n").as_bytes()).await.unwrap();
     let connect = head(&mut client).await;
     assert!(connect.starts_with(b"HTTP/1.1 200"));
-    client.write_all(format!("GET /inner HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+    client.write_all(format!("GET /inner HTTP/1.1\r\nHost: {connect_origin}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
     let inner = remainder(&mut client).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert!(inner.starts_with(b"HTTP/1.1 200"));
@@ -504,17 +505,17 @@ async fn owned_workflow(directory: &Path) {
     );
     assert_eq!(outer["steps"][0]["hook"], "http_connect");
     assert_eq!(outer["not_loaded"], json!([]));
-    ordinary_step(&inside, "allowed");
+    ordinary_step(&inside, "allowed", &connect_host);
 
     // An owned, uncontacted destination proves denial creates no egress.
     configured = config(directory, "deny");
     proxy.reload(configured.clone()).await.unwrap();
-    let listener = TcpListener::bind((HOST, 0)).await.unwrap();
-    let denied = fetch(directory, listener.local_addr().unwrap().port(), true).await;
+    let (listener, denied_origin) = crate::test_owned_endpoint::bind().await;
+    let denied = fetch(directory, denied_origin, true).await;
     assert!(denied.starts_with(b"HTTP/1.1 403"));
     let (status, report) = trace(directory, "alice", &request_id(&denied)).await;
     assert_eq!(status, 200);
-    ordinary_step(&report, "blocked");
+    ordinary_step(&report, "blocked", &denied_origin.ip().to_string());
     assert_eq!(report["steps"][0]["details"], json!({"status":403}));
     assert!(
         timeout(Duration::from_millis(20), listener.accept())
@@ -529,47 +530,49 @@ async fn owned_workflow(directory: &Path) {
         .set("network-guard", false)
         .unwrap();
     proxy.reload(configured.clone()).await.unwrap();
-    let (port, peer) = origin().await;
-    let warned = fetch(directory, port, true).await;
+    let (warned_origin, peer) = origin().await;
+    let warned = fetch(directory, warned_origin, true).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert!(warned.starts_with(b"HTTP/1.1 200"));
     ordinary_step(
         &trace(directory, "alice", &request_id(&warned)).await.1,
         "warned",
+        &warned_origin.ip().to_string(),
     );
     configured.network_guard_enabled = false;
     proxy.reload(configured).await.unwrap();
-    let (port, peer) = origin().await;
-    let bypassed = fetch(directory, port, true).await;
+    let (bypassed_origin, peer) = origin().await;
+    let bypassed = fetch(directory, bypassed_origin, true).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     let report = trace(directory, "alice", &request_id(&bypassed)).await.1;
     assert_eq!(report["steps"][0]["state"], "bypassed");
     assert_eq!(report["steps"][0]["reason"], "addon_disabled");
     assert!(report["steps"][0].get("duration_us").is_none());
     // A present but empty marker remains opted out after source hygiene.
-    let (port, peer) = origin().await;
+    let (empty_origin, peer) = origin().await;
     let empty = exchange(directory, "alice", &format!(
-        "GET http://{HOST}:{port}/empty HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace:\r\nConnection: close\r\n\r\n"
+        "GET http://{empty_origin}/empty HTTP/1.1\r\nHost: {empty_origin}\r\nX-SafeYolo-Trace:\r\nConnection: close\r\n\r\n"
     )).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert_eq!(trace(directory, "alice", &request_id(&empty)).await.0, 404);
 
     // Context application and its response audit use the same request owner.
+    let (applied_origin, peer) = origin().await;
+    let applied_host = applied_origin.ip().to_string();
     configured = config(directory, "allow");
     std::fs::write(
         directory.join("policy.json"),
         json!({
             "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
-            "addons":{"test_context":{"target_hosts":[HOST]}},
+            "addons":{"test_context":{"target_hosts":[applied_host]}},
         })
         .to_string(),
     )
     .unwrap();
     configured.test_context_block = true;
     proxy.reload(configured).await.unwrap();
-    let (port, peer) = origin().await;
     let applied = exchange(directory, "alice", &format!(
-        "GET http://{HOST}:{port}/context HTTP/1.1\r\nHost: {HOST}:{port}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Test-Context: run=owned;agent=alice;test=wire\r\nConnection: close\r\n\r\n"
+        "GET http://{applied_origin}/context HTTP/1.1\r\nHost: {applied_origin}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Test-Context: run=owned;agent=alice;test=wire\r\nConnection: close\r\n\r\n"
     )).await;
     timeout(LIMIT, peer).await.unwrap().unwrap();
     assert!(applied.starts_with(b"HTTP/1.1 200"));
@@ -590,7 +593,7 @@ async fn owned_workflow(directory: &Path) {
         json!({"context_source":"header"})
     );
     assert_eq!(applied["steps"][5]["details"], json!({"status_code":200}));
-    let denied = fetch(directory, port, true).await;
+    let denied = fetch(directory, applied_origin, true).await;
     assert!(denied.starts_with(b"HTTP/1.1 428"));
     let denied = trace(directory, "alice", &request_id(&denied)).await.1;
     assert_eq!(

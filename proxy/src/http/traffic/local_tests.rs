@@ -303,14 +303,19 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         config.circuit_breaker_enabled = true;
         config.flow_store_enabled = true;
         config.flow_store_db_path = directory.path().join("flows.sqlite3");
+        let (origin, address) = crate::test_owned_endpoint::bind().await;
+        let host = address.ip().to_string();
+        assert_ne!(
+            address.ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            "this circuit test needs an endpoint outside default circuit exclusions"
+        );
         std::fs::write(config.policy_file.as_ref().unwrap(), json!({
             "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
-            "addons":{"test_context":{"target_hosts":["127.0.0.2"]},"circuit_breaker":{
+            "addons":{"test_context":{"target_hosts":[host.clone()]},"circuit_breaker":{
                 "failure_threshold":1,"half_open_max_requests":if invalid {json!("invalid")}else{json!(3)},
             }},
         }).to_string()).unwrap();
-        let origin = TcpListener::bind("127.0.0.2:0").await.unwrap();
-        let port = origin.local_addr().unwrap().port();
         let peer = tokio::spawn(async move {
             let (mut stream, _) = origin.accept().await.unwrap();
             let mut request = Vec::new();
@@ -336,7 +341,7 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         let proxy = Proxy::start(config).await.unwrap();
         {
             let runtime = proxy.runtime.read().unwrap();
-            runtime.circuits.restore(&json!({"states":{"127.0.0.2":{
+            runtime.circuits.restore(&json!({"states":{(host.clone()):{
                 "state":"half_open","failure_count":0,"success_count":0,"failure_streak":0,"half_open_requests":0,
             }}}),crate::circuit_runtime::now(),&mut ||0.5).unwrap();
         }
@@ -347,9 +352,9 @@ async fn circuit_request_exception_skips_later_request_hooks_but_allows_response
         };
         let reply = send(
             directory.path(),
-            &format!("http://127.0.0.2:{port}/circuit-error"),
+            &format!("http://{address}/circuit-error"),
             "GET",
-            &format!("Host: 127.0.0.2:{port}\r\nConnection: close\r\n{claim}"),
+            &format!("Host: {address}\r\nConnection: close\r\n{claim}"),
             b"",
         )
         .await;

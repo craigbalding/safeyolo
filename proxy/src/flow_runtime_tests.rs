@@ -317,10 +317,20 @@ fn live_agent_flow_api_reads_the_runtime_store_with_ingress_ownership() {
         return;
     };
     let directory = Path::new(&directory);
+    let fixture_ip = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let (listener, address) = crate::test_owned_endpoint::bind().await;
+            drop(listener);
+            address.ip()
+        });
+    let fixture_host = fixture_ip.to_string();
     let mut config = config(directory, true);
     std::fs::write(config.policy_file.as_ref().unwrap(), json!({
         "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
-        "addons":{"test_context":{"target_hosts":["127.0.0.2"]},"flow_store":{"max_request_body_bytes":3}}
+        "addons":{"test_context":{"target_hosts":[fixture_host]},"flow_store":{"max_request_body_bytes":3}}
     }).to_string()).unwrap();
     config.listeners = ["alice", "bob"]
         .into_iter()
@@ -481,7 +491,7 @@ fn live_agent_flow_api_reads_the_runtime_store_with_ingress_ownership() {
                 .0,
                 200
             );
-            record_wire_flow(directory).await;
+            record_wire_flow(directory, fixture_ip).await;
             let (status, recorded) = tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
                     let found =
@@ -584,12 +594,16 @@ fn live_agent_flow_api_reads_the_runtime_store_with_ingress_ownership() {
 #[tokio::test]
 async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen() {
     let directory = tempfile::tempdir().unwrap();
+    let (fixture_listener, fixture_address) = crate::test_owned_endpoint::bind().await;
+    let fixture_ip = fixture_address.ip();
+    let fixture_host = fixture_ip.to_string();
+    drop(fixture_listener);
     let mut config = config(directory.path(), true);
     std::fs::write(
         config.policy_file.as_ref().unwrap(),
         json!({
             "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
-            "addons":{"test_context":{"target_hosts":["127.0.0.2"]}}
+            "addons":{"test_context":{"target_hosts":[fixture_host]}}
         })
         .to_string(),
     )
@@ -608,6 +622,7 @@ async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen
     // durably visible before the failure trigger is installed.
     record_wire_flow_case(
         directory.path(),
+        fixture_ip,
         "/durable-success",
         b"635-persisted-request",
         b"635-persisted-response",
@@ -635,6 +650,7 @@ async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen
     drop(db);
     record_wire_flow_case(
         directory.path(),
+        fixture_ip,
         "/storage-failure",
         b"635-discarded-request",
         b"635-discarded-response",
@@ -680,12 +696,16 @@ async fn live_storage_write_failure_keeps_transport_success_separate_from_reopen
 #[tokio::test]
 async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_recovery() {
     let directory = tempfile::tempdir().unwrap();
+    let (fixture_listener, fixture_address) = crate::test_owned_endpoint::bind().await;
+    let fixture_ip = fixture_address.ip();
+    let fixture_host = fixture_ip.to_string();
+    drop(fixture_listener);
     let mut healthy = config(directory.path(), true);
     std::fs::write(
         healthy.policy_file.as_ref().unwrap(),
         json!({
             "permissions":[{"action":"network:request","resource":"*","effect":"allow"}],
-            "addons":{"test_context":{"target_hosts":["127.0.0.2"]}}
+            "addons":{"test_context":{"target_hosts":[fixture_host]}}
         })
         .to_string(),
     )
@@ -705,6 +725,7 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
     let event_owner = proxy.runtime.read().unwrap().clone();
     let failed_response = record_wire_flow_case_observe_with_hook(
         directory.path(),
+        fixture_ip,
         "/audit-sink-failure",
         b"635-audit-failure-request",
         b"635-audit-failure-response",
@@ -741,6 +762,7 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
     proxy.reload(healthy.clone()).await.unwrap();
     let recovered_response = record_wire_flow_case_observe_with_hook(
         directory.path(),
+        fixture_ip,
         "/after-audit-recovery",
         b"635-recovered-request",
         b"635-recovered-response",
@@ -831,12 +853,14 @@ async fn live_evidence_sink_failure_keeps_transport_and_capture_distinct_from_re
 
 async fn record_wire_flow_case(
     directory: &Path,
+    fixture_ip: std::net::IpAddr,
     route: &str,
     request_body: &[u8],
     response_body: &[u8],
 ) {
     let response =
-        record_wire_flow_case_observe(directory, route, request_body, response_body).await;
+        record_wire_flow_case_observe(directory, fixture_ip, route, request_body, response_body)
+            .await;
     assert!(response.starts_with(b"HTTP/1.1 200"));
     assert!(response.ends_with(response_body));
     assert!(
@@ -848,16 +872,25 @@ async fn record_wire_flow_case(
 
 async fn record_wire_flow_case_observe(
     directory: &Path,
+    fixture_ip: std::net::IpAddr,
     route: &str,
     request_body: &[u8],
     response_body: &[u8],
 ) -> Vec<u8> {
-    record_wire_flow_case_observe_with_hook(directory, route, request_body, response_body, || {})
-        .await
+    record_wire_flow_case_observe_with_hook(
+        directory,
+        fixture_ip,
+        route,
+        request_body,
+        response_body,
+        || {},
+    )
+    .await
 }
 
 async fn record_wire_flow_case_observe_with_hook<F>(
     directory: &Path,
+    fixture_ip: std::net::IpAddr,
     route: &str,
     request_body: &[u8],
     response_body: &[u8],
@@ -868,12 +901,9 @@ where
 {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, UnixStream},
+        net::UnixStream,
     };
-    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let (listener, address) = crate::test_owned_endpoint::bind_on(fixture_ip).await;
     let route = route.to_owned();
     let request_body = request_body.to_vec();
     let response_body = response_body.to_vec();
@@ -917,7 +947,7 @@ where
         socket
             .write_all(
                 format!(
-                    "POST http://127.0.0.2:{port}{route} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nX-SafeYolo-Test-Context: run=wire-run;agent=declared-tool;test=wire;role=tester\r\nConnection: close\r\n\r\n",
+                    "POST http://{address}{route} HTTP/1.1\r\nHost: {address}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nX-SafeYolo-Test-Context: run=wire-run;agent=declared-tool;test=wire;role=tester\r\nConnection: close\r\n\r\n",
                     request_body.len()
                 )
                 .as_bytes(),
@@ -938,15 +968,12 @@ where
     response
 }
 
-async fn record_wire_flow(directory: &Path) {
+async fn record_wire_flow(directory: &Path, fixture_ip: std::net::IpAddr) {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, UnixStream},
+        net::UnixStream,
     };
-    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let (listener, address) = crate::test_owned_endpoint::bind_on(fixture_ip).await;
     let origin = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut head = Vec::new();
@@ -966,7 +993,7 @@ async fn record_wire_flow(directory: &Path) {
     });
     tokio::time::timeout(Duration::from_secs(3), async {
         let mut socket = UnixStream::connect(directory.join("alice.sock")).await.unwrap();
-        socket.write_all(format!("POST http://127.0.0.2:{port}/recorded HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nX-SafeYolo-Test-Context: run=wire-run;agent=declared-tool;test=wire;role=tester\r\nConnection: close\r\n\r\nwire in").as_bytes()).await.unwrap();
+        socket.write_all(format!("POST http://{address}/recorded HTTP/1.1\r\nHost: {address}\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nX-SafeYolo-Test-Context: run=wire-run;agent=declared-tool;test=wire;role=tester\r\nConnection: close\r\n\r\nwire in").as_bytes()).await.unwrap();
         let mut response = Vec::new();
         socket.read_to_end(&mut response).await.unwrap();
         assert!(response.starts_with(b"HTTP/1.1 200"));
