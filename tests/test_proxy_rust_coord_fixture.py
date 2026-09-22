@@ -263,10 +263,15 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     test = workflow.index("- name: Test and build the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
     assert setup < test < teardown
-    assert "coord_fixture.py" in workflow[setup:test]
-    assert "SAFEYOLO_NATS_TEST_INSTANCE" in workflow[setup:test]
-    assert workflow.count("SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture") == 3
-    assert "teardown failed after startup failure" in workflow[setup:test]
+    setup_block = workflow[setup:test]
+    assert "if: matrix.os == 'ubuntu-latest'" in setup_block
+    assert "coord_fixture.py" in setup_block
+    assert "SAFEYOLO_NATS_TEST_INSTANCE" in setup_block
+    assert workflow.count("SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture") == 2
+    assert "teardown failed after startup failure" in setup_block
+    test_block = workflow[test:teardown]
+    assert 'if [ "$RUNNER_OS" = Linux ]; then' in test_block
+    assert "export SAFEYOLO_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
     teardown_block = workflow[teardown:]
-    assert "if: always()" in teardown_block
+    assert "if: always() && matrix.os == 'ubuntu-latest'" in teardown_block
     assert "coord_fixture.py --teardown" in teardown_block

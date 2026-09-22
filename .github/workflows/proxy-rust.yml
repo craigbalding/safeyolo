@@ -58,6 +58,7 @@ jobs:
           uv sync --frozen --group dev --python 3.12
 
       - name: Start the Python-owned Coord fixture
+        if: matrix.os == 'ubuntu-latest'
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
@@ -99,14 +100,16 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
-          SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
         run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            export SAFEYOLO_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+            export SAFEYOLO_NATS_TEST_INSTANCE=proxy-rust-fixture
+          fi
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked
 
       - name: Stop the Python-owned Coord fixture
-        if: always()
+        if: always() && matrix.os == 'ubuntu-latest'
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
