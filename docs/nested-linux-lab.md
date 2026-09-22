@@ -65,11 +65,19 @@ copied host resolver before it emits the rootfs artifacts.
 
 Choose ports that do not shadow the inherited outer proxy endpoint. For
 example, set `proxy.port` to `18080`, `proxy.admin_port` to `19090`, and
-`proxy.web_port` to `18081` in the nested `config.yaml`, then start normally:
+`proxy.web_port` to `18081` in the nested `config.yaml`. For the native
+runtime, set `proxy.backend` to `rust`, set `proxy.rust_config` to the lab's
+absolute `state/data/native.json` path, and set `proxy.upstream_proxy` to the
+same parent proxy URL as `SAFEYOLO_UPSTREAM_PROXY`. Start without `--dev`:
 
 ```bash
-uv run safeyolo start --dev
+uv run safeyolo start
 ```
+
+The normal native launcher generates `state/data/native.json` from this
+configuration. If a stopped lab changes its parent proxy for the self-loop
+check, update `proxy.upstream_proxy` and remove only that lab-generated JSON
+before starting again.
 
 The nested traffic master uses mitmproxy's upstream HTTP-proxy layer for each
 per-agent UDS connection. UDS-derived peer attribution is unchanged. Each

@@ -46,6 +46,50 @@ export SAFEYOLO_COORD_DATA_DIR="$LAB_STATE/coord"
 export SAFEYOLO_UPSTREAM_PROXY="$OUTER_PROXY"
 export SAFEYOLO_RUNSC_PLATFORM=systrap
 
+configure_nested_rust_proxy() {
+    local parent_proxy=$1
+    uv run python - "$LAB_STATE/config.yaml" "$LAB_STATE/data/native.json" \
+        "$INNER_PROXY_PORT" "$INNER_ADMIN_PORT" "$INNER_WEB_PORT" "$parent_proxy" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+config_path = Path(sys.argv[1])
+native_config = Path(sys.argv[2])
+config = yaml.safe_load(config_path.read_text())
+proxy = config["proxy"]
+proxy["port"] = int(sys.argv[3])
+proxy["admin_port"] = int(sys.argv[4])
+proxy["web_port"] = int(sys.argv[5])
+proxy["backend"] = "rust"
+proxy["rust_config"] = str(native_config)
+proxy["upstream_proxy"] = sys.argv[6]
+config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+
+# This dedicated lab owns the generated JSON. The Rust launcher recreates it
+# from config.yaml at the next normal `safeyolo start`.
+native_config.unlink(missing_ok=True)
+PY
+}
+
+assert_nested_rust_runtime_config() {
+    local native_config="$LAB_STATE/data/native.json"
+    [ "$(jq -er '.proxy.rust_config' "$LAB_STATE/config.yaml")" = "$native_config" ] || die \
+        "nested Rust config path does not select the lab-generated native JSON"
+    jq -e --arg state "$LAB_STATE" --arg parent_proxy "$SAFEYOLO_UPSTREAM_PROXY" '
+        .policy_file == ($state + "/policy.toml")
+        and .data_dir == ($state + "/data")
+        and .parent_proxy == $parent_proxy
+    ' "$native_config" >/dev/null || die \
+        "Rust startup did not generate the expected nested runtime JSON"
+}
+
+start_nested_rust_proxy() {
+    uv run safeyolo start
+    assert_nested_rust_runtime_config
+}
+
 step "Prepare guest-local lab storage"
 sudo -n install -d -m 0755 -o "$(id -u)" -g "$(id -g)" \
     "$LAB_ROOT" "$LAB_SOURCE" "$LAB_STATE"
@@ -72,23 +116,11 @@ if cmp -s "$SSL_CERT_FILE" \
     die "outer CA was baked into the nested rootfs"
 fi
 
-step "Select non-conflicting nested listeners"
-uv run python - "$LAB_STATE/config.yaml" \
-    "$INNER_PROXY_PORT" "$INNER_ADMIN_PORT" "$INNER_WEB_PORT" <<'PY'
-import sys
-from pathlib import Path
-import yaml
-
-path = Path(sys.argv[1])
-config = yaml.safe_load(path.read_text())
-config["proxy"]["port"] = int(sys.argv[2])
-config["proxy"]["admin_port"] = int(sys.argv[3])
-config["proxy"]["web_port"] = int(sys.argv[4])
-path.write_text(yaml.safe_dump(config, sort_keys=False))
-PY
+step "Select the Rust backend and non-conflicting nested listeners"
+configure_nested_rust_proxy "$OUTER_PROXY"
 
 step "Start nested proxy and a direct-runsc agent"
-uv run safeyolo start --dev
+start_nested_rust_proxy
 uv run safeyolo agent add "$INNER_AGENT" "$LAB_SOURCE" \
     --host-script "$LAB_SOURCE/contrib/codex-host-setup.sh" --no-run
 uv run safeyolo coord room create "$COORD_ROOM" \
@@ -126,7 +158,8 @@ socat TCP-LISTEN:"$LOOP_PORT",bind=127.0.0.1,reuseaddr,fork \
 SOCAT_PID=$!
 trap 'kill "$SOCAT_PID" 2>/dev/null || true' EXIT
 export SAFEYOLO_UPSTREAM_PROXY="http://127.0.0.1:$LOOP_PORT"
-uv run safeyolo start --dev
+configure_nested_rust_proxy "$SAFEYOLO_UPSTREAM_PROXY"
+start_nested_rust_proxy
 inner_shell \
     "status=\$(curl -sS -o /tmp/nested-loop.body -D /tmp/nested-loop.headers -w '%{http_code}' '$LOOP_TARGET_URL'); [ \"\$status\" = 508 ]"
 inner_shell "grep -iq '^x-blocked-by: loop-guard' /tmp/nested-loop.headers" || die \
@@ -138,7 +171,8 @@ trap - EXIT
 step "Restore the normal outer upstream and leave the lab healthy"
 uv run safeyolo stop
 export SAFEYOLO_UPSTREAM_PROXY="$OUTER_PROXY"
-uv run safeyolo start --dev
+configure_nested_rust_proxy "$OUTER_PROXY"
+start_nested_rust_proxy
 inner_shell \
     'for attempt in $(seq 1 30); do { printf "Authorization: Bearer "; cat /app/agent_token; printf "\n"; } | curl -fsS -o /tmp/nested-health.json --header @- http://_safeyolo.proxy.internal/health && cat /tmp/nested-health.json && exit 0; sleep 0.2; done; exit 1'
 
