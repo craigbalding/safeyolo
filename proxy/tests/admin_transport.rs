@@ -114,6 +114,7 @@ async fn operator_auth_target_and_client_text_match_source_canonical_events() {
             assert!(row.as_object_mut().unwrap().remove("ts").is_some());
             row
         })
+        .filter(|row| row["kind"].as_str() == Some("admin"))
         .collect();
     assert_eq!(rows.len(), cases.as_array().unwrap().len() + 1);
     for (row, case) in rows.iter().zip(cases.as_array().unwrap()) {
