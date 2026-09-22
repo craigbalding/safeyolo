@@ -188,6 +188,7 @@ fn write_evidence(root: &Path, observations: &[Value], outcome: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // The process-global presenter environment must span this bounded native workflow.
 async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     let _lock = test_lock();
     let root = TempDir::new().unwrap();
@@ -281,6 +282,7 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // The process-global presenter environment must span this unavailable-host control.
 async fn approved_request_reports_unavailable_host_presenter_without_false_success() {
     let _lock = test_lock();
     unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };

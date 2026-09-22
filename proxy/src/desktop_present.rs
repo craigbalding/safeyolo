@@ -265,6 +265,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)] // Serialize process-wide presenter environment and fixture state across bounded awaits.
     async fn shutdown_reclaims_helper_after_canceled_blocked_request() {
         let _lock = test_lock();
         let directory = tempfile::tempdir().expect("fixture directory");

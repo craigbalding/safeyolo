@@ -88,9 +88,8 @@ async fn synchronous_audit_submission_failure_commits_mutations_then_closes_conn
                 );
                 assert!(!source.contains("resource = \"*\""));
             }
-            "mode" => assert_eq!(
-                proxy.runtime.read().unwrap().operator_modes.network_block(),
-                false,
+            "mode" => assert!(
+                !proxy.runtime.read().unwrap().operator_modes.network_block(),
                 "mode mutation was rolled back"
             ),
             "host" => assert!(

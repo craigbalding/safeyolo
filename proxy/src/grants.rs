@@ -918,6 +918,10 @@ fn remove_record(
     }
     Ok(())
 }
+// The agent, collection, key, value, and optional tuple are the explicit
+// persisted-record identity shared with `record_matches`, `remove_from_list`,
+// and `remove_record`.
+#[allow(clippy::too_many_arguments)]
 fn upsert_record(
     document: &mut DocumentMut,
     agent: &str,

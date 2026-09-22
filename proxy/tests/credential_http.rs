@@ -1460,7 +1460,7 @@ async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
         .await
         .unwrap()
         .unwrap();
-    let requests = seen.lock().unwrap();
+    let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     assert!(
         requests[0]

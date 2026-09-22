@@ -46,7 +46,6 @@ enum CoordError {
     Invalid,
     Unavailable,
     Data,
-    PublishUnknown,
     Cancelled,
 }
 
@@ -2241,7 +2240,7 @@ async fn respond_payload(
             Err(()) => return response(400, json!({"error":"invalid limit"})),
         };
         let timeout = match query_f64(request.path_and_query, "timeout", 30.0) {
-            Ok(value) => value.max(0.1).min(300.0),
+            Ok(value) => bounded_timeout_seconds(value),
             Err(()) => return response(400, json!({"error":"invalid timeout"})),
         };
         return match context
@@ -2404,7 +2403,7 @@ async fn respond_payload(
                 Err(()) => return response(400, json!({"error":"invalid limit"})),
             };
             let timeout = match query_f64(request.path_and_query, "timeout", 30.0) {
-                Ok(value) => value.max(0.1).min(300.0),
+                Ok(value) => bounded_timeout_seconds(value),
                 Err(()) => return response(400, json!({"error":"invalid timeout"})),
             };
             let include_self = match query_bool(request.path_and_query, "include_self", false) {
@@ -2412,14 +2411,13 @@ async fn respond_payload(
                 Err(()) => return response(400, json!({"error":"invalid include_self"})),
             };
             wait_room(
-                context.client,
+                &context,
                 &room_name,
                 &principal,
                 since,
                 limit,
                 timeout,
                 !include_self,
-                context.cancellation.clone(),
             )
             .await
         }
@@ -2559,13 +2557,6 @@ fn error_response(error: CoordError) -> Outcome<'static> {
         }
         CoordError::Data => response(500, json!({"error":"coordination state unavailable"})),
         CoordError::Cancelled => response(503, json!({"error":"coordination wait cancelled"})),
-        CoordError::PublishUnknown => response(
-            503,
-            json!({
-                "error":"message acceptance outcome unknown; inspect retained room history before retrying",
-                "send_outcome":"unknown",
-            }),
-        ),
     }
 }
 
@@ -2648,6 +2639,13 @@ fn query_f64(path_and_query: &str, wanted: &str, default: f64) -> Result<f64, ()
     raw.parse::<f64>().map_err(|_| ())
 }
 
+// `query_f64` accepts NaN. This max/min order normalizes it to 0.1, while
+// `f64::clamp` would preserve it until `Duration::from_secs_f64` panics.
+#[allow(clippy::manual_clamp)]
+fn bounded_timeout_seconds(value: f64) -> f64 {
+    value.max(0.1).min(300.0)
+}
+
 fn query_bool(path_and_query: &str, wanted: &str, default: bool) -> Result<bool, ()> {
     let Some(raw) = query_parameter(path_and_query, wanted)? else {
         return Ok(default);
@@ -2684,12 +2682,6 @@ async fn send(
         return response(400, json!({"error":"body required (non-empty string)"}));
     }
     if body.len() > MAX_BODY_BYTES {
-        return response(
-            413,
-            json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}),
-        );
-    }
-    if body.as_bytes().len() > MAX_BODY_BYTES {
         return response(
             413,
             json!({"error":"body too large", "max_bytes":MAX_BODY_BYTES}),
@@ -3046,16 +3038,15 @@ async fn read_messages(
 }
 
 async fn wait_room(
-    client: &CoordClient,
+    context: &CoordContext<'_>,
     room_name: &str,
     principal: &str,
     since: u64,
     limit: usize,
     timeout_seconds: f64,
     exclude_self: bool,
-    cancellation: tokio::sync::watch::Receiver<bool>,
 ) -> Outcome<'static> {
-    let access = match client.access(room_name, principal).await {
+    let access = match context.client.access(room_name, principal).await {
         Ok(access) => access,
         Err(error) => return error_response(error),
     };
@@ -3067,20 +3058,23 @@ async fn wait_room(
         return response(403, json!({"error":"permission 'receive' denied"}));
     }
     read_messages_with_timeout(
-        client,
+        context.client,
         room_name,
         access,
         principal,
         since,
         limit,
-        Duration::from_secs_f64(timeout_seconds.clamp(0.1, 300.0)),
+        Duration::from_secs_f64(bounded_timeout_seconds(timeout_seconds)),
         exclude_self,
         true,
-        cancellation,
+        context.cancellation.clone(),
     )
     .await
 }
 
+// The message-read and room-wait callers have distinct fetch-window, wake-mode,
+// and cancellation contracts; a generic context object would hide those inputs.
+#[allow(clippy::too_many_arguments)]
 async fn read_messages_with_timeout(
     client: &CoordClient,
     room_name: &str,
@@ -3324,6 +3318,70 @@ async fn read_messages_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_coord_request(method: &'static str, path_and_query: &'static str) -> Request<'static> {
+        Request {
+            method,
+            path_and_query,
+            authorization: None,
+            identity: crate::network_guard::Identity::Resolved("alice"),
+            client_ip: None,
+            request_id: "req-00000000000000000000000000000000",
+        }
+    }
+
+    fn test_receive_access() -> RoomAccess {
+        RoomAccess {
+            room_id: "rm-shared".to_owned(),
+            room_name: "shared".to_owned(),
+            permissions: vec!["receive".to_owned()],
+            members: Vec::new(),
+            instance_id: "instance".to_owned(),
+            brief: Value::Null,
+        }
+    }
+
+    fn coord_client_with_receive_access(directory: &tempfile::TempDir) -> CoordClient {
+        let policy_file = directory.path().join("policy.toml");
+        std::fs::write(&policy_file, "[agents.alice]\nagent_id = 'ag-alice'\n").unwrap();
+        let db = directory.path().join("v0.db");
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version=5;
+             CREATE TABLE rooms(room_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+             CREATE TABLE memberships(
+                 room_id TEXT NOT NULL,
+                 principal_kind TEXT NOT NULL,
+                 principal_id TEXT NOT NULL,
+                 permissions TEXT NOT NULL,
+                 granted_at INTEGER NOT NULL,
+                 revoked_at INTEGER,
+                 PRIMARY KEY(room_id, principal_kind, principal_id, granted_at)
+             );
+             CREATE TABLE instance(id TEXT PRIMARY KEY);
+             CREATE TABLE coord_briefs(
+                 room_id TEXT PRIMARY KEY,
+                 revision INTEGER NOT NULL,
+                 markdown TEXT NOT NULL,
+                 content_hash TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );
+             INSERT INTO rooms(room_id, name) VALUES ('rm-shared', 'shared');
+             INSERT INTO instance(id) VALUES ('instance');
+             INSERT INTO memberships
+                 (room_id, principal_kind, principal_id, permissions, granted_at)
+                 VALUES ('rm-shared', 'agent', 'ag-alice', 'receive', 7);",
+        )
+        .unwrap();
+        CoordClient::with_owner(
+            Arc::new(CoordOwner {
+                data_dir: directory.path().to_owned(),
+                nats: tokio::sync::Mutex::new(None),
+                cleanup: Arc::new(CoordCleanup::new()),
+            }),
+            Some(policy_file),
+        )
+    }
 
     #[test]
     fn coord_routes_are_parsed_without_accepting_extra_segments() {
@@ -3638,11 +3696,23 @@ mod tests {
             .is_err()
         );
         assert_eq!(
-            query_f64("/api?timeout=301", "timeout", 30.0).map(|value| value.max(0.1).min(300.0)),
+            query_f64("/api?timeout=301", "timeout", 30.0).map(bounded_timeout_seconds),
             Ok(300.0)
         );
         assert_eq!(
-            query_f64("/api?timeout=-1", "timeout", 30.0).map(|value| value.max(0.1).min(300.0)),
+            query_f64("/api?timeout=-1", "timeout", 30.0).map(bounded_timeout_seconds),
+            Ok(0.1)
+        );
+        assert_eq!(
+            query_f64("/api?timeout=NaN", "timeout", 30.0).map(bounded_timeout_seconds),
+            Ok(0.1)
+        );
+        assert_eq!(
+            query_f64("/api?timeout=inf", "timeout", 30.0).map(bounded_timeout_seconds),
+            Ok(300.0)
+        );
+        assert_eq!(
+            query_f64("/api?timeout=-inf", "timeout", 30.0).map(bounded_timeout_seconds),
             Ok(0.1)
         );
         assert!(query_f64("/api?timeout=oops", "timeout", 30.0).is_err());
@@ -3654,6 +3724,66 @@ mod tests {
             query_bool("/api?include_self=unexpected", "include_self", false),
             Ok(false)
         );
+    }
+
+    #[tokio::test]
+    async fn room_wait_route_normalizes_nan_timeout_before_duration_conversion() {
+        let directory = tempfile::tempdir().unwrap();
+        let client = coord_client_with_receive_access(&directory);
+        let (_, cancellation) = tokio::sync::watch::channel(false);
+        let outcome = respond_payload(
+            test_coord_request(
+                "GET",
+                "/api/coord/rooms/shared/wait?since=0&limit=1&timeout=NaN",
+            ),
+            Some(CoordContext {
+                client: &client,
+                cancellation,
+            }),
+            None,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 503);
+    }
+
+    #[tokio::test]
+    async fn send_body_limits_preserve_utf8_byte_semantics() {
+        let client = CoordClient::new(None);
+        let oversized =
+            serde_json::to_vec(&json!({"body": "x".repeat(MAX_BODY_BYTES + 1)})).unwrap();
+        let outcome = send(
+            &client,
+            test_coord_request("POST", "/api/coord/rooms/shared/send"),
+            "shared",
+            test_receive_access(),
+            "ag-alice",
+            "alice",
+            &oversized,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 413);
+
+        let multibyte = "é";
+        let accepted_body = multibyte.repeat(MAX_BODY_BYTES / multibyte.len());
+        assert_eq!(accepted_body.len(), MAX_BODY_BYTES);
+        let exact_limit = serde_json::to_vec(&json!({
+            "body": accepted_body,
+            "declared_content_type": 1,
+        }))
+        .unwrap();
+        let outcome = send(
+            &client,
+            test_coord_request("POST", "/api/coord/rooms/shared/send"),
+            "shared",
+            test_receive_access(),
+            "ag-alice",
+            "alice",
+            &exact_limit,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 400);
+        let body: Value = serde_json::from_slice(&outcome.response.body_bytes()).unwrap();
+        assert_eq!(body["error"], "content_type must be a string");
     }
 
     #[test]
