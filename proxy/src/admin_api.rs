@@ -2699,7 +2699,7 @@ mod tests {
                 "/admin/policy/task/x",
                 Some(TOKEN),
                 404,
-                json!({"error":"not found"}),
+                json!({"error":"Task policy 'x' not found"}),
             ),
         ] {
             let mut request = Request::builder()

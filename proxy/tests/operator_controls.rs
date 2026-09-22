@@ -894,11 +894,13 @@ fn admin_port(config: &Config) -> u16 {
 
 struct Reply {
     status: u16,
+    #[cfg(target_os = "linux")]
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 }
 
 impl Reply {
+    #[cfg(target_os = "linux")]
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -949,6 +951,7 @@ async fn admin(port: u16, token: &str, method: &str, path: &str, body: &[u8]) ->
         .unwrap()
         .parse()
         .unwrap();
+    #[cfg(target_os = "linux")]
     let headers = head
         .lines()
         .skip(1)
@@ -959,6 +962,7 @@ async fn admin(port: u16, token: &str, method: &str, path: &str, body: &[u8]) ->
         .collect();
     Reply {
         status,
+        #[cfg(target_os = "linux")]
         headers,
         body: bytes[split + 4..].to_vec(),
     }

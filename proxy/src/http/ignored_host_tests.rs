@@ -17,7 +17,7 @@ const LIMIT: Duration = Duration::from_secs(5);
 const HOST: &str = "127.0.0.2";
 const SOURCE: &str = "192.0.2.10";
 
-fn config(directory: &Path, port: u16, matched: bool, allowed: bool) -> Config {
+fn config(directory: &Path, authority: &str, matched: bool, allowed: bool) -> Config {
     std::fs::write(
         directory.join("policy.json"),
         json!({"permissions":[{"action":"network:request","resource":"*",
@@ -34,29 +34,34 @@ fn config(directory: &Path, port: u16, matched: bool, allowed: bool) -> Config {
         "event_log":directory.join("events.jsonl"),
         "flow_store_enabled":false,"flow_store_db_path":directory.join("unused.sqlite3"),
         "circuit_breaker_enabled":false,"circuit_state_file":"",
-        "ignore_hosts":if matched { vec![format!("{HOST}:{port}")] } else { vec![] }
+        "ignore_hosts":if matched { vec![authority] } else { vec![] }
     }))
     .unwrap()
 }
 
-async fn listener() -> TcpListener {
-    TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap()
+async fn listener() -> (TcpListener, std::net::SocketAddr, String, String) {
+    let (listener, address) = crate::test_owned_endpoint::bind().await;
+    let (authority, host) = match address.ip() {
+        std::net::IpAddr::V4(_) => (address.to_string(), address.ip().to_string()),
+        // The existing production `ignore_hosts` contract accepts canonical
+        // hostnames and IPv4 entries, but not IPv6 literals. `localhost` is
+        // its portable canonical hostname path; it reaches this ::1 listener
+        // without adding an alias or changing the configured boundary.
+        std::net::IpAddr::V6(_) => (format!("localhost:{}", address.port()), "localhost".into()),
+    };
+    (listener, address, authority, host)
 }
 
 async fn accept(listener: &TcpListener) -> TcpStream {
     timeout(LIMIT, listener.accept()).await.unwrap().unwrap().0
 }
 
-async fn request_to(directory: &Path, host: &str, port: u16) -> (UnixStream, Vec<u8>) {
+async fn request_to(directory: &Path, authority: &str) -> (UnixStream, Vec<u8>) {
     let mut client = UnixStream::connect(directory.join("alice.sock"))
         .await
         .unwrap();
     client
-        .write_all(
-            format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n").as_bytes(),
-        )
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
         .await
         .unwrap();
     let head = timeout(LIMIT, async {
@@ -71,12 +76,12 @@ async fn request_to(directory: &Path, host: &str, port: u16) -> (UnixStream, Vec
     (client, head)
 }
 
-async fn request(directory: &Path, port: u16) -> (UnixStream, Vec<u8>) {
-    request_to(directory, HOST, port).await
+async fn request(directory: &Path, authority: &str) -> (UnixStream, Vec<u8>) {
+    request_to(directory, authority).await
 }
 
-async fn connect(directory: &Path, port: u16) -> UnixStream {
-    let (client, head) = request(directory, port).await;
+async fn connect(directory: &Path, authority: &str) -> UnixStream {
+    let (client, head) = request(directory, authority).await;
     assert!(
         head.starts_with(b"HTTP/1.1 200"),
         "{}",
@@ -86,7 +91,7 @@ async fn connect(directory: &Path, port: u16) -> UnixStream {
 }
 
 async fn connect_to(directory: &Path, host: &str, port: u16) -> UnixStream {
-    let (client, head) = request_to(directory, host, port).await;
+    let (client, head) = request_to(directory, &format!("{host}:{port}")).await;
     assert!(
         head.starts_with(b"HTTP/1.1 200"),
         "{}",
@@ -149,7 +154,7 @@ async fn wait_lifecycle(runtime: &Runtime, directory: &Path, count: usize) -> Ve
 // Compare the complete source envelope and key order. The timestamp must parse;
 // duration is the observed nonnegative integer bounded by this owned operation.
 // Error wording is checked by the individual control before reuse here.
-fn check(row: &Value, phase: &str, port: u16, elapsed: Duration) {
+fn check(row: &Value, phase: &str, authority: &str, host: &str, port: u16, elapsed: Duration) {
     let timestamp = row["ts"].as_str().unwrap();
     time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339).unwrap();
     let (severity, verb) = match phase {
@@ -172,8 +177,8 @@ fn check(row: &Value, phase: &str, port: u16, elapsed: Duration) {
     let expected = json!({
         "schema_version":1,"ts":timestamp,"event":format!("traffic.passthrough_{phase}"),
         "kind":"traffic","severity":severity,
-        "summary":format!("TLS passthrough {verb} {HOST}:{port}"),
-        "agent":"alice","addon":"ignored-host-logger","host":HOST,"details":details
+        "summary":format!("TLS passthrough {verb} {authority}"),
+        "agent":"alice","addon":"ignored-host-logger","host":host,"details":details
     });
     assert_eq!(row, &expected);
     assert_eq!(
@@ -191,17 +196,24 @@ fn clean(directory: &Path) {
 async fn matched_server_first_preserves_both_half_close_orders() {
     for server_half_first in [true, false] {
         let directory = tempfile::tempdir().unwrap();
-        let origin = listener().await;
-        let port = origin.local_addr().unwrap().port();
-        let proxy = Proxy::start(config(directory.path(), port, true, true))
+        let (origin, address, authority, host) = listener().await;
+        let port = address.port();
+        let proxy = Proxy::start(config(directory.path(), &authority, true, true))
             .await
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         let started = Instant::now();
-        let mut client = connect(directory.path(), port).await;
+        let mut client = connect(directory.path(), &authority).await;
         let mut peer = accept(&origin).await;
         let start = wait_lifecycle(&runtime, directory.path(), 1).await;
-        check(&start[0], "start", port, started.elapsed());
+        check(
+            &start[0],
+            "start",
+            &authority,
+            &host,
+            port,
+            started.elapsed(),
+        );
         // No origin or client tunnel data was sent before the start check.
         peer.write_all(b"server-first").await.unwrap();
         let mut banner = [0; 12];
@@ -230,7 +242,7 @@ async fn matched_server_first_preserves_both_half_close_orders() {
         drop(peer);
         let rows = wait_lifecycle(&runtime, directory.path(), 2).await;
         assert_eq!(rows[0], start[0]);
-        check(&rows[1], "end", port, started.elapsed());
+        check(&rows[1], "end", &authority, &host, port, started.elapsed());
         proxy.shutdown().await;
         assert_eq!(lifecycle(&runtime, directory.path()), rows);
         clean(directory.path());
@@ -240,15 +252,15 @@ async fn matched_server_first_preserves_both_half_close_orders() {
 #[tokio::test]
 async fn refused_owned_endpoint_emits_only_connect_error() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address, authority, host) = listener().await;
+    let port = address.port();
     drop(origin);
-    let proxy = Proxy::start(config(directory.path(), port, true, true))
+    let proxy = Proxy::start(config(directory.path(), &authority, true, true))
         .await
         .unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let started = Instant::now();
-    let (client, head) = request(directory.path(), port).await;
+    let (client, head) = request(directory.path(), &authority).await;
     assert!(head.starts_with(b"HTTP/1.1 502"));
     drop(client);
     let rows = wait_lifecycle(&runtime, directory.path(), 1).await;
@@ -259,7 +271,14 @@ async fn refused_owned_endpoint_emits_only_connect_error() {
             .to_ascii_lowercase()
             .contains("refused")
     );
-    check(&rows[0], "error", port, started.elapsed());
+    check(
+        &rows[0],
+        "error",
+        &authority,
+        &host,
+        port,
+        started.elapsed(),
+    );
     proxy.shutdown().await;
     assert_eq!(lifecycle(&runtime, directory.path()), rows);
     clean(directory.path());
@@ -273,14 +292,14 @@ async fn admin_port_remains_contained_with_broad_cidr_passthrough() {
     // events.  This keeps the configured exception scoped to egress and does
     // not turn a CIDR entry into access to the operator API.
     let directory = tempfile::tempdir().unwrap();
-    let proxy = Proxy::start(config(directory.path(), 9090, false, true))
+    let proxy = Proxy::start(config(directory.path(), "127.0.0.1:9090", false, true))
         .await
         .unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     *runtime.passthrough.write().unwrap() =
         crate::tunnels::Passthrough::new(&[], "127.0.0.0/8").unwrap();
 
-    let (client, head) = request_to(directory.path(), "127.0.0.1", 9090).await;
+    let (client, head) = request_to(directory.path(), "127.0.0.1:9090").await;
     assert!(head.starts_with(b"HTTP/1.1 403"), "{head:?}");
     drop(client);
     assert!(lifecycle(&runtime, directory.path()).is_empty());
@@ -293,13 +312,12 @@ async fn admin_port_remains_contained_with_broad_cidr_passthrough() {
 async fn unmatched_opaque_and_policy_denial_do_not_create_logger_sessions() {
     for allowed in [true, false] {
         let directory = tempfile::tempdir().unwrap();
-        let origin = listener().await;
-        let port = origin.local_addr().unwrap().port();
-        let proxy = Proxy::start(config(directory.path(), port, !allowed, allowed))
+        let (origin, _address, authority, _host) = listener().await;
+        let proxy = Proxy::start(config(directory.path(), &authority, !allowed, allowed))
             .await
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
-        let (mut client, head) = request(directory.path(), port).await;
+        let (mut client, head) = request(directory.path(), &authority).await;
         if allowed {
             assert!(head.starts_with(b"HTTP/1.1 200"));
             let mut peer = accept(&origin).await;
@@ -327,16 +345,23 @@ async fn unmatched_opaque_and_policy_denial_do_not_create_logger_sessions() {
 #[tokio::test]
 async fn reload_retains_live_session_but_removal_applies_to_next_connection() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
-    let mut configuration = config(directory.path(), port, true, true);
+    let (origin, address, authority, host) = listener().await;
+    let port = address.port();
+    let mut configuration = config(directory.path(), &authority, true, true);
     let mut proxy = Proxy::start(configuration.clone()).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let started = Instant::now();
-    let mut first = connect(directory.path(), port).await;
+    let mut first = connect(directory.path(), &authority).await;
     let mut first_peer = accept(&origin).await;
     let start = wait_lifecycle(&runtime, directory.path(), 1).await;
-    check(&start[0], "start", port, started.elapsed());
+    check(
+        &start[0],
+        "start",
+        &authority,
+        &host,
+        port,
+        started.elapsed(),
+    );
     configuration.ignore_hosts.clear();
     proxy.reload(configuration).await.unwrap();
     first_peer.write_all(b"live-after-reload").await.unwrap();
@@ -349,8 +374,15 @@ async fn reload_retains_live_session_but_removal_applies_to_next_connection() {
     drop(first);
     drop(first_peer);
     let first_rows = wait_lifecycle(&runtime, directory.path(), 2).await;
-    check(&first_rows[1], "end", port, started.elapsed());
-    let mut second = connect(directory.path(), port).await;
+    check(
+        &first_rows[1],
+        "end",
+        &authority,
+        &host,
+        port,
+        started.elapsed(),
+    );
+    let mut second = connect(directory.path(), &authority).await;
     let mut second_peer = accept(&origin).await;
     second_peer.write_all(b"unmatched-now").await.unwrap();
     second_peer.shutdown().await.unwrap();
@@ -367,24 +399,31 @@ async fn reload_retains_live_session_but_removal_applies_to_next_connection() {
 #[tokio::test]
 async fn graceful_shutdown_closes_live_transport_then_emits_end() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
-    let proxy = Proxy::start(config(directory.path(), port, true, true))
+    let (origin, address, authority, host) = listener().await;
+    let port = address.port();
+    let proxy = Proxy::start(config(directory.path(), &authority, true, true))
         .await
         .unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let started = Instant::now();
-    let mut client = connect(directory.path(), port).await;
+    let mut client = connect(directory.path(), &authority).await;
     let mut peer = accept(&origin).await;
     let start = wait_lifecycle(&runtime, directory.path(), 1).await;
-    check(&start[0], "start", port, started.elapsed());
+    check(
+        &start[0],
+        "start",
+        &authority,
+        &host,
+        port,
+        started.elapsed(),
+    );
     timeout(LIMIT, proxy.shutdown()).await.unwrap();
     assert!(remaining(&mut client).await.is_empty());
     assert!(remaining(&mut peer).await.is_empty());
     let rows = lifecycle(&runtime, directory.path());
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0], start[0]);
-    check(&rows[1], "end", port, started.elapsed());
+    check(&rows[1], "end", &authority, &host, port, started.elapsed());
     clean(directory.path());
 }
 
@@ -398,9 +437,9 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
     // No earlier network gate is disabled or rewritten for this control.
     for poisoned in [false, true] {
         let directory = tempfile::tempdir().unwrap();
-        let origin = listener().await;
-        let port = origin.local_addr().unwrap().port();
-        let proxy = Proxy::start(config(directory.path(), port, true, true))
+        let (origin, address, authority, host) = listener().await;
+        let port = address.port();
+        let proxy = Proxy::start(config(directory.path(), &authority, true, true))
             .await
             .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
@@ -412,7 +451,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         };
         let request = hyper::Request::builder()
             .method("CONNECT")
-            .uri(format!("{HOST}:{port}"))
+            .uri(&authority)
             .body(())
             .unwrap();
         let destination = Destination::from_request(&request, None).unwrap();
@@ -443,7 +482,7 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
                 },
                 true,
                 None,
-                Some(SelectedDestination { host: HOST, port }),
+                Some(SelectedDestination { host: &host, port }),
                 None,
                 None,
             ),
@@ -451,15 +490,15 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(connected.peer, Some(HOST.parse().unwrap()));
+        assert_eq!(
+            connected.peer,
+            address.ip().to_string().parse::<std::net::Ipv4Addr>().ok()
+        );
         assert_eq!(
             connected.observation.route,
             crate::traffic_view::UpstreamRoute::Direct
         );
-        assert_eq!(
-            connected.observation.peer,
-            Some(origin.local_addr().unwrap())
-        );
+        assert_eq!(connected.observation.peer, Some(address));
         assert!(connected.observation.started.is_some());
         assert!(connected.observation.tcp_setup.is_some());
         assert!(connected.observation.tls_setup.is_none());
@@ -493,14 +532,21 @@ async fn connected_stream_cleanup_and_poisoned_writer_preserve_admitted_transpor
             assert_eq!(records(directory.path(), "audit.jsonl"), before);
         } else {
             let start = wait_lifecycle(&runtime, directory.path(), 1).await;
-            check(&start[0], "start", port, started.elapsed());
+            check(
+                &start[0],
+                "start",
+                &authority,
+                &host,
+                port,
+                started.elapsed(),
+            );
             // No client upgrade future or relay has been created. Dropping this
             // connected owner must close TCP and consume its terminal event.
             drop(connected.stream);
             assert!(remaining(&mut peer).await.is_empty());
             let rows = wait_lifecycle(&runtime, directory.path(), 2).await;
             assert_eq!(rows[0], start[0]);
-            check(&rows[1], "end", port, started.elapsed());
+            check(&rows[1], "end", &authority, &host, port, started.elapsed());
         }
         drop(peer);
         proxy.shutdown().await;
@@ -525,9 +571,14 @@ async fn resolved_peer_match_creates_lifecycle_owner_after_tcp_connect() {
             .await
             .unwrap();
         let port = origin.local_addr().unwrap().port();
-        let proxy = Proxy::start(config(directory.path(), port, false, true))
-            .await
-            .unwrap();
+        let proxy = Proxy::start(config(
+            directory.path(),
+            &origin.local_addr().unwrap().to_string(),
+            false,
+            true,
+        ))
+        .await
+        .unwrap();
         let runtime = proxy.runtime.read().unwrap().clone();
         *runtime.passthrough.write().unwrap() = matcher;
         let mut client = connect_to(directory.path(), "127.1", port).await;
@@ -586,7 +637,14 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
     let first = writer_lifecycle(&writer, directory.path());
     assert_eq!(first.len(), 1);
     assert_eq!(first[0]["details"]["error"], "connection cancelled");
-    check(&first[0], "error", 443, Duration::ZERO);
+    check(
+        &first[0],
+        "error",
+        &format!("{HOST}:443"),
+        HOST,
+        443,
+        Duration::ZERO,
+    );
     let mut explicit = ConnectionAudit::new(writer.clone(), &identity, selected());
     explicit.failed("owned explicit connection failure");
     let before_drop = writer_lifecycle(&writer, directory.path());
@@ -596,7 +654,14 @@ fn pending_guard_drop_or_explicit_error_consumes_terminal_ownership_once() {
         before_drop[1]["details"]["error"],
         "owned explicit connection failure"
     );
-    check(&before_drop[1], "error", 443, Duration::ZERO);
+    check(
+        &before_drop[1],
+        "error",
+        &format!("{HOST}:443"),
+        HOST,
+        443,
+        Duration::ZERO,
+    );
     drop(explicit);
     assert_eq!(writer_lifecycle(&writer, directory.path()), before_drop);
     assert!(writer.shutdown(LIMIT).unwrap());

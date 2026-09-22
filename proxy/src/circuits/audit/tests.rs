@@ -39,6 +39,7 @@ fn records(path: &Path) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "actual Python circuit audit oracle; set SAFEYOLO_POLICY_PYTHON"]
 fn live_source_submission_oracle_matches_frozen_rows() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")

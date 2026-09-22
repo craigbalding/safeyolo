@@ -1,16 +1,20 @@
 use super::*;
 use crate::admin_api::{OperatorContext, respond_with_context};
+#[cfg(target_os = "linux")]
 use crate::audit::{Event, Kind, Settings as AuditSettings, Severity, Submission};
 use http_body_util::{BodyExt, Full};
+#[cfg(target_os = "linux")]
 use std::{
     ffi::CString,
     fs::{self, OpenOptions},
     io::Read,
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+    time::{Duration, Instant},
+};
+use std::{
     pin::Pin,
     sync::Arc,
     task::{Context as PollContext, Poll},
-    time::{Duration, Instant},
 };
 
 const TOKEN: &str = "owned-service-operator";

@@ -79,6 +79,8 @@ use tokio::{
     sync::Notify,
 };
 
+mod test_owned_endpoint;
+
 fn config(
     directory: &TempDir,
     policy: &std::path::Path,
@@ -2058,17 +2060,20 @@ async fn run_h2_response_content_case(
     let data_dir = directory.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::write(data_dir.join("hmac_secret"), b"h2-response-key").unwrap();
+    let (origin_listener, origin_address) = test_owned_endpoint::bind().await;
+    let origin_host = origin_address.ip().to_string();
+    let authority = origin_address.to_string();
     std::fs::write(
         &policy_path,
         json!({
             "permissions": [
                 {"action":"network:request", "resource":"*", "effect":"allow"},
-                {"action":"credential:use", "resource":"127.0.0.2/*", "effect":"allow"}
+                {"action":"credential:use", "resource":format!("{origin_host}/*"), "effect":"allow"}
             ],
             "credential_rules": [{
                 "name":"h2-response-credential",
                 "patterns":["key-h2-response"],
-                "allowed_hosts":["127.0.0.2"],
+                "allowed_hosts":[origin_host.clone()],
                 "header_names":["authorization"]
             }],
             "scan_patterns": [{
@@ -2085,10 +2090,7 @@ async fn run_h2_response_content_case(
     .unwrap();
 
     let mut proxy_config = config(&directory, &policy_path, &socket, true);
-    let tls = configure_h2_test_tls(&directory, &mut proxy_config, "127.0.0.2");
-
-    let origin_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let authority = format!("127.0.0.2:{}", origin_listener.local_addr().unwrap().port());
+    let tls = configure_h2_test_tls(&directory, &mut proxy_config, &origin_host);
     let origin_tls = h2_origin_tls(&tls);
     let origin_seen = Arc::new(Mutex::new(Vec::<(String, Vec<u8>)>::new()));
     let origin_seen_task = origin_seen.clone();
@@ -2135,7 +2137,8 @@ async fn run_h2_response_content_case(
         block_websocket_response: false,
     });
     let proxy = Proxy::start(proxy_config).await.unwrap();
-    let tls_stream = connect_h2_through_proxy(&socket, &authority, "127.0.0.2", tls.proxy_ca).await;
+    let tls_stream =
+        connect_h2_through_proxy(&socket, &authority, &origin_host, tls.proxy_ca).await;
     let (mut sender, connection) =
         hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls_stream))
             .await
@@ -2526,17 +2529,20 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     let policy_path = directory.path().join("policy.json");
     std::fs::create_dir_all(directory.path().join("data")).unwrap();
     std::fs::write(directory.path().join("data/hmac_secret"), b"invalid-h2-key").unwrap();
+    let (listener, origin_address) = test_owned_endpoint::bind().await;
+    let origin_host = origin_address.ip().to_string();
+    let authority = origin_address.to_string();
     std::fs::write(
         &policy_path,
         json!({
             "permissions": [
                 {"action":"network:request", "resource":"*", "effect":"allow"},
-                {"action":"credential:use", "resource":"127.0.0.2/*", "effect":"deny"}
+                {"action":"credential:use", "resource":format!("{origin_host}/*"), "effect":"deny"}
             ],
             "credential_rules": [{
                 "name":"invalid-byte-h2",
                 "patterns":[r"key-\uDCFF"],
-                "allowed_hosts":["127.0.0.2"],
+                "allowed_hosts":[origin_host.clone()],
                 "header_names":["authorization"]
             }],
             "scan_patterns":[{
@@ -2567,11 +2573,9 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
         ca.der().clone()
     };
     let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+        rcgen::generate_simple_self_signed(vec![origin_host.clone()]).unwrap();
     std::fs::write(directory.path().join("upstream.pem"), cert.pem()).unwrap();
     proxy_config.upstream_ca_file = Some(directory.path().join("upstream.pem"));
-    let listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let authority = format!("127.0.0.2:{}", listener.local_addr().unwrap().port());
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -2658,7 +2662,7 @@ async fn native_guard_invalid_utf8_h2_warn_block_and_origin_bytes() {
     client_config.alpn_protocols = vec![b"h2".to_vec()];
     let tls_stream = tokio_rustls::TlsConnector::from(Arc::new(client_config))
         .connect(
-            rustls::pki_types::ServerName::try_from("127.0.0.2".to_owned()).unwrap(),
+            rustls::pki_types::ServerName::try_from(origin_host.clone()).unwrap(),
             upstream,
         )
         .await
@@ -3202,8 +3206,8 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
     // The same detected credential is sent to a host outside the rule's
     // allowed host set.  The receiver is already accepting connections before
     // this request starts, so an attempted dial or any first byte is visible.
-    let forbidden_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let forbidden_port = forbidden_listener.local_addr().unwrap().port();
+    let (forbidden_listener, forbidden_address) = test_owned_endpoint::bind().await;
+    let forbidden_authority = forbidden_address.to_string();
     let forbidden_seen = Arc::new(Mutex::new(None));
     let forbidden_ready = Arc::new(Notify::new());
     let forbidden_task = tokio::spawn(live_receiver(
@@ -3215,7 +3219,7 @@ async fn native_guard_allowed_then_forbidden_live_receiver_no_bytes() {
 
     let forbidden_body = b"forbidden-application-canary";
     let mut forbidden_request = format!(
-        "POST http://127.0.0.2:{forbidden_port}/forbidden HTTP/1.1\r\nHost: 127.0.0.2:{forbidden_port}\r\nAuthorization: Bearer key-authorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST http://{forbidden_authority}/forbidden HTTP/1.1\r\nHost: {forbidden_authority}\r\nAuthorization: Bearer key-authorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         forbidden_body.len()
     )
     .into_bytes();
@@ -3310,8 +3314,8 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     let _ = first.collect().await.unwrap();
     allowed_ready.notified().await;
 
-    let forbidden_listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let forbidden_port = forbidden_listener.local_addr().unwrap().port();
+    let (forbidden_listener, forbidden_address) = test_owned_endpoint::bind().await;
+    let forbidden_authority = forbidden_address.to_string();
     let forbidden_seen = Arc::new(Mutex::new(None));
     let forbidden_ready = Arc::new(Notify::new());
     let forbidden_task = tokio::spawn(live_receiver(
@@ -3322,7 +3326,7 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     forbidden_ready.notified().await;
     let denied = send(
         &mut sender,
-        format!("http://127.0.0.2:{forbidden_port}/reuse-denied")
+        format!("http://{forbidden_authority}/reuse-denied")
             .parse()
             .unwrap(),
         "Bearer key-reuse",

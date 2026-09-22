@@ -2,11 +2,13 @@
 //! The source writer adds attribution to its envelope; these comparisons keep
 //! its original detail fields and test the development envelope separately.
 
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    sync::{Arc, mpsc},
+    sync::mpsc,
     thread,
     time::Duration,
 };

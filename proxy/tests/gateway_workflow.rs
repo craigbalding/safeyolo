@@ -22,6 +22,8 @@ use tokio::{
 };
 use tokio_rustls::{TlsAcceptor, rustls};
 
+mod test_owned_endpoint;
+
 const PASS: &str = "synthetic-vault-passphrase";
 static ACTIVITY_EVIDENCE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 fn initial_policy(origin_port: u16) -> String {
@@ -1861,6 +1863,17 @@ async fn oauth_refresh_live_distinct_candidates_rollback_after_shutdown() {
                 "allow_http: true\n  refresh_on_401: true",
             )
     };
+    let origin_one = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_one_address = origin_one.local_addr().unwrap();
+    let origin_one_port = origin_one_address.port();
+    let (origin_two, origin_two_address) = test_owned_endpoint::bind().await;
+    let origin_two_host = origin_two_address.ip().to_string();
+    assert_ne!(
+        origin_one_address.ip(),
+        origin_two_address.ip(),
+        "the two refresh services must remain distinct hosts"
+    );
+    let origin_two_port = origin_two_address.port();
     std::fs::write(
         root_path.join("services/one.yaml"),
         refresh_service("one", "127.0.0.1"),
@@ -1868,14 +1881,9 @@ async fn oauth_refresh_live_distinct_candidates_rollback_after_shutdown() {
     .unwrap();
     std::fs::write(
         root_path.join("services/two.yaml"),
-        refresh_service("two", "127.0.0.2"),
+        refresh_service("two", &origin_two_host),
     )
     .unwrap();
-
-    let origin_one = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin_one_port = origin_one.local_addr().unwrap().port();
-    let origin_two = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let origin_two_port = origin_two.local_addr().unwrap().port();
     let origin_seen = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let origin_one_task = tokio::spawn(origin(origin_one, origin_seen.clone(), origin_one_port));
     let origin_two_task = tokio::spawn(origin(origin_two, origin_seen.clone(), origin_two_port));
@@ -1931,10 +1939,10 @@ service = "one"
 [hosts."127.0.0.1:{origin_one_port}"]
 egress = "allow"
 
-[hosts."127.0.0.2"]
+[hosts."{origin_two_host}"]
 service = "two"
 
-[hosts."127.0.0.2:{origin_two_port}"]
+[hosts."{origin_two_address}"]
 egress = "allow"
 
 [hosts."*"]
@@ -2020,7 +2028,7 @@ min_length = 1000
         let socket = socket.clone();
         async move {
             let request = format!(
-                "GET http://127.0.0.2:{origin_two_port}/v1/value HTTP/1.1\r\nHost: 127.0.0.2:{origin_two_port}\r\nAuthorization: Bearer {two_token}\r\nConnection: close\r\n\r\n"
+                "GET http://{origin_two_address}/v1/value HTTP/1.1\r\nHost: {origin_two_address}\r\nAuthorization: Bearer {two_token}\r\nConnection: close\r\n\r\n"
             );
             raw_http_without_timeout(&socket, request.as_bytes()).await
         }

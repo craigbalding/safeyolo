@@ -46,12 +46,6 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
 
-      - name: Test and build the Rust proxy
-        working-directory: proxy
-        run: |
-          ../scripts/cargo_with_space.sh test --locked
-          ../scripts/cargo_with_space.sh build --locked
-
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
@@ -62,6 +56,14 @@ jobs:
         run: |
           uv python install 3.12
           uv sync --frozen --group dev --python 3.12
+
+      - name: Test and build the Rust proxy
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          ../scripts/cargo_with_space.sh test --locked
+          ../scripts/cargo_with_space.sh build --locked
 
       - name: Run shared HTTP contracts against the historical Python comparator
         run: |

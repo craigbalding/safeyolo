@@ -4,14 +4,12 @@ use serde_json::{Value, json};
 use std::{path::Path, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::UnixStream,
     sync::oneshot,
     time::timeout,
 };
 
 const LIMIT: Duration = Duration::from_secs(5);
-const HOST: &str = "127.0.0.2";
-
 fn config(directory: &Path) -> Config {
     let policy = directory.join("policy.json");
     std::fs::write(
@@ -45,12 +43,17 @@ async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     .unwrap()
 }
 
-async fn request(directory: &Path, agent: &str, port: u16, length: usize) -> UnixStream {
+async fn request(
+    directory: &Path,
+    agent: &str,
+    origin: std::net::SocketAddr,
+    length: usize,
+) -> UnixStream {
     let mut stream = UnixStream::connect(directory.join(format!("{agent}.sock")))
         .await
         .unwrap();
     stream.write_all(format!(
-        "POST http://{HOST}:{port}/owned HTTP/1.1\r\nHost: {HOST}:{port}\r\nContent-Length: {length}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Agent: forged-owner\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
+        "POST http://{origin}/owned HTTP/1.1\r\nHost: {origin}\r\nContent-Length: {length}\r\nX-SafeYolo-Trace: 1\r\nX-SafeYolo-Agent: forged-owner\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n"
     ).as_bytes()).await.unwrap();
     stream
 }
@@ -127,13 +130,13 @@ fn trace_steps(runtime: &Runtime, response: &[u8], agent: &str) -> Vec<Value> {
         .collect()
 }
 
-fn check_open(event: &Value) {
+fn check_open(event: &Value, host: &str) {
     assert_eq!(event["event"], "ops.circuit_breaker.open");
     assert_eq!(event["schema_version"], 1);
     assert_eq!(event["kind"], "ops");
     assert_eq!(event["severity"], "medium");
     assert_eq!(event["addon"], "circuit-breaker");
-    assert_eq!(event["host"], HOST);
+    assert_eq!(event["host"], host);
     assert_eq!(
         event["details"],
         json!({"failure_count":1,"error":"HTTP 500"})
@@ -145,8 +148,9 @@ fn check_open(event: &Value) {
 #[tokio::test]
 async fn response_open_and_next_denial_emit_once_with_stage_identity() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind((HOST, 0)).await.unwrap();
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
+    let port = address.port();
+    let host = address.ip().to_string();
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let peer = tokio::spawn(async move {
@@ -160,10 +164,10 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
         drop(stream);
         origin
     });
-    let response = reply(request(directory.path(), "alice", port, 0).await).await;
+    let response = reply(request(directory.path(), "alice", address, 0).await).await;
     assert!(response.starts_with(b"HTTP/1.1 500") && response.ends_with(b"body"));
     let origin = timeout(LIMIT, peer).await.unwrap().unwrap();
-    let denied = reply(request(directory.path(), "bob", port, 0).await).await;
+    let denied = reply(request(directory.path(), "bob", address, 0).await).await;
     assert!(denied.starts_with(b"HTTP/1.1 503"));
     assert_eq!(
         trace_steps(&runtime, &response, "alice"),
@@ -198,7 +202,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
     let stats = circuit_stats(&runtime);
     assert_eq!(stats["opens_total"], 1);
     assert_eq!(stats["checks_total"], 2);
-    assert_eq!(stats["domains"][HOST]["state"], "open");
+    assert_eq!(stats["domains"][host.as_str()]["state"], "open");
     proxy.shutdown().await;
     let rows = records(directory.path());
     let names: Vec<_> = rows
@@ -217,7 +221,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
             "traffic.response"
         ]
     );
-    check_open(&rows[2]);
+    check_open(&rows[2], &host);
     assert_eq!(rows[2]["agent"], "alice");
     assert_eq!(rows[2]["request_id"], rows[1]["request_id"]);
     assert_eq!(rows[2]["request_id"], rows[3]["request_id"]);
@@ -227,7 +231,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
     assert_eq!(security["severity"], "high");
     assert_eq!(security["decision"], "deny");
     assert_eq!(security["agent"], "bob");
-    assert_eq!(security["host"], HOST);
+    assert_eq!(security["host"], host);
     assert_eq!(security["request_id"], rows[5]["request_id"]);
     assert_ne!(security["request_id"], rows[2]["request_id"]);
     assert_eq!(security["details"]["circuit_state"], "open");
@@ -263,8 +267,7 @@ async fn response_open_and_next_denial_emit_once_with_stage_identity() {
 #[tokio::test]
 async fn early_response_open_omits_unreached_source_correlation() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind((HOST, 0)).await.unwrap();
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let peer = tokio::spawn(async move {
@@ -285,7 +288,7 @@ async fn early_response_open_omits_unreached_source_correlation() {
     let mut client = request(
         directory.path(),
         "alice",
-        port,
+        address,
         crate::http_content::BUFFERED_BODY_THRESHOLD + 1,
     )
     .await;
@@ -321,7 +324,7 @@ async fn early_response_open_omits_unreached_source_correlation() {
     let rows = records(directory.path());
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0]["event"], "ops.policy_reload");
-    check_open(&rows[1]);
+    check_open(&rows[1], &address.ip().to_string());
     assert!(rows[1].get("agent").is_none());
     assert!(rows[1].get("request_id").is_none());
     assert_eq!(rows[2]["event"], "traffic.response");
@@ -331,8 +334,7 @@ async fn early_response_open_omits_unreached_source_correlation() {
 #[tokio::test]
 async fn synchronous_response_audit_error_preserves_partial_state_and_skips_children() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind((HOST, 0)).await.unwrap();
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
     let proxy = Proxy::start(config(directory.path())).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     let (admitted, received) = oneshot::channel();
@@ -347,7 +349,7 @@ async fn synchronous_response_audit_error_preserves_partial_state_and_skips_chil
             .await
             .unwrap();
     });
-    let client = request(directory.path(), "alice", port, 0).await;
+    let client = request(directory.path(), "alice", address, 0).await;
     timeout(LIMIT, received).await.unwrap().unwrap();
     assert_eq!(logger_stats(&runtime)["requests_total"], 1);
     assert!(runtime.audit.wait_for_drain(LIMIT).unwrap());

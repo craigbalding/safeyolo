@@ -22,6 +22,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod test_owned_endpoint;
+
 struct Policy {
     task: JoinHandle<()>,
     requests: Arc<Mutex<Vec<Value>>>,
@@ -3195,15 +3197,16 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
     config.policy_file = Some(policy.clone());
     config.data_dir = Some(directory.path().join("data"));
     config.circuit_state_file = Some(directory.path().join("circuit-state.json"));
+    let (listener, origin_address) = test_owned_endpoint::bind().await;
+    let origin_host = origin_address.ip().to_string();
+    let authority = origin_address.to_string();
     let proxy_ca = interception_ca(&directory, &mut config);
     let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+        rcgen::generate_simple_self_signed(vec![origin_host.clone()]).unwrap();
     let origin_cert = cert.der().clone();
     let ca_path = directory.path().join("upstream.pem");
     std::fs::write(&ca_path, cert.pem()).unwrap();
     config.upstream_ca_file = Some(ca_path);
-    let listener = TcpListener::bind("127.0.0.2:0").await.unwrap();
-    let authority = format!("127.0.0.2:{}", listener.local_addr().unwrap().port());
     let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -3227,7 +3230,7 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
     let socket = connect_tls_with_alpn(
         &config.listeners[0].socket_path,
         &authority,
-        "127.0.0.2",
+        &origin_host,
         proxy_ca,
         &[b"h2"],
     )
@@ -3316,7 +3319,7 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
         );
     } else {
         assert_eq!(circuit_events.len(), 1, "complete 503 must count once");
-        assert_eq!(circuit_events[0]["host"], "127.0.0.2");
+        assert_eq!(circuit_events[0]["host"], origin_host);
     }
     let state = config
         .circuit_state_file
@@ -3327,7 +3330,7 @@ async fn full_proxy_h2_terminal_evidence_case(partial_reset: bool) -> Value {
         });
     let domain_state = state
         .as_ref()
-        .and_then(|value| value["states"].get("127.0.0.2"));
+        .and_then(|value| value["states"].get(&origin_host));
     if partial_reset {
         assert!(
             domain_state.is_none(),

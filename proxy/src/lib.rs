@@ -49,6 +49,8 @@ mod service_catalog_tests;
 pub mod services;
 pub mod tasks;
 pub mod test_context;
+#[cfg(test)]
+pub(crate) mod test_owned_endpoint;
 pub mod tls;
 pub mod trace;
 pub(crate) mod traffic_view;

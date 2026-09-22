@@ -59,7 +59,7 @@ fn cleanup(directory: &Path) {
         assert!(!directory.join(name).exists(), "left behind {name}");
     }
 }
-fn owned_egress(directory: &Path, port: u16, expected: usize) {
+fn owned_egress(directory: &Path, host: &str, port: u16, expected: usize) {
     let events: Vec<Value> = std::fs::read_to_string(directory.join("events"))
         .unwrap()
         .lines()
@@ -73,7 +73,7 @@ fn owned_egress(directory: &Path, port: u16, expected: usize) {
     assert!(
         egress
             .iter()
-            .all(|row| row["host"] == "127.0.0.2" && row["port"] == port)
+            .all(|row| row["host"] == host && row["port"] == port)
     );
     assert!(
         !events
@@ -86,10 +86,8 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.write_all(bytes).unwrap();
     encoder.finish().unwrap()
 }
-async fn listener() -> TcpListener {
-    TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 2), 0))
-        .await
-        .unwrap()
+async fn listener() -> (TcpListener, std::net::SocketAddr) {
+    crate::test_owned_endpoint::bind().await
 }
 async fn read_head(stream: &mut (impl AsyncRead + Unpin)) -> Vec<u8> {
     let mut head = Vec::new();
@@ -122,19 +120,26 @@ async fn origin_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
 }
 async fn start_request(
     socket: &Path,
-    port: u16,
+    origin: std::net::SocketAddr,
     route: &str,
     length: usize,
     encoding: &str,
 ) -> UnixStream {
     let mut stream = UnixStream::connect(socket).await.unwrap();
     stream.write_all(format!(
-        "POST http://127.0.0.2:{port}{route} HTTP/1.1\r\nHost: logical.invalid:{port}\r\nConnection: close\r\nContent-Encoding: {encoding}\r\nContent-Length: {length}\r\n\r\n"
+        "POST http://{origin}{route} HTTP/1.1\r\nHost: logical.invalid:{}\r\nConnection: close\r\nContent-Encoding: {encoding}\r\nContent-Length: {length}\r\n\r\n",
+        origin.port()
     ).as_bytes()).await.unwrap();
     stream
 }
-async fn send(socket: &Path, port: u16, route: &str, body: &[u8], encoding: &str) -> Vec<u8> {
-    let mut stream = start_request(socket, port, route, body.len(), encoding).await;
+async fn send(
+    socket: &Path,
+    origin: std::net::SocketAddr,
+    route: &str,
+    body: &[u8],
+    encoding: &str,
+) -> Vec<u8> {
+    let mut stream = start_request(socket, origin, route, body.len(), encoding).await;
     stream.write_all(body).await.unwrap();
     let mut reply = Vec::new();
     timeout(LIMIT, stream.read_to_end(&mut reply))
@@ -198,8 +203,9 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
     assert!(runtime.policy.is_some() && runtime.config.temporary_policy_socket.is_none());
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         for compressed in [false, true] {
             let (mut stream, _) = timeout(LIMIT, origin.accept()).await.unwrap().unwrap();
@@ -230,7 +236,7 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
         };
         let reply = send(
             &directory.path().join(format!("{agent}.sock")),
-            port,
+            address,
             "/plain;parameter?query=private",
             &body,
             if compressed { "gzip" } else { "identity" },
@@ -277,7 +283,7 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
         );
         assert_eq!(rows[i * 2]["request_id"], rows[i * 2 + 1]["request_id"]);
     }
-    owned_egress(directory.path(), port, 2);
+    owned_egress(directory.path(), &host, port, 2);
 }
 
 #[tokio::test]
@@ -285,8 +291,9 @@ async fn quiet_invalid_coding_is_never_decoded_on_either_leg() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), true)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
         assert_eq!(origin_request(&mut stream).await, b"invalid gzip");
@@ -294,7 +301,7 @@ async fn quiet_invalid_coding_is_never_decoded_on_either_leg() {
     });
     let reply = send(
         &directory.path().join("alice.sock"),
-        port,
+        address,
         "/quiet",
         b"invalid gzip",
         "gzip",
@@ -315,7 +322,7 @@ async fn quiet_invalid_coding_is_never_decoded_on_either_leg() {
             Some("traffic.request" | "traffic.response")
         )
     }));
-    owned_egress(directory.path(), port, 1);
+    owned_egress(directory.path(), &host, port, 1);
 }
 
 #[tokio::test]
@@ -323,8 +330,9 @@ async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let cases = [
         (200, "identity", "identity"),
         (302, "identity", "identity"),
@@ -346,7 +354,7 @@ async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
     for (status, encoding, _) in cases {
         let reply = send(
             &directory.path().join("alice.sock"),
-            port,
+            address,
             "/metrics-control",
             b"req",
             encoding,
@@ -377,7 +385,7 @@ async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
     assert_eq!(report["summary"]["requests_error"], 1);
     assert_eq!(report["summary"]["success_rate"], 0.5);
     assert_eq!(report["domains"].as_object().unwrap().len(), 1);
-    let domain = &report["domains"]["127.0.0.2"];
+    let domain = &report["domains"][host.as_str()];
     assert_eq!(domain["requests"], 6);
     assert_eq!(domain["successes"], 3);
     assert_eq!(
@@ -405,7 +413,7 @@ async fn metrics_count_reached_hooks_and_classify_upstream_statuses() {
             .count(),
         6
     );
-    owned_egress(directory.path(), port, 7);
+    owned_egress(directory.path(), &host, port, 7);
 }
 
 #[tokio::test]
@@ -413,8 +421,9 @@ async fn streamed_upload_and_sse_response_use_absent_content_size_zero() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
         let body = origin_request(&mut stream).await;
@@ -425,7 +434,7 @@ async fn streamed_upload_and_sse_response_use_absent_content_size_zero() {
     let body = vec![b'x'; STREAMED_SIZE];
     let reply = send(
         &directory.path().join("alice.sock"),
-        port,
+        address,
         "/streamed",
         &body,
         "gzip",
@@ -468,7 +477,7 @@ async fn streamed_upload_and_sse_response_use_absent_content_size_zero() {
         0,
         true,
     );
-    owned_egress(directory.path(), port, 1);
+    owned_egress(directory.path(), &host, port, 1);
 }
 
 #[tokio::test]
@@ -476,8 +485,9 @@ async fn early_response_before_upload_eom_has_no_request_id_or_start_time() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
         let _ = read_head(&mut stream).await;
@@ -492,7 +502,7 @@ async fn early_response_before_upload_eom_has_no_request_id_or_start_time() {
     });
     let mut client = start_request(
         &directory.path().join("alice.sock"),
-        port,
+        address,
         "/early",
         STREAMED_SIZE,
         "identity",
@@ -535,7 +545,7 @@ async fn early_response_before_upload_eom_has_no_request_id_or_start_time() {
         5,
         false,
     );
-    owned_egress(directory.path(), port, 1);
+    owned_egress(directory.path(), &host, port, 1);
 }
 
 #[tokio::test]
@@ -543,8 +553,9 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = listener().await;
+    let host = address.ip().to_string();
+    let port = address.port();
     let peer = tokio::spawn(async move {
         let (mut stream, _) = origin.accept().await.unwrap();
         assert_eq!(origin_request(&mut stream).await, b"request body");
@@ -561,7 +572,7 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     });
     let mut client = start_request(
         &directory.path().join("alice.sock"),
-        port,
+        address,
         "/cancel",
         12,
         "identity",
@@ -576,7 +587,7 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
     timeout(LIMIT, peer).await.unwrap().unwrap();
     let reply = send(
         &directory.path().join("bob.sock"),
-        port,
+        address,
         "/refused",
         b"request body",
         "identity",
@@ -619,24 +630,38 @@ async fn canceled_response_and_real_dial_error_never_fabricate_response_events()
         true,
     );
     // The development egress event includes the refused owned dial attempt.
-    owned_egress(directory.path(), port, 2);
+    owned_egress(directory.path(), &host, port, 2);
 }
 
 #[tokio::test]
 async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let directory = tempfile::tempdir().unwrap();
+    let (origin, address) = listener().await;
+    let host = match address.ip() {
+        std::net::IpAddr::V4(_) => address.ip().to_string(),
+        // This request-logger fixture has a canonical hostname boundary for
+        // its host field. Keep the physical ::1 listener while using the
+        // existing localhost path rather than adding an alias.
+        std::net::IpAddr::V6(_) => "localhost".into(),
+    };
+    let port = address.port();
+    let authority = if address.is_ipv4() {
+        address.to_string()
+    } else {
+        format!("{host}:{port}")
+    };
     let mut configuration = config(directory.path(), false);
     std::fs::write(
         configuration.policy_file.as_ref().unwrap(),
         json!({
             "permissions":[
                 {"action":"network:request","resource":"*","effect":"allow"},
-                {"action":"credential:use","resource":"127.0.0.2/*","effect":"allow"}
+                {"action":"credential:use","resource":format!("{host}/*"),"effect":"allow"}
             ],
             "credential_rules":[{
                 "name":"h2-rule",
                 "patterns":["key-[a-z]+"],
-                "allowed_hosts":["127.0.0.2"],
+                "allowed_hosts":[host.clone()],
                 "header_names":["authorization"]
             }],
             "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
@@ -653,7 +678,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     std::fs::write(&ca_path, format!("{}{}", key.serialize_pem(), ca.pem())).unwrap();
     configuration.tls_ca_file = Some(ca_path);
     let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(vec!["127.0.0.2".into()]).unwrap();
+        rcgen::generate_simple_self_signed(vec![host.clone()]).unwrap();
     let upstream_path = directory.path().join("upstream-ca.pem");
     std::fs::write(&upstream_path, cert.pem()).unwrap();
     configuration.upstream_ca_file = Some(upstream_path);
@@ -669,8 +694,6 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     )
     .unwrap();
     tls.alpn_protocols = vec![b"h2".to_vec()];
-    let origin = listener().await;
-    let port = origin.local_addr().unwrap().port();
     let peer = tokio::spawn(async move {
         let (stream, _) = origin.accept().await.unwrap();
         let stream = tokio_rustls::TlsAcceptor::from(Arc::new(tls))
@@ -701,10 +724,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .await
         .unwrap();
     client
-        .write_all(
-            format!("CONNECT 127.0.0.2:{port} HTTP/1.1\r\nHost: 127.0.0.2:{port}\r\n\r\n")
-                .as_bytes(),
-        )
+        .write_all(format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n").as_bytes())
         .await
         .unwrap();
     assert!(read_head(&mut client).await.starts_with(b"HTTP/1.1 200"));
@@ -720,7 +740,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let client = tokio_rustls::TlsConnector::from(Arc::new(tls))
         .connect(
-            rustls::pki_types::ServerName::try_from("127.0.0.2").unwrap(),
+            rustls::pki_types::ServerName::try_from(host.clone()).unwrap(),
             client,
         )
         .await
@@ -732,7 +752,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     let driver = tokio::spawn(connection);
     let request = Request::builder()
         .method("POST")
-        .uri(format!("https://127.0.0.2:{port}/h2?private=query"))
+        .uri(format!("https://{authority}/h2?private=query"))
         .header("Authorization", "Bearer key-h2")
         .body(Full::new(Bytes::from_static(b"request body")))
         .unwrap();
@@ -754,12 +774,12 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         json!({
             "permissions":[
                 {"action":"network:request","resource":"*","effect":"allow"},
-                {"action":"credential:use","resource":"127.0.0.2/*","effect":"deny"}
+                {"action":"credential:use","resource":format!("{host}/*"),"effect":"deny"}
             ],
             "credential_rules":[{
                 "name":"h2-rule",
                 "patterns":["key-[a-z]+"],
-                "allowed_hosts":["127.0.0.2"],
+                "allowed_hosts":[host.clone()],
                 "header_names":["authorization"]
             }],
             "addons":{"credential_guard":{"enabled":true,"settings":{"use_default_credential_rules":false}}}
@@ -770,7 +790,7 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     proxy.reload(configuration).await.unwrap();
     let denied = Request::builder()
         .method("POST")
-        .uri(format!("https://127.0.0.2:{port}/h2-denied"))
+        .uri(format!("https://{authority}/h2-denied"))
         .header("Authorization", "Bearer key-h2")
         .body(Full::new(Bytes::from_static(b"blocked-h2-body")))
         .unwrap();
@@ -797,8 +817,8 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
         .filter(|row| row["event"] == "traffic.request" || row["event"] == "traffic.response")
         .collect();
     assert_eq!(traffic.len(), 2);
-    check_event(traffic[0], "alice", "127.0.0.2", "/h2", false, 12, true);
-    check_event(traffic[1], "alice", "127.0.0.2", "/h2", true, 13, true);
+    check_event(traffic[0], "alice", &host, "/h2", false, 12, true);
+    check_event(traffic[1], "alice", &host, "/h2", true, 13, true);
     assert_eq!(traffic[0]["request_id"], traffic[1]["request_id"]);
     let credentials: Vec<_> = rows
         .iter()
@@ -809,15 +829,16 @@ async fn ordinary_h2_inside_owned_tls_logs_inner_exchange_only() {
     assert_eq!(credentials[1]["decision"], "deny");
     assert_eq!(credentials[0]["agent"], "alice");
     assert_eq!(credentials[1]["agent"], "alice");
-    owned_egress(directory.path(), port, 1);
+    owned_egress(directory.path(), &host, port, 1);
 }
 
 #[tokio::test]
 async fn network_security_events_precede_traffic_and_use_trusted_uds_identity() {
     for mode in ["deny", "prompt", "warn", "homoglyph"] {
         let directory = tempfile::tempdir().unwrap();
-        let origin = listener().await;
-        let port = origin.local_addr().unwrap().port();
+        let (origin, address) = listener().await;
+        let endpoint_host = address.ip().to_string();
+        let port = address.port();
         let mut configuration = config(directory.path(), false);
         configuration.network_guard_block = mode != "warn";
         let policy = configuration.policy_file.as_ref().unwrap();
@@ -855,14 +876,19 @@ async fn network_security_events_precede_traffic_and_use_trusted_uds_identity() 
         let host = if mode == "homoglyph" {
             "xn--pi-6kc.invalid"
         } else {
-            "127.0.0.2"
+            &endpoint_host
+        };
+        let authority = if mode == "homoglyph" {
+            format!("{host}:{port}")
+        } else {
+            address.to_string()
         };
         let mut ids = Vec::new();
         for agent in ["alice", "bob"] {
             let mut stream = UnixStream::connect(directory.path().join(format!("{agent}.sock")))
                 .await
                 .unwrap();
-            stream.write_all(format!("GET http://{host}:{port}/owned?private=query HTTP/1.1\r\nHost: logical.invalid\r\nX-SafeYolo-Agent: forged-agent\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+            stream.write_all(format!("GET http://{authority}/owned?private=query HTTP/1.1\r\nHost: logical.invalid\r\nX-SafeYolo-Agent: forged-agent\r\nX-SafeYolo-Request-Id: forged-id\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
             let mut reply = Vec::new();
             timeout(LIMIT, stream.read_to_end(&mut reply))
                 .await

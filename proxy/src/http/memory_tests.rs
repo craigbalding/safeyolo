@@ -5,13 +5,12 @@ use std::{io::Write, path::Path, sync::Arc, time::Duration};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UnixStream},
+    net::UnixStream,
     time::timeout,
 };
 
 use crate::{Config, Proxy};
 
-const HOST: &str = "127.0.0.2";
 const LIMIT: Duration = Duration::from_secs(5);
 
 fn config(directory: &Path) -> Config {
@@ -74,8 +73,8 @@ async fn reply(stream: &mut UnixStream) -> Vec<u8> {
 #[tokio::test]
 async fn original_body_accounting_survives_hygiene_and_runtime_reload() {
     let directory = tempfile::tempdir().unwrap();
-    let origin = TcpListener::bind((HOST, 0)).await.unwrap();
-    let port = origin.local_addr().unwrap().port();
+    let (origin, address) = crate::test_owned_endpoint::bind().await;
+    let host = address.ip().to_string();
     let request_plain = b"owned request content";
     let request_encoded = gzip(request_plain);
     let response_plain = b"owned response content";
@@ -119,7 +118,7 @@ async fn original_body_accounting_survives_hygiene_and_runtime_reload() {
             ));
         }
         let connection = if round == 0 { "keep-alive" } else { "close" };
-        client.write_all(format!("POST http://{HOST}:{port}/owned HTTP/1.1\r\nHost: {HOST}:{port}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: {connection}, Content-Encoding\r\n\r\n",request_encoded.len()).as_bytes()).await.unwrap();
+        client.write_all(format!("POST http://{address}/owned HTTP/1.1\r\nHost: {address}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: {connection}, Content-Encoding\r\n\r\n",request_encoded.len()).as_bytes()).await.unwrap();
         client.write_all(&request_encoded).await.unwrap();
         assert_eq!(reply(&mut client).await, response_encoded);
     }
@@ -152,7 +151,7 @@ async fn original_body_accounting_survives_hygiene_and_runtime_reload() {
     assert_eq!(events[0]["event"], "ops.startup");
     assert_eq!(events[0]["details"], json!({"rss_start_mb":0.0}));
     assert_eq!(events[1]["event"], "ops.memory.conn_closed");
-    assert_eq!(events[1]["host"], HOST);
+    assert_eq!(events[1]["host"], host);
     assert_eq!(events[1]["details"]["flow_count"], 2);
     assert_eq!(events[1]["details"]["bytes_sent"], request_plain.len() * 2);
     assert_eq!(
