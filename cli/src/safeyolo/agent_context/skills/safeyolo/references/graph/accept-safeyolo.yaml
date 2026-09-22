@@ -415,7 +415,7 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: tests/nested-linux/acceptance.sh
-          sha256: e35f0bca4f1e7d16d3b53538d2372f511b01dcc157c3a6865bb1bbf2601d9155
+          sha256: 7755d7f5de157bf81127042d5a665488b2de16b8616e16a443ccecdb97696d3e
         - path: tests/nested-linux/flow_probe.py
           sha256: 769e1ac6ef5eb73a9af67bf286dc89b144c2ddd7df556164136cedde77f76c64
         - path: tests/nested-linux/mcp_probe.py

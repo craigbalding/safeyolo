@@ -79,6 +79,11 @@ configuration. If a stopped lab changes its parent proxy for the self-loop
 check, update `proxy.upstream_proxy` and remove only that lab-generated JSON
 before starting again.
 
+Before you start the source-copy lab, make `safeyolo-proxy` available through
+`SAFEYOLO_RUST_PROXY`, the installed `safeyolo/bin/safeyolo-proxy`, or the
+copied checkout's `proxy/target/{release,debug}/safeyolo-proxy`. A missing
+binary fails the selected Rust backend and does not fall back to Python.
+
 The nested traffic master uses mitmproxy's upstream HTTP-proxy layer for each
 per-agent UDS connection. UDS-derived peer attribution is unchanged. Each
 SafeYolo process also uses a stable instance-specific Via pseudonym derived

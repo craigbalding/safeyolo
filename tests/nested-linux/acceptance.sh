@@ -73,9 +73,28 @@ native_config.unlink(missing_ok=True)
 PY
 }
 
+selected_nested_rust_config() {
+    uv run python - "$LAB_STATE/config.yaml" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text())
+proxy = config.get("proxy") if isinstance(config, dict) else None
+rust_config = proxy.get("rust_config") if isinstance(proxy, dict) else None
+if not isinstance(rust_config, str):
+    raise SystemExit("nested config does not name proxy.rust_config")
+print(rust_config)
+PY
+}
+
 assert_nested_rust_runtime_config() {
     local native_config="$LAB_STATE/data/native.json"
-    [ "$(jq -er '.proxy.rust_config' "$LAB_STATE/config.yaml")" = "$native_config" ] || die \
+    local selected_native_config
+    selected_native_config=$(selected_nested_rust_config) || die \
+        "cannot read the nested Rust config path"
+    [ "$selected_native_config" = "$native_config" ] || die \
         "nested Rust config path does not select the lab-generated native JSON"
     jq -e --arg state "$LAB_STATE" --arg parent_proxy "$SAFEYOLO_UPSTREAM_PROXY" '
         .policy_file == ($state + "/policy.toml")
