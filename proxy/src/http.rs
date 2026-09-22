@@ -1402,6 +1402,9 @@ fn record_agent_api(
     }))
 }
 
+// `Traffic` is only the request snapshot; retain connection identity,
+// destination, and upgrade ownership explicitly, as `forward` does.
+#[allow(clippy::too_many_arguments)]
 async fn local_agent_api<B>(
     runtime: &Runtime,
     traffic: Arc<traffic::Traffic>,

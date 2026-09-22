@@ -2213,14 +2213,12 @@ fn mask_large_toml_integers(source: &str) -> Result<(String, LargeIntegerContext
             index += 1;
             continue;
         }
-        if !line_has_content && bytes[index] == b'[' {
-            if array_depth == 0 {
-                table_header = true;
-                line_has_content = true;
-                output.push('[');
-                index += 1;
-                continue;
-            }
+        if !line_has_content && bytes[index] == b'[' && array_depth == 0 {
+            table_header = true;
+            line_has_content = true;
+            output.push('[');
+            index += 1;
+            continue;
         }
         if table_header {
             output.push(bytes[index] as char);
@@ -2252,10 +2250,8 @@ fn mask_large_toml_integers(source: &str) -> Result<(String, LargeIntegerContext
             // A numeric-looking bare key is not a value.  TOML dates and
             // floats are also excluded by out_of_range_integer_literal.
             if !table_header && (next >= bytes.len() || bytes[next] != b'=') {
-                if integer_literal_candidate(literal) {
-                    if parsed_integer_literal(literal).is_none() {
-                        return Err(invalid(format!("invalid TOML integer literal: {literal}")));
-                    }
+                if integer_literal_candidate(literal) && parsed_integer_literal(literal).is_none() {
+                    return Err(invalid(format!("invalid TOML integer literal: {literal}")));
                 }
                 if out_of_range_integer_literal(literal) {
                     output.push('"');
@@ -3635,6 +3631,8 @@ mod yaml_tests {
         assert!(restored.contains("underscored = +9_223_372_036_854_775_808"));
         assert!(parse_toml_document("number = 09223372036854775808\n").is_err());
         assert!(parse_toml_document("number = 9__223372036854775808\n").is_err());
+        let invalid_integer = parse_toml_document("number = 1_\n").unwrap_err();
+        assert_eq!(invalid_integer.message, "invalid TOML integer literal: 1_");
         for signed_radix in [
             "+0x8000000000000000",
             "+0o1000000000000000000000",
