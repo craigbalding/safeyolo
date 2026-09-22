@@ -103,7 +103,7 @@ impl Fixture {
                 flows: row["available"].as_bool().unwrap().then_some(&self.store),
                 circuits: None,
                 declarations: None,
-            coord: None,
+                coord: None,
             },
             RequestBody {
                 body,

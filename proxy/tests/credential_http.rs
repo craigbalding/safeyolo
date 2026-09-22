@@ -776,7 +776,10 @@ async fn native_guard_parser_boundary_preserves_signed_target_duplicates_and_bod
         .find(|event| event["event"] == "proxy.credential_guard")
         .unwrap();
     assert_eq!(guard_event["outcome"], "allowed");
-    assert_eq!(guard_event["evaluations"][0]["finding"]["rule"], "signed-target");
+    assert_eq!(
+        guard_event["evaluations"][0]["finding"]["rule"],
+        "signed-target"
+    );
     assert_eq!(guard_event["evaluations"][0]["effect"], "allow");
 
     proxy.shutdown().await;
@@ -1018,8 +1021,7 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 2);
     assert_eq!(
-        live_stats["policy-engine"]["engine_stats"]["evaluations"],
-        4,
+        live_stats["policy-engine"]["engine_stats"]["evaluations"], 4,
         "concurrent Alice/Bob requests must charge one network and one credential evaluation each: {live_stats}"
     );
     assert_eq!(
@@ -1060,7 +1062,11 @@ async fn native_guard_concurrent_identities_retain_approval_scope_and_audit_owne
         assert_eq!(event["evaluations"][0]["effect"], "require_approval");
         assert_eq!(
             event["evaluations"][0]["required_checks"],
-            json!(["rate_limit", "credential_detection", "credential_validation"])
+            json!([
+                "rate_limit",
+                "credential_detection",
+                "credential_validation"
+            ])
         );
         assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
         assert_eq!(event["audit"][0]["approval"]["approval_type"], "credential");
@@ -1376,9 +1382,7 @@ async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
                 let size = stream.read(&mut buffer).await.unwrap();
                 assert!(size > 0, "origin ended before request headers");
                 request.extend_from_slice(&buffer[..size]);
-                if let Some(position) = request
-                    .windows(4)
-                    .position(|window| window == b"\r\n\r\n")
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n")
                 {
                     break position + 4;
                 }
@@ -2328,11 +2332,7 @@ async fn native_guard_precedes_observation_failure_and_reserved_api_stays_local(
     let origin_port = origin_listener.local_addr().unwrap().port();
     let origin_seen = Arc::new(Mutex::new(Vec::new()));
     let origin_ready = Arc::new(Notify::new());
-    let origin_task = tokio::spawn(origin(
-        origin_listener,
-        origin_seen.clone(),
-        origin_ready,
-    ));
+    let origin_task = tokio::spawn(origin(origin_listener, origin_seen.clone(), origin_ready));
     let mut proxy_config = config(&directory, &policy_path, &socket, true);
     proxy_config.inspection = Some(Inspection {
         policy_file: policy_path.clone(),
@@ -3354,8 +3354,7 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
     let live_stats = stats(&directory).await;
     assert_eq!(live_stats["credential-guard"]["violations_total"], 1);
     assert_eq!(
-        live_stats["policy-engine"]["engine_stats"]["evaluations"],
-        8,
+        live_stats["policy-engine"]["engine_stats"]["evaluations"], 8,
         "reused allow/deny/allow must charge network admission plus guard evaluation for every request: {live_stats}"
     );
     assert_eq!(
@@ -3397,7 +3396,11 @@ async fn native_guard_reused_h1_decisions_keep_counter_and_identity() {
         assert_eq!(event["evaluations"].as_array().unwrap().len(), 1);
         assert_eq!(
             event["evaluations"][0]["required_checks"],
-            json!(["rate_limit", "credential_detection", "credential_validation"])
+            json!([
+                "rate_limit",
+                "credential_detection",
+                "credential_validation"
+            ])
         );
         assert_eq!(event["evaluations"][0]["budget_remaining"], Value::Null);
     }

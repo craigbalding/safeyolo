@@ -276,7 +276,10 @@ async fn closing_agent_socket_cancels_connection_coordination_waits() {
     let mut cancellation = tasks.cancellation_receiver.clone();
 
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert!(!*cancellation.borrow(), "an open peer must not cancel the wait");
+    assert!(
+        !*cancellation.borrow(),
+        "an open peer must not cancel the wait"
+    );
     drop(client);
     tokio::time::timeout(Duration::from_secs(1), cancellation.changed())
         .await
