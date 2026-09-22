@@ -9,17 +9,17 @@ types = ["ACTIVATE", "PAUSE", "RESUME", "PRIORITY", "NEXT", "DIRECTION"]
 [roles.coordinator]
 agent = "relay"
 contract = "backlog-coordinator.md"
-args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=medium"]
+args = ["--model", "gpt-6-sol", "-c", "model_reasoning_effort=medium"]
 
 [roles.owner]
 agent = "forge"
 contract = "../agent-roles/issue-owner.md"
-args = ["--model", "gpt-5.6-terra", "-c", "model_reasoning_effort=max"]
+args = ["--model", "gpt-6-sol", "-c", "model_reasoning_effort=max"]
 
 [roles.owner.repair]
 request = "REPAIR"
 from = "coordinator"
-args = ["--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=high"]
+args = ["--model", "gpt-6-sol", "-c", "model_reasoning_effort=high"]
 after_rounds = 2
 max_rounds = 1
 release_on = "REVIEW_READY"

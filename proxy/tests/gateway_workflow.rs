@@ -646,14 +646,31 @@ async fn raw_http_without_timeout(socket: &Path, request: &[u8]) -> Vec<u8> {
     response
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+async fn held_refresh_response(
+    phase: impl std::fmt::Debug,
+    request: tokio::task::JoinHandle<Vec<u8>>,
+) -> Vec<u8> {
+    // The provider can report readiness before the proxy has registered the
+    // next phase's timer. Drive the paused clock in steps so live socket I/O
+    // can reach that timer, and fail instead of waiting forever if it cannot.
+    for _ in 0..12 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        if request.is_finished() {
+            return request.await.unwrap();
+        }
+    }
+    panic!("held refresh {phase:?} did not finish within 12 seconds of paused time");
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeldRefreshPhase {
     BeforeRequest,
     Send,
     Body,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HeldParentPhase {
     ParentTls,
     Connect,
@@ -828,7 +845,7 @@ async fn run_live_refresh_response_case(
         );
         return;
     }
-    if held_phase.is_some() {
+    if let Some(phase) = held_phase {
         let request = tokio::spawn({
             let socket = socket.clone();
             let gateway_token = gateway_token.clone();
@@ -840,9 +857,14 @@ async fn run_live_refresh_response_case(
             }
         });
         token_ready.notified().await;
-        tokio::time::advance(Duration::from_secs(11)).await;
-        tokio::task::yield_now().await;
-        let response = request.await.unwrap();
+        let response = if phase == HeldRefreshPhase::Body {
+            tokio::time::timeout(Duration::from_secs(15), request)
+                .await
+                .expect("held refresh body did not finish within 15 seconds")
+                .unwrap()
+        } else {
+            held_refresh_response(phase, request).await
+        };
         status(&response, "503");
         assert!(String::from_utf8_lossy(&response).contains(expected_reason));
         assert!(origin_seen.lock().unwrap().is_empty());
@@ -906,7 +928,7 @@ async fn run_live_parent_timeout_case(phase: HeldParentPhase) {
             let Ok((mut stream, _)) = origin_listener.accept().await else {
                 return;
             };
-            origin_ready.notify_waiters();
+            origin_ready.notify_one();
             origin_release.notified().await;
             let _ = stream.shutdown().await;
         }))
@@ -1041,14 +1063,8 @@ async fn run_live_parent_timeout_case(phase: HeldParentPhase) {
             raw_http_without_timeout(&socket, request.as_bytes()).await
         }
     });
-    if phase == HeldParentPhase::OriginTls {
-        origin_ready.notified().await;
-    } else {
-        parent_ready.notified().await;
-    }
-    tokio::time::advance(Duration::from_secs(11)).await;
-    tokio::task::yield_now().await;
-    let response = request.await.unwrap();
+    parent_ready.notified().await;
+    let response = held_refresh_response(phase, request).await;
     status(&response, "503");
     assert!(String::from_utf8_lossy(&response).contains("REFRESH_TRANSPORT"));
     assert!(origin_seen.lock().unwrap().is_empty());
@@ -2125,6 +2141,9 @@ async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
         Some(HeldRefreshPhase::Send),
     )
     .await;
+    // The provider's header write precedes the proxy's live socket read, so
+    // advancing paused time here can outrun registration of the body timer.
+    tokio::time::resume();
     run_live_refresh_response_case(
         200,
         br#"{"access_token":"synthetic-body-timeout","expires_in":3600}"#,
@@ -2134,6 +2153,7 @@ async fn oauth_refresh_live_held_send_and_body_phases_timeout() {
         Some(HeldRefreshPhase::Body),
     )
     .await;
+    tokio::time::pause();
     run_live_parent_timeout_case(HeldParentPhase::ParentTls).await;
     run_live_parent_timeout_case(HeldParentPhase::Connect).await;
     run_live_parent_timeout_case(HeldParentPhase::OriginTls).await;

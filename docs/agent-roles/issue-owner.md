@@ -133,6 +133,9 @@ Evidence requested as a repository deliverable belongs in the repository.
   execution for a published head; do not run the repository-wide test suite or
   reproduce its matrix locally. Diagnose a failure with the smallest useful
   local reproducer.
+- When a required hosted check is still running, use one bounded foreground
+  wait such as `gh run watch` and inspect its terminal result once. Do not spend
+  repeated model turns issuing equivalent sleep-and-query requests.
 - Diagnose a failed check before excluding it from the candidate evidence. Call
   it pre-existing or unrelated only when the same failure is established on an
   equivalent current-base run or by equally direct canonical evidence. A
