@@ -72,21 +72,35 @@ def _fixture(tmp_path: Path, *, darwin: bool, with_setsid: bool) -> tuple[Path, 
 
 
 def _run_wrapper(
-    tmp_path: Path, *, darwin: bool, with_setsid: bool
+    tmp_path: Path,
+    *,
+    darwin: bool,
+    with_setsid: bool,
+    source_root: Path | None = None,
+    target_dir: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     bin_dir, log = _fixture(tmp_path, darwin=darwin, with_setsid=with_setsid)
+    (bin_dir / "mkdir").symlink_to("/usr/bin/mkdir")
     env = {
         "PATH": str(bin_dir),
         "CARGO_FAKE_LOG": str(log),
-        "CARGO_TARGET_DIR": str(tmp_path / "missing" / "target"),
+        "CARGO_TARGET_DIR": str(target_dir or tmp_path / "missing" / "target"),
         "SAFEYOLO_CARGO_RESERVE_GIB": "0",
         "SAFEYOLO_CARGO_SPACE_POLL_SECONDS": "1",
         "DF_EXPECT_BSD": "1" if darwin else "0",
         "DF_EXPECT_GNU": "0" if darwin else "1",
     }
+    cwd = None
+    if source_root is not None:
+        source_root.mkdir(parents=True, exist_ok=True)
+        cwd = source_root
+        env["SAFEYOLO_CARGO_SOURCE_BATCH"] = "review-mutants"
+        env["SAFEYOLO_CARGO_SOURCE_ROOT"] = str(source_root)
     return subprocess.run(
         [str(WRAPPER), "build", "--locked"],
         env=env,
+        cwd=cwd,
         text=True,
         capture_output=True,
         check=False,
@@ -146,6 +160,56 @@ def test_macos_runs_without_setsid_and_reports_stop_limitation(tmp_path: Path) -
     assert (tmp_path / "cargo.log").read_text() == "build --locked\n"
     assert "setsid unavailable" in result.stderr
     assert "signals Cargo only" in result.stderr
+
+
+def test_source_batch_reuses_one_target_from_one_stable_source(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    source = tmp_path / "scratch"
+
+    first = _run_wrapper(
+        tmp_path / "first",
+        darwin=False,
+        with_setsid=True,
+        source_root=source,
+        target_dir=target,
+    )
+    second = _run_wrapper(
+        tmp_path / "second",
+        darwin=False,
+        with_setsid=True,
+        source_root=source,
+        target_dir=target,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert (target / ".safeyolo-cargo-source-batch").read_text().splitlines() == [
+        "review-mutants",
+        str(source.resolve()),
+    ]
+
+
+def test_source_batch_rejects_target_reuse_from_another_source(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    first = _run_wrapper(
+        tmp_path / "first",
+        darwin=False,
+        with_setsid=True,
+        source_root=tmp_path / "scratch-a",
+        target_dir=target,
+    )
+    second = _run_wrapper(
+        tmp_path / "second",
+        darwin=False,
+        with_setsid=True,
+        source_root=tmp_path / "scratch-b",
+        target_dir=target,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 64
+    assert "belongs to another source batch" in second.stderr
+    assert not (tmp_path / "second" / "cargo.log").exists()
 
 
 def test_macos_hard_stop_interrupts_cargo_but_leaves_child(tmp_path: Path) -> None:

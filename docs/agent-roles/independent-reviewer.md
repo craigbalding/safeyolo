@@ -349,6 +349,24 @@ disposition and name the exact reviewed target:
 Also disclose review limitations and validation not performed so the disposition
 is not broader than the evidence supports.
 
+After returning `CHANGES_REQUIRED`, retain review affinity for that candidate.
+Review Forge's corrected exact target before starting newly assigned unrelated
+background work. Existing background work that began before a candidate arrived
+finishes normally. Affinity ends when the correction is awaiting the operator,
+blocked, superseded, accepted, or otherwise terminal.
+
+When sensitivity testing needs candidate and mutant executables, use one stable
+scratch source tree and one Cargo target for the complete batch. Do not create a
+worktree, full source copy, or target for each mutant. Bind that target to the
+stable scratch path with `SAFEYOLO_CARGO_SOURCE_BATCH` and
+`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. Build
+and hash the candidate first. Before each mutant, restore the changed files,
+apply the mutation, and run `cargo clean -p` through the wrapper for every
+locally changed Cargo package. Build and hash each mutant. Restore and rebuild
+the candidate last; its hash must match the first candidate build, and mutant
+hashes must be distinct. Retire the disposable target after the disposition
+while preserving required binaries, patches, commands, hashes, and results.
+
 A limitation that leaves a material acceptance criterion or system boundary
 supported only by the implementation owner's claim is not compatible with
 `READY`. Try reasonable alternatives using approved tools and environments.

@@ -6,14 +6,65 @@ set -euo pipefail
 reserve_gib=${SAFEYOLO_CARGO_RESERVE_GIB:-20}
 poll_seconds=${SAFEYOLO_CARGO_SPACE_POLL_SECONDS:-15}
 hard_stop=${SAFEYOLO_CARGO_HARD_STOP:-0}
+source_batch=${SAFEYOLO_CARGO_SOURCE_BATCH:-}
 
 case $reserve_gib in ''|*[!0-9]*) echo 'SAFEYOLO_CARGO_RESERVE_GIB must be a whole number of GiB' >&2; exit 64;; esac
 case $poll_seconds in ''|*[!0-9]*|0) echo 'SAFEYOLO_CARGO_SPACE_POLL_SECONDS must be a positive whole number' >&2; exit 64;; esac
 case $hard_stop in 0|1) ;; *) echo 'SAFEYOLO_CARGO_HARD_STOP must be 0 or 1' >&2; exit 64;; esac
+case $source_batch in
+  ''|*[!A-Za-z0-9._-]*)
+    if [[ -n $source_batch ]]; then
+      echo 'SAFEYOLO_CARGO_SOURCE_BATCH may contain only letters, digits, dot, underscore, and hyphen' >&2
+      exit 64
+    fi
+    ;;
+esac
 
 # df needs an existing path. Walking parents makes a new isolated target work
 # before Cargo has created it.
 target_dir=${CARGO_TARGET_DIR:-"$PWD/target"}
+
+# Sensitivity tests can build an exact candidate and several source mutants in
+# one Cargo target.  When the caller names that batch, bind the target to one
+# stable source tree.  This catches the stale-artifact failure caused by using
+# one target from a candidate checkout and then from recreated mutant trees.
+# The wrapper does not create source trees or extra targets.
+if [[ -n $source_batch ]]; then
+  source_root_input=${SAFEYOLO_CARGO_SOURCE_ROOT:-$PWD}
+  if [[ ! -d $source_root_input ]]; then
+    echo "Cargo source batch root does not exist: $source_root_input" >&2
+    exit 64
+  fi
+  source_root=$(cd -- "$source_root_input" && pwd -P)
+  source_cwd=$(pwd -P)
+  case "$source_cwd/" in
+    "$source_root/"*) ;;
+    *)
+      echo "Cargo source batch must run beneath $source_root; current directory is $source_cwd" >&2
+      exit 64
+      ;;
+  esac
+
+  mkdir -p "$target_dir"
+  target_dir=$(cd -- "$target_dir" && pwd -P)
+  source_batch_file="$target_dir/.safeyolo-cargo-source-batch"
+  if [[ -e $source_batch_file ]]; then
+    recorded_source_batch=()
+    while IFS= read -r recorded_source_batch_line; do
+      recorded_source_batch+=("$recorded_source_batch_line")
+    done < "$source_batch_file"
+    if [[ ${#recorded_source_batch[@]} -ne 2 \
+      || ${recorded_source_batch[0]} != "$source_batch" \
+      || ${recorded_source_batch[1]} != "$source_root" ]]; then
+      echo "Cargo target belongs to another source batch: $target_dir" >&2
+      echo "requested batch=$source_batch source=$source_root" >&2
+      exit 64
+    fi
+  else
+    printf '%s\n%s\n' "$source_batch" "$source_root" > "$source_batch_file"
+  fi
+fi
+
 probe=$target_dir
 case "$(uname -s)" in
   Darwin)
