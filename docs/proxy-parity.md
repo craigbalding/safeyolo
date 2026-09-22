@@ -2987,9 +2987,20 @@ inspection and the exposed edit/replay workflows are deferred under the
 [first-release traffic scope](#first-release-traffic-scope). The Python proxy has
 not been removed or cut over.
 
-[Rust migration CI](../.github/workflows/proxy-rust.yml) runs the focused native
-checks on Linux and macOS. A workflow definition is not evidence that those
-jobs, the macOS VM relay or the Linux guest mount have passed.
+[Rust migration CI](../.github/workflows/proxy-rust.yml) runs focused Ubuntu
+checks for each relevant pull-request update, including draft updates. A
+factory-owned implementation pull request starts as a draft. After its focused
+check passes, Relay marks the unchanged head ready for review. That transition
+runs the complete Ubuntu/macOS migration matrix. A correction returns the pull
+request to draft before another push, then repeats the focused check and ready
+transition at the new head. Pushes to `feat/rust-proxy-620`, `master`, and
+`main` also run the complete matrix.
+
+Focused checks do not establish release acceptance. Relay and Lens must confirm
+that the full-matrix run belongs to the exact reviewed head and that both jobs
+completed successfully. A pending, skipped, stale-head, canceled, or failed
+full job does not satisfy that condition. A workflow definition is not evidence
+that the jobs, the macOS VM relay, or the Linux guest mount have passed.
 
 
 ### Operator service authorization
