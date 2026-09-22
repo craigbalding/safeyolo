@@ -344,3 +344,16 @@ def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     teardown_block = workflow[teardown:]
     assert "if: always() && matrix.os == 'ubuntu-latest'" in teardown_block
     assert "coord_fixture.py --teardown" in teardown_block
+
+
+def test_rust_workflow_exposes_the_host_target_binary_to_later_contracts() -> None:
+    """The explicit Cargo target must not hide the binary from Python tests."""
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    test = workflow.index("- name: Test and build the Rust proxy")
+    teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
+    test_block = workflow[test:teardown]
+    build = test_block.index("../scripts/cargo_with_space.sh build --locked")
+    binary = test_block.index('rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"')
+    export = test_block.index('printf \'SAFEYOLO_RUST_PROXY=%s\\n\' "$rust_proxy" >> "$GITHUB_ENV"')
+    assert build < binary < export
+    assert 'test -x "$rust_proxy"' in test_block[binary:export]

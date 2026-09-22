@@ -114,6 +114,11 @@ jobs:
           fi
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked
+          if [ "$RUNNER_OS" = Linux ]; then
+            rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+            test -x "$rust_proxy"
+            printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+          fi
 
       - name: Stop the Python-owned Coord fixture
         if: always() && matrix.os == 'ubuntu-latest'
