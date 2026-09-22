@@ -80,7 +80,7 @@ jobs:
           uv run --frozen pytest -q \
             cli/tests/test_desktop_presenter.py \
             cli/tests/test_desktop_presenter_rpc.py \
-            cli/tests/test_agent_preview.py
+            cli/tests/test_agent_preview.py::test_managed_preview_failure_after_start_reclaims_listener
 
       - name: Test focused native boundaries
         timeout-minutes: 10

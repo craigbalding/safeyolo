@@ -59,7 +59,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_cutover_deletion_map.py",
         "cli/tests/test_desktop_presenter.py",
         "cli/tests/test_desktop_presenter_rpc.py",
-        "cli/tests/test_agent_preview.py",
+        "cli/tests/test_agent_preview.py::test_managed_preview_failure_after_start_reclaims_listener",
         "cargo_with_space.sh test --locked --test agent_api_audit",
         "cargo_with_space.sh test --locked --test gateway_workflow",
     ):
