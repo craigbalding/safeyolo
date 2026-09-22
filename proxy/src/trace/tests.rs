@@ -81,12 +81,8 @@ fn late_owner_assignment_enforces_existing_per_agent_cap() {
     // Both records are initially ownerless, so neither consumes an agent
     // slot. Resolving each owner later must apply the existing cap in FIFO
     // order for that agent.
-    store
-        .append("ownerless-a", None, step(0.0), 0.0)
-        .unwrap();
-    store
-        .append("ownerless-b", None, step(1.0), 1.0)
-        .unwrap();
+    store.append("ownerless-a", None, step(0.0), 0.0).unwrap();
+    store.append("ownerless-b", None, step(1.0), 1.0).unwrap();
     store
         .append("ownerless-a", Some("alice"), step(2.0), 2.0)
         .unwrap();
@@ -94,14 +90,18 @@ fn late_owner_assignment_enforces_existing_per_agent_cap() {
         .append("ownerless-b", Some("alice"), step(3.0), 3.0)
         .unwrap();
 
-    assert!(store
-        .get("ownerless-a", Some("alice"), 3.0)
-        .unwrap()
-        .is_none());
-    assert!(store
-        .get("ownerless-b", Some("alice"), 3.0)
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .get("ownerless-a", Some("alice"), 3.0)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get("ownerless-b", Some("alice"), 3.0)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
@@ -115,9 +115,7 @@ fn capped_append_keeps_timestamp_age_and_sweeps_stale_reordered_record() {
     store
         .append("stale", Some("alice"), step(0.0), 0.0)
         .unwrap();
-    store
-        .append("live", Some("alice"), step(1.0), 1.0)
-        .unwrap();
+    store.append("live", Some("alice"), step(1.0), 1.0).unwrap();
 
     // This append moves `stale` behind `live`, but its step cap prevents a
     // new timestamp from being retained. At 5.5 it is stale even though the
@@ -126,14 +124,8 @@ fn capped_append_keeps_timestamp_age_and_sweeps_stale_reordered_record() {
         .append("stale", Some("alice"), step(2.0), 2.0)
         .unwrap();
 
-    assert!(store
-        .get("stale", Some("alice"), 5.5)
-        .unwrap()
-        .is_none());
-    assert!(store
-        .get("live", Some("alice"), 5.5)
-        .unwrap()
-        .is_some());
+    assert!(store.get("stale", Some("alice"), 5.5).unwrap().is_none());
+    assert!(store.get("live", Some("alice"), 5.5).unwrap().is_some());
 }
 
 #[test]
@@ -163,14 +155,18 @@ fn controlled_clock_enforces_all_retention_boundaries_after_owner_fill() {
         .append("alice-new", Some("alice"), step(4.0), 4.0)
         .unwrap();
 
-    assert!(store
-        .get("alice-old", Some("alice"), 4.0)
-        .unwrap()
-        .is_none());
-    assert!(store
-        .get("ownerless", Some("alice"), 4.0)
-        .unwrap()
-        .is_some());
+    assert!(
+        store
+            .get("alice-old", Some("alice"), 4.0)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get("ownerless", Some("alice"), 4.0)
+            .unwrap()
+            .is_some()
+    );
     assert!(store.get("bob-old", Some("bob"), 4.0).unwrap().is_some());
 
     // A capped append moves Bob's record to the end but retains its previous
@@ -186,10 +182,12 @@ fn controlled_clock_enforces_all_retention_boundaries_after_owner_fill() {
         .append("bob-new", Some("bob"), step(5.2), 5.2)
         .unwrap();
 
-    assert!(store
-        .get("ownerless", Some("alice"), 5.2)
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .get("ownerless", Some("alice"), 5.2)
+            .unwrap()
+            .is_none()
+    );
     let bob = store.get("bob-old", Some("bob"), 5.2).unwrap().unwrap();
     assert_eq!(bob["steps"].as_array().unwrap().len(), 2);
     assert!(bob["truncated"].as_bool().unwrap());
@@ -198,14 +196,18 @@ fn controlled_clock_enforces_all_retention_boundaries_after_owner_fill() {
     // present. One tick later it is expired; the boundary is based on the
     // retained step timestamp, not the append that was rejected by the step
     // cap.
-    assert!(store
-        .get("alice-new", Some("alice"), 9.0)
-        .unwrap()
-        .is_some());
-    assert!(store
-        .get("alice-new", Some("alice"), 9.001)
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .get("alice-new", Some("alice"), 9.0)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .get("alice-new", Some("alice"), 9.001)
+            .unwrap()
+            .is_none()
+    );
     assert!(store.get("bob-new", Some("bob"), 9.001).unwrap().is_some());
 }
 
@@ -405,8 +407,7 @@ fn actual_source_store_workflows_preserve_order_reports_and_partial_errors() {
         // tests above cover the native contract.
         if matches!(
             name,
-            "late_owner_fill_omits_cap_until_next_record"
-                | "capped_append_stale_behind_live"
+            "late_owner_fill_omits_cap_until_next_record" | "capped_append_stale_behind_live"
         ) {
             continue;
         }

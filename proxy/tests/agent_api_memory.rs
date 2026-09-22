@@ -92,7 +92,7 @@ impl Fixture {
                 flows: None,
                 circuits: None,
                 declarations: None,
-            coord: None,
+                coord: None,
             },
             RequestBody {
                 body: &mut body,
