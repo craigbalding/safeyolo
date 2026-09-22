@@ -631,14 +631,14 @@ def test_factory_run_executes_staged_worker_commands(
     platform.exec_in_sandbox.side_effect = exec_in_sandbox
 
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
-    monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)
+    monkeypatch.setattr("safeyolo.proxy.is_proxy_running", lambda: True)
     monkeypatch.setattr(
-        "safeyolo.commands.agent.reserve_agent_network_slot",
+        "safeyolo.agents_store.reserve_agent_network_slot",
         lambda name: names.index(name),
     )
-    monkeypatch.setattr("safeyolo.commands.agent._update_agent_map", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.commands.agent.write_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.commands.agent.prepare_config_share", lambda **kwargs: None)
+    monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.agent_lifecycle.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.vm.prepare_config_share", lambda **kwargs: None)
     monkeypatch.setattr(
         "safeyolo.sockets.path_for",
         lambda name, _ip: tmp_path / f"{name}.sock",

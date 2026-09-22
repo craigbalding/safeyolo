@@ -150,7 +150,7 @@ def release_stopped_work(
     leaves backups and names the agents already changed; repeating the exact
     selection releases the remaining records without resetting other work.
     """
-    from .commands.agent import _agent_host_setup_lock
+    from .agent_lifecycle import _agent_host_setup_lock
 
     supervisor = _supervisor()
     if not targets or any(not supervisor._valid_target_url(target) for target in targets):

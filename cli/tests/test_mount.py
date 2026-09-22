@@ -9,7 +9,7 @@ Contract for is_path_protected(host_path, protected_paths):
 """
 
 
-from safeyolo.commands.mount import is_path_protected
+from safeyolo.mount_protection import is_path_protected
 
 
 class TestIsPathProtectedExactMatch:

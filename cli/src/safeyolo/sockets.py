@@ -8,7 +8,7 @@ layers, re-parse the socket path instead.
 
 The directory-name layout is unambiguous because SafeYolo agent names are
 validated as RFC 1123 hostnames (lowercase alphanumeric + hyphens,
-no underscores — see `commands/agent.py::_validate_instance_name`),
+no underscores — see `agent_configuration.py::_validate_instance_name`),
 so `split('_', 1)` reliably splits the IP prefix from the agent
 suffix.
 """
@@ -28,7 +28,7 @@ from .config import get_bridge_sockets_dir
 # would spuriously reject valid Linux paths.
 _SUN_PATH_MAX = 104 if sys.platform == "darwin" else 108
 
-# Match commands/agent.py::_validate_instance_name.
+# Match agent_configuration.py::_validate_instance_name.
 _AGENT_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 

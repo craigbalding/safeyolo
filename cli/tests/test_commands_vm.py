@@ -1445,24 +1445,24 @@ class TestRunAgent:
         return [
             patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
-                "safeyolo.commands.agent._load_agent_metadata",
+                "safeyolo.agent_lifecycle._load_agent_metadata",
                 return_value=metadata or {"folder": str(folder)},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.vm._update_agent_map", autospec=True,),
             patch(
-                "safeyolo.commands.agent.platform_supports_snapshot",
+                "safeyolo.snapshot.platform_supports_snapshot",
                 return_value=snapshot_supported,
                 autospec=True,
             ),
-            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
+            patch("safeyolo.vm.prepare_config_share", autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
             patch(
-                "safeyolo.commands.agent.write_event",
+                "safeyolo.agent_lifecycle.write_event",
                 side_effect=RuntimeError("stop after rename boundary"),
             autospec=True,
             ),
@@ -1476,10 +1476,10 @@ class TestRunAgent:
         rootfs = tmp_path / "rootfs"
         rootfs.mkdir()
 
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,)
+        rename_patch = patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,)
 
         with rename_patch as rename:
             for p in patches:
@@ -1501,10 +1501,10 @@ class TestRunAgent:
         rootfs = tmp_path / "rootfs"
         rootfs.mkdir()
 
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,)
+        rename_patch = patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,)
 
         with rename_patch as rename:
             for p in patches:
@@ -1528,19 +1528,19 @@ class TestRunAgent:
         for path in (persistent, transient, rootfs):
             path.mkdir()
 
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         patches = self._committed_launch_patches(
             persistent, rootfs, snapshot_supported=True
         )
         with (
             patch(
-                "safeyolo.commands.agent.compute_snapshot_version",
+                "safeyolo.snapshot.compute_snapshot_version",
                 return_value={"snapshot_schema": 3},
                 autospec=True,
             ) as compute,
             patch(
-                "safeyolo.commands.agent.is_snapshot_valid",
+                "safeyolo.snapshot.is_snapshot_valid",
                 return_value=True,
                 autospec=True,
             ),
@@ -1571,7 +1571,7 @@ class TestRunAgent:
         if configured_memory is not None:
             metadata["memory_mb"] = configured_memory
 
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         patches = self._committed_launch_patches(
             folder,
@@ -1581,12 +1581,12 @@ class TestRunAgent:
         )
         with (
             patch(
-                "safeyolo.commands.agent.compute_snapshot_version",
+                "safeyolo.snapshot.compute_snapshot_version",
                 return_value={"snapshot_schema": 3},
                 autospec=True,
             ) as compute,
             patch(
-                "safeyolo.commands.agent.is_snapshot_valid",
+                "safeyolo.snapshot.is_snapshot_valid",
                 return_value=True,
                 autospec=True,
             ),
@@ -1617,23 +1617,23 @@ class TestRunAgent:
         fake_platform.is_sandbox_running.return_value = False
 
         import safeyolo.platform as platform_module
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         with (
             patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
-                "safeyolo.commands.agent._load_agent_metadata",
+                "safeyolo.agent_lifecycle._load_agent_metadata",
                 return_value={"folder": str(folder)},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
             patch(
-                "safeyolo.commands.agent.reserve_agent_network_slot",
+                "safeyolo.agents_store.reserve_agent_network_slot",
                 side_effect=OSError("no slot"),
             autospec=True,
             ),
-            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
+            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
             pytest.raises(click.exceptions.Exit),
         ):
             _run_agent("committed", rename_tmux_window=True)
@@ -1662,32 +1662,32 @@ class TestRunAgent:
         }
 
         import safeyolo.platform as platform_module
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         with (
             patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
             patch(
-                "safeyolo.commands.agent._load_agent_metadata",
+                "safeyolo.agent_lifecycle._load_agent_metadata",
                 return_value={"folder": str(folder)},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
+            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.vm._update_agent_map", autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
             patch(
-                "safeyolo.commands.agent.platform_supports_snapshot",
+                "safeyolo.snapshot.platform_supports_snapshot",
                 return_value=False,
             autospec=True,
             ),
             patch(
-                "safeyolo.commands.agent.prepare_config_share",
+                "safeyolo.vm.prepare_config_share",
                 side_effect=RuntimeError("config share broken"),
             autospec=True,
             ),
-            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
+            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
             pytest.raises(click.exceptions.Exit),
         ):
             _run_agent("committed", rename_tmux_window=True)
@@ -1697,7 +1697,7 @@ class TestRunAgent:
     def test_immediate_helper_failure_surfaces_error_instead_of_empty_log_hint(
         self, config_dir, tmp_path, capsys
     ):
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         folder = tmp_path / "project"
         folder.mkdir()
@@ -1717,20 +1717,20 @@ class TestRunAgent:
 
         with (
             patch(
-                "safeyolo.commands.agent._load_agent_metadata",
+                "safeyolo.agent_lifecycle._load_agent_metadata",
                 return_value={"folder": str(folder)},
                 autospec=True,
             ),
-            patch("safeyolo.commands.agent._check_project_ownership", autospec=True,),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.commands.agent._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
-            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
-            patch("safeyolo.commands.agent.platform_supports_snapshot", return_value=False, autospec=True,),
+            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
+            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
+            patch("safeyolo.vm._update_agent_map", autospec=True,),
+            patch("safeyolo.agent_lifecycle.write_event", autospec=True,),
+            patch("safeyolo.vm.prepare_config_share", autospec=True,),
+            patch("safeyolo.snapshot.platform_supports_snapshot", return_value=False, autospec=True,),
             patch(
-                "safeyolo.commands.agent.vm_helper_failure_summary",
+                "safeyolo.vm.vm_helper_failure_summary",
                 return_value=(
                     "safeyolo-vm startup failed with exit code 1: "
                     "Error: Virtualization is not supported on this machine"
@@ -1754,7 +1754,7 @@ class TestRunAgent:
     def test_run_preflight_failure_does_not_rename(self, runner, config_dir):
         """Nonexistent agent: preflight fails before rename gets a chance."""
         with (
-            patch("safeyolo.commands.agent.rename_window_for_agent", autospec=True,) as rename,
+            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
         ):
             result = runner.invoke(app, ["agent", "run", "no-such-agent"])
 
@@ -1768,7 +1768,7 @@ class TestRunAgent:
 
         platform = get_platform()
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
+            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
             patch.object(
                 platform, "is_sandbox_running", autospec=True,
@@ -1852,7 +1852,7 @@ class TestRunAgent:
 
     def test_setup_and_start_transitions_share_a_barrier(self, config_dir):
         """A setup or start transition cannot pass while the other owns the lock."""
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
 
         for first in ("setup", "start"):
             entered = threading.Event()
@@ -1886,7 +1886,7 @@ class TestRunAgent:
 
     @pytest.mark.parametrize("lock_kind", ("hardlink", "symlink"))
     def test_setup_lock_rejects_ambiguous_lock_entry(self, config_dir, lock_kind):
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
         from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
         ensure_agent_persistent_dirs("unsafe-lock")
@@ -1907,7 +1907,7 @@ class TestRunAgent:
                 pass
 
     def test_setup_lock_rejects_symlinked_state_directory(self, config_dir, tmp_path):
-        from safeyolo.commands.agent import _agent_host_setup_lock, _open_safe_setup_directory
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock, _open_safe_setup_directory
         from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
 
         ensure_agent_persistent_dirs("unsafe-parent")
@@ -1928,7 +1928,7 @@ class TestRunAgent:
 
     @pytest.mark.parametrize("entry_kind", ("file", "fifo"))
     def test_setup_directory_rejects_non_directory(self, tmp_path, entry_kind):
-        from safeyolo.commands.agent import _open_safe_setup_directory
+        from safeyolo.agent_lifecycle import _open_safe_setup_directory
 
         entry = tmp_path / "not-a-directory"
         if entry_kind == "file":
@@ -1941,7 +1941,7 @@ class TestRunAgent:
 
     @pytest.mark.parametrize("mode", (0o720, 0o702))
     def test_setup_directory_rejects_group_or_world_write(self, tmp_path, mode):
-        from safeyolo.commands.agent import _open_safe_setup_directory
+        from safeyolo.agent_lifecycle import _open_safe_setup_directory
 
         directory = tmp_path / "unsafe-mode"
         directory.mkdir()
@@ -1951,7 +1951,7 @@ class TestRunAgent:
             _open_safe_setup_directory(directory, "unsafe-mode")
 
     def test_setup_lock_works_without_o_path(self, config_dir, monkeypatch):
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
         from safeyolo.vm import get_agent_home_dir
 
         monkeypatch.delattr(os, "O_PATH", raising=False)
@@ -1962,7 +1962,7 @@ class TestRunAgent:
 
     @staticmethod
     def _patch_setup_lock_descriptor_primitives(monkeypatch, config_dir):
-        import safeyolo.commands.agent as agent_module
+        import safeyolo.agent_lifecycle as agent_module
 
         monkeypatch.setattr("safeyolo.vm.ensure_agent_persistent_dirs", lambda _name: None)
         monkeypatch.setattr(
@@ -1988,7 +1988,7 @@ class TestRunAgent:
 
         monkeypatch.setattr(agent_module.os, "open", fail_open)
 
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
 
         with pytest.raises(RuntimeError, match="lock open failed"):
             with _agent_host_setup_lock("open-failure"):
@@ -2009,7 +2009,7 @@ class TestRunAgent:
 
         monkeypatch.setattr(agent_module.os, "close", close)
 
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
 
         with pytest.raises(OSError, match="setup directory close failed"):
             with _agent_host_setup_lock("directory-close-failure"):
@@ -2042,7 +2042,7 @@ class TestRunAgent:
             fail_flock,
         )
 
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
 
         with pytest.raises(OSError, match="flock failed"):
             with _agent_host_setup_lock("validation-failure"):
@@ -2072,7 +2072,7 @@ class TestRunAgent:
             lambda fd, operation: flock_calls.append((fd, operation)),
         )
 
-        from safeyolo.commands.agent import _agent_host_setup_lock
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
 
         with _agent_host_setup_lock("normal-exit"):
             pass
@@ -2100,7 +2100,7 @@ class TestRunAgent:
         save_agent("test-agent", {"folder": str(tmp_path), "agent_id": "ag-test"})
         mock_platform.exec_in_sandbox.return_value = 7
         with (
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
         ):
             result = runner.invoke(app, ["agent", "run", "test-agent"])
@@ -2114,7 +2114,7 @@ class TestRunAgent:
         self, config_dir, tmp_path, capsys,
     ):
         """Public mount settings must reach both config staging and runtime."""
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         project = tmp_path / "project"
         persistent = tmp_path / "persistent-toolage"
@@ -2167,12 +2167,12 @@ class TestRunAgent:
         }
 
         with (
-            patch("safeyolo.commands.agent._load_agent_metadata", return_value=metadata, autospec=True,),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0, autospec=True,),
-            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
-            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,) as prepare,
+            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value=metadata, autospec=True,),
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=0, autospec=True,),
+            patch("safeyolo.vm._update_agent_map", autospec=True,),
+            patch("safeyolo.agent_lifecycle.write_event", autospec=True,),
+            patch("safeyolo.vm.prepare_config_share", autospec=True,) as prepare,
             patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
         ):
@@ -2211,7 +2211,7 @@ class TestRunAgent:
         self, config_dir, tmp_path, capsys, session_result, expect_detach,
     ):
         """Only host Ctrl-C leaves the Linux/gVisor sandbox running."""
-        from safeyolo.commands.agent import _run_agent
+        from safeyolo.agent_lifecycle import _run_agent
 
         name = "session-exit-agent"
         project = tmp_path / "project"
@@ -2256,16 +2256,16 @@ class TestRunAgent:
 
         with (
             patch(
-                "safeyolo.commands.agent._load_agent_metadata",
+                "safeyolo.agent_lifecycle._load_agent_metadata",
                 return_value={"folder": str(project)},
                 autospec=True,
             ),
-            patch("safeyolo.commands.agent.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.commands.agent.reserve_agent_network_slot", return_value=0, autospec=True,),
-            patch("safeyolo.commands.agent._update_agent_map", autospec=True,),
-            patch("safeyolo.commands.agent.write_event", autospec=True,) as write_event,
+            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=0, autospec=True,),
+            patch("safeyolo.vm._update_agent_map", autospec=True,),
+            patch("safeyolo.agent_lifecycle.write_event", autospec=True,) as write_event,
             patch("safeyolo.events.write_event", autospec=True) as lifecycle_event,
-            patch("safeyolo.commands.agent.prepare_config_share", autospec=True,),
+            patch("safeyolo.vm.prepare_config_share", autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
             patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
             patch("sys.platform", "linux"),
@@ -3162,7 +3162,7 @@ class TestParseMount:
 
     def test_valid_rw_mount(self, tmp_path):
         """Valid read-write mount is normalized."""
-        from safeyolo.commands.agent import _parse_mount
+        from safeyolo.agent_configuration import _parse_mount
 
         host_dir = tmp_path / "data"
         host_dir.mkdir()
@@ -3171,7 +3171,7 @@ class TestParseMount:
 
     def test_valid_ro_mount(self, tmp_path):
         """Valid read-only mount is normalized."""
-        from safeyolo.commands.agent import _parse_mount
+        from safeyolo.agent_configuration import _parse_mount
 
         host_dir = tmp_path / "data"
         host_dir.mkdir()
@@ -3182,7 +3182,7 @@ class TestParseMount:
         """Non-existent host path raises typer.Exit."""
         from typer import Exit
 
-        from safeyolo.commands.agent import _parse_mount
+        from safeyolo.agent_configuration import _parse_mount
 
         with pytest.raises(Exit):
             _parse_mount(f"{tmp_path}/nonexistent:/data")
@@ -3191,7 +3191,7 @@ class TestParseMount:
         """Container path must start with /."""
         from typer import Exit
 
-        from safeyolo.commands.agent import _parse_mount
+        from safeyolo.agent_configuration import _parse_mount
 
         host_dir = tmp_path / "data"
         host_dir.mkdir()
@@ -3201,7 +3201,7 @@ class TestParseMount:
     def test_container_path_cannot_traverse_or_replace_runtime_mounts(self, tmp_path):
         from typer import Exit
 
-        from safeyolo.commands.agent import _parse_mount
+        from safeyolo.agent_configuration import _parse_mount
 
         host_dir = tmp_path / "data"
         host_dir.mkdir()
@@ -3213,7 +3213,7 @@ class TestParseMount:
     def test_persistent_and_transient_mounts_resolve_with_transient_override(
         self, tmp_path,
     ):
-        from safeyolo.commands.agent import _resolve_extra_shares
+        from safeyolo.agent_configuration import _resolve_extra_shares
 
         persistent = tmp_path / "persistent"
         replacement = tmp_path / "replacement"
