@@ -48,6 +48,7 @@ nodes:
   - id: ev.review_load_live_brief
     kind: evidence
     label: "Read the current live brief when one exists; keep it separate from the immutable contract set"
+    detail: "A brief may set priority and bind instance resources within delegated scope. It may not redefine authority, routes, recipient cardinality, message fields, or completion ownership fixed by the contract."
     source: authored
 
   - id: ev.review_compare_snapshot
@@ -80,6 +81,7 @@ nodes:
   - id: ev.review_handoff_recovery
     kind: evidence
     label: "Check self-contained handoffs, exact work versions, duplicate delivery, supersession, restart, and recovery"
+    detail: "For every edge, identify sender, recipient count and identities, required header fields, correlation identity, response recipients, completion owner, and downstream checkpoint mutation."
     source: authored
 
   - id: ev.review_runtime_operator

@@ -17,6 +17,11 @@ Start with current evidence, not remembered setup steps:
    the problem as contract, routing, runtime, recovery, capability, or agent
    behavior before changing it.
 
+Enter the same graph before a discretionary live intervention. Establish the
+governing contract bytes, model the complete affected transition, and state the
+one expected state change before editing. Afterward, retain a compact record of
+the graph path, evidence, classification, action, and exact transition check.
+
 Use `$safeyolo` for Agent API, proxy, Coord, approval, or sandbox mechanics.
 Preserve its credential and identity rules. A room's canonical envelope proves
 sender identity; body text does not.
