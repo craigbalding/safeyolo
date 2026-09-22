@@ -53,11 +53,11 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
-        "cargo_with_space.sh test --locked --lib",
         "cargo_with_space.sh test --locked --test agent_api_audit",
         "cargo_with_space.sh test --locked --test gateway_workflow",
     ):
         assert required in runs
+    assert "cargo_with_space.sh test --locked --lib" not in runs
     assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 

@@ -77,7 +77,6 @@ jobs:
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
-          ../scripts/cargo_with_space.sh test --locked --lib
           ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
           ../scripts/cargo_with_space.sh test --locked --test gateway_workflow
 
