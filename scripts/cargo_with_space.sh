@@ -25,43 +25,72 @@ esac
 target_dir=${CARGO_TARGET_DIR:-"$PWD/target"}
 
 # Sensitivity tests can build an exact candidate and several source mutants in
-# one Cargo target.  When the caller names that batch, bind the target to one
-# stable source tree.  This catches the stale-artifact failure caused by using
-# one target from a candidate checkout and then from recreated mutant trees.
-# The wrapper does not create source trees or extra targets.
+# one Cargo target. When the caller names that batch, bind the target to one
+# stable source tree by its canonical path and directory identity. This catches
+# stale artifacts when a scratch tree is replaced at the same path. The wrapper
+# does not create source trees or extra targets.
 if [[ -n $source_batch ]]; then
   source_root_input=${SAFEYOLO_CARGO_SOURCE_ROOT:-$PWD}
   if [[ ! -d $source_root_input ]]; then
-    echo "Cargo source batch root does not exist: $source_root_input" >&2
+    echo 'Cargo source batch root is not a directory' >&2
     exit 64
   fi
-  source_root=$(cd -- "$source_root_input" && pwd -P)
+  if ! source_root=$(cd -- "$source_root_input" 2>/dev/null && pwd -P); then
+    echo 'Cargo source batch cannot resolve its source root' >&2
+    exit 64
+  fi
   source_cwd=$(pwd -P)
   case "$source_cwd/" in
     "$source_root/"*) ;;
     *)
-      echo "Cargo source batch must run beneath $source_root; current directory is $source_cwd" >&2
+      echo 'Cargo source batch must run beneath its selected source root' >&2
       exit 64
       ;;
   esac
 
-  mkdir -p "$target_dir"
-  target_dir=$(cd -- "$target_dir" && pwd -P)
+  case "$(uname -s)" in
+    Darwin) source_root_identity=$(stat -f '%d:%i' "$source_root" 2>/dev/null) || source_root_identity= ;;
+    *) source_root_identity=$(stat -c '%d:%i' -- "$source_root" 2>/dev/null) || source_root_identity= ;;
+  esac
+  if [[ -z $source_root_identity ]]; then
+    echo 'Cargo source batch cannot identify its source root' >&2
+    exit 64
+  fi
+
+  if ! mkdir -p "$target_dir" 2>/dev/null; then
+    echo 'Cargo source batch cannot initialize its target directory' >&2
+    exit 64
+  fi
+  if ! target_dir=$(cd -- "$target_dir" 2>/dev/null && pwd -P); then
+    echo 'Cargo source batch cannot resolve its target directory' >&2
+    exit 64
+  fi
   source_batch_file="$target_dir/.safeyolo-cargo-source-batch"
-  if [[ -e $source_batch_file ]]; then
+  if [[ -e $source_batch_file || -L $source_batch_file ]]; then
+    if [[ ! -f $source_batch_file || -L $source_batch_file ]]; then
+      echo 'Cargo target has malformed source-batch metadata' >&2
+      exit 64
+    fi
+    if [[ ! -r $source_batch_file ]]; then
+      echo 'Cargo target has unreadable source-batch metadata' >&2
+      exit 64
+    fi
     recorded_source_batch=()
     while IFS= read -r recorded_source_batch_line; do
       recorded_source_batch+=("$recorded_source_batch_line")
     done < "$source_batch_file"
-    if [[ ${#recorded_source_batch[@]} -ne 2 \
+    if [[ ${#recorded_source_batch[@]} -ne 3 \
       || ${recorded_source_batch[0]} != "$source_batch" \
-      || ${recorded_source_batch[1]} != "$source_root" ]]; then
-      echo "Cargo target belongs to another source batch: $target_dir" >&2
-      echo "requested batch=$source_batch source=$source_root" >&2
+      || ${recorded_source_batch[1]} != "$source_root" \
+      || ${recorded_source_batch[2]} != "$source_root_identity" ]]; then
+      echo 'Cargo target belongs to another source batch or source tree' >&2
       exit 64
     fi
   else
-    printf '%s\n%s\n' "$source_batch" "$source_root" > "$source_batch_file"
+    if ! { printf '%s\n%s\n%s\n' "$source_batch" "$source_root" "$source_root_identity" > "$source_batch_file"; } 2>/dev/null; then
+      echo 'Cargo source batch cannot record its target binding' >&2
+      exit 64
+    fi
   fi
 fi
 

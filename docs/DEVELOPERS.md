@@ -409,10 +409,11 @@ changed files, apply the mutation, and run `cargo clean -p` for every locally
 changed package through the same wrapper. Build and hash the mutant, then
 repeat. Finally restore the candidate, clean the changed packages, rebuild it,
 and require its hash to match the first candidate build. Mutant hashes must be
-distinct. The wrapper records the batch and source path in the target and
-refuses to use that target from another source tree. Retire the disposable
-target after acceptance; keep the commands, patches, hashes, and required
-executables as evidence.
+distinct. The wrapper records the batch, canonical source path, and source
+directory identity in the target. The wrapper refuses a target from another
+source tree, including a replacement tree at the same scratch path. Retire the
+disposable target after acceptance; keep the commands, patches, hashes, and
+required executables as evidence.
 
 Reuse one target directory per active candidate through coding and reviewer
 correction rounds. Give concurrent candidates distinct target directories.

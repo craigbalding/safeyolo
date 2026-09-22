@@ -359,8 +359,9 @@ When sensitivity testing needs candidate and mutant executables, use one stable
 scratch source tree and one Cargo target for the complete batch. Do not create a
 worktree, full source copy, or target for each mutant. Bind that target to the
 stable scratch path with `SAFEYOLO_CARGO_SOURCE_BATCH` and
-`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. Build
-and hash the candidate first. Before each mutant, restore the changed files,
+`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. The
+wrapper rejects a replacement source tree at the same scratch path. Build and
+hash the candidate first. Before each mutant, restore the changed files,
 apply the mutation, and run `cargo clean -p` through the wrapper for every
 locally changed Cargo package. Build and hash each mutant. Restore and rebuild
 the candidate last; its hash must match the first candidate build, and mutant

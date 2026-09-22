@@ -51,6 +51,16 @@ def _fixture(tmp_path: Path, *, darwin: bool, with_setsid: bool) -> tuple[Path, 
         bin_dir / "dirname",
         "#!/bin/sh\nif [ \"$DF_EXPECT_BSD\" = 1 ] && [ \"$1\" = -- ]; then exit 2; fi\nif [ \"$DF_EXPECT_GNU\" = 1 ] && [ \"$1\" != -- ]; then exit 2; fi\nexec /usr/bin/dirname \"$@\"\n",
     )
+    _write_executable(
+        bin_dir / "stat",
+        "#!/bin/sh\n"
+        "if [ \"$DF_EXPECT_BSD\" = 1 ]; then\n"
+        "  [ \"$1\" = -f ] || exit 2\n"
+        "  exec /usr/bin/stat -c '%d:%i' \"$3\"\n"
+        "fi\n"
+        "[ \"$1\" = -c ] || exit 2\n"
+        "exec /usr/bin/stat \"$@\"\n",
+    )
     (bin_dir / "sleep").symlink_to("/usr/bin/sleep")
     if with_setsid:
         _write_executable(
@@ -165,6 +175,9 @@ def test_macos_runs_without_setsid_and_reports_stop_limitation(tmp_path: Path) -
 def test_source_batch_reuses_one_target_from_one_stable_source(tmp_path: Path) -> None:
     target = tmp_path / "target"
     source = tmp_path / "scratch"
+    source.mkdir()
+    source_marker = source / "candidate-or-mutant.txt"
+    source_marker.write_text("candidate\n")
 
     first = _run_wrapper(
         tmp_path / "first",
@@ -173,6 +186,7 @@ def test_source_batch_reuses_one_target_from_one_stable_source(tmp_path: Path) -
         source_root=source,
         target_dir=target,
     )
+    source_marker.write_text("mutant\n")
     second = _run_wrapper(
         tmp_path / "second",
         darwin=False,
@@ -186,6 +200,26 @@ def test_source_batch_reuses_one_target_from_one_stable_source(tmp_path: Path) -
     assert (target / ".safeyolo-cargo-source-batch").read_text().splitlines() == [
         "review-mutants",
         str(source.resolve()),
+        f"{source.stat().st_dev}:{source.stat().st_ino}",
+    ]
+
+
+def test_source_batch_uses_the_macos_directory_identity_format(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    source = tmp_path / "scratch"
+    result = _run_wrapper(
+        tmp_path / "run",
+        darwin=True,
+        with_setsid=False,
+        source_root=source,
+        target_dir=target,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (target / ".safeyolo-cargo-source-batch").read_text().splitlines() == [
+        "review-mutants",
+        str(source.resolve()),
+        f"{source.stat().st_dev}:{source.stat().st_ino}",
     ]
 
 
@@ -198,6 +232,8 @@ def test_source_batch_rejects_target_reuse_from_another_source(tmp_path: Path) -
         source_root=tmp_path / "scratch-a",
         target_dir=target,
     )
+    retained = target / "retain-me"
+    retained.write_text("keep\n")
     second = _run_wrapper(
         tmp_path / "second",
         darwin=False,
@@ -208,8 +244,122 @@ def test_source_batch_rejects_target_reuse_from_another_source(tmp_path: Path) -
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 64
-    assert "belongs to another source batch" in second.stderr
+    assert "belongs to another source batch or source tree" in second.stderr
+    assert str(target) not in second.stderr
+    assert str(tmp_path / "scratch-b") not in second.stderr
     assert not (tmp_path / "second" / "cargo.log").exists()
+    assert retained.read_text() == "keep\n"
+
+
+def test_source_batch_rejects_recreated_source_at_the_same_path(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    source = tmp_path / "scratch"
+    source.mkdir()
+    (source / "candidate.txt").write_text("candidate\n")
+    first = _run_wrapper(
+        tmp_path / "first",
+        darwin=False,
+        with_setsid=True,
+        source_root=source,
+        target_dir=target,
+    )
+    original_identity = f"{source.stat().st_dev}:{source.stat().st_ino}"
+    source.rename(tmp_path / "replaced-scratch")
+    source.mkdir()
+    (source / "mutant.txt").write_text("mutant\n")
+    replacement_identity = f"{source.stat().st_dev}:{source.stat().st_ino}"
+    second = _run_wrapper(
+        tmp_path / "second",
+        darwin=False,
+        with_setsid=True,
+        source_root=source,
+        target_dir=target,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert original_identity != replacement_identity
+    assert second.returncode == 64
+    assert "belongs to another source batch or source tree" in second.stderr
+    assert str(target) not in second.stderr
+    assert str(source) not in second.stderr
+    assert not (tmp_path / "second" / "cargo.log").exists()
+
+
+def test_source_batch_rejects_stale_metadata_without_cleanup(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    source = tmp_path / "scratch"
+    source.mkdir()
+    metadata = target / ".safeyolo-cargo-source-batch"
+    metadata.write_text(f"review-mutants\n{source.resolve()}\n")
+    retained = target / "retain-me"
+    retained.write_text("keep\n")
+    result = _run_wrapper(
+        tmp_path / "run",
+        darwin=False,
+        with_setsid=True,
+        source_root=source,
+        target_dir=target,
+    )
+
+    assert result.returncode == 64
+    assert "belongs to another source batch or source tree" in result.stderr
+    assert str(target) not in result.stderr
+    assert not (tmp_path / "run" / "cargo.log").exists()
+    assert metadata.read_text() == f"review-mutants\n{source.resolve()}\n"
+    assert retained.read_text() == "keep\n"
+
+
+def test_source_batch_rejects_malformed_metadata_without_cleanup(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    metadata = target / ".safeyolo-cargo-source-batch"
+    metadata.mkdir()
+    retained = target / "retain-me"
+    retained.write_text("keep\n")
+    result = _run_wrapper(
+        tmp_path / "run",
+        darwin=False,
+        with_setsid=True,
+        source_root=tmp_path / "scratch",
+        target_dir=target,
+    )
+
+    assert result.returncode == 64
+    assert "has malformed source-batch metadata" in result.stderr
+    assert str(target) not in result.stderr
+    assert not (tmp_path / "run" / "cargo.log").exists()
+    assert metadata.is_dir()
+    assert retained.read_text() == "keep\n"
+
+
+def test_non_scratch_builds_ignore_source_batch_metadata(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    metadata = target / ".safeyolo-cargo-source-batch"
+    metadata.write_text("malformed metadata\n")
+    retained = target / "retain-me"
+    retained.write_text("keep\n")
+
+    first = _run_wrapper(
+        tmp_path / "first",
+        darwin=False,
+        with_setsid=True,
+        target_dir=target,
+    )
+    second = _run_wrapper(
+        tmp_path / "second",
+        darwin=False,
+        with_setsid=True,
+        target_dir=target,
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert metadata.read_text() == "malformed metadata\n"
+    assert retained.read_text() == "keep\n"
 
 
 def test_macos_hard_stop_interrupts_cargo_but_leaves_child(tmp_path: Path) -> None:
