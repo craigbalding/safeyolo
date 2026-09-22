@@ -552,10 +552,76 @@ async fn send_agent_with_scheme(
     host: &str,
     scheme: &str,
 ) -> Vec<u8> {
+    send_agent_with_scheme_and_headers(socket, port, token, host, scheme, "").await
+}
+
+async fn send_agent_with_scheme_and_headers(
+    socket: &Path,
+    port: u16,
+    token: &str,
+    host: &str,
+    scheme: &str,
+    headers: &str,
+) -> Vec<u8> {
     let request = format!(
-        "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
     );
     raw_http(socket, request.as_bytes()).await
+}
+
+async fn agent_flow_read(socket: &Path, path: &str) -> (u16, Value) {
+    let request = format!(
+        "GET http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer agent-token\r\nConnection: close\r\n\r\n"
+    );
+    let response = raw_http(socket, request.as_bytes()).await;
+    let status = std::str::from_utf8(&response)
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    (status, serde_json::from_slice(body(&response)).unwrap())
+}
+
+async fn wait_for_owned_flow(socket: &Path) -> Value {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let (status, flows) = agent_flow_read(socket, "/api/flows/search").await;
+            if status == 200
+                && flows["count"] == 1
+                && let Some(id) = flows["flows"][0]["id"].as_i64()
+            {
+                let (status, detail) = agent_flow_read(socket, &format!("/api/flows/{id}")).await;
+                if status == 200 {
+                    return detail;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("gateway flow was not available through the scoped Agent API")
+}
+
+fn assert_jsonl_rows_exclude_canaries(path: &Path, canaries: &[&str]) -> Vec<Value> {
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(!text.is_empty(), "expected routine JSONL evidence");
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| {
+            let row: Value = serde_json::from_str(line).unwrap();
+            let rendered = serde_json::to_string(&row).unwrap();
+            for canary in canaries {
+                assert!(
+                    !rendered.contains(canary),
+                    "credential canary reached routine JSONL row {}",
+                    index + 1
+                );
+            }
+            row
+        })
+        .collect()
 }
 
 async fn send_agent_with_unrelated_credential(
@@ -3299,11 +3365,52 @@ async fn gateway_refreshed_github_credential_use_deny_blocks_before_origin() {
 
 /// A selected service without an auth stanza removes the gateway token and
 /// still forwards over an HTTPS origin. The final credential guard must skip
-/// this intentionally materialized absence.
-#[tokio::test]
-async fn gateway_no_auth_selection_removes_token_before_https_origin() {
-    let root = tempfile::tempdir().unwrap();
-    let root_path = root.path();
+/// this intentionally materialized absence without losing the authorized,
+/// nonsecret evidence that operators and the owning agent need.
+const DISCLOSURE_CHILD_DIRECTORY: &str = "SAFEYOLO_GATEWAY_DISCLOSURE_TEST_DIRECTORY";
+const DISCLOSURE_CREDENTIAL_CANARY: &str = "exact-disclosure-origin-credential";
+const DISCLOSURE_CONTROL: &str = "ordinary-disclosure-control";
+
+#[test]
+fn gateway_no_auth_selection_removes_token_before_https_origin() {
+    let Some(directory) = std::env::var_os(DISCLOSURE_CHILD_DIRECTORY) else {
+        let root = tempfile::tempdir().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "gateway_no_auth_selection_removes_token_before_https_origin",
+                "--nocapture",
+            ])
+            .env(DISCLOSURE_CHILD_DIRECTORY, root.path())
+            .env("SAFEYOLO_DATA_DIR", root.path().join("data"))
+            .output()
+            .unwrap();
+        for diagnostic in [&output.stdout, &output.stderr] {
+            assert!(
+                !diagnostic.windows(4).any(|window| window == b"sgw_"),
+                "gateway token reached child diagnostics"
+            );
+            assert!(
+                !diagnostic
+                    .windows(DISCLOSURE_CREDENTIAL_CANARY.len())
+                    .any(|window| window == DISCLOSURE_CREDENTIAL_CANARY.as_bytes()),
+                "credential canary reached child diagnostics"
+            );
+        }
+        assert!(output.status.success(), "gateway disclosure child failed");
+        assert!(root.path().join("completed").exists());
+        return;
+    };
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(gateway_no_auth_disclosure_workflow(Path::new(&directory)));
+    std::fs::write(Path::new(&directory).join("completed"), b"complete").unwrap();
+}
+
+async fn gateway_no_auth_disclosure_workflow(root_path: &Path) {
     for directory in ["data", "builtin", "services"] {
         std::fs::create_dir_all(root_path.join(directory)).unwrap();
     }
@@ -3344,12 +3451,17 @@ async fn gateway_no_auth_selection_removes_token_before_https_origin() {
 
     let mut runtime_config = config(root_path);
     runtime_config.upstream_ca_file = Some(origin_ca);
+    runtime_config.flow_store_enabled = true;
     interception_ca(root_path, &mut runtime_config);
-    std::fs::write(
-        root_path.join("policy.toml"),
-        bound_gateway_policy(origin_port).replace("127.0.0.1", "localhost"),
-    )
-    .unwrap();
+    let mut policy = bound_gateway_policy(origin_port).replace("127.0.0.1", "localhost");
+    policy.push_str(
+        r#"
+
+[addons.test_context]
+target_hosts = ["localhost"]
+"#,
+    );
+    std::fs::write(root_path.join("policy.toml"), policy).unwrap();
     std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
     let vault_path = root_path.join("data/vault.yaml.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
@@ -3357,7 +3469,7 @@ async fn gateway_no_auth_selection_removes_token_before_https_origin() {
         .store(Credential::new(
             "simple-secret",
             "bearer",
-            Secret::new("synthetic-origin-secret"),
+            Secret::new(DISCLOSURE_CREDENTIAL_CANARY),
         ))
         .unwrap();
 
@@ -3368,9 +3480,19 @@ async fn gateway_no_auth_selection_removes_token_before_https_origin() {
         .as_str()
         .unwrap()
         .to_owned();
-    let response =
-        send_agent_with_scheme(&socket, origin_port, &gateway_token, "localhost", "https").await;
+    let response = send_agent_with_scheme_and_headers(
+        &socket,
+        origin_port,
+        &gateway_token,
+        "localhost",
+        "https",
+        &format!(
+            "X-SafeYolo-Test-Context: run=disclosure;agent=alice;test=no-auth\r\nX-Disclosure-Control: {DISCLOSURE_CONTROL}\r\n"
+        ),
+    )
+    .await;
     status(&response, "200");
+    let request_id = response_header(&response, "x-safeyolo-request-id").unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         while origin_seen.lock().unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -3386,11 +3508,46 @@ async fn gateway_no_auth_selection_removes_token_before_https_origin() {
     );
     assert!(
         !request
-            .windows(b"synthetic-origin-secret".len())
-            .any(|window| window == b"synthetic-origin-secret")
+            .windows(DISCLOSURE_CREDENTIAL_CANARY.len())
+            .any(|window| window == DISCLOSURE_CREDENTIAL_CANARY.as_bytes())
     );
+    assert!(
+        request
+            .windows(DISCLOSURE_CONTROL.len())
+            .any(|window| window == DISCLOSURE_CONTROL.as_bytes())
+    );
+
+    let detail = wait_for_owned_flow(&socket).await;
+    assert_eq!(detail["evidence_owner"], "alice");
+    let headers = detail["request_headers_json"].as_str().unwrap();
+    assert!(headers.contains(DISCLOSURE_CONTROL));
+    assert!(!headers.contains(&gateway_token));
+    assert!(!headers.contains(DISCLOSURE_CREDENTIAL_CANARY));
+    assert!(headers.contains("[\"Authorization\", \"[GATEWAY:..."));
+
     proxy.shutdown().await;
     origin_task.abort();
+
+    let canaries = [gateway_token.as_str(), DISCLOSURE_CREDENTIAL_CANARY];
+    let event_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("events.jsonl"), &canaries);
+    let gateway_event = event_rows
+        .iter()
+        .find(|row| row["event"] == "proxy.gateway" && row["request_id"] == request_id)
+        .unwrap();
+    assert_eq!(
+        gateway_event["metadata"]["gateway_injected_header"],
+        "Authorization"
+    );
+    assert_eq!(gateway_event["stats"]["injected"], 1);
+
+    let audit_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
+    let gateway_audit = audit_rows
+        .iter()
+        .find(|row| row["event"] == "gateway.allow" && row["request_id"] == request_id)
+        .unwrap();
+    assert_eq!(gateway_audit["agent"], "alice");
+    assert_eq!(gateway_audit["details"]["service"], "simple");
+    assert_eq!(gateway_audit["details"]["capability"], "reader");
 }
 
 fn state_sha256(path: &Path) -> String {
