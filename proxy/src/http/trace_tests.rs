@@ -521,7 +521,13 @@ async fn owned_workflow(directory: &Path) {
             .await
             .is_err()
     );
-    configured.network_guard_block = false;
+    proxy
+        .runtime
+        .read()
+        .unwrap()
+        .operator_modes
+        .set("network-guard", false)
+        .unwrap();
     proxy.reload(configured.clone()).await.unwrap();
     let (port, peer) = origin().await;
     let warned = fetch(directory, port, true).await;
