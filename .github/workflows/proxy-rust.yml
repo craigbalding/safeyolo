@@ -231,11 +231,13 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"
           git worktree add --detach "$SAFEYOLO_STATE_PYTHON_SOURCE" "$SAFEYOLO_COMPARATOR_COMMIT"
+          cd "$SAFEYOLO_STATE_PYTHON_SOURCE"
+          uv sync --frozen --group dev --python 3.12.14
 
       - name: Compare native behavior with the historical implementation
         working-directory: proxy
         env:
-          SAFEYOLO_POLICY_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_POLICY_PYTHON: ${{ runner.temp }}/safeyolo-comparator/.venv/bin/python
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
           SAFEYOLO_SOURCE_PYTHON: ${{ github.workspace }}/.venv/bin/python
           SAFEYOLO_SOURCE_ROOT: ${{ github.workspace }}

@@ -106,11 +106,14 @@ def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> 
     assert source["env"]["SAFEYOLO_COMPARATOR_COMMIT"] == comparator
     assert 'git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"' in source["run"]
     assert "git worktree add --detach" in source["run"]
+    assert 'cd "$SAFEYOLO_STATE_PYTHON_SOURCE"' in source["run"]
+    assert "uv sync --frozen --group dev --python 3.12.14" in source["run"]
     assert steps.index(source) < steps.index(named["Compare native behavior with the historical implementation"])
 
     oracle = named["Compare native behavior with the historical implementation"]
     env = oracle["env"]
-    for key in ("SAFEYOLO_POLICY_PYTHON", "SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
+    assert env["SAFEYOLO_POLICY_PYTHON"] == "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
+    for key in ("SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
         assert env[key] == "${{ github.workspace }}/.venv/bin/python"
     assert env["SAFEYOLO_SOURCE_ROOT"] == "${{ github.workspace }}"
     assert env["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"]
