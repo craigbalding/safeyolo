@@ -396,13 +396,18 @@ class CredentialGuard(SecurityAddon):
         )
 
     def requestheaders(self, flow: http.HTTPFlow):
-        """Decide header credentials before an announced large body streams.
+        """Decide header credentials before a body can stream upstream.
 
         A request with no detected header credential keeps its normal request
         hook. For a detected credential, evaluate once at the request head;
         the result must not be re-evaluated after bytes have streamed upstream.
         """
-        if not flow.request.stream or flow.response:
+        transfer_codings = flow.request.headers.get("transfer-encoding", "").lower().split(",")
+        chunked = (
+            not (flow.request.is_http2 or flow.request.is_http3)
+            and transfer_codings[-1].strip() == "chunked"
+        )
+        if not (flow.request.stream or chunked) or flow.response:
             return
         self._maybe_reload_rules()
         if not self._header_detections(flow):
@@ -413,6 +418,10 @@ class CredentialGuard(SecurityAddon):
         flow.metadata["credential_guard_head_checked"] = True
         if flow.response:
             flow.metadata["credential_guard_head_denied"] = True
+            if chunked:
+                # An unannounced body has not reached the streaming threshold.
+                # Enter the existing per-flow early-response path at the head.
+                flow.request.stream = True
             # Do not send 100 Continue before the local denial.
             flow.request.headers.pop("expect", None)
 
