@@ -401,6 +401,10 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
     context.load_cert_chain(server_file)
     context.load_verify_locations(cafile=ca_file)
     context.verify_mode = ssl.CERT_REQUIRED
+    # TLS 1.3's missing-certificate alert can leave the historical comparator
+    # waiting after CONNECT. TLS 1.2 rejects during the handshake, keeping
+    # the same fail-closed HTTP 502 observable on both platforms.
+    context.maximum_version = ssl.TLSVersion.TLSv1_2
     origin = MtlsOrigin(context)
     thread = threading.Thread(target=origin.serve_forever, daemon=True)
     thread.start()

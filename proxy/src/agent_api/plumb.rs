@@ -13,7 +13,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use hyper::body::Body;
@@ -160,6 +160,9 @@ impl Store {
         let connection = Connection::open(path)?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         connection.execute_batch(CREATE_SCHEMA)?;
+        // A second process may hold the writer lock. Return a truthful 503
+        // before an agent's ordinary response timeout expires.
+        connection.busy_timeout(Duration::from_secs(1))?;
         let mut pending = HashMap::new();
         let mut conversations = HashMap::new();
         {

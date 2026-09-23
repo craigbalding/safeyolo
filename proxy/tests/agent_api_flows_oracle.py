@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import gzip
 import hashlib
 import json
 import logging
@@ -23,6 +22,7 @@ from unittest.mock import patch
 REPO = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path[:0] = [str(REPO / "cli/src"), str(REPO)]
 from mitmproxy.test import taddons, tflow  # noqa: E402
+from oracle_gzip import compress as oracle_gzip_compress  # noqa: E402
 
 from safeyolo.mitm_addons.agent_api import AgentAPI  # noqa: E402
 from safeyolo.proxy_modes.unix_listener import UnixMode  # noqa: E402
@@ -99,7 +99,7 @@ def cases():
         c("search_invalid_utf8", payload=b"\xff"),
         c("search_empty", payload=b""),
         c("search_utf16", payload='{"limit":1}'.encode("utf-16")),
-        c("search_gzip", payload=gzip.compress(b'{"limit":1}', mtime=0)),
+        c("search_gzip", payload=oracle_gzip_compress(b'{"limit":1}')),
         c("search_bad_gzip", payload=b"broken"),
         c("search_bigint", payload=b'{"limit":9223372036854775808}'),
         c("search_integer_conversion", payload=b'{"limit":' + b"1" * 4301 + b"}"),

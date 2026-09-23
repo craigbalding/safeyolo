@@ -74,7 +74,7 @@ def test_setup_uv_preserves_v5_cache_pruning_behavior() -> None:
             for step in job.get("steps", []):
                 if not str(step.get("uses", "")).startswith("astral-sh/setup-uv@"):
                     continue
-                assert step.get("with", {}).get("version") == "0.9.24"
+                assert step.get("with", {}).get("version") == ("0.12.8" if path.name == "proxy-rust.yml" else "0.9.24")
                 assert step.get("with", {}).get("prune-cache") is True
 
 
