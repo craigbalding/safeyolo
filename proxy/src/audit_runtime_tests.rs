@@ -249,7 +249,19 @@ fn writer_threads() -> BTreeSet<String> {
             let name = std::fs::read_to_string(entry.path().join("comm"));
             match name {
                 Ok(name) if name.starts_with("safeyolo-audit") => {
-                    Some(entry.file_name().to_string_lossy().into_owned())
+                    let status = match fs::read_to_string(entry.path().join("status")) {
+                        Ok(status) => status,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+                        Err(error) => panic!("owned task state observation failed: {error}"),
+                    };
+                    let state = status
+                        .lines()
+                        .find(|line| line.starts_with("State:"))
+                        .unwrap_or("State: unavailable");
+                    Some(format!(
+                        "tid={} {state}",
+                        entry.file_name().to_string_lossy()
+                    ))
                 }
                 Ok(_) => None,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -257,6 +269,21 @@ fn writer_threads() -> BTreeSet<String> {
             }
         })
         .collect()
+}
+
+fn assert_no_writer_threads(timeout: Duration) {
+    let started = std::time::Instant::now();
+    loop {
+        let threads = writer_threads();
+        if threads.is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() < timeout,
+            "audit writer tasks remain in /proc: {threads:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -279,7 +306,7 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                     )
                     .unwrap();
                     let writer = inert.audit.clone();
-                    assert!(writer_threads().is_empty());
+                    assert_no_writer_threads(Duration::ZERO);
                     assert!(!sink.parent().unwrap().exists());
                     assert_eq!(writer.pending_count().unwrap(), 0);
                     assert!(writer.wait_for_drain(Duration::ZERO).unwrap());
@@ -293,7 +320,7 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                         assert_eq!(writer.emit(event(index)).unwrap(), Submission::Queued);
                     }
                     proxy.shutdown().await;
-                    assert!(writer_threads().is_empty());
+                    assert_no_writer_threads(Duration::from_millis(100));
                     assert_eq!(writer.pending_count().unwrap(), 0);
                     assert_eq!(writer.dropped_count().unwrap(), 0.into());
                     assert!(writer.shutdown(Duration::ZERO).unwrap());
@@ -382,7 +409,7 @@ fn reload_preserves_queued_audit_startup_sink_and_logger_state() {
                 tokio::time::timeout(Duration::from_secs(2), shutdown).await.unwrap().unwrap();
                 assert_eq!(retained.audit.pending_count().unwrap(), 0);
                 assert_eq!(retained.audit.dropped_count().unwrap(), 0.into());
-                assert!(writer_threads().is_empty());
+                assert_no_writer_threads(Duration::from_millis(100));
                 assert_eq!(initial.audit.emit(event(99)).unwrap(), Submission::Stopped);
 
                 let mut bytes = Vec::new();
