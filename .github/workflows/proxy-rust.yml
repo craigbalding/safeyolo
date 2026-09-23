@@ -125,6 +125,12 @@ jobs:
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Provide the macOS admin peer test address
+        if: matrix.os == 'macos-latest'
+        run: |
+          sudo -n ifconfig lo0 alias 127.0.0.2
+          ifconfig lo0 | grep -F '127.0.0.2'
+
       - name: Start the Python-owned Coord fixture
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
