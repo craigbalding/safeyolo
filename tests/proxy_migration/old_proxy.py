@@ -81,6 +81,10 @@ class Observations:
 async def run(config):
     ensure_registered()
     configure_policy_client(PolicyClientConfig(baseline_path=config["policy_file"]))
+    if config.get("services_dir"):
+        from safeyolo.core.service_loader import init_service_registry
+
+        init_service_registry(Path(config["services_dir"]))
     options = Options(
         mode=[f"unix:{item['socket_path']}" for item in config["listeners"]],
         confdir=config["ca_directory"],

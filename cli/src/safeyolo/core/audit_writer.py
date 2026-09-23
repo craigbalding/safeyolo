@@ -1,6 +1,6 @@
 """Async audit event writer — drains a queue into the JSONL audit log.
 
-Each `write_event()` call in `utils.py` used to do three blocking things
+Each ordinary `write_event()` call in `utils.py` used to do three blocking things
 inside a mitmproxy hook: build the entry, open the log file, append.
 File I/O on every request/response hook is the classic hot-path
 regression. This module moves the file write off the hook thread
@@ -8,6 +8,8 @@ onto a single dedicated background thread. Callers enqueue with
 `put_event()` (one `queue.put_nowait` call, non-blocking), the writer
 thread batches whatever is currently queued into a single `write()`
 syscall, and rotation still runs — just on the writer, not the caller.
+Approval requests that promise operator review use `put_event_confirmed()`:
+the caller waits for that batch's append and close before claiming success.
 
 Why a thread and not asyncio: mitmproxy addon hooks are synchronous
 (`def request(self, flow)` etc.). Calling into an `asyncio.Queue`
@@ -40,6 +42,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+class AuditAppendError(RuntimeError):
+    """An approval event was not confirmed in the operator audit file."""
+
+
+class _ConfirmedEvent:
+    def __init__(self, entry: dict) -> None:
+        self.entry = entry
+        self.done = threading.Event()
+        self.error: Exception | None = None
+
+
 class _AuditWriter:
     """Single-threaded JSONL appender behind a bounded queue."""
 
@@ -61,6 +74,7 @@ class _AuditWriter:
         self._flush_timeout_s = flush_timeout_s
         self._thread: threading.Thread | None = None
         self._started = False
+        self._stopped = False
         self._start_lock = threading.Lock()
         self._dropped = 0
         self._dropped_lock = threading.Lock()
@@ -78,28 +92,50 @@ class _AuditWriter:
     # ---- producer side (called from addon hooks) --------------------------
     def put_event(self, entry: dict) -> None:
         """Non-blocking enqueue. Drops + warns if the queue is full."""
+        self._enqueue(entry, confirmed=False)
+
+    def put_event_confirmed(self, entry: dict, *, timeout_s: float | None = None) -> None:
+        """Return only after append/close, not merely after queue admission.
+
+        This does not fsync the file or promise survival of a process or host
+        crash. A timeout fails closed even if the writer later appends the row.
+        """
+        item = _ConfirmedEvent(entry)
+        self._enqueue(item, confirmed=True)
+        if not item.done.wait(self._flush_timeout_s if timeout_s is None else timeout_s):
+            raise AuditAppendError("audit append acknowledgement timed out")
+        if item.error is not None:
+            raise AuditAppendError("audit append failed") from item.error
+
+    def _enqueue(self, item: dict | _ConfirmedEvent, *, confirmed: bool) -> None:
         self._ensure_started()
         # Reserve the in-flight slot BEFORE the put so a reader that
         # observes queue.empty() cannot conclude "drained" while we're
         # still in the middle of enqueuing.
-        with self._inflight_cv:
-            self._inflight += 1
-        try:
-            self._queue.put_nowait(entry)
-        except queue.Full:
-            with self._inflight_cv:
-                self._inflight -= 1
-                self._inflight_cv.notify_all()
-            with self._dropped_lock:
-                self._dropped += 1
-                total = self._dropped
-            # One-liner to stderr; keeps debugging trivially grep-able.
-            print(
-                f"[safeyolo] audit writer queue full (maxsize={self._queue.maxsize}); "
-                f"dropped event (total_dropped={total})",
-                file=sys.stderr,
-                flush=True,
-            )
+        with self._start_lock:
+            if self._stopped:
+                reason = "stopped"
+            else:
+                with self._inflight_cv:
+                    self._inflight += 1
+                try:
+                    self._queue.put_nowait(item)
+                    return
+                except queue.Full:
+                    with self._inflight_cv:
+                        self._inflight -= 1
+                        self._inflight_cv.notify_all()
+                    reason = f"queue full (maxsize={self._queue.maxsize})"
+        with self._dropped_lock:
+            self._dropped += 1
+            total = self._dropped
+        print(
+            f"[safeyolo] audit writer {reason}; dropped event (total_dropped={total})",
+            file=sys.stderr,
+            flush=True,
+        )
+        if confirmed:
+            raise AuditAppendError(f"audit writer {reason}")
 
     @property
     def dropped_count(self) -> int:
@@ -159,7 +195,7 @@ class _AuditWriter:
     # ---- consumer side (runs on the background thread) -------------------
     def _run(self) -> None:
         """Drain + flush loop. Exits when the shutdown sentinel arrives."""
-        batch: list[dict] = []
+        batch: list[dict | _ConfirmedEvent] = []
         while True:
             # Block for the first item; drain everything else nonblocking.
             first = self._queue.get()
@@ -174,33 +210,40 @@ class _AuditWriter:
             self._flush(batch)
             batch.clear()
 
-    def _drain_pending(self, batch: list[dict]) -> None:
+    def _drain_pending(self, batch: list[dict | _ConfirmedEvent]) -> None:
         while True:
             try:
                 batch.append(self._queue.get_nowait())
             except queue.Empty:
                 return
 
-    def _flush(self, batch: list[dict]) -> None:
+    def _flush(self, batch: list[dict | _ConfirmedEvent]) -> None:
         if not batch:
             return
+        error: Exception | None = None
+        entries = [item.entry if isinstance(item, _ConfirmedEvent) else item for item in batch]
         try:
             path = self._path_provider()
             path.parent.mkdir(parents=True, exist_ok=True)
             self._rotate()
-            lines = "".join(json.dumps(entry) + "\n" for entry in batch)
+            lines = "".join(json.dumps(entry) + "\n" for entry in entries)
             with open(path, "a") as f:
                 f.write(lines)
         except Exception as exc:  # noqa: BLE001 — stderr fallback is the point
+            error = exc
             print(
                 f"[safeyolo] audit writer flush failed "
                 f"({len(batch)} entries): {type(exc).__name__}: {exc}",
                 file=sys.stderr,
                 flush=True,
             )
-            for entry in batch:
+            for entry in entries:
                 print(f"[safeyolo] Event: {json.dumps(entry)}", file=sys.stderr, flush=True)
         finally:
+            for item in batch:
+                if isinstance(item, _ConfirmedEvent):
+                    item.error = error
+                    item.done.set()
             # Release the in-flight reservations these events held. Runs on
             # both success and stderr-fallback paths so `wait_for_drain`
             # doesn't wedge on a persistent flush failure — the events are
@@ -210,22 +253,31 @@ class _AuditWriter:
                 self._inflight_cv.notify_all()
 
     def _shutdown(self) -> None:
-        if not self._started or self._thread is None:
-            return
+        with self._start_lock:
+            if not self._started or self._thread is None or self._stopped:
+                return
+            self._stopped = True
         try:
             self._queue.put(self._SHUTDOWN, timeout=self._flush_timeout_s)
         except queue.Full:
             # Writer is wedged or the queue is overflowing — last-ditch
             # dump of whatever is visible so nothing is silently dropped.
-            remaining: list[dict] = []
+            remaining: list[dict | _ConfirmedEvent] = []
             try:
                 while True:
                     remaining.append(self._queue.get_nowait())
             except queue.Empty:
                 pass
-            for entry in remaining:
+            for item in remaining:
+                entry = item.entry if isinstance(item, _ConfirmedEvent) else item
                 print(f"[safeyolo] Event (shutdown): {json.dumps(entry)}", file=sys.stderr, flush=True)
-            return
+                if isinstance(item, _ConfirmedEvent):
+                    item.error = AuditAppendError("audit writer stopped before append")
+                    item.done.set()
+            with self._inflight_cv:
+                self._inflight -= len(remaining)
+                self._inflight_cv.notify_all()
+            self._queue.put_nowait(self._SHUTDOWN)
         self._thread.join(timeout=self._flush_timeout_s)
 
 
@@ -272,6 +324,11 @@ def get_writer() -> _AuditWriter:
 def put_event(entry: dict) -> None:
     """Enqueue an already-built audit entry for background write."""
     get_writer().put_event(entry)
+
+
+def put_event_confirmed(entry: dict) -> None:
+    """Wait for the canonical audit append before claiming approval submission."""
+    get_writer().put_event_confirmed(entry)
 
 
 # No mitmproxy addon here — this module is pure infrastructure, loaded

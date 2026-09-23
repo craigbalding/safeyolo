@@ -202,6 +202,7 @@ def write_event(  # DOC: SECURITY.md, README.md
     addon: str | None = None,
     approval: ApprovalRequest | None = None,
     details: dict | None = None,
+    confirm_append: bool = False,
 ) -> None:
     """
     Write a structured event to the central JSONL audit log.
@@ -225,6 +226,8 @@ def write_event(  # DOC: SECURITY.md, README.md
         addon: Name of the addon emitting the event
         approval: Approval request metadata
         details: Addon-specific fields not in the spine
+        confirm_append: Wait for append/close before claiming operator review;
+            not a filesystem sync or crash-durability guarantee
     """
     from safeyolo.core.audit_schema import AuditEvent
 
@@ -253,6 +256,9 @@ def write_event(  # DOC: SECURITY.md, README.md
         entry = audit_event.to_jsonl()
     except Exception as e:
         _log.error(f"Event validation failed for '{event}': {type(e).__name__}: {e}")
+        if confirm_append:
+            # An unvalidated fallback is not an operator-reviewable approval.
+            raise
         # Fallback: write unvalidated entry so events are never silently lost
         entry = {
             "ts": datetime.now(UTC).isoformat(),
@@ -262,13 +268,15 @@ def write_event(  # DOC: SECURITY.md, README.md
             "summary": summary,
         }
 
-    # Hand off to the async writer. `put_event` is a single
-    # `queue.put_nowait` (non-blocking); the background thread handles
-    # rotation, open/append/close, and stderr fallback on flush failure.
-    # Keeping file I/O off the hook thread matters because `write_event`
-    # is called from request/response hooks on every flow.
+    # Ordinary events keep the non-blocking hook path. An approval that claims
+    # operator review waits for the same writer's append/close acknowledgement.
     from safeyolo.core.audit_writer import put_event as _put_event
-    _put_event(entry)
+    if confirm_append:
+        from safeyolo.core.audit_writer import put_event_confirmed
+
+        put_event_confirmed(entry)
+    else:
+        _put_event(entry)
 
 
 def make_block_response(

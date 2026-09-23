@@ -420,7 +420,11 @@ class PlumbService:
         await asyncio.to_thread(self._store.put_pending, req)
 
         target_names = [p for p in members if p != requester]
-        write_event(
+        # The pending SQLite row may already exist if the audit destination
+        # fails. Do not claim an operator-reviewable request until its canonical
+        # approval event is appended; keep the event loop free while waiting.
+        await asyncio.to_thread(
+            write_event,
             "plumb.requested",
             kind=EventKind.PLUMB,
             severity=Severity.CRITICAL,
@@ -443,6 +447,7 @@ class PlumbService:
                     "note": note_c,                   # untrusted: agent prose (sanitized)
                 },
             ),
+            confirm_append=True,
         )
         return {"status": 202, "state": "pending",
                 "request_id": req["request_id"], "participants": members}
