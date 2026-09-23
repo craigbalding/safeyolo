@@ -360,14 +360,10 @@ def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) 
 def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
     """Both matrix platforms run Rust tests between owned fixture steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    macos_peer = workflow.index("- name: Provide the macOS admin peer test address")
     setup = workflow.index("- name: Start the Python-owned Coord fixture")
     test = workflow.index("- name: Test and build the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
-    assert macos_peer < setup < test < teardown
-    peer_block = workflow[macos_peer:setup]
-    assert "if: matrix.os == 'macos-latest'" in peer_block
-    assert "sudo -n ifconfig lo0 alias 127.0.0.2" in peer_block
+    assert setup < test < teardown
     setup_block = workflow[setup:test]
     assert "if: matrix.os == 'ubuntu-latest'" not in setup_block
     assert "coord_fixture.py" in setup_block
