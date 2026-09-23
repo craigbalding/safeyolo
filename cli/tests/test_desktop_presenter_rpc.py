@@ -10,6 +10,8 @@ import textwrap
 import types
 from types import SimpleNamespace
 
+import pytest
+
 from safeyolo import desktop_presenter_rpc
 
 
@@ -119,3 +121,45 @@ def test_daemon_keeps_inherited_guest_output_off_protocol_stdout():
     assert responses[2] == {"error": "Agent not found", "kind": "not_found"}
     assert responses[3] == {"status": "stopped"}
     assert completed.stderr.count("desktop already ready") == 4
+
+
+def test_daemon_closes_preview_owner_on_input_end_or_broken_response_pipe(monkeypatch):
+    class PresentationError(RuntimeError):
+        pass
+
+    class Presenter:
+        instance = None
+
+        def __init__(self):
+            self.closed = False
+            Presenter.instance = self
+
+        def present(self, agent_id):
+            return SimpleNamespace(to_dict=lambda: {
+                "agent_id": agent_id,
+                "agent": agent_id,
+                "url": "http://127.0.0.1:12345/vnc.html",
+                "unlock_code": "fixture",
+                "reused": False,
+            })
+
+        def close_all(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        desktop_presenter_rpc,
+        "_load_dependencies",
+        lambda: (PresentationError, Presenter, lambda value: value, None),
+    )
+    output = io.StringIO()
+    assert desktop_presenter_rpc.daemon_main(io.StringIO('{"agent_id":"alice"}\n'), output) == 0
+    assert json.loads(output.getvalue())["agent"] == "alice"
+    assert Presenter.instance.closed
+
+    class BrokenOutput:
+        def write(self, _text):
+            raise BrokenPipeError("proxy output closed")
+
+    with pytest.raises(BrokenPipeError, match="proxy output closed"):
+        desktop_presenter_rpc.daemon_main(io.StringIO('{"agent_id":"alice"}\n'), BrokenOutput())
+    assert Presenter.instance.closed
