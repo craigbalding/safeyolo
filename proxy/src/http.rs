@@ -1535,24 +1535,35 @@ where
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
-    // AgentAPI runs before the later request/response traffic hooks. Only a
-    // synchronous producer error changes its outcome; queue drops and async
-    // sink failures retain the already-established source response semantics.
+    // AgentAPI runs before the later request/response traffic hooks. An
+    // approval claim waits for its own canonical audit write; other events
+    // retain the source's asynchronous submission semantics.
     let mut evidence_failed = false;
     if !outcome.audit_owned
         && let Some(audit) = &outcome.audit
-        && let Err(error) = runtime.audit.emit(audit.to_event())
     {
-        evidence_failed = true;
-        let authentication_failed = audit.kind == agent_api::AuditKind::AuthenticationFailed;
-        if audit.kind != agent_api::AuditKind::HandlerUnavailable {
-            evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
-        }
-        outcome = outcome.audit_submission_failed(api_request, error.kind());
-        if authentication_failed && let Some(guard) = &outcome.audit {
-            // A single independent containment attempt. The guard catches a
-            // second failure and its local response must remain intact.
-            evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
+        let submission = if audit
+            .approval
+            .as_ref()
+            .is_some_and(|approval| approval.required)
+        {
+            runtime.audit.emit_confirmed(audit.to_event()).await
+        } else {
+            runtime.audit.emit(audit.to_event()).map(|_| ())
+        };
+        if let Err(error) = submission {
+            evidence_failed = true;
+            let authentication_failed = audit.kind == agent_api::AuditKind::AuthenticationFailed;
+            if audit.kind != agent_api::AuditKind::HandlerUnavailable {
+                evidence_failed |=
+                    record_agent_api(runtime, identity, request_id, &outcome).is_err();
+            }
+            outcome = outcome.audit_submission_failed(api_request, error.kind());
+            if authentication_failed && let Some(guard) = &outcome.audit {
+                // A single independent containment attempt. The guard catches a
+                // second failure and its local response must remain intact.
+                evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
+            }
         }
     }
     evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err()

@@ -2039,6 +2039,19 @@ agent identity. Failed-auth audit retains the full request target independently
 of route parsing. These operator call sites supply no agent attribution,
 decision or approval.
 
+Approval-bearing Agent API requests (`/gateway/request-access`,
+`/gateway/submit-binding`, `/desktop/present` and `/plumb/request-chat`) now
+return a pending success only after their own canonical audit event is written
+and closed. If the destination write fails, the queue is full or stopped, or
+the write does not complete within 5 seconds, the agent receives 500 rather
+than a claim that the operator can review the request. Other audit events remain
+asynchronous. A failed Plumb audit does not undo its already committed SQLite
+request; the operator approval views still require the canonical audit event.
+The write receipt does not promise filesystem sync or crash durability.
+[The focused approval delivery test](../proxy/tests/approval_audit_delivery.rs)
+checks all three stateless routes against the native admin and retained watch
+views before and after destination recovery in one process.
+
 The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
 It does not cover every canonical submission exception: circuit hook failures
 and a TestContext head-hook failure can omit the header while preserving their

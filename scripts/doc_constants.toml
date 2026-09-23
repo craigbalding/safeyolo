@@ -177,6 +177,27 @@ forbidden = ["binds to 0.0.0.0", "binds on all interfaces"]
 # forbidden-phrase check rather than piggybacking on this file.
 
 [[assertion]]
+name = "approval-audit-write-timeout"
+source = "proxy/src/audit/writer.rs"
+pattern = 'tokio::time::timeout\(Duration::from_secs\((?P<seconds>\d+)\), receipt\)'
+docs = ["docs/proxy-parity.md"]
+must_contain = "{seconds} seconds"
+
+[[assertion]]
+name = "approval-audit-http-confirmed"
+source = "proxy/src/http.rs"
+pattern = 'runtime\.audit\.emit_confirmed\(audit\.to_event\(\)\)\.await'
+docs = ["docs/proxy-parity.md"]
+must_contain = "Approval-bearing Agent API requests"
+
+[[assertion]]
+name = "approval-audit-plumb-confirmed"
+source = "proxy/src/agent_api/plumb.rs"
+pattern = 'writer\.emit_confirmed\(intent\.to_event\(\)\)\.await'
+docs = ["docs/proxy-parity.md"]
+must_contain = "/plumb/request-chat"
+
+[[assertion]]
 name = "credguard-scan-url-option-name"
 source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
 pattern = 'loader\.add_option\("(?P<opt>credguard_scan_urls)"'

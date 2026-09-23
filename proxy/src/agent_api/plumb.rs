@@ -1164,9 +1164,12 @@ impl PlumbOwner {
                 let intent = (result["status"].as_u64() == Some(202))
                     .then(|| audit_request_values(&request_id, &requester, result.clone()));
                 let audit_owned = writer.is_some() && intent.is_some();
-                let audit_failed = intent
-                    .as_ref()
-                    .is_some_and(|intent| submit_agent_audit(writer.as_ref(), intent).is_err());
+                let audit_failed =
+                    if let (Some(writer), Some(intent)) = (writer.as_ref(), intent.as_ref()) {
+                        writer.emit_confirmed(intent.to_event()).await.is_err()
+                    } else {
+                        false
+                    };
                 OwnedAgentResult {
                     value: if audit_failed {
                         json!({"status":500,"error":"Internal error: RuntimeError"})
@@ -2366,6 +2369,52 @@ mod tests {
             1
         );
         assert!(!directory.path().join("audit.jsonl").exists());
+    }
+
+    #[tokio::test]
+    async fn request_audit_destination_failure_does_not_claim_operator_submission() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = PlumbOwner::for_data_dir(directory.path());
+        let path = directory.path().join("audit.jsonl");
+        std::fs::create_dir(&path).unwrap();
+        let writer = Arc::new(crate::audit::Writer::new(
+            path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        let failed = owner
+            .request_chat_owned(
+                "unwritten-plumb-request".into(),
+                "alice".into(),
+                vec![json!("bob")],
+                None,
+                None,
+                None,
+                Some(writer.clone()),
+            )
+            .await;
+        assert_eq!(failed.value["status"], 500);
+        assert_eq!(failed.failure, Some(super::super::Failure::AuditWrite));
+        assert!(path.is_dir());
+
+        std::fs::remove_dir(&path).unwrap();
+        let healthy = owner
+            .request_chat_owned(
+                "written-plumb-request".into(),
+                "alice".into(),
+                vec![json!("bob")],
+                None,
+                None,
+                None,
+                Some(writer.clone()),
+            )
+            .await;
+        assert_eq!(healthy.value["status"], 202);
+        let audit = std::fs::read_to_string(&path).unwrap();
+        assert!(audit.contains("written-plumb-request"));
+        assert!(!audit.contains("unwritten-plumb-request"));
+        owner.stop_admission().await;
+        owner.drain().await;
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
     }
 
     #[tokio::test]
