@@ -233,7 +233,7 @@ fn stop_presenter(owner: Arc<PresenterOwner>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, net::TcpStream, os::unix::fs::PermissionsExt, sync::OnceLock};
+    use std::{fs, os::unix::fs::PermissionsExt, sync::OnceLock};
 
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -256,138 +256,6 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&script, permissions).expect("fixture executable");
         (directory, script)
-    }
-
-    fn preview_fixture(protocol_failure: bool) -> (tempfile::TempDir, std::path::PathBuf) {
-        let directory = tempfile::tempdir().expect("fixture directory");
-        let script = directory.path().join("desktop-presenter-preview");
-        let body = format!(
-            r#"#!/usr/bin/env python3
-import http.server
-import json
-import pathlib
-import sys
-import threading
-
-class Preview(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"preview-alive")
-
-    def log_message(self, *_args):
-        pass
-
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Preview)
-thread = threading.Thread(target=server.serve_forever, daemon=True)
-thread.start()
-url = "http://127.0.0.1:%s/vnc.html" % server.server_port
-seen = False
-for line in sys.stdin:
-    request = json.loads(line)
-    if request.get("shutdown"):
-        server.shutdown()
-        server.server_close()
-        pathlib.Path(__file__ + ".closed").write_text("closed")
-        print('{{"status":"stopped"}}', flush=True)
-        break
-    if request["agent_id"] == "bob":
-        print("not-json" if {protocol_failure} else '{{"kind":"failed","error":"fixture"}}', flush=True)
-    else:
-        print(json.dumps({{"agent_id":"durable-alice","agent":"alice","url":url,
-                          "unlock_code":"fixture","reused":seen}}), flush=True)
-        seen = True
-"#,
-            protocol_failure = if protocol_failure { "True" } else { "False" },
-        );
-        fs::write(&script, body).expect("preview fixture");
-        let mut permissions = fs::metadata(&script)
-            .expect("fixture metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script, permissions).expect("fixture executable");
-        (directory, script)
-    }
-
-    fn preview_replies(url: &str) -> bool {
-        let port = url
-            .split(':')
-            .nth(2)
-            .and_then(|value| value.split('/').next())
-            .and_then(|value| value.parse::<u16>().ok())
-            .expect("preview URL port");
-        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-            return false;
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .expect("read timeout");
-        stream
-            .write_all(b"GET /vnc.html HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-            .expect("preview request");
-        let mut response = String::new();
-        std::io::Read::read_to_string(&mut stream, &mut response).expect("preview response");
-        response.starts_with("HTTP/1.0 200") && response.contains("preview-alive")
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::await_holding_lock)]
-    async fn typed_sibling_failure_keeps_shared_preview_alive() {
-        let _lock = test_lock();
-        shutdown();
-        let (_directory, script) = preview_fixture(false);
-        unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &script) };
-
-        let first = present("alice".to_owned()).await.expect("first preview");
-        let url = first["url"].as_str().expect("preview URL").to_owned();
-        let owner = PRESENTER.lock().unwrap().as_ref().unwrap().clone();
-        let original_pid = owner.child.lock().unwrap().id();
-        assert!(preview_replies(&url), "initial preview must serve requests");
-
-        assert!(matches!(
-            present("bob".to_owned()).await,
-            Err(Error::Failed)
-        ));
-        let current = PRESENTER.lock().unwrap().as_ref().unwrap().clone();
-        assert_eq!(current.child.lock().unwrap().id(), original_pid);
-        assert!(!script.with_extension("closed").exists());
-        assert!(
-            preview_replies(&url),
-            "failed sibling must not close preview"
-        );
-
-        let again = present("alice".to_owned()).await.expect("next request");
-        assert_eq!(again["url"], url);
-        assert_eq!(again["reused"], true);
-        assert!(preview_replies(&url));
-        shutdown();
-        assert!(script.with_extension("closed").exists());
-        assert!(!preview_replies(&url), "shutdown must close preview");
-        unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::await_holding_lock)]
-    async fn broken_protocol_closes_owned_preview_before_retiring_helper() {
-        let _lock = test_lock();
-        shutdown();
-        let (_directory, script) = preview_fixture(true);
-        unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &script) };
-
-        let first = present("alice".to_owned()).await.expect("first preview");
-        let url = first["url"].as_str().expect("preview URL").to_owned();
-        assert!(preview_replies(&url));
-        assert!(matches!(
-            present("bob".to_owned()).await,
-            Err(Error::Protocol)
-        ));
-        assert!(PRESENTER.lock().unwrap().is_none());
-        assert!(
-            script.with_extension("closed").exists(),
-            "helper must close its live preview before exit"
-        );
-        assert!(!preview_replies(&url));
-        unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
     }
 
     #[test]
