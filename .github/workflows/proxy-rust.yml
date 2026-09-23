@@ -206,12 +206,21 @@ jobs:
           echo "Coord fixture did not finish its ownership-verified teardown" >&2
           exit 1
 
+      - name: Provide the macOS owned HTTP peer address
+        if: matrix.os == 'macos-latest'
+        run: |
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+
       - name: Run shared HTTP contracts against the historical Python comparator
+        env:
+          PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-py' || '' }}
         run: |
           uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
 
       - name: Run shared HTTP contracts against native Rust without the temporary adapter
         env:
+          PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
           SAFEYOLO_RUST_NATIVE_ONLY: "1"
         run: uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 

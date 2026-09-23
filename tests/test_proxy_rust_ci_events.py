@@ -84,6 +84,17 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
     steps = {step.get("name"): step for step in job["steps"]}
     assert steps["Test and build the Rust proxy"]["timeout-minutes"] == 10
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
+    peer = steps["Provide the macOS owned HTTP peer address"]
+    assert peer["if"] == "matrix.os == 'macos-latest'"
+    assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
+    assert job["steps"].index(peer) < job["steps"].index(
+        steps["Run shared HTTP contracts against the historical Python comparator"]
+    )
+    short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-py' || '' }}"
+    assert steps["Run shared HTTP contracts against the historical Python comparator"]["env"]["PYTEST_ADDOPTS"] == short_tmp
+    assert steps["Run shared HTTP contracts against native Rust without the temporary adapter"]["env"][
+        "PYTEST_ADDOPTS"
+    ] == short_tmp.replace("sy-py", "sy-rs")
     assert (
         "--proxy-backend python" in steps["Run shared HTTP contracts against the historical Python comparator"]["run"]
     )
