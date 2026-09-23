@@ -2637,9 +2637,9 @@
   ],
   "source_sha256": {
     "cli/src/safeyolo/mitm_addons/ignored_host_logger.py": "9330a729788a3d05383ebd70850addd817468fc47627f69ab525a7fe3b88a505",
-    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",
     "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
-    "cli/src/safeyolo/core/audit_writer.py": "7db71d553ef7b1889828d3adabcacb125a12ef1b3f1d070c7948a9e1cf5c5103",
+    "cli/src/safeyolo/core/audit_writer.py": "1f171a0155977fa93dc2aaffcd15f24b53a7df4d4fe7f0c560a1e7aae42c9a23",
     "tests/test_ignored_host_logger.py": "20255a2b6b181c36ebd8e0cbdc78f5be781361deddbd8f3763c2582ab48695c3"
   }
 }

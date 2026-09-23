@@ -2350,7 +2350,7 @@
     "cli/src/safeyolo/policy/toml_normalize.py": "24511e6669a6a96414ca40236c225b6038f21da6538becc0280b9c922567968d",
     "cli/src/safeyolo/policy/compiler.py": "56ce5b6a203fed9b43152c94695184f85ca334aab4507f22d84df1c8f9f3d77e",
     "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
-    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",
     "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072"
   }
 }
