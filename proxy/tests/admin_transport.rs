@@ -1,13 +1,15 @@
-//! Owned-loopback integration witnesses for operator tasks and budget resets.
+//! Owned local-endpoint integration witnesses for operator tasks and budget resets.
 //!
 //! Source contract: operator-api-task-wire-source/results.json, SHA256
 //! 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.
 //! Registry writes do not activate tasks. Numeric alias containment and rejecting
 //! malformed shield reloads intentionally repair the separately witnessed source
-//! gaps. These tests use no operational token, external resolver, or host listener.
+//! gaps. These tests use no operational token or external resolver; listeners
+//! and request data are test-owned.
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    io::ErrorKind,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::Path,
     sync::{
         Arc,
@@ -15,6 +17,8 @@ use std::{
     },
     time::Duration,
 };
+
+mod test_owned_endpoint;
 
 use safeyolo_proxy::{Config, Proxy, admin_shield::REJECTION};
 use serde_json::{Value, json};
@@ -353,6 +357,33 @@ struct Peer {
 impl Peer {
     async fn bind(address: (Ipv4Addr, u16), response_headers: &str) -> Self {
         let listener = TcpListener::bind(address).await.unwrap();
+        Self::from_listener(listener, response_headers)
+    }
+
+    async fn bind_same_port(port: u16, response_headers: &str) -> Self {
+        // macOS may not assign 127.0.0.2. ::1 cannot replace it here: the
+        // shield intentionally protects ::1 on the admin listener's port.
+        let listener = match TcpListener::bind((Ipv4Addr::new(127, 0, 0, 2), port)).await {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == ErrorKind::AddrNotAvailable => {
+                let mut bound = None;
+                for address in assigned_non_loopback_ipv4() {
+                    if let Ok(listener) = TcpListener::bind((address, port)).await {
+                        bound = Some(listener);
+                        break;
+                    }
+                }
+                bound.expect("bind same-port peer on an assigned non-loopback address")
+            }
+            Err(error) => panic!("bind same-port peer: {error}"),
+        };
+        let address = listener.local_addr().unwrap();
+        assert_ne!(address.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        assert_ne!(address.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        Self::from_listener(listener, response_headers)
+    }
+
+    fn from_listener(listener: TcpListener, response_headers: &str) -> Self {
         let address = listener.local_addr().unwrap();
         let accepts = Arc::new(AtomicUsize::new(0));
         let count = accepts.clone();
@@ -385,6 +416,37 @@ impl Peer {
         let _ = self.task.await;
         assert!(TcpStream::connect(self.address).await.is_err());
     }
+}
+
+fn assigned_non_loopback_ipv4() -> Vec<Ipv4Addr> {
+    // getifaddrs only reads local assignments. Even a non-127 address on a
+    // loopback interface is usable as a distinct, test-owned same-port peer.
+    let mut first = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { libc::getifaddrs(&mut first) },
+        0,
+        "read assigned interface addresses: {}",
+        std::io::Error::last_os_error()
+    );
+    let mut addresses = Vec::new();
+    let mut current = first;
+    while !current.is_null() {
+        let interface = unsafe { &*current };
+        let address = interface.ifa_addr;
+        if !address.is_null()
+            && unsafe { (*address).sa_family as i32 } == libc::AF_INET
+            && interface.ifa_flags & (libc::IFF_UP as u32) != 0
+        {
+            let socket = unsafe { &*address.cast::<libc::sockaddr_in>() };
+            let ip = Ipv4Addr::from(socket.sin_addr.s_addr.to_ne_bytes());
+            if !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast() {
+                addresses.push(ip);
+            }
+        }
+        current = interface.ifa_next;
+    }
+    unsafe { libc::freeifaddrs(first) };
+    addresses
 }
 
 #[tokio::test]
@@ -845,11 +907,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     // port 0 and change the configured port to prove independent A protection.
     config.admin_port = Some(port);
     proxy.reload(config.clone()).await.unwrap();
-    let peer = Peer::bind(
-        (Ipv4Addr::new(127, 0, 0, 2), port),
-        "X-Blocked-By: admin-shield\r\n",
-    )
-    .await;
+    let peer = Peer::bind_same_port(port, "X-Blocked-By: admin-shield\r\n").await;
     let different_port_peer = Peer::bind((Ipv4Addr::LOCALHOST, 0), "").await;
     let body =
         serde_json::to_vec(&json!({"policy":{"unknown":{"synthetic_secret":secret}}})).unwrap();
@@ -1002,7 +1060,7 @@ async fn both_agents_cannot_reach_operator_aliases_but_same_port_peer_remains_us
     assert_eq!(credential_events.len(), 4);
     for row in credential_events {
         assert_eq!(row["outcome"], "no_detection");
-        assert!(row["host"] == "127.0.0.2" || row["host"] == "127.0.0.1");
+        assert!(row["host"] == peer.address.ip().to_string() || row["host"] == "127.0.0.1");
     }
     assert_eq!(extra_peer.accepts.load(Ordering::SeqCst), 0);
     assert_private(&config, &[&token, &secret]);
@@ -1022,7 +1080,8 @@ async fn immediate_parent_alias_and_invalid_shield_reload_preserve_live_containm
     // The immediate numeric parent must be checked even though the requested
     // origin is a different owned endpoint. A regression can only reach that
     // owned control, so this witness cannot cause external DNS or egress.
-    let peer = Peer::bind((Ipv4Addr::new(127, 0, 0, 2), 0), "").await;
+    let (listener, _) = test_owned_endpoint::bind().await;
+    let peer = Peer::from_listener(listener, "");
     let target_host = peer.address.to_string();
     let target = format!("http://{target_host}/health");
     config.parent_proxy = Some(format!("http://2130706433:{port}"));
