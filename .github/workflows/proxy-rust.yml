@@ -4,6 +4,8 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, converted_to_draft, ready_for_review]
     paths:
+      - "cli/src/safeyolo/rust_proxy.py"
+      - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
       - "tests/proxy_migration/**"
       - "tests/test_proxy_rust_coord_fixture.py"
@@ -65,6 +67,8 @@ jobs:
       - name: Test workflow, fixture, deletion, and adapter boundaries
         run: |
           uv run --frozen pytest -q \
+            cli/tests/test_rust_proxy.py \
+            cli/tests/test_sockets.py \
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_proxy_cutover_deletion_map.py \
