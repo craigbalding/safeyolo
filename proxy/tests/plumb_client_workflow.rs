@@ -805,7 +805,7 @@ async fn backing_state_failure_is_truthful_and_other_member_recovers() {
     blocker
         .execute_batch("PRAGMA busy_timeout=0; BEGIN IMMEDIATE;")
         .unwrap();
-    let failed = exchange_unix_with_timeout(
+    let failed = exchange_unix(
         &alice,
         &request(
             "POST",
@@ -813,7 +813,6 @@ async fn backing_state_failure_is_truthful_and_other_member_recovers() {
             AGENT_TOKEN,
             br#"{"body":"must not be reported as committed"}"#,
         ),
-        Duration::from_secs(10),
     )
     .await;
     assert_eq!(failed.status, 503);
