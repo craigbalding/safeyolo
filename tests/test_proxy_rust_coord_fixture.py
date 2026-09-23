@@ -319,30 +319,32 @@ def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) 
 
 
 def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
-    """The ordinary Rust test step must run between fixture ownership steps."""
+    """Both matrix platforms run Rust tests between owned fixture steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     setup = workflow.index("- name: Start the Python-owned Coord fixture")
     test = workflow.index("- name: Test and build the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
     assert setup < test < teardown
     setup_block = workflow[setup:test]
-    assert "if: matrix.os == 'ubuntu-latest'" in setup_block
+    assert "if: matrix.os == 'ubuntu-latest'" not in setup_block
     assert "coord_fixture.py" in setup_block
     assert "SAFEYOLO_NATS_TEST_INSTANCE" in setup_block
     assert workflow.count("SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture") == 2
     assert "teardown failed after startup failure" in setup_block
     test_block = workflow[test:teardown]
-    assert 'if [ "$RUNNER_OS" = Linux ]; then' in test_block
     assert "export SAFEYOLO_PROXY_COORD_DATA_DIR" in test_block
     assert "export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
     assert 'host_target="$(rustc -vV' in test_block
     assert "runner_variable=" in test_block
+    assert "tr '[:lower:]-' '[:upper:]_'" in test_block
     assert "export CARGO_BUILD_TARGET" in test_block
     assert "coord_test_runner.sh" in test_block
+    assert 'if [ "$RUNNER_OS" = Linux ]; then' not in test_block
     assert "export SAFEYOLO_COORD_DATA_DIR" not in test_block
     assert "export SAFEYOLO_NATS_TEST_INSTANCE" not in test_block
     teardown_block = workflow[teardown:]
-    assert "if: always() && matrix.os == 'ubuntu-latest'" in teardown_block
+    assert "if: always()" in teardown_block
+    assert "if: always() && matrix.os == 'ubuntu-latest'" not in teardown_block
     assert "coord_fixture.py --teardown" in teardown_block
 
 

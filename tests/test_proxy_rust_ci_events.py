@@ -77,7 +77,7 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
     assert steps["Test and build the Rust proxy"]["timeout-minutes"] == 10
-    assert steps["Stop the Python-owned Coord fixture"]["if"] == "always() && matrix.os == 'ubuntu-latest'"
+    assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
     assert (
         "--proxy-backend python" in steps["Run shared HTTP contracts against the historical Python comparator"]["run"]
     )
