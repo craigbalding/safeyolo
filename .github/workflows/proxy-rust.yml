@@ -4,7 +4,9 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, converted_to_draft, ready_for_review]
     paths:
+      - "cli/src/safeyolo/mitm_addons/credential_guard.py"
       - "proxy/**"
+      - "tests/test_credential_guard.py"
       - "tests/proxy_migration/**"
       - "tests/test_proxy_rust_coord_fixture.py"
       - "tests/test_proxy_rust_ci_events.py"
@@ -65,6 +67,8 @@ jobs:
       - name: Test workflow, fixture, deletion, and adapter boundaries
         run: |
           uv run --frozen pytest -q \
+            tests/test_credential_guard.py \
+            tests/test_check_doc_cli_flags.py \
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_proxy_cutover_deletion_map.py \

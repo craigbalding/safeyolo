@@ -236,8 +236,8 @@ class CredentialGuard(SecurityAddon):
     def load(self, loader):
         """Register mitmproxy options."""
         loader.add_option("credguard_block", bool, True, "Block violations (default: true)")
-        loader.add_option("credguard_scan_urls", bool, False, "Scan URLs for credentials")  # DOC: SECURITY.md
-        loader.add_option("credguard_scan_bodies", bool, False, "Scan request bodies")  # DOC: SECURITY.md
+        loader.add_option("credguard_scan_urls", bool, False, "Inactive compatibility option; setting it does not scan request URLs")  # DOC: SECURITY.md
+        loader.add_option("credguard_scan_bodies", bool, False, "Inactive compatibility option; setting it does not scan request bodies")  # DOC: SECURITY.md
 
     def configure(self, updates):
         """Handle configuration updates."""
