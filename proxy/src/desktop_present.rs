@@ -167,17 +167,16 @@ pub(crate) async fn present(agent_id: String) -> Result<Value, Error> {
         let owner = presenter.as_ref().expect("presenter initialized").clone();
         drop(presenter);
         let result = request(&owner, &agent_id);
-        if matches!(result, Err(Error::Transport | Error::Protocol)) {
-            if let Ok(mut presenter) = PRESENTER.lock()
-                && presenter
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &owner))
-            {
-                presenter.take().expect("matching presenter is installed");
-                // Do not start a replacement before this helper has closed
-                // the previews it owns and exited.
-                stop_presenter(owner);
-            }
+        if matches!(result, Err(Error::Transport | Error::Protocol))
+            && let Ok(mut presenter) = PRESENTER.lock()
+            && presenter
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &owner))
+        {
+            presenter.take().expect("matching presenter is installed");
+            // Do not start a replacement before this helper has closed
+            // the previews it owns and exited.
+            stop_presenter(owner);
         }
         result
     })
