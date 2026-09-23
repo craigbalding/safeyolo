@@ -116,7 +116,7 @@ contain runaway request loops.
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
 
 **Credential detection.**
-As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256 — only the fingerprint is stored or logged, never the raw value. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
+As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256. Routine credential events store the fingerprint, not the detected raw value. Stored flows can retain request and response content, including credentials in ordinary headers and bodies. Authorized operator views and exports can expose that retained content. The flow store redacts the gateway-injected credential header. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
 
 ## Out of Scope
 
