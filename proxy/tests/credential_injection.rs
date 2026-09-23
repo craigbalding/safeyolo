@@ -513,6 +513,18 @@ fn cases() -> Vec<Value> {
     cases.push(json!({"kind":"bearer","scheme":"https","value":"synthetic\r\nX-Injected: yes","repair":"crlf_value"}));
     cases
 }
+
+fn is_legacy_failed_provider_refresh(case: &Value, expected: &Value) -> bool {
+    case["refresh_mode"] == "failure"
+        && case["credential_type"] == "oauth2"
+        && case["refresh_on_401"] == true
+        && case["missing_refresh"] != true
+        && case["missing_url"] != true
+        && expected["refresh_calls"] == 1
+        && expected["evidence"]["stats"]["refreshed"] == 0
+        && expected["evidence"]["stats"]["injected"] == 1
+}
+
 fn observe(case: &Value, vault: &Vault) -> Value {
     vault.remove("demo-key").unwrap();
     let mut c = credential();
@@ -623,6 +635,97 @@ fn observe(case: &Value, vault: &Vault) -> Value {
     json!({"headers":fields(&headers),"response":response,"evidence":result_evidence,"failure":failure,"refresh_calls":refresh_calls,"header_injection":headers.values().any(|value|value.as_bytes().windows(b"\r\nX-Injected:".len()).any(|window|window==b"\r\nX-Injected:"))})
 }
 
+fn assert_python_injection_observation(
+    index: usize,
+    case: &Value,
+    actual: &Value,
+    expected: &Value,
+) -> bool {
+    if case["repair"] == "crlf_value" {
+        assert_eq!(expected["header_injection"], true);
+        assert_eq!(expected["evidence"]["stats"]["injected"], 1);
+        assert!(expected["failure"].is_null());
+        assert_eq!(actual["failure"], "InvalidHeaderValue");
+        assert_eq!(actual["header_injection"], false);
+        assert!(
+            actual["headers"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(["x-credential", "sgw_synthetic"]))
+        );
+        false
+    } else if is_legacy_failed_provider_refresh(case, expected) {
+        // Python reuses the stored access token after a failed refresh. Native
+        // behavior deliberately refuses delivery. This is a historical difference.
+        assert!(
+            expected["headers"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(["x-credential", "Bearer synthetic-value"]))
+        );
+        // This field detects CRLF header injection, not credential delivery.
+        assert_eq!(expected["header_injection"], false);
+        assert!(expected["response"].is_null());
+        assert!(expected["failure"].is_null());
+        assert_eq!(expected["refresh_calls"], 1);
+        assert_eq!(
+            expected["evidence"]["stats"],
+            json!({"injected": 1, "refreshed": 0})
+        );
+        assert!(
+            expected["evidence"]["audit"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["event"] == "gateway.allow")
+        );
+        assert_eq!(expected["evidence"]["trace"]["outcome"], "injected");
+
+        assert!(
+            actual["headers"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(["x-credential", "sgw_synthetic"]))
+        );
+        assert!(actual["response"].is_null());
+        assert!(actual["evidence"].is_null());
+        assert_eq!(actual["failure"], "native_error");
+        assert_eq!(actual["refresh_calls"], 1);
+        assert_eq!(actual["header_injection"], false);
+        assert!(!actual.to_string().contains("synthetic-value"));
+        assert!(!actual.to_string().contains("synthetic-refreshed"));
+        true
+    } else {
+        assert_eq!(actual, expected, "source injection case {index}: {case}");
+        false
+    }
+}
+
+#[test]
+fn other_python_injection_rows_still_require_exact_equality() {
+    let cases = cases();
+    for index in [27, 53, 54] {
+        let case = &cases[index];
+        let expected = if index == 27 {
+            json!({"failure": null, "refresh_calls": 0})
+        } else {
+            json!({"failure": null, "refresh_calls": 1, "evidence": {"stats": {"injected": 1, "refreshed": 0}}})
+        };
+        assert!(!is_legacy_failed_provider_refresh(case, &expected));
+        assert!(
+            std::panic::catch_unwind(|| {
+                assert_python_injection_observation(
+                    index,
+                    case,
+                    &json!({"failure": "unexpected"}),
+                    &expected,
+                );
+            })
+            .is_err()
+        );
+    }
+}
+
 #[test]
 #[ignore = "historical Python oracle; set SAFEYOLO_POLICY_PYTHON"]
 fn injection_protocol_and_expiry_order_match_actual_python_gateway() {
@@ -727,27 +830,14 @@ json.dump(rows,sys.stdout)
     );
     let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
     let (_directory, vault) = vault();
+    let mut legacy_failed_refresh_cases = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let actual = observe(case, &vault);
-        if case["repair"] == "crlf_value" {
-            assert_eq!(expected[index]["header_injection"], true);
-            assert_eq!(expected[index]["evidence"]["stats"]["injected"], 1);
-            assert!(expected[index]["failure"].is_null());
-            assert_eq!(actual["failure"], "InvalidHeaderValue");
-            assert_eq!(actual["header_injection"], false);
-            assert!(
-                actual["headers"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!(["x-credential", "sgw_synthetic"]))
-            );
-        } else {
-            assert_eq!(
-                actual, expected[index],
-                "source injection case {index}: {case}"
-            );
+        if assert_python_injection_observation(index, case, &actual, &expected[index]) {
+            legacy_failed_refresh_cases.push(index);
         }
     }
+    assert_eq!(legacy_failed_refresh_cases, [31, 35, 45]);
     eprintln!(
         "{} actual Python service-gateway injection cases",
         cases.len()

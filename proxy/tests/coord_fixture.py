@@ -24,6 +24,7 @@ SHUTDOWN_AGENT = "ag-alice"
 INITIAL_CAPABILITIES = ["python:initial", "python:shared"]
 FINAL_CAPABILITIES = ["python:final", "python:shared"]
 NATIVE_CAPABILITIES = ["rust:native", "rust:shared"]
+FIXTURE_STOP_TIMEOUT_S = 15.0
 
 
 def fixture_root() -> Path:
@@ -211,16 +212,24 @@ def wait_for_native_generation(root: Path, nats_runtime: Any, api: Any) -> None:
 
 
 def stop_fixture(root: Path) -> None:
-    """Request fixture shutdown and stop only the NATS server it owns."""
-    _, nats_client, nats_runtime = coord_modules()
+    """Ask the fixture owner to stop NATS and wait for its stop receipt."""
+    _, _, nats_runtime = coord_modules()
     nats_runtime.nats_root()
-    if root.exists():
-        fixture_path(root, "fixture.stop").touch()
-    nats_client.reset_for_tests()
-    try:
-        nats_runtime.stop_server()
-    finally:
-        nats_client.reset_for_tests()
+    if not root.exists():
+        return
+
+    stopped_path = fixture_path(root, "fixture.stopped")
+    if stopped_path.is_file():
+        return
+    fixture_path(root, "fixture.stop").touch()
+    deadline = time.monotonic() + FIXTURE_STOP_TIMEOUT_S
+    while not stopped_path.is_file():
+        if time.monotonic() >= deadline:
+            # If the owner died, attempt the runtime's ownership-verified
+            # cleanup. Never report a missing receipt as a clean stop.
+            nats_runtime.stop_server()
+            raise TimeoutError(f"fixture owner did not confirm NATS shutdown: {stopped_path}")
+        time.sleep(0.05)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -233,7 +242,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--teardown",
         action="store_true",
-        help="request fixture shutdown and stop its ownership-verified NATS server",
+        help="request owner-verified fixture shutdown and wait for its stop receipt",
     )
     return parser.parse_args()
 

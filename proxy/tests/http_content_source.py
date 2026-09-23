@@ -4,7 +4,6 @@ import argparse
 import base64
 import bz2
 import codecs
-import gzip
 import hashlib
 import importlib.metadata
 import json
@@ -16,6 +15,7 @@ import brotli
 import zstandard
 from mitmproxy import http
 from mitmproxy.net import encoding
+from oracle_gzip import compress as oracle_gzip_compress
 
 
 def cases():
@@ -29,9 +29,9 @@ def cases():
     yield "identity_space", b" identity ", body
     yield "encoding_nonascii", b"\xff", body
     yield "encoding_nul", b"identity\x00", body
-    yield "encoding_list", b"gzip, br", gzip.compress(body, mtime=0)
+    yield "encoding_list", b"gzip, br", oracle_gzip_compress(body)
     encoders = {
-        "gzip": lambda value: gzip.compress(value, mtime=0),
+        "gzip": oracle_gzip_compress,
         "deflate": zlib.compress,
         "raw": lambda value: zlib.compress(value, wbits=-15),
         "br": brotli.compress,
@@ -53,12 +53,12 @@ def cases():
             yield f"{name}_{label}", content_encoding, data
     yield "gzip_zlib", b"gzip", zlib.compress(body)
     yield "gzip_raw", b"gzip", zlib.compress(body, wbits=-15)
-    yield "gzip_upper", b"GZIP", gzip.compress(body, mtime=0)
+    yield "gzip_upper", b"GZIP", oracle_gzip_compress(body)
     yield "deflateraw_zlib", b"deflateraw", zlib.compress(body)
     yield "deflateraw_raw", b"deflateraw", zlib.compress(body, wbits=-15)
     yield "zstd_unknown_size", b"zstd", zstandard.ZstdCompressor(write_content_size=False).compress(body)
-    yield "gzip_late_bad_crc", b"gzip", gzip.compress(b"A" * 20000, mtime=0)[:-8] + b"\x00" * 8
-    yield "gzip_large", b"gzip", gzip.compress(b"A" * 20000, mtime=0)
+    yield "gzip_late_bad_crc", b"gzip", oracle_gzip_compress(b"A" * 20000)[:-8] + b"\x00" * 8
+    yield "gzip_large", b"gzip", oracle_gzip_compress(b"A" * 20000)
     yield "br_large", b"br", brotli.compress(b"A" * 20000)
     yield "zstd_large", b"zstd", zstandard.ZstdCompressor().compress(b"A" * 20000)
     for name in (
