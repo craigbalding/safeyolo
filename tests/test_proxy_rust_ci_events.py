@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -85,3 +86,59 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
         "--proxy-backend rust"
         in steps["Run shared HTTP contracts against native Rust without the temporary adapter"]["run"]
     )
+
+
+def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> None:
+    steps = rust_workflow()["jobs"]["http-slice"]["steps"]
+    named = {step.get("name"): step for step in steps}
+    python = named["Select the pinned Python oracle interpreter"]
+    assert python["uses"] == "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
+    assert python["with"]["python-version"] == "3.12.14"
+    assert (
+        'uv sync --frozen --group dev --python "$(command -v python)"'
+        in named["Install the historical comparator and temporary policy adapter"]["run"]
+    )
+
+    source = named["Prepare pinned Python oracle source"]
+    comparator = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
+    assert source["env"]["SAFEYOLO_COMPARATOR_COMMIT"] == comparator
+    assert 'git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"' in source["run"]
+    assert "git worktree add --detach" in source["run"]
+    assert steps.index(source) < steps.index(named["Compare native behavior with the historical implementation"])
+
+    oracle = named["Compare native behavior with the historical implementation"]
+    env = oracle["env"]
+    for key in ("SAFEYOLO_POLICY_PYTHON", "SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
+        assert env[key] == "${{ github.workspace }}/.venv/bin/python"
+    assert env["SAFEYOLO_SOURCE_ROOT"] == "${{ github.workspace }}"
+    assert env["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"]
+    assert env["SAFEYOLO_STATE_EVIDENCE_DIR"] == "${{ runner.temp }}/safeyolo-state-oracle"
+    assert f'"$comparator_head" != {comparator}' in oracle["run"]
+    assert "status --porcelain" in oracle["run"]
+    assert "platform.python_version(), unicodedata.unidata_version" in oracle["run"]
+    assert "('3.12.14', '15.0.0')" in oracle["run"]
+    assert "set -e -o pipefail" in oracle["run"]
+    assert "cargo_with_space.sh test --locked -- --ignored --nocapture" in oracle["run"]
+
+
+def test_full_matrix_ignored_oracle_summary_fails_closed() -> None:
+    steps = rust_workflow()["jobs"]["http-slice"]["steps"]
+    oracle = next(
+        step for step in steps if step.get("name") == "Compare native behavior with the historical implementation"
+    )
+    assert (
+        subprocess.run(["bash", "-n"], input=oracle["run"], text=True, capture_output=True, check=False).returncode == 0
+    )
+    assert "2>&1 | tee" in oracle["run"]
+    awk_script = oracle["run"].split("awk '", 1)[1].rsplit("' \"$RUNNER_TEMP", 1)[0]
+
+    def summary_exits_zero(summary: str) -> bool:
+        return (
+            subprocess.run(["awk", awk_script], input=summary, text=True, capture_output=True, check=False).returncode
+            == 0
+        )
+
+    assert summary_exits_zero("test result: ok. 3 passed; 0 failed; 0 ignored; 5 filtered out\n")
+    assert not summary_exits_zero("")
+    assert not summary_exits_zero("test result: ok. 0 passed; 0 failed; 0 ignored; 8 filtered out\n")
+    assert not summary_exits_zero("test result: ok. 3 passed; 0 failed; 1 ignored; 4 filtered out\n")

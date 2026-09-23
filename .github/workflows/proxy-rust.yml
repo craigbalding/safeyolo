@@ -120,10 +120,14 @@ jobs:
           version: "0.9.24"
           prune-cache: true
 
+      - name: Select the pinned Python oracle interpreter
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12.14"
+
       - name: Install the historical comparator and temporary policy adapter
         run: |
-          uv python install 3.12
-          uv sync --frozen --group dev --python 3.12
+          uv sync --frozen --group dev --python "$(command -v python)"
 
       - name: Start the Python-owned Coord fixture
         if: matrix.os == 'ubuntu-latest'
@@ -224,8 +228,44 @@ jobs:
         run: |
           uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 
+      - name: Prepare pinned Python oracle source
+        env:
+          SAFEYOLO_COMPARATOR_COMMIT: 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
+        run: |
+          git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"
+          git worktree add --detach "$SAFEYOLO_STATE_PYTHON_SOURCE" "$SAFEYOLO_COMPARATOR_COMMIT"
+
       - name: Compare native behavior with the historical implementation
         working-directory: proxy
         env:
           SAFEYOLO_POLICY_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --locked -- --ignored --nocapture
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_SOURCE_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_SOURCE_ROOT: ${{ github.workspace }}
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
+          SAFEYOLO_STATE_EVIDENCE_DIR: ${{ runner.temp }}/safeyolo-state-oracle
+        run: |
+          set -e -o pipefail
+          comparator_head="$(git -C "$SAFEYOLO_STATE_PYTHON_SOURCE" rev-parse HEAD)"
+          if [ "$comparator_head" != 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a ]; then
+            echo "Wrong Python comparator commit: $comparator_head" >&2
+            exit 1
+          fi
+          if [ -n "$(git -C "$SAFEYOLO_STATE_PYTHON_SOURCE" status --porcelain)" ]; then
+            echo "Python comparator checkout is not clean" >&2
+            exit 1
+          fi
+          "$SAFEYOLO_POLICY_PYTHON" -c "import platform, unicodedata; actual = (platform.python_version(), unicodedata.unidata_version); assert actual == ('3.12.14', '15.0.0'), f'Wrong Python oracle runtime: {actual}'"
+          mkdir -p "$SAFEYOLO_STATE_EVIDENCE_DIR"
+          ../scripts/cargo_with_space.sh test --locked -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/safeyolo-ignored-oracle.log"
+          awk '
+            /^test result: / { summaries++; passed += $4; ignored += $8 }
+            END {
+              if (summaries == 0 || passed == 0 || ignored != 0) {
+                printf "ignored-oracle lane did not execute cleanly: summaries=%d passed=%d ignored=%d\n", summaries, passed, ignored > "/dev/stderr"
+                exit 1
+              }
+              printf "ignored-oracle lane executed %d tests across %d summaries\n", passed, summaries
+            }
+          ' "$RUNNER_TEMP/safeyolo-ignored-oracle.log"
