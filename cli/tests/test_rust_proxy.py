@@ -2,6 +2,7 @@
 
 import json
 import signal
+import socket
 import subprocess
 import time
 import urllib.request
@@ -285,14 +286,24 @@ def test_start_waits_past_wrong_pid_before_accepting_its_complete_marker(launch)
 
 def test_before_ready_exit_captures_console_before_cleaning_lifetime_state(launch):
     launch.alive.return_value = False
+    bridge = rust_proxy.get_bridge_sockets_dir()
+    bridge.mkdir(parents=True)
+    other_path = bridge / "other-instance.sock"
 
     def capture():
         assert rust_proxy.state_file().exists()
         return "owned exit evidence"
 
     launch.capture.side_effect = capture
-    with pytest.raises(RuntimeError, match="exited before readiness") as error:
-        rust_proxy.start(launch.config)
+    with socket.socket(socket.AF_UNIX) as other:
+        other.bind(str(other_path))
+        other.listen()
+        inode = other_path.stat().st_ino
+        with pytest.raises(RuntimeError, match="exited before readiness") as error:
+            rust_proxy.start(launch.config)
+        assert other_path.stat().st_ino == inode
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(other_path))
     assert "owned exit evidence" in str(error.value)
     launch.capture.assert_called_once_with()
     launch.kill.assert_not_called()
@@ -341,18 +352,26 @@ def test_graceful_stop_waits_beyond_both_old_deadlines_without_sigkill(launch):
     assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
 
 
-def test_macos_post_signal_unobservable_exit_clears_lifecycle_state(launch, monkeypatch):
-    """A macOS post-SIGTERM ps gap is an exited process, not an identity error."""
+def test_macos_post_signal_unobservable_exit_preserves_other_live_socket(launch):
+    """An exited native process cannot authorize removal of another UDS."""
     receipt(launch)
     launch.ready.write_text(json.dumps(marker()))
     launch.token.side_effect = [TOKEN, None]
-    remove_stale = create_autospec(rust_proxy.remove_stale_sockets, spec_set=True)
-    monkeypatch.setattr(rust_proxy, "remove_stale_sockets", remove_stale)
+    bridge = rust_proxy.get_bridge_sockets_dir()
+    bridge.mkdir(parents=True)
+    other_path = bridge / "other-instance.sock"
+    with socket.socket(socket.AF_UNIX) as other:
+        other.bind(str(other_path))
+        other.listen()
+        inode = other_path.stat().st_ino
 
-    proxy.stop_proxy()
+        proxy.stop_proxy()
+
+        assert other_path.stat().st_ino == inode
+        with socket.socket(socket.AF_UNIX) as client:
+            client.connect(str(other_path))
 
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
-    remove_stale.assert_called_once_with()
     assert not launch.ready.exists()
     assert not rust_proxy.state_file().exists()
     assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
