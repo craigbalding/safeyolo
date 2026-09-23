@@ -7,11 +7,11 @@
     "mitmproxy": "12.2.3"
   },
   "source_sha256": {
-    "agent_api.py": "ab52434f28e82c9cc5f7ce32bf0b69ff6dcd3158e5e5fd5a446e4a747942e378",
+    "agent_api.py": "7ef754e4361bd52b70e601eac63acbb2335b354a2be990866f151c9072b651d5",
     "identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
     "service_loader.py": "a5def870f8e3e6896db8aaed4a1cdd2aecb0a6cb5537d942923ca5f610e445e8",
     "audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
-    "utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",
     "unix_listener.py": "59f22518f7f6752cc857cf62ed196e8645e01cde3b8540cfb62739734099e3db",
     "tokens.py": "0e9f55d14f411a6e71c2b234ca5072f4c65904da4d0c62aba3103a589152d1a5"
   },
@@ -79,7 +79,8 @@
               "reason": "owned inbox review",
               "proposed_lifetime": "session"
             }
-          }
+          },
+          "confirm_append": true
         }
       ],
       "identity": {
@@ -437,7 +438,8 @@
               "reason": "owned inbox review",
               "proposed_lifetime": "session"
             }
-          }
+          },
+          "confirm_append": true
         }
       ],
       "identity": {
