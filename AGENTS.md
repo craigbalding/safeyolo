@@ -136,6 +136,10 @@ branch and commit, and the PR when one exists, for work implemented or reviewed.
 
 ## Technical writing
 
+For releases and other multi-issue work, follow the
+[issue-planning guide](docs/issue-planning.md). Keep acceptance evidence in
+issues and comments. Use Project fields to show estimates and progress.
+
 For README, quickstart, and onboarding work, use the
 [readme-usability skill](cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md).
 It includes a reference for SafeYolo owner priorities.
