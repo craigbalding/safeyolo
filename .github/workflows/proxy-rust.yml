@@ -126,7 +126,6 @@ jobs:
           uv sync --frozen --group dev --python 3.12.14
 
       - name: Start the Python-owned Coord fixture
-        if: matrix.os == 'ubuntu-latest'
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
@@ -170,26 +169,22 @@ jobs:
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then
-            export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
-            export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
-            host_target="$(rustc -vV | sed -n 's/^host: //p')"
-            test -n "$host_target"
-            runner_variable="CARGO_TARGET_${host_target^^}_RUNNER"
-            runner_variable="${runner_variable//-/_}"
-            export CARGO_BUILD_TARGET="$host_target"
-            export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
-          fi
+          export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+          export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$host_target"
+          runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
+          runner_variable="CARGO_TARGET_${runner_target}_RUNNER"
+          export CARGO_BUILD_TARGET="$host_target"
+          export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked
-          if [ "$RUNNER_OS" = Linux ]; then
-            rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
-            test -x "$rust_proxy"
-            printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
-          fi
+          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+          test -x "$rust_proxy"
+          printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
-        if: always() && matrix.os == 'ubuntu-latest'
+        if: always()
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
