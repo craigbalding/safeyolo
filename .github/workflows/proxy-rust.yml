@@ -9,6 +9,8 @@ on:
       - "tests/test_proxy_rust_coord_fixture.py"
       - "tests/test_proxy_rust_ci_events.py"
       - "tests/test_proxy_cutover_deletion_map.py"
+      - "tests/blackbox/sinkhole/server.py"
+      - "tests/test_blackbox_sinkhole.py"
       - "tests/test_rust_temporary_policy.py"
       - "tests/test_workflow_action_pins.py"
       - "tools/proxy_migration/**"
@@ -68,6 +70,7 @@ jobs:
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_proxy_cutover_deletion_map.py \
+            tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_rust_temporary_policy.py \
             tests/test_workflow_action_pins.py
 
