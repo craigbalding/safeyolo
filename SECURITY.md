@@ -116,7 +116,7 @@ contain runaway request loops.
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
 
 **Credential detection.**
-As a safety net, SafeYolo also detects credentials in transit via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256 — only the fingerprint is stored or logged, never the raw value. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
+As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256 — only the fingerprint is stored or logged, never the raw value. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
 
 ## Out of Scope
 
@@ -125,8 +125,8 @@ As a safety net, SafeYolo also detects credentials in transit via pattern matchi
 | **Prompt injection** | SafeYolo reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
-| **Credentials in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned. |
-| **Credentials in query/body** | Off by default. Enable with `--set credguard_scan_urls=true` / `credguard_scan_bodies=true`. |
+| **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
+| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. Python registers `credguard_scan_urls` and `credguard_scan_bodies` but does not use them; setting them does not enable these scans. The native proxy has no equivalent options. |
 
 ## Reporting Security Issues
 
