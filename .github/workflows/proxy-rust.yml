@@ -54,7 +54,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.9.24"
+          version: "0.12.8"
           prune-cache: true
 
       - name: Install the historical comparator and temporary policy adapter
@@ -117,17 +117,13 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.9.24"
+          version: "0.12.8"
           prune-cache: true
-
-      - name: Select the pinned Python oracle interpreter
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12.14"
 
       - name: Install the historical comparator and temporary policy adapter
         run: |
-          uv sync --frozen --group dev --python "$(command -v python)"
+          uv python install 3.12.14
+          uv sync --frozen --group dev --python 3.12.14
 
       - name: Start the Python-owned Coord fixture
         if: matrix.os == 'ubuntu-latest'

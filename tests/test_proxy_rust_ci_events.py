@@ -91,13 +91,10 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
 def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> None:
     steps = rust_workflow()["jobs"]["http-slice"]["steps"]
     named = {step.get("name"): step for step in steps}
-    python = named["Select the pinned Python oracle interpreter"]
-    assert python["uses"] == "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
-    assert python["with"]["python-version"] == "3.12.14"
-    assert (
-        'uv sync --frozen --group dev --python "$(command -v python)"'
-        in named["Install the historical comparator and temporary policy adapter"]["run"]
-    )
+    assert named["Install uv"]["with"]["version"] == "0.12.8"
+    installation = named["Install the historical comparator and temporary policy adapter"]["run"]
+    assert "uv python install 3.12.14" in installation
+    assert "uv sync --frozen --group dev --python 3.12.14" in installation
 
     source = named["Prepare pinned Python oracle source"]
     comparator = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
