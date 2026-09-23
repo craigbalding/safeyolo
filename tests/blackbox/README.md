@@ -235,7 +235,11 @@ Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
 The prepared-host runner keeps Python as its default.  Explicit proxy runs use
 the existing `tests/proxy_migration` process harness, which starts a fresh
 selected process and its owned UDS/origin fixtures for every test.  Assertions
-stay shared between implementations:
+stay shared between implementations. From `tests/blackbox` in the test-suite
+checkout, with `pytest` installed, replace the paths below with a Python
+checkout containing `cli/src/safeyolo` and an already built Rust proxy. The
+focused Rust command uses `proxy/target/debug/safeyolo-proxy` from the test-suite
+checkout unless `SAFEYOLO_RUST_PROXY` names another executable.
 
 ```bash
 # Run the focused acceptance against the selected source checkout.
@@ -253,13 +257,17 @@ stay shared between implementations:
 
 # Forward focused pytest arguments after `--`.
 ./run-tests.sh --proxy --proxy-impl rust -- \
-  tests/proxy_migration/test_http_contract.py -k attribution
+  ../proxy_migration/test_http_contract.py -k attribution
 ```
 
 The selector validates the requested checkout or executable before starting
 pytest.  Rust selection runs its `--version` command and records the binary
-SHA-256; each backend artifact also records the interpreter, selected Python
-package path, source and test-suite revision/dirty state, platform and machine.
+SHA-256; each backend artifact also records the pytest launcher, Python
+package location, source and test-suite revision/dirty state, platform and
+machine. When the selector verifies a Python interpreter from the launcher's
+shebang, the artifact records that interpreter and version. For a wrapper or
+unreadable launcher, those fields are null because the selector cannot identify
+the interpreter used by pytest.
 Missing binaries, failed readiness, or a failed selected backend are errors.
 `both` still starts the second backend after a first-run failure and returns a
 nonzero result if either run fails.  `--proxy-impl rust|both` is currently

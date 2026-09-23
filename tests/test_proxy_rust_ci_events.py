@@ -33,6 +33,9 @@ def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> No
         "cli/src/safeyolo/rust_proxy.py",
         "cli/tests/test_rust_proxy.py",
         "proxy/**",
+        "tests/blackbox/proxy_backend.py",
+        "tests/blackbox/run-tests.sh",
+        "tests/test_blackbox_harness.py",
         "tests/test_proxy_rust_ci_events.py",
         "tests/test_proxy_rust_coord_fixture.py",
         ".github/workflows/proxy-rust.yml",
@@ -58,6 +61,8 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
+        "tests/test_blackbox_harness.py",
+        "tests/proxy_migration/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",
         "cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
     ):

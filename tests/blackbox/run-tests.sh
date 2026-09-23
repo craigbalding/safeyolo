@@ -192,13 +192,6 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
         python|rust) SELECTED_BACKENDS=("$PROXY_IMPL") ;;
         both) SELECTED_BACKENDS=(python rust) ;;
     esac
-    SELECTOR_ARGS=(--test-suite-root "$REPO_ROOT")
-    if [ -n "$PYTHON_SOURCE" ]; then
-        SELECTOR_ARGS+=(--python-source "$PYTHON_SOURCE")
-    fi
-    if [ -n "$RUST_BIN" ]; then
-        SELECTOR_ARGS+=(--rust-bin "$RUST_BIN")
-    fi
     if [ -n "$EXPECTED_PLATFORM" ]; then
         echo "ERROR: --expect-platform cannot be combined with the proxy-only backend selector" >&2
         exit 2
@@ -225,13 +218,24 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
     for backend in "${SELECTED_BACKENDS[@]}"; do
         evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
         junit="$ARTIFACTS_DIR/proxy-${backend}-junit.xml"
+        selector_args=(--test-suite-root "$REPO_ROOT")
+        if [ "$backend" = "python" ] && [ -n "$PYTHON_SOURCE" ]; then
+            selector_args+=(--python-source "$PYTHON_SOURCE")
+        fi
+        if [ "$backend" = "rust" ] && [ -n "$RUST_BIN" ]; then
+            selector_args+=(--rust-bin "$RUST_BIN")
+        fi
         echo "=== Selected proxy backend: $backend ==="
         echo "  Runtime evidence: $ARTIFACTS_DIR/proxy-${backend}-runtime.json"
         # Validate immediately before this backend's independent process run.
         # A missing second backend must leave the first run's evidence intact
         # and must not prevent the remaining selected backends from running.
         if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
-            "${SELECTOR_ARGS[@]}" --output "$evidence"; then
+            "${selector_args[@]}" --output "$evidence"; then
+            if [ "$backend" = "python" ]; then
+                # A rejected comparator cannot affect the independent Rust run.
+                unset SAFEYOLO_PYTHON_SOURCE || true
+            fi
             echo "Infrastructure failure selecting proxy backend '$backend'; continuing" >&2
             infrastructure_failure=true
             continue
