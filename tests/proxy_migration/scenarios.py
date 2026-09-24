@@ -29,6 +29,8 @@ class Origin(ThreadingHTTPServer):
     def __init__(self, port=0, *, stream_seconds=2.0, response_delay=0.0):
         self.accepts = 0
         self.requests = []
+        self.via_headers = []
+        self.canary_headers = []
         self.websocket_frames = []
         self.keep_alive = False
         self.connection_ids = {}
@@ -61,6 +63,8 @@ class OriginHandler(BaseHTTPRequestHandler):
         if self.server.keep_alive:
             observation["connection_id"] = self.server.connection_ids[id(self.connection)]
         self.server.requests.append(observation)
+        self.server.via_headers.append(self.headers.get_all("Via", []))
+        self.server.canary_headers.append(self.headers.get("X-Fixture-Canary"))
         if self.path in {"/stream", "/stream-control", "/stream-cancel"}:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")

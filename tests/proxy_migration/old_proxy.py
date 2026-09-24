@@ -22,6 +22,7 @@ from safeyolo.core.audit_writer import get_writer
 from safeyolo.core.internal_api import is_agent_api_host
 from safeyolo.core.probe import is_probe_host
 from safeyolo.mitm_addons.agent_api_guard import AgentAPIRequestGuard
+from safeyolo.mitm_addons.loop_guard import LoopGuard
 from safeyolo.mitm_addons.network_guard import NetworkGuard
 from safeyolo.mitm_addons.pattern_scanner import PatternScanner
 from safeyolo.mitm_addons.probe_sink import ProbeSink
@@ -109,7 +110,7 @@ async def run(config):
         master.addons.add(AdminShield(), admin_api)
         master.options.update(admin_port=config["admin_port"],
                               admin_api_token_file=config.get("admin_api_token_file", ""))
-    master.addons.add(RequestIdGenerator())
+    master.addons.add(LoopGuard(config.get("via_token")), RequestIdGenerator())
     if config.get("fixture_agent_api", False):
         from safeyolo.mitm_addons.agent_api import AgentAPI
 
