@@ -226,6 +226,8 @@ class H2CancellationOriginHandler(socketserver.BaseRequestHandler):
                         if not server.reset_seen.wait(timeout=5):
                             raise TimeoutError("cancel stream reset was not observed")
                         self._finish_keep(connection, keep_stream_id)
+                        # The client need not send another frame after its reset.
+                        stream.sendall(connection.data_to_send())
                         keep_stream_id = None
         except (ConnectionError, OSError, ssl.SSLError, TimeoutError) as error:
             # A downstream reset and subsequent TLS close are expected. Preserve
@@ -447,6 +449,49 @@ def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend,
             assert len({events[row["headers"]["x-safeyolo-request-id"]]["connection_id"] for row in responses}) == 1
             for row in responses:
                 assert events[row["headers"]["x-safeyolo-request-id"]]["agent"] == agent
+
+
+def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp_path):
+    """The origin fixture must write its queued sibling body after the reset gate."""
+    pem, public = origin_certificate(tmp_path)
+    with h2_cancellation_origin(pem) as origin:
+        context = ssl.create_default_context(cafile=public)
+        context.set_alpn_protocols(["h2"])
+        with socket.create_connection(origin.server_address, timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname="127.0.0.1") as stream:
+                stream.settimeout(5)
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=True, header_encoding="utf-8"))
+                connection.initiate_connection()
+                connection.send_headers(1, headers(origin.authority, "/h2-keep"), end_stream=True)
+                stream.sendall(connection.data_to_send())
+
+                saw_headers = False
+                while not saw_headers:
+                    data = stream.recv(65536)
+                    assert data, "origin closed before sibling response headers"
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.ResponseReceived):
+                            assert event.stream_id == 1
+                            assert dict(event.headers)[":status"] == "200"
+                            saw_headers = True
+                # Trigger the reset gate without another write on this socket.
+                origin.reset_seen.set()
+                assert origin.keep_completed.wait(timeout=5)
+
+                body = bytearray()
+                ended = False
+                while not ended:
+                    data = stream.recv(65536)
+                    assert data, "origin closed before sibling response body"
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.DataReceived):
+                            assert event.stream_id == 1
+                            body.extend(event.data)
+                        elif isinstance(event, h2.events.StreamEnded):
+                            assert event.stream_id == 1
+                            ended = True
+                assert body == b"keep-complete"
 
 
 def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend, tmp_path, request):

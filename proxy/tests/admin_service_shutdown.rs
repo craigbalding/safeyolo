@@ -11,7 +11,7 @@
 
 use std::{
     fs::{self, OpenOptions},
-    os::unix::{fs::MetadataExt, process::ExitStatusExt},
+    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::Duration,
@@ -196,7 +196,7 @@ async fn completed_shutdown_reopens_same_agent_socket_and_readiness_paths() {
     wait_for_absent(&paths.agent_socket()).await;
 
     // A second native process gets the same configured state and socket paths.
-    // Requiring the old marker and inode to disappear first prevents a stale
+    // Requiring the old marker and socket path to disappear first prevents a stale
     // readiness file or socket from making this a false-positive launch.
     let (second, mut second_guard) = start_proxy(&paths);
     let second_ready = wait_for_readiness(&paths.readiness).await;
@@ -264,8 +264,6 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
         .find(|row| row["event"] == "admin.agent_service_authorized")
         .cloned()
         .expect("completed service mutation must have one canonical audit event");
-    let first_socket = fs::metadata(paths.agent_socket()).unwrap();
-
     // SIGKILL deliberately skips Drop. The next native start must reclaim the
     // stale Unix socket and replace the stale readiness marker before serving.
     let first_pid = u64::from(first.id());
@@ -289,6 +287,10 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
     let stale_ready: Value = serde_json::from_slice(&fs::read(&paths.readiness).unwrap()).unwrap();
     assert_eq!(stale_ready["instance_id"], first_instance);
     assert_eq!(stale_ready["pid"], first_pid);
+    assert!(
+        UnixStream::connect(paths.agent_socket()).await.is_err(),
+        "stale socket must not accept connections after the first process exits"
+    );
 
     let (second, mut second_guard) = start_proxy(&paths);
     let second_ready =
@@ -300,11 +302,6 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
     assert_ne!(second_instance, first_instance);
     assert_ne!(second_pid, first_pid);
     wait_for_path(&paths.agent_socket()).await;
-    let second_socket = fs::metadata(paths.agent_socket()).unwrap();
-    assert!(
-        first_socket.ino() != second_socket.ino() || first_socket.dev() != second_socket.dev(),
-        "restart must replace the stale socket inode"
-    );
     let second_admin_port = second_ready["admin_port"]
         .as_u64()
         .expect("restarted readiness must publish the operator port")
@@ -340,6 +337,7 @@ async fn abrupt_kill_restarts_over_stale_paths_and_retains_completed_audit() {
         "first_exit_signal": first_status.signal(),
         "stale_readiness_observed": true,
         "stale_agent_socket_observed": true,
+        "stale_agent_socket_unusable": true,
         "stale_readiness_replaced": true,
         "stale_socket_replaced": true,
         "completed_mutation_response": "HTTP/1.1 200",

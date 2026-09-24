@@ -1356,6 +1356,131 @@ async fn native_pattern_scanner_http_request_and_response_boundaries() {
 }
 
 #[tokio::test]
+async fn native_pattern_scanner_url_block_without_body_keeps_local_response() {
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("agent.sock");
+    let policy_path = directory.path().join("policy.json");
+    std::fs::write(
+        &policy_path,
+        json!({
+            "permissions": [{"action":"network:request", "resource":"*", "effect":"allow"}],
+            "scan_patterns": [{
+                "name":"synthetic-secret",
+                "pattern":"SYNTHETIC-SECRET-621",
+                "scope":["url", "body"],
+                "target":"request",
+                "action":"block"
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    let mut proxy_config = config(&directory, &policy_path, &socket, false);
+    proxy_config.inspection = Some(Inspection {
+        policy_file: policy_path,
+        block_request: true,
+        block_response: false,
+        block_websocket_request: false,
+        block_websocket_response: false,
+    });
+    let proxy = Proxy::start(proxy_config).await.unwrap();
+
+    let url_request = format!(
+        "GET http://127.0.0.1:{origin_port}/clean?key=SYNTHETIC-SECRET-621 HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nConnection: close\r\n\r\n"
+    );
+    let url_block = tokio::time::timeout(
+        Duration::from_secs(3),
+        raw_exchange(&socket, url_request.as_bytes()),
+    )
+    .await
+    .unwrap();
+    assert!(url_block.starts_with(b"HTTP/1.1 403"), "{url_block:?}");
+    assert_eq!(
+        response_header(&url_block, "x-blocked-by"),
+        "pattern-scanner"
+    );
+    let url_id = response_header(&url_block, "x-safeyolo-request-id");
+
+    let body = b"SYNTHETIC-SECRET-621";
+    let mut body_request = format!(
+        "POST http://127.0.0.1:{origin_port}/clean HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    body_request.extend_from_slice(body);
+    let body_block =
+        tokio::time::timeout(Duration::from_secs(3), raw_exchange(&socket, &body_request))
+            .await
+            .unwrap();
+    assert!(body_block.starts_with(b"HTTP/1.1 403"), "{body_block:?}");
+    assert_eq!(
+        response_header(&body_block, "x-blocked-by"),
+        "pattern-scanner"
+    );
+    let body_id = response_header(&body_block, "x-safeyolo-request-id");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "blocked requests dialed the origin"
+    );
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let origin_task = tokio::spawn(origin(listener, seen.clone(), Arc::new(Notify::new())));
+    let allowed_request = format!(
+        "GET http://127.0.0.1:{origin_port}/clean HTTP/1.1\r\nHost: 127.0.0.1:{origin_port}\r\nConnection: close\r\n\r\n"
+    );
+    let allowed = tokio::time::timeout(
+        Duration::from_secs(3),
+        raw_exchange(&socket, allowed_request.as_bytes()),
+    )
+    .await
+    .unwrap();
+    assert!(allowed.starts_with(b"HTTP/1.1 200"), "{allowed:?}");
+    assert!(allowed.ends_with(b"origin-ok"), "{allowed:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    proxy.shutdown().await;
+    origin_task.abort();
+    let events = std::fs::read_to_string(directory.path().join("events.jsonl")).unwrap();
+    let rows = events
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let audit = std::fs::read_to_string(directory.path().join("audit.jsonl")).unwrap();
+    let audit_rows = audit
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for (request_id, location) in [(&url_id, "url"), (&body_id, "body")] {
+        assert!(rows.iter().any(|event| {
+            event["event"] == "security.pattern_scanner"
+                && event["request_id"] == request_id.as_str()
+                && event["decision"] == "deny"
+                && event["outcome"] == "match_blocked"
+                && event["finding"]["location"] == location
+        }));
+        assert!(rows.iter().any(|event| {
+            event["event"] == "proxy.request"
+                && event["request_id"] == request_id.as_str()
+                && event["status"] == 403
+                && event["decision"] == "deny"
+        }));
+        assert!(!rows.iter().any(|event| {
+            event["event"] == "proxy.egress" && event["request_id"] == request_id.as_str()
+        }));
+        assert!(audit_rows.iter().any(|event| {
+            event["event"] == "traffic.response"
+                && event["request_id"] == request_id.as_str()
+                && event["details"]["status"] == 403
+                && event["details"]["blocked_by"] == "pattern-scanner"
+        }));
+    }
+}
+
+#[tokio::test]
 async fn native_pattern_scanner_decodes_gzip_request_and_response_on_real_h1() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("agent.sock");

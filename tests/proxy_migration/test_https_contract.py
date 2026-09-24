@@ -355,6 +355,7 @@ class MtlsOrigin(Origin):
         self.mtls_context = context
         self.tls_successes = 0
         self.tls_failures = []
+        self.tls_failure_recorded = threading.Event()
         super().__init__()
 
     def get_request(self):
@@ -364,6 +365,7 @@ class MtlsOrigin(Origin):
         except ssl.SSLError as error:
             self.tls_failures.append(type(error).__name__)
             raw.close()
+            self.tls_failure_recorded.set()
             raise
         self.tls_successes += 1
         return stream, address
@@ -465,8 +467,10 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
 
             assert origin.tls_successes == 1
             # A backend may make more than one failed TLS attempt while
-            # completing the one CONNECT request. Every attempt must fail before
-            # HTTP application data reaches the origin.
+            # completing the one CONNECT request. The origin thread may record
+            # a failed handshake after the client receives 502.
+            assert origin.tls_failure_recorded.wait(timeout=5)
+            # Every attempt must fail before HTTP application data reaches the origin.
             assert len(origin.tls_failures) >= 1
             assert origin.accepts == 1 + len(origin.tls_failures)
             assert origin.requests == [{"method": "GET", "target": "/direct-mtls"}]
