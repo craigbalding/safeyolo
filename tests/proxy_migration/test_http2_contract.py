@@ -11,6 +11,7 @@ import ssl
 import threading
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 
 import h2.config
 import h2.connection
@@ -126,7 +127,8 @@ class OriginHandler(socketserver.BaseRequestHandler):
                                 connection.send_headers(event.stream_id, [(":status", "200"), ("content-length", "5")])
                                 connection.send_data(event.stream_id, b"hello", end_stream=True)
                             elif isinstance(event, h2.events.DataReceived):
-                                requests[event.stream_id]["body"].extend(event.data)
+                                with self.server.lock:
+                                    requests[event.stream_id]["body"].extend(event.data)
                                 connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
                         if output := connection.data_to_send():
                             stream.sendall(output)
@@ -397,6 +399,74 @@ def headers(authority, path, extra=()):
     return [(":method", "GET"), (":scheme", "https"), (":authority", authority), (":path", path), *extra]
 
 
+def recv_upload_response(stream, origin, *, idle_seconds=5):
+    """Wait for proxy bytes while the owned origin continues receiving the upload."""
+    with origin.lock:
+        origin_bytes = len(origin.requests[0]["body"]) if origin.requests else 0
+    deadline = monotonic() + idle_seconds
+    previous_timeout = stream.gettimeout()
+    try:
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                pytest.fail("HTTP/2 upload made no origin or response progress")
+            stream.settimeout(min(1, remaining))
+            try:
+                return stream.recv(65536)
+            except TimeoutError:
+                with origin.lock:
+                    received_bytes = len(origin.requests[0]["body"]) if origin.requests else 0
+                if received_bytes > origin_bytes:
+                    origin_bytes = received_bytes
+                    deadline = monotonic() + idle_seconds
+    finally:
+        stream.settimeout(previous_timeout)
+
+
+def test_upload_response_wait_requires_origin_progress(monkeypatch):
+    """A long transfer may continue, but a silent transfer must expire."""
+    clock = [0]
+    monkeypatch.setattr("tests.proxy_migration.test_http2_contract.monotonic", lambda: clock[0])
+
+    class ProgressOrigin:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.requests = [{"body": bytearray()}]
+
+    class TimedStream:
+        def __init__(self, origin, progressing):
+            self.origin = origin
+            self.progressing = progressing
+            self.timeout = 5
+            self.calls = 0
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def recv(self, size):
+            clock[0] += self.timeout
+            self.calls += 1
+            if self.calls == 7:
+                return b"HTTP/2 response"
+            if self.progressing:
+                with self.origin.lock:
+                    self.origin.requests[0]["body"].extend(b"x")
+            raise TimeoutError
+
+    origin = ProgressOrigin()
+    progressing = TimedStream(origin, progressing=True)
+    assert recv_upload_response(progressing, origin) == b"HTTP/2 response"
+    assert progressing.gettimeout() == 5
+    clock[0] = 0
+    stalled = TimedStream(ProgressOrigin(), progressing=False)
+    with pytest.raises(pytest.fail.Exception, match="no origin or response progress"):
+        recv_upload_response(stalled, stalled.origin)
+    assert stalled.gettimeout() == 5
+
+
 def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
@@ -428,7 +498,7 @@ def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_b
                     connection.send_data(1, payload[offset:offset + count], end_stream=offset + count == len(payload))
                     offset += count
                 stream.sendall(connection.data_to_send())
-                data = stream.recv(65536)
+                data = recv_upload_response(stream, origin)
                 assert data, "HTTP/2 upload ended before its response"
                 for event in connection.receive_data(data):
                     if isinstance(event, h2.events.ResponseReceived):

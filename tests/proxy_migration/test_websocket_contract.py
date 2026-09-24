@@ -36,6 +36,7 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 TEXT = ("bounded compressed websocket message 📦 " * 32).encode()
 BINARY = bytes(range(256)) * 8
+D32_REASON = "D32: historical wsproto loses compression state across control frames"
 PATTERN = '''
 [[scan_patterns]]
 name = "project-id"
@@ -345,11 +346,19 @@ def drain_shutdown(stream):
         return
 
 
-def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None):
+def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None,
+             expect_d32_teardown=False):
     with connect_peer(origin, path=path, ca=ca, compressed=origin.compressed) as peer:
         if direction == "request":
             peer.send(opcode, payload, fragmented=True, control=control)
-        observed = peer.receive()
+        try:
+            observed = peer.receive()
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, EOFError):
+            if not expect_d32_teardown or (
+                direction == "response" and (control, b"control") not in peer.controls
+            ):
+                raise
+            pytest.xfail(D32_REASON)
         if observed[0] != 8:
             if direction == "response":
                 peer.send(1, b"ack")
@@ -359,6 +368,34 @@ def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None)
         destination = result if direction == "request" else observed
         destination_controls = controls if direction == "request" else peer.controls
         return destination, destination_controls
+
+
+def test_d32_teardown_requires_proxy_control_delivery(monkeypatch):
+    class BrokenPeer:
+        controls = []
+
+        def receive(self):
+            raise BrokenPipeError("peer closed during control reply")
+
+    class CompressedOrigin:
+        compressed = True
+
+    peer = BrokenPeer()
+
+    @contextmanager
+    def broken_connection(*args, **kwargs):
+        yield peer
+
+    monkeypatch.setattr("tests.proxy_migration.test_websocket_contract.connect_peer", broken_connection)
+    options = {"direction": "response", "opcode": 1, "payload": TEXT, "control": 9,
+               "expect_d32_teardown": True}
+    with pytest.raises(BrokenPipeError):
+        exchange(CompressedOrigin(), **options)
+    peer.controls = [(9, b"control")]
+    with pytest.raises(pytest.xfail.Exception, match="D32"):
+        exchange(CompressedOrigin(), **options)
+    with pytest.raises(BrokenPipeError):
+        exchange(CompressedOrigin(), **(options | {"expect_d32_teardown": False}))
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
@@ -390,16 +427,16 @@ def test_complete_fragmented_messages(proxy_backend, tmp_path, request, tls, dir
         assert control is None or (control, b"control") in direct_controls
         with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
                           inspection={}) as proxy:
+            python_d32 = proxy_backend == "python" and compressed and control is not None
             delivered, controls = exchange(origin, direction=direction, opcode=opcode, payload=payload,
-                                            control=control, path=proxy.paths["alice"], ca=proxy_ca)
+                                            control=control, path=proxy.paths["alice"], ca=proxy_ca,
+                                            expect_d32_teardown=python_d32)
             assert control is None or (control, b"control") in controls
-            if proxy_backend == "python" and compressed and control is not None:
-                # Captured first without an xfail: all 48 direct specimens
-                # passed, and precisely these 16 WS/WSS deliveries failed.
-                # Keep setup, handshake and control forwarding outside the
-                # expected-failure region; a repaired source must report XPASS.
-                request.node.add_marker(pytest.mark.xfail(
-                    strict=True, reason="D32: historical wsproto loses compression state across control frames"))
+            if python_d32:
+                # The direct specimen and proxy handshake passed. exchange()
+                # classifies only receive-side teardown after the handshake.
+                # A repaired delivery must report XPASS here.
+                request.node.add_marker(pytest.mark.xfail(strict=True, reason=D32_REASON))
             assert delivered == (opcode, payload)
 
 
@@ -1208,6 +1245,11 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
             assert all(item["origin"]["data_frames"] == 0 for item in observations)
             assert all(item["pending_spool_retained_after_close"] == 0 for item in observations)
             assert proxy.events("proxy.websocket.message") == []
+            if proxy_backend == "rust":
+                deadline = time.monotonic() + 3
+                while len(proxy.events("proxy.websocket.end")) < sessions:
+                    assert time.monotonic() < deadline, "Cancelled compressed WebSocket did not finish"
+                    time.sleep(0.01)
             ended = proxy.events("proxy.websocket.end")
             if proxy_backend == "rust":
                 assert len(ended) == sessions
