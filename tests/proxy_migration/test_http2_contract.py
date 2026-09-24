@@ -325,8 +325,48 @@ def h2_requests(stream, requests, *, allow_rejection=False):
                     results[identifier]["goaway"] = int(event.error_code)
                 pending.clear()
         if output := connection.data_to_send():
-            stream.sendall(output)
+            try:
+                stream.sendall(output)
+            except (BrokenPipeError, ConnectionResetError):
+                if not allow_rejection:
+                    raise
+                # A rejecting peer can close before our SETTINGS ACK; keep
+                # reading to record its GOAWAY or closed connection.
     return list(results.values())
+
+
+@pytest.mark.parametrize("write_error", [BrokenPipeError, ConnectionResetError])
+def test_h2_requests_rejection_closes_before_settings_ack(write_error):
+    server = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=False))
+    server.initiate_connection()
+    settings = server.data_to_send()
+    server.close_connection(error_code=h2.errors.ErrorCodes.PROTOCOL_ERROR)
+    goaway = server.data_to_send()
+
+    class ClosedAckStream:
+        def __init__(self):
+            self.replies = iter((settings, goaway))
+            self.writes = []
+
+        def sendall(self, data):
+            self.writes.append(data)
+            if len(self.writes) == 2:
+                assert data == b"\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+                raise write_error("peer closed after rejecting the request")
+
+        def recv(self, size):
+            return next(self.replies)
+
+    request_headers = [headers("127.0.0.1:443", "/forbidden")]
+    allowed = ClosedAckStream()
+    response = h2_requests(allowed, request_headers, allow_rejection=True)[0]
+    assert response["goaway"] == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+    assert len(allowed.writes) == 2
+
+    strict = ClosedAckStream()
+    with pytest.raises(write_error):
+        h2_requests(strict, request_headers)
+    assert len(strict.writes) == 2
 
 
 def headers(authority, path, extra=()):
