@@ -1,7 +1,7 @@
 """Tests for the request_id addon.
 
-Contract: assign a correlation ID and start_time to every flow, strip RFC 7230
-hop-by-hop headers, preserve WebSocket handshake headers when applicable.
+Contract: assign a correlation ID and start_time to every flow, strip client
+hop headers, and retain chunked framing and WebSocket handshake headers.
 
 These tests are organised by contract area (ID + start_time, hop-by-hop
 stripping, WebSocket classification, logging hygiene, cross-module contract)
@@ -160,7 +160,6 @@ HOP_BY_HOP = [
     ("Proxy-Authorization", "Basic c2VjcmV0"),
     ("TE", "trailers"),
     ("Trailer", "Expires"),
-    ("Transfer-Encoding", "chunked"),
     ("Upgrade", "h2c"),
 ]
 
@@ -168,7 +167,7 @@ HOP_BY_HOP = [
 class TestHopByHopStripping:
     @pytest.mark.parametrize("header,value", HOP_BY_HOP)
     def test_canonical_hop_by_hop_header_stripped(self, addon, header, value):
-        """Every RFC 7230 §6.1 hop-by-hop header is individually stripped."""
+        """Non-framing RFC 7230 §6.1 hop headers are individually stripped."""
         flow = tflow.tflow()
         flow.request.headers[header] = value
 
@@ -205,6 +204,32 @@ class TestHopByHopStripping:
         addon.request(flow)
 
         assert "proxy-authorization" not in {k.lower() for k in flow.request.headers.keys()}
+
+    def test_chunked_framing_remains_until_request_end(self, addon):
+        flow = tflow.tflow()
+        flow.request.headers["Transfer-Encoding"] = "chunked"
+        flow.request.headers["Connection"] = "Transfer-Encoding, X-Hop"
+        flow.request.headers["X-Hop"] = "remove-me"
+        flow.request.headers["Proxy-Authorization"] = "Basic fixture"
+
+        addon.requestheaders(flow)
+        assert flow.request.headers["Transfer-Encoding"] == "chunked"
+        assert "Connection" not in flow.request.headers
+        assert "X-Hop" not in flow.request.headers
+        assert "Proxy-Authorization" not in flow.request.headers
+
+        flow.request.stream = True
+        addon.request(flow)
+        assert flow.request.headers["Transfer-Encoding"] == "chunked"
+        assert flow.metadata["request_id"]
+
+    def test_non_chunked_transfer_encoding_still_stripped(self, addon):
+        flow = tflow.tflow()
+        flow.request.headers["Transfer-Encoding"] = "gzip"
+
+        addon.requestheaders(flow)
+
+        assert "Transfer-Encoding" not in flow.request.headers
 
 
 class TestConnectionHeaderNominatedHopHeaders:
