@@ -63,6 +63,16 @@ The shared assertions cover:
   opposing path-conditioned allow and deny rules.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
+- An HTTP/2 upload one byte above the 10 MiB streaming threshold reaches the
+  owned origin byte for byte. The origin observes END_STREAM before it replies.
+  A separate header-detectable credential case sends only a partial request
+  body, with no END_STREAM, and checks that the native guard replies before
+  the origin sees an application request. The allowed CONNECT can open the
+  origin TLS connection first; the denied inner request creates no additional
+  origin accept or outbound event. A sibling stream on the same client
+  connection completes. The Python credential case remains a strict expected
+  failure until the production head guard from PR #698 is integrated and the
+  shared lane is rerun.
 - Opaque CONNECT, server-first traffic and both TCP half-close directions.
   The old half-close defects remain two strict expected failures.
 - A client EOF before the terminating CONNECT header line is a canceled request:

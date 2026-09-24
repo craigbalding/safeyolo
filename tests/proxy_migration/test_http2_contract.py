@@ -44,6 +44,22 @@ effect = "deny"
 condition = { agent = "bob" }
 '''
 
+CREDENTIAL_POLICY = POLICY + '''
+[[permissions]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "deny"
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-[a-z]+"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+
 
 def origin_certificate(directory):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -71,8 +87,15 @@ class Origin(socketserver.ThreadingTCPServer):
         self.context.set_alpn_protocols(protocols)
         self.protocols = protocols
         self.requests = []
+        self.accepts = 0
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), OriginHandler)
+
+    def get_request(self):
+        request = super().get_request()
+        with self.lock:
+            self.accepts += 1
+        return request
 
     @property
     def authority(self):
@@ -99,6 +122,7 @@ class OriginHandler(socketserver.BaseRequestHandler):
                                 with self.server.lock:
                                     self.server.requests.append(record)
                             elif isinstance(event, h2.events.StreamEnded):
+                                requests[event.stream_id]["ended"] = True
                                 connection.send_headers(event.stream_id, [(":status", "200"), ("content-length", "5")])
                                 connection.send_data(event.stream_id, b"hello", end_stream=True)
                             elif isinstance(event, h2.events.DataReceived):
@@ -373,13 +397,16 @@ def headers(authority, path, extra=()):
     return [(":method", "GET"), (":scheme", "https"), (":authority", authority), (":path", path), *extra]
 
 
-def test_http2_upload_preserves_binary_body_across_flow_control(proxy_backend, tmp_path):
+def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
     CertStore.from_store(directory / "ca", "mitmproxy", 2048)
     pem, public = origin_certificate(directory)
-    payload = bytes(range(256)) * 1025
-    with origin_server(pem) as origin, launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
+    payload = bytes(range(256)) * 40960 + b"\xff"  # 10 MiB + 1 byte
+    with origin_server(pem) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+        native_policy=proxy_backend == "rust", stream_large_bodies="10m",
+    ) as proxy:
         with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
             connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
                 client_side=True, header_encoding="utf-8"))
@@ -418,7 +445,148 @@ def test_http2_upload_preserves_binary_body_across_flow_control(proxy_backend, t
             assert response == b"hello"
         assert len(origin.requests) == 1
         assert origin.requests[0]["body"] == payload
+        assert origin.requests[0]["ended"] is True
         assert origin.requests[0][":path"] == "/upload?part=one&part=two%2Fthree"
+        (directory / "h2-upload-evidence.json").write_text(json.dumps({
+            "backend": proxy_backend,
+            "payload_bytes": len(payload),
+            "payload_sha256": hashlib.sha256(payload).hexdigest(),
+            "origin_bytes": len(origin.requests[0]["body"]),
+            "origin_sha256": hashlib.sha256(origin.requests[0]["body"]).hexdigest(),
+            "origin_end_stream": origin.requests[0]["ended"],
+            "response_status": status,
+            "response_body_sha256": hashlib.sha256(response).hexdigest(),
+            "proxy_identity": proxy_identity(proxy),
+        }, indent=2) + "\n")
+
+
+def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend, tmp_path, request):
+    """A header denial completes before END_STREAM and leaves another stream usable."""
+    if proxy_backend == "python":
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Python fixture has no production credential head guard until PR #698 is integrated",
+        ))
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    pem, public = origin_certificate(directory)
+    partial_body = b"held-open-body-prefix"
+    with origin_server(pem) as origin:
+        with launch_proxy(
+            proxy_backend, directory, CREDENTIAL_POLICY, tls=True, upstream_ca=public,
+            native_policy=proxy_backend == "rust", stream_large_bodies="10m",
+        ) as proxy:
+            with tls_tunnel(
+                proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+                offers=("h2",),
+            ) as stream:
+                assert stream.selected_alpn_protocol() == "h2"
+                accepts_before_denial = origin.accepts
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=True, header_encoding="utf-8"))
+                connection.initiate_connection()
+                connection.send_headers(1, [
+                    (":method", "POST"), (":scheme", "https"), (":authority", origin.authority),
+                    (":path", "/denied-upload"), ("authorization", "Bearer key-denied"),
+                    ("content-length", str(len(partial_body) + 4096)),
+                ])
+                connection.send_data(1, partial_body)
+                stream.sendall(connection.data_to_send())
+
+                responses = {identifier: {"headers": {}, "body": bytearray(), "ended": False, "reset": None}
+                             for identifier in (1, 3)}
+
+                def receive_until_terminal(identifier):
+                    while not (responses[identifier]["ended"] or responses[identifier]["reset"] is not None):
+                        data = stream.recv(65536)
+                        assert data, f"HTTP/2 connection closed before stream {identifier} ended"
+                        for event in connection.receive_data(data):
+                            if isinstance(event, h2.events.ResponseReceived):
+                                responses[event.stream_id]["headers"] = dict(event.headers)
+                            elif isinstance(event, h2.events.DataReceived):
+                                responses[event.stream_id]["body"].extend(event.data)
+                                connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                            elif isinstance(event, h2.events.StreamEnded):
+                                responses[event.stream_id]["ended"] = True
+                            elif isinstance(event, h2.events.StreamReset) and event.stream_id == 1:
+                                responses[1]["reset"] = int(event.error_code)
+                            elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                                pytest.fail(f"HTTP/2 connection lost while stream {identifier} was live: {event}")
+                        if output := connection.data_to_send():
+                            stream.sendall(output)
+
+                receive_until_terminal(1)
+                denied = responses[1]
+                assert denied["headers"][":status"] == "403"
+                assert denied["headers"]["x-blocked-by"] == "credential-guard"
+                assert denied["ended"] or denied["reset"] == int(h2.errors.ErrorCodes.NO_ERROR)
+                assert b"key-denied" not in denied["body"]
+                accepts_after_denial = origin.accepts
+                assert accepts_after_denial == accepts_before_denial
+                assert origin.requests == []
+
+                connection.send_headers(3, headers(origin.authority, "/sibling"), end_stream=True)
+                stream.sendall(connection.data_to_send())
+                receive_until_terminal(3)
+                sibling = responses[3]
+                assert sibling["headers"][":status"] == "200"
+                assert sibling["body"] == b"hello"
+                assert sibling["ended"] is True
+                assert len(origin.requests) == 1
+                assert origin.requests[0][":path"] == "/sibling"
+                assert origin.requests[0]["body"] == b""
+                assert origin.requests[0]["ended"] is True
+                identity = proxy_identity(proxy)
+
+        request_ids = {identifier: responses[identifier]["headers"]["x-safeyolo-request-id"]
+                       for identifier in (1, 3)}
+        assert request_ids[1] != request_ids[3]
+        events = read_events(directory / "events.jsonl")
+        audit = read_events(directory / "audit.jsonl")
+        denied_requests = [row for row in events if row.get("event") == "proxy.request"
+                           and row.get("request_id") == request_ids[1]]
+        assert len(denied_requests) == 1
+        assert denied_requests[0]["status"] == 403
+        assert denied_requests[0]["decision"] == "deny"
+        assert not any(row.get("event") == "proxy.egress" and row.get("request_id") == request_ids[1]
+                       for row in events)
+        denied_guard = [row for row in events if row.get("event") == "proxy.credential_guard"
+                        and row.get("request_id") == request_ids[1]]
+        assert len(denied_guard) == 1
+        assert denied_guard[0]["outcome"] == "blocked"
+        denied_audit = [row for row in audit if row.get("event") == "security.credential_guard"
+                        and row.get("request_id") == request_ids[1]]
+        assert len(denied_audit) == 1
+        assert denied_audit[0]["decision"] == "deny"
+        assert denied_audit[0]["agent"] == "alice"
+        sibling_requests = [row for row in events if row.get("event") == "proxy.request"
+                            and row.get("request_id") == request_ids[3]]
+        assert len(sibling_requests) == 1
+        assert sibling_requests[0]["status"] == 200
+        assert sibling_requests[0]["decision"] == "allow"
+        assert sibling_requests[0]["connection_id"] == denied_requests[0]["connection_id"]
+        (directory / "h2-held-body-evidence.json").write_text(json.dumps({
+            "backend": proxy_backend,
+            "client_alpn": "h2",
+            "held_body_bytes_sent_without_end_stream": len(partial_body),
+            "announced_body_bytes": len(partial_body) + 4096,
+            "origin_accepts_before_denial": accepts_before_denial,
+            "origin_accepts_after_denial": accepts_after_denial,
+            "origin_http_requests_before_sibling": 0,
+            "denied": {"status": denied["headers"][":status"],
+                       "blocked_by": denied["headers"]["x-blocked-by"],
+                       "request_id": request_ids[1], "response_ended": denied["ended"],
+                       "reset_code": denied["reset"]},
+            "sibling": {"status": sibling["headers"][":status"],
+                        "body_sha256": hashlib.sha256(sibling["body"]).hexdigest(),
+                        "request_id": request_ids[3], "response_ended": sibling["ended"]},
+            "origin_requests": [{"path": row[":path"], "body_bytes": len(row["body"]),
+                                 "request_ended": row["ended"]} for row in origin.requests],
+            "proxy_events": [*denied_requests, *denied_guard, *sibling_requests],
+            "security_audit": denied_audit,
+            "proxy_identity": identity,
+        }, indent=2) + "\n")
 
 
 def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend, tmp_path):
