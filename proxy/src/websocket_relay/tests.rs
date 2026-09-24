@@ -247,6 +247,7 @@ async fn complete_messages_count_before_drop_and_monitor_error_preserves_scanner
                 panic!("allowed binary missing")
             };
             assert_eq!(allowed.with_text(str::to_owned).unwrap(), "allowed");
+            assert!(matches!(messages.recv().await, Some(Event::Close(_))));
             assert!(
                 messages.recv().await.is_none(),
                 "scanner-dropped message must stay dropped"

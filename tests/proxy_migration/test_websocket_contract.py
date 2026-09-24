@@ -590,6 +590,111 @@ def test_idle_control_ping_pong_and_close_are_forwarded_exactly(proxy_backend, t
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_origin_close_after_client_close(proxy_backend, tmp_path, tls):
+    """The client receives the origin's own Close after initiating closure."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    client_message = b"client message before close"
+    origin_message = b"origin reply before close"
+    origin_ping = b"origin ping before close"
+    client_close = struct.pack("!H", 1000) + b"client initiated"
+    origin_close = struct.pack("!H", 1000) + b"origin acknowledged"
+    release_origin_close = threading.Event()
+
+    def script(peer, results):
+        assert peer.receive() == (1, client_message)
+        peer.send(1, origin_message)
+        peer.stream.sendall(frame(9, origin_ping))
+        assert peer.receive_control() == (10, origin_ping)
+        results.put(("client_close", peer.receive_control()))
+        assert release_origin_close.wait(5), "Origin Close was never released"
+        peer.stream.sendall(frame(8, origin_close))
+        results.put(("origin_close_sent", (8, origin_close)))
+
+    def exchange(origin, *, path=None, ca=None):
+        release_origin_close.clear()
+        try:
+            with connect_peer(origin, path=path, ca=ca) as peer:
+                peer.send(1, client_message)
+                assert peer.receive() == (1, origin_message)
+                assert peer.receive_control() == (9, origin_ping)
+                peer.close(code=1000, reason=b"client initiated")
+                assert origin.results.get(timeout=5) == ("client_close", (8, client_close))
+
+                # Before the origin writes its distinct Close, no local reply
+                # or logged completion can satisfy the client observation.
+                peer.stream.settimeout(0.2)
+                try:
+                    premature = peer.receive_control()
+                except TimeoutError:
+                    pass
+                else:
+                    pytest.fail(f"Client received {premature!r} before origin Close was sent")
+                peer.stream.settimeout(5)
+                release_origin_close.set()
+                assert peer.receive_control() == (8, origin_close)
+                assert origin.results.get(timeout=5) == ("origin_close_sent", (8, origin_close))
+                drain_shutdown(peer.stream)
+        finally:
+            release_origin_close.set()
+
+    with origin_server(script, pem=pem) as origin:
+        exchange(origin, ca=public)
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            exchange(origin, path=proxy.paths["alice"], ca=proxy_ca)
+            assert origin.accepts == 2
+            assert origin.errors.empty()
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_missing_origin_close_does_not_become_clean_reply(proxy_backend, tmp_path, tls):
+    """A silent origin cannot turn the client's Close into an origin reply."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    client_close = struct.pack("!H", 1000) + b"client initiated"
+    release_origin = threading.Event()
+
+    def script(peer, results):
+        assert peer.receive_control() == (8, client_close)
+        results.put("client_close_seen")
+        assert release_origin.wait(15), "Origin was not released after the close bound"
+
+    def exchange(origin, *, path=None, ca=None, expect_proxy_timeout=False):
+        release_origin.clear()
+        try:
+            with connect_peer(origin, path=path, ca=ca) as peer:
+                peer.close(code=1000, reason=b"client initiated")
+                assert origin.results.get(timeout=5) == "client_close_seen"
+                peer.stream.settimeout(0.2)
+                with pytest.raises(TimeoutError):
+                    peer.receive_control()
+                if expect_proxy_timeout:
+                    peer.stream.settimeout(12)
+                    try:
+                        terminal = peer.stream.recv(1)
+                    except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+                        # TLS can report an abrupt transport close as a read
+                        # error. None of these outcomes contains a WS Close.
+                        terminal = b""
+                    assert terminal == b"", "Proxy sent a reply without origin Close"
+                else:
+                    release_origin.set()
+                    peer.stream.settimeout(5)
+                    assert peer.stream.recv(1) == b""
+        finally:
+            release_origin.set()
+
+    with origin_server(script, pem=pem) as origin:
+        exchange(origin, ca=public)
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            exchange(origin, path=proxy.paths["alice"], ca=proxy_ca, expect_proxy_timeout=True)
+            assert origin.accepts == 2
+            assert origin.errors.empty()
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
 def test_denied_websocket_opens_no_origin_connection(proxy_backend, tmp_path, tls):
     directory = tmp_path / proxy_backend
     _, public, _ = prepare_tls(directory, tls)
@@ -790,6 +895,8 @@ def test_message_preceding_close_is_delivered(proxy_backend, tmp_path, tls, dire
                 else:
                     assert peer.receive() == (1, payload)
                 assert peer.receive() == (8, close_payload)
+                if direction == "response":
+                    peer.close(code=1000, reason=b"fixture complete")
                 if direction == "request":
                     assert origin.results.get(timeout=5) == (1, payload)
 
