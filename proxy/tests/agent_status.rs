@@ -3,7 +3,7 @@ use std::{path::Path, process::Command};
 use safeyolo_proxy::{
     agent_api::{Failure, PolicyState, Request, respond_read},
     network_guard::Identity,
-    policy::{Effect, EngineStatsError, NetworkRequest, Policy},
+    policy::{Effect, NetworkRequest, Policy},
     tasks::Registry,
 };
 use serde_json::{Value, json};
@@ -214,58 +214,6 @@ async fn status_is_shared_across_identities_ignores_queries_and_tracks_reload_ha
     assert_eq!(body["engine_stats"]["evaluations"], 1);
     assert_eq!(body["engine_stats"]["task_permissions"], 0);
     assert_eq!(fresh.count().unwrap(), 0);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn method_and_auth_precede_typed_stats_failure_without_leaking_path() {
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
-    let directory = tempfile::tempdir().unwrap();
-    let token = directory.path().join("agent_token");
-    std::fs::write(&token, TOKEN).unwrap();
-    let baseline = directory
-        .path()
-        .join(OsString::from_vec(b"private-policy-\xff.json".to_vec()));
-    std::fs::write(&baseline, "{}").unwrap();
-    let policy = Policy::from_path_at(&baseline, NOW).unwrap();
-    let tasks = Registry::default();
-    for (method, authorization, status) in
-        [("HEAD", None, 405), ("POST", None, 405), ("GET", None, 401)]
-    {
-        let outcome = respond_read(
-            Request {
-                method,
-                authorization,
-                ..request("/status")
-            },
-            &token,
-            PolicyState::Ready(&policy),
-            &tasks,
-            NOW,
-        )
-        .await;
-        assert_eq!(outcome.response.status, status);
-        assert!(outcome.failure.is_none());
-    }
-    let outcome = respond_read(
-        request("/status?private_query=discarded"),
-        &token,
-        PolicyState::Ready(&policy),
-        &tasks,
-        NOW,
-    )
-    .await;
-    assert_eq!(outcome.response.status, 503);
-    assert_eq!(
-        outcome.failure,
-        Some(Failure::EngineReporting(EngineStatsError::PathEncoding))
-    );
-    assert!(!outcome.handler_owned);
-    assert!(outcome.scrub_request);
-    let bytes = outcome.response.body_bytes();
-    let text = std::str::from_utf8(&bytes).unwrap();
-    assert!(!text.contains("private-policy") && !text.contains("private_query"));
-    assert!(text.contains("req-status-fixture"));
 }
 
 #[tokio::test]

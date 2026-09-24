@@ -1116,6 +1116,89 @@ fn parse_port(source: &str) -> Result<u16, String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn method_and_auth_precede_typed_stats_failure_without_leaking_path() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        const TOKEN: &[u8] = b"synthetic-agent-status-fixture";
+        const AUTH: &[u8] = b"Bearer synthetic-agent-status-fixture";
+        let directory = tempfile::tempdir().unwrap();
+        let token = directory.path().join("agent_token");
+        std::fs::write(&token, TOKEN).unwrap();
+        let tasks = crate::tasks::Registry::default();
+        let request = Request {
+            method: "GET",
+            path_and_query: "/status?private_query=discarded",
+            authorization: Some(AUTH),
+            identity: Identity::Resolved("alice"),
+            client_ip: None,
+            request_id: "req-status-fixture",
+        };
+
+        let valid_path = directory.path().join("public-policy.json");
+        let policy = Policy::parse_at("{}", crate::policy::Format::Json, 1_000_000.)
+            .unwrap()
+            .with_baseline_path_for_test(valid_path);
+        let positive = respond_read(
+            request,
+            &token,
+            PolicyState::Ready(&policy),
+            &tasks,
+            1_000_000.,
+        )
+        .await;
+        assert_eq!(positive.response.status, 200);
+        assert!(positive.failure.is_none());
+        drop(positive);
+
+        let invalid_path = directory
+            .path()
+            .join(OsString::from_vec(b"private-policy-\xff.json".to_vec()));
+        assert!(invalid_path.to_str().is_none());
+        assert!(!invalid_path.exists());
+        let policy = policy.with_baseline_path_for_test(invalid_path);
+        assert_eq!(policy.engine_stats(), Err(EngineStatsError::PathEncoding));
+
+        for (method, authorization, status) in
+            [("HEAD", None, 405), ("POST", None, 405), ("GET", None, 401)]
+        {
+            let outcome = respond_read(
+                Request {
+                    method,
+                    authorization,
+                    ..request
+                },
+                &token,
+                PolicyState::Ready(&policy),
+                &tasks,
+                1_000_000.,
+            )
+            .await;
+            assert_eq!(outcome.response.status, status);
+            assert!(outcome.failure.is_none());
+        }
+        let outcome = respond_read(
+            request,
+            &token,
+            PolicyState::Ready(&policy),
+            &tasks,
+            1_000_000.,
+        )
+        .await;
+        assert_eq!(outcome.response.status, 503);
+        assert_eq!(
+            outcome.failure,
+            Some(Failure::EngineReporting(EngineStatsError::PathEncoding))
+        );
+        assert!(!outcome.handler_owned);
+        assert!(outcome.scrub_request);
+        let bytes = outcome.response.body_bytes();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(!text.contains("private-policy") && !text.contains("private_query"));
+        assert!(text.contains("req-status-fixture"));
+    }
+
     #[test]
     fn status_reporting_failures_preserve_native_categories() {
         let request = Request {

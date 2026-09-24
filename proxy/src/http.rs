@@ -302,10 +302,9 @@ fn record_pattern_decision(
     }))
 }
 
-/// Attach the ordinary local-response completion marker after a response body
-/// has already been consumed for post-upstream inspection.  The request-side
-/// helper cannot be used here because its parser observer belongs to the
-/// forwarded request, which has already been moved into `Completion`.
+/// Attach the ordinary local-response completion marker after the request
+/// owner has already consumed the parser observer. Callers must have reached
+/// the request traffic hooks; taking a second observer would fail.
 fn pattern_local_response(
     reply: &mut Response<Body>,
     traffic: &Arc<traffic::Traffic>,
@@ -3144,16 +3143,9 @@ where
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("x-blocked-by", "pattern-scanner")
                 .body(full(body))?;
-            traffic::local_reply(
-                context.traffic().as_ref(),
-                &mut request,
-                &mut blocked,
-                Some(json!("pattern-scanner")),
-                result.failure.map(|failure| json!(failure)),
-                destination,
-                true,
-                trace.as_ref(),
-            )?;
+            if context.request_hooks_completed() {
+                pattern_local_response(&mut blocked, &response_traffic, result.failure);
+            }
             return Ok((prior_block(blocked), "deny".into()));
         }
     }

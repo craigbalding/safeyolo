@@ -249,7 +249,10 @@ class SinkholeHandler(BaseHTTPRequestHandler):
 
         # Route to handler
         handler = HANDLERS.get(host, DEFAULT_HANDLER)
-        response: Response = handler.handle(captured)
+        # HEAD describes the GET representation, while the observer keeps the
+        # actual request method. Some handlers include that method in the body.
+        response_request = replace(captured, method="GET") if method == "HEAD" else captured
+        response: Response = handler.handle(response_request)
 
         # Send response
         self.send_response(response.status)
@@ -257,7 +260,8 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.send_header("Content-Length", str(len(response.body)))
         self.end_headers()
-        self.wfile.write(response.body)
+        if method != "HEAD":
+            self.wfile.write(response.body)
 
     def do_GET(self):
         self._capture_and_route("GET")

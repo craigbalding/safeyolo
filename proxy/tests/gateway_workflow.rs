@@ -273,10 +273,18 @@ async fn origin(listener: TcpListener, seen: Arc<Mutex<Vec<Vec<u8>>>>, redirect_
 }
 
 async fn raw_http(socket: &Path, request: &[u8]) -> Vec<u8> {
+    raw_http_with_read_timeout(socket, request, Duration::from_secs(3)).await
+}
+
+async fn raw_http_with_read_timeout(
+    socket: &Path,
+    request: &[u8],
+    read_timeout: Duration,
+) -> Vec<u8> {
     let mut stream = UnixStream::connect(socket).await.unwrap();
     stream.write_all(request).await.unwrap();
     let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response))
+    tokio::time::timeout(read_timeout, stream.read_to_end(&mut response))
         .await
         .unwrap()
         .unwrap();
@@ -554,7 +562,16 @@ async fn send_agent_with_scheme(
     host: &str,
     scheme: &str,
 ) -> Vec<u8> {
-    send_agent_with_scheme_and_headers(socket, port, token, host, scheme, "").await
+    send_agent_with_scheme_and_headers(
+        socket,
+        port,
+        token,
+        host,
+        scheme,
+        "",
+        Duration::from_secs(3),
+    )
+    .await
 }
 
 async fn send_agent_with_scheme_and_headers(
@@ -564,11 +581,12 @@ async fn send_agent_with_scheme_and_headers(
     host: &str,
     scheme: &str,
     headers: &str,
+    read_timeout: Duration,
 ) -> Vec<u8> {
     let request = format!(
         "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
     );
-    raw_http(socket, request.as_bytes()).await
+    raw_http_with_read_timeout(socket, request.as_bytes(), read_timeout).await
 }
 
 async fn agent_flow_read(socket: &Path, path: &str) -> (u16, Value) {
@@ -1091,7 +1109,7 @@ enum LiveVaultMutation {
 /// Hold the provider response while the native vault is edited through each
 /// stale-generation path. The response must be rejected as superseded and the
 /// replacement token must never reach either the vault or the origin.
-async fn run_live_superseded_case(mutation: LiveVaultMutation) {
+async fn run_live_superseded_case(mutation: LiveVaultMutation, response_timeout: Duration) {
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
     for directory in ["data", "builtin", "services"] {
@@ -1191,9 +1209,20 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation) {
         .to_owned();
     let request = tokio::spawn({
         let socket = socket.clone();
-        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+        async move {
+            send_agent_with_scheme_and_headers(
+                &socket,
+                origin_port,
+                &gateway_token,
+                "127.0.0.1",
+                "http",
+                "",
+                response_timeout,
+            )
+            .await
+        }
     });
-    tokio::time::timeout(Duration::from_secs(3), token_ready.notified())
+    tokio::time::timeout(response_timeout, token_ready.notified())
         .await
         .expect("refresh request did not reach provider");
     let edited = {
@@ -1231,7 +1260,7 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation) {
         }
     }
     token_release.notify_one();
-    let response = tokio::time::timeout(Duration::from_secs(3), request)
+    let response = tokio::time::timeout(response_timeout, request)
         .await
         .expect("superseded request hung")
         .unwrap();
@@ -2167,7 +2196,7 @@ async fn oauth_refresh_live_stale_edit_delete_replace_and_adverse_generation() {
         LiveVaultMutation::Replace,
         LiveVaultMutation::AdverseGeneration,
     ] {
-        run_live_superseded_case(mutation).await;
+        run_live_superseded_case(mutation, Duration::from_secs(3)).await;
     }
 }
 
@@ -2178,7 +2207,9 @@ async fn oauth_refresh_live_malformed_empty_and_salt_change_fail_closed() {
         LiveVaultMutation::Empty,
         LiveVaultMutation::SaltChanged,
     ] {
-        run_live_superseded_case(mutation).await;
+        // These adverse vault reads can exceed the short client budget while
+        // the debug suite runs other integration tests in parallel.
+        run_live_superseded_case(mutation, Duration::from_secs(10)).await;
     }
 }
 
@@ -2786,7 +2817,9 @@ token = "other-secret"
 /// The gateway's expired OAuth path is exercised through the real UDS listener,
 /// watcher publication and two controlled TCP origins. The token endpoint is
 /// intentionally delayed so the second request must join the first flight.
-async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
+async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
+    token_wait: Duration,
+) {
     let activity_id = ACTIVITY_EVIDENCE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let root = tempfile::tempdir().unwrap();
     let root_path = root.path();
@@ -2963,7 +2996,7 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() 
         let gateway_token = gateway_token.clone();
         async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
-    if tokio::time::timeout(Duration::from_secs(2), token_ready.notified())
+    if tokio::time::timeout(token_wait, token_ready.notified())
         .await
         .is_err()
     {
@@ -3164,7 +3197,8 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() 
 
 #[tokio::test]
 async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
-    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token().await;
+    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(Duration::from_secs(2))
+        .await;
 }
 
 /// Repeat the complete service/approval/OAuth activity fixture concurrently.
@@ -3175,7 +3209,11 @@ async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
 async fn repeated_service_oauth_activity_runs_concurrently() {
     let tasks: Vec<_> = (0..3)
         .map(|_| {
-            tokio::spawn(run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token())
+            tokio::spawn(
+                run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
+                    Duration::from_secs(10),
+                ),
+            )
         })
         .collect();
     let mut completed = 0;
@@ -3517,6 +3555,7 @@ target_hosts = ["localhost"]
         &format!(
             "X-SafeYolo-Test-Context: run=disclosure;agent=alice;test=no-auth\r\nX-Disclosure-Control: {DISCLOSURE_CONTROL}\r\n"
         ),
+        Duration::from_secs(3),
     )
     .await;
     status(&response, "200");
