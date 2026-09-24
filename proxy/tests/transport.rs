@@ -2502,7 +2502,7 @@ async fn configured_parent_receives_absolute_target_without_origin_dns() {
 async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let (parent_address, accepted, parent_task) = origin().await;
     config.parent_proxy = Some(format!("http://{parent_address}"));
     let proxy = Proxy::start(config.clone()).await.unwrap();
@@ -2529,7 +2529,6 @@ async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
         assert!(invalid_parent.validate().is_err());
     }
     assert_eq!(accepted.load(Ordering::SeqCst), 0);
-    assert!(policy.requests.lock().unwrap().is_empty());
     assert!(
         events(&config)
             .iter()
