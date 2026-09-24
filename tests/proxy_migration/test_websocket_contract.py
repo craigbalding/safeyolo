@@ -1302,6 +1302,8 @@ action = "log"
                 observed = peer.receive()
                 assert observed[0] == 8
                 assert struct.unpack("!H", observed[1][:2])[0] == (1000 if trigger == "peer_close" else 1001)
+                if trigger == "peer_close":
+                    peer.close()
                 origin_observed, frames = origin.results.get(timeout=5)
                 assert origin_observed[0] == 8
                 assert frames == 0
