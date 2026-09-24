@@ -135,7 +135,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
-                 agent_map=None):
+                 agent_map=None, stream_large_bodies=None, credential_head_decision=False,
+                 via_token=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -168,7 +169,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             # file even when the gateway fixture is not enabled.  Keep that
             # state inside this run so the selected Rust process never falls
             # back to the host's /safeyolo/data path.
-            "data_dir": str(directory / "data"),
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
             "event_log": str(directory / "events.jsonl"),
@@ -190,6 +190,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
+        if via_token is not None:
+            config["via_token"] = via_token
         if admin_port is not None:
             config["admin_port"] = admin_port
         if admin_api_token_file is not None:
@@ -222,6 +224,11 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if backend == "python":
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
+            if stream_large_bodies is not None:
+                config["stream_large_bodies"] = stream_large_bodies
+            if credential_head_decision:
+                config["fixture_credential_head_decision"] = True
+                env["SAFEYOLO_DATA_DIR"] = config["data_dir"]
             config["fixture_agent_api"] = agent_api
             selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
             command = [str(selected_python or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]

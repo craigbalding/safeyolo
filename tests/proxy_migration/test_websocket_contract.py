@@ -36,6 +36,7 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 KEY = "dGhlIHNhbXBsZSBub25jZQ=="
 TEXT = ("bounded compressed websocket message 📦 " * 32).encode()
 BINARY = bytes(range(256)) * 8
+D32_REASON = "D32: historical wsproto loses compression state across control frames"
 PATTERN = '''
 [[scan_patterns]]
 name = "project-id"
@@ -345,11 +346,19 @@ def drain_shutdown(stream):
         return
 
 
-def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None):
+def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None,
+             expect_d32_teardown=False):
     with connect_peer(origin, path=path, ca=ca, compressed=origin.compressed) as peer:
         if direction == "request":
             peer.send(opcode, payload, fragmented=True, control=control)
-        observed = peer.receive()
+        try:
+            observed = peer.receive()
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, EOFError):
+            if not expect_d32_teardown or (
+                direction == "response" and (control, b"control") not in peer.controls
+            ):
+                raise
+            pytest.xfail(D32_REASON)
         if observed[0] != 8:
             if direction == "response":
                 peer.send(1, b"ack")
@@ -359,6 +368,34 @@ def exchange(origin, *, direction, opcode, payload, control, path=None, ca=None)
         destination = result if direction == "request" else observed
         destination_controls = controls if direction == "request" else peer.controls
         return destination, destination_controls
+
+
+def test_d32_teardown_requires_proxy_control_delivery(monkeypatch):
+    class BrokenPeer:
+        controls = []
+
+        def receive(self):
+            raise BrokenPipeError("peer closed during control reply")
+
+    class CompressedOrigin:
+        compressed = True
+
+    peer = BrokenPeer()
+
+    @contextmanager
+    def broken_connection(*args, **kwargs):
+        yield peer
+
+    monkeypatch.setattr("tests.proxy_migration.test_websocket_contract.connect_peer", broken_connection)
+    options = {"direction": "response", "opcode": 1, "payload": TEXT, "control": 9,
+               "expect_d32_teardown": True}
+    with pytest.raises(BrokenPipeError):
+        exchange(CompressedOrigin(), **options)
+    peer.controls = [(9, b"control")]
+    with pytest.raises(pytest.xfail.Exception, match="D32"):
+        exchange(CompressedOrigin(), **options)
+    with pytest.raises(BrokenPipeError):
+        exchange(CompressedOrigin(), **(options | {"expect_d32_teardown": False}))
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
@@ -390,16 +427,16 @@ def test_complete_fragmented_messages(proxy_backend, tmp_path, request, tls, dir
         assert control is None or (control, b"control") in direct_controls
         with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
                           inspection={}) as proxy:
+            python_d32 = proxy_backend == "python" and compressed and control is not None
             delivered, controls = exchange(origin, direction=direction, opcode=opcode, payload=payload,
-                                            control=control, path=proxy.paths["alice"], ca=proxy_ca)
+                                            control=control, path=proxy.paths["alice"], ca=proxy_ca,
+                                            expect_d32_teardown=python_d32)
             assert control is None or (control, b"control") in controls
-            if proxy_backend == "python" and compressed and control is not None:
-                # Captured first without an xfail: all 48 direct specimens
-                # passed, and precisely these 16 WS/WSS deliveries failed.
-                # Keep setup, handshake and control forwarding outside the
-                # expected-failure region; a repaired source must report XPASS.
-                request.node.add_marker(pytest.mark.xfail(
-                    strict=True, reason="D32: historical wsproto loses compression state across control frames"))
+            if python_d32:
+                # The direct specimen and proxy handshake passed. exchange()
+                # classifies only receive-side teardown after the handshake.
+                # A repaired delivery must report XPASS here.
+                request.node.add_marker(pytest.mark.xfail(strict=True, reason=D32_REASON))
             assert delivered == (opcode, payload)
 
 
@@ -587,6 +624,111 @@ def test_idle_control_ping_pong_and_close_are_forwarded_exactly(proxy_backend, t
                     "temporary_policy_socket": None,
                     "temporary_policy_adapter": False,
                 }
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_origin_close_after_client_close(proxy_backend, tmp_path, tls):
+    """The client receives the origin's own Close after initiating closure."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    client_message = b"client message before close"
+    origin_message = b"origin reply before close"
+    origin_ping = b"origin ping before close"
+    client_close = struct.pack("!H", 1000) + b"client initiated"
+    origin_close = struct.pack("!H", 1000) + b"origin acknowledged"
+    release_origin_close = threading.Event()
+
+    def script(peer, results):
+        assert peer.receive() == (1, client_message)
+        peer.send(1, origin_message)
+        peer.stream.sendall(frame(9, origin_ping))
+        assert peer.receive_control() == (10, origin_ping)
+        results.put(("client_close", peer.receive_control()))
+        assert release_origin_close.wait(5), "Origin Close was never released"
+        peer.stream.sendall(frame(8, origin_close))
+        results.put(("origin_close_sent", (8, origin_close)))
+
+    def exchange(origin, *, path=None, ca=None):
+        release_origin_close.clear()
+        try:
+            with connect_peer(origin, path=path, ca=ca) as peer:
+                peer.send(1, client_message)
+                assert peer.receive() == (1, origin_message)
+                assert peer.receive_control() == (9, origin_ping)
+                peer.close(code=1000, reason=b"client initiated")
+                assert origin.results.get(timeout=5) == ("client_close", (8, client_close))
+
+                # Before the origin writes its distinct Close, no local reply
+                # or logged completion can satisfy the client observation.
+                peer.stream.settimeout(0.2)
+                try:
+                    premature = peer.receive_control()
+                except TimeoutError:
+                    pass
+                else:
+                    pytest.fail(f"Client received {premature!r} before origin Close was sent")
+                peer.stream.settimeout(5)
+                release_origin_close.set()
+                assert peer.receive_control() == (8, origin_close)
+                assert origin.results.get(timeout=5) == ("origin_close_sent", (8, origin_close))
+                drain_shutdown(peer.stream)
+        finally:
+            release_origin_close.set()
+
+    with origin_server(script, pem=pem) as origin:
+        exchange(origin, ca=public)
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            exchange(origin, path=proxy.paths["alice"], ca=proxy_ca)
+            assert origin.accepts == 2
+            assert origin.errors.empty()
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_missing_origin_close_does_not_become_clean_reply(proxy_backend, tmp_path, tls):
+    """A silent origin cannot turn the client's Close into an origin reply."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    client_close = struct.pack("!H", 1000) + b"client initiated"
+    release_origin = threading.Event()
+
+    def script(peer, results):
+        assert peer.receive_control() == (8, client_close)
+        results.put("client_close_seen")
+        assert release_origin.wait(15), "Origin was not released after the close bound"
+
+    def exchange(origin, *, path=None, ca=None, expect_proxy_timeout=False):
+        release_origin.clear()
+        try:
+            with connect_peer(origin, path=path, ca=ca) as peer:
+                peer.close(code=1000, reason=b"client initiated")
+                assert origin.results.get(timeout=5) == "client_close_seen"
+                peer.stream.settimeout(0.2)
+                with pytest.raises(TimeoutError):
+                    peer.receive_control()
+                if expect_proxy_timeout:
+                    peer.stream.settimeout(12)
+                    try:
+                        terminal = peer.stream.recv(1)
+                    except (BrokenPipeError, ConnectionResetError, ssl.SSLEOFError):
+                        # TLS can report an abrupt transport close as a read
+                        # error. None of these outcomes contains a WS Close.
+                        terminal = b""
+                    assert terminal == b"", "Proxy sent a reply without origin Close"
+                else:
+                    release_origin.set()
+                    peer.stream.settimeout(5)
+                    assert peer.stream.recv(1) == b""
+        finally:
+            release_origin.set()
+
+    with origin_server(script, pem=pem) as origin:
+        exchange(origin, ca=public)
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls, upstream_ca=public,
+                          inspection={}) as proxy:
+            exchange(origin, path=proxy.paths["alice"], ca=proxy_ca, expect_proxy_timeout=True)
+            assert origin.accepts == 2
+            assert origin.errors.empty()
 
 
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
@@ -790,6 +932,8 @@ def test_message_preceding_close_is_delivered(proxy_backend, tmp_path, tls, dire
                 else:
                     assert peer.receive() == (1, payload)
                 assert peer.receive() == (8, close_payload)
+                if direction == "response":
+                    peer.close(code=1000, reason=b"fixture complete")
                 if direction == "request":
                     assert origin.results.get(timeout=5) == (1, payload)
 
@@ -1101,6 +1245,11 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
             assert all(item["origin"]["data_frames"] == 0 for item in observations)
             assert all(item["pending_spool_retained_after_close"] == 0 for item in observations)
             assert proxy.events("proxy.websocket.message") == []
+            if proxy_backend == "rust":
+                deadline = time.monotonic() + 3
+                while len(proxy.events("proxy.websocket.end")) < sessions:
+                    assert time.monotonic() < deadline, "Cancelled compressed WebSocket did not finish"
+                    time.sleep(0.01)
             ended = proxy.events("proxy.websocket.end")
             if proxy_backend == "rust":
                 assert len(ended) == sessions
@@ -1195,6 +1344,8 @@ action = "log"
                 observed = peer.receive()
                 assert observed[0] == 8
                 assert struct.unpack("!H", observed[1][:2])[0] == (1000 if trigger == "peer_close" else 1001)
+                if trigger == "peer_close":
+                    peer.close()
                 origin_observed, frames = origin.results.get(timeout=5)
                 assert origin_observed[0] == 8
                 assert frames == 0

@@ -22,6 +22,7 @@ from safeyolo.core.audit_writer import get_writer
 from safeyolo.core.internal_api import is_agent_api_host
 from safeyolo.core.probe import is_probe_host
 from safeyolo.mitm_addons.agent_api_guard import AgentAPIRequestGuard
+from safeyolo.mitm_addons.loop_guard import LoopGuard
 from safeyolo.mitm_addons.network_guard import NetworkGuard
 from safeyolo.mitm_addons.pattern_scanner import PatternScanner
 from safeyolo.mitm_addons.probe_sink import ProbeSink
@@ -29,6 +30,7 @@ from safeyolo.mitm_addons.request_id import RequestIdGenerator
 from safeyolo.mitm_addons.sse_streaming import SSEStreaming
 from safeyolo.mitm_addons.transport_guard import TransportGuard
 from safeyolo.proxy_modes.unix_listener import ensure_registered
+from safeyolo.websocket_close import install_websocket_close_handshake
 
 
 class Observations:
@@ -79,7 +81,12 @@ class Observations:
 
 
 async def run(config):
+    if config.get("fixture_credential_head_decision", False):
+        from safeyolo.early_credential_response import install_early_credential_response
+
+        install_early_credential_response()
     ensure_registered()
+    install_websocket_close_handshake()
     configure_policy_client(PolicyClientConfig(baseline_path=config["policy_file"]))
     options = Options(
         mode=[f"unix:{item['socket_path']}" for item in config["listeners"]],
@@ -90,6 +97,8 @@ async def run(config):
 
     master.options.update(connection_strategy=config.get("connection_strategy", "lazy"),
                           ignore_hosts=build_ignore_patterns(config.get("ignore_hosts", [])))
+    if "stream_large_bodies" in config:
+        master.options.update(stream_large_bodies=config["stream_large_bodies"])
     if config.get("upstream_ca_file"):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
     admin_api = None
@@ -101,15 +110,17 @@ async def run(config):
         master.addons.add(AdminShield(), admin_api)
         master.options.update(admin_port=config["admin_port"],
                               admin_api_token_file=config.get("admin_api_token_file", ""))
-    master.addons.add(RequestIdGenerator())
+    master.addons.add(LoopGuard(config.get("via_token")), RequestIdGenerator())
     if config.get("fixture_agent_api", False):
         from safeyolo.mitm_addons.agent_api import AgentAPI
 
         master.addons.add(AgentAPI())
-    master.addons.add(
-        AgentAPIRequestGuard(), NetworkGuard(),
-        SSEStreaming(), ProbeSink(), TransportGuard(),
-    )
+    addons = [AgentAPIRequestGuard(), NetworkGuard(), SSEStreaming()]
+    if config.get("fixture_credential_head_decision", False):
+        from safeyolo.mitm_addons.credential_guard import CredentialGuard
+
+        addons.append(CredentialGuard())
+    master.addons.add(*addons, ProbeSink(), TransportGuard())
     master.options.update(**{name: config[name] for name in (
         "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
     ) if name in config})

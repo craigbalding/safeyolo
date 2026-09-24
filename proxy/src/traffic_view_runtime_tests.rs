@@ -697,6 +697,13 @@ async fn live_operator_inspector_browses_native_websocket_transcript() {
                 panic!("client WebSocket close expected");
             };
             assert_eq!(payload, 1000_u16.to_be_bytes());
+            writer
+                .control(
+                    tungstenite::protocol::frame::coding::Control::Close,
+                    &1000_u16.to_be_bytes(),
+                )
+                .await
+                .unwrap();
         });
 
         let proxy = Proxy::start(config.clone()).await.unwrap();

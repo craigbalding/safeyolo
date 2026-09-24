@@ -33,6 +33,13 @@ effect = "budget"
 budget = 1
 """
 GLOBAL_POLICY = '[budgets]\n"network:request" = 1\n' + POLICY
+GLOBAL_REQUEST_LIMIT = """[budgets]
+"network:request" = 1
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+"""
 
 
 def report(keys=(), *, global_limit=False):
@@ -189,6 +196,86 @@ def reset_audits(proxy, backend):
     return [
         event["audit_intent"] for event in proxy.events("proxy.admin_api") if event.get("audit_intent") in RESET_EVENTS
     ]
+
+
+@pytest.mark.parametrize("scope", ["per-host", "global"])
+def test_network_request_limit_scope_and_recovery(proxy_backend, tmp_path, monkeypatch, scope):
+    """Observe request-budget denial at the wire and origin, then reset it."""
+    policy = POLICY if scope == "per-host" else GLOBAL_REQUEST_LIMIT
+    directory = tmp_path / proxy_backend
+    with budget_proxy(proxy_backend, tmp_path, policy, monkeypatch) as (proxy, parent, client, _port):
+        started = time.monotonic()
+        attempts = []
+        forwarded = []
+
+        def send(agent, host):
+            target = f"http://{host}/request-limit"
+            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            status, headers, body = send_request(proxy.paths[agent], target)
+            after = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            if status == 200:
+                assert body == b"hello"
+                forwarded.append({"method": "GET", "target": target})
+                assert after == tuple(value + 1 for value in before)
+            else:
+                assert_rejection(status, headers, body, 429, host)
+                assert json.loads(body)["reason"] == f"Request budget exceeded for {host}"
+                assert after == before
+            assert parent.requests == forwarded
+            (directory / "request-limit-origin.json").write_text(
+                json.dumps({"accepts": parent.accepts, "requests": parent.requests}, indent=2) + "\n"
+            )
+            attempts.append(
+                {
+                    "agent": agent,
+                    "host": host,
+                    "target": target,
+                    "status": status,
+                    "headers": headers,
+                    "body_hex": body.hex(),
+                    "origin_accepts_before": before[0],
+                    "origin_accepts_after": after[0],
+                    "origin_requests_before": before[1],
+                    "origin_requests_after": after[1],
+                }
+            )
+            (directory / "request-limit-wire.json").write_text(json.dumps(attempts, indent=2) + "\n")
+            return status
+
+        # A rate of one has a small GCRA burst. Bound attempts and stay well
+        # before refill rather than assuming a token-bucket window boundary.
+        for index in range(4):
+            status = send(("alice", "bob")[index % 2], "alpha.invalid")
+            if status == 429:
+                break
+        else:
+            pytest.fail("The configured request budget did not exhaust within four attempts")
+        assert any(attempt["status"] == 200 for attempt in attempts)
+
+        neighbor_status = send("bob", "beta.invalid")
+        assert neighbor_status == (200 if scope == "per-host" else 429)
+        resource = ALPHA if scope == "per-host" else None
+        reset(client, resource)
+        assert send("alice", "alpha.invalid") == 200
+
+        assert parent.accepts == len(parent.requests) == len(forwarded)
+        requests = proxy.events("proxy.request")
+        assert [(event["agent"], event["host"], event["port"], event["status"]) for event in requests] == [
+            (attempt["agent"], attempt["host"], 80, attempt["status"]) for attempt in attempts
+        ]
+        assert [event["request_id"] for event in requests] == [
+            next(value for name, value in attempt["headers"].items() if name.lower() == "x-safeyolo-request-id")
+            for attempt in attempts
+        ]
+        denials = [
+            event
+            for event in read_events(directory / "audit.jsonl")
+            if event.get("event") == "security.network_guard" and event.get("decision") == "budget_exceeded"
+        ]
+        assert [(event["agent"], event["host"], event["request_id"]) for event in denials] == [
+            (event["agent"], event["host"], event["request_id"]) for event in requests if event["status"] == 429
+        ]
+        assert_no_refill(started)
 
 
 def test_operator_exact_budget_reset_shares_state_and_retains_order(proxy_backend, tmp_path, monkeypatch):

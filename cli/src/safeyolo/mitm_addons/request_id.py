@@ -6,7 +6,8 @@ Runs early in the addon chain to:
 2. Consume opt-in `X-SafeYolo-Trace` and set flow.metadata["trace"]
 3. Strip SafeYolo-internal correlation headers a client must not spoof or
    have forwarded upstream (X-SafeYolo-Trace, X-SafeYolo-Request-Id)
-4. Strip hop-by-hop headers that must not be forwarded to origin servers
+4. Strip hop-by-hop headers before streamed requests reach origin servers,
+   retaining parsed HTTP/1.1 chunked framing until mitmproxy sends the body end
 5. On response, stamp X-SafeYolo-Request-Id so the originating agent can
    correlate its request without asking the operator to search host logs
 
@@ -29,6 +30,10 @@ as it could leak proxy credentials to upstream servers.
 
 WebSocket exception: The Upgrade and Connection headers are preserved for
 WebSocket handshakes (RFC 6455) so mitmproxy can proxy them correctly.
+
+Transfer-Encoding exception: mitmproxy decodes inbound chunks and uses the
+request's Transfer-Encoding field to frame the outgoing body and terminator.
+The validated chunked field must remain on the flow through end-of-message.
 """
 
 import logging
@@ -67,7 +72,8 @@ _INTERNAL_CORRELATION_HEADERS = frozenset({
     )
 })
 
-# RFC 7230 Section 6.1 - Hop-by-hop headers that must not be forwarded
+# RFC 7230 Section 6.1 - Headers requiring per-hop cleanup. Parsed chunked
+# Transfer-Encoding is retained below because mitmproxy uses it for framing.
 # https://datatracker.ietf.org/doc/html/rfc7230#section-6.1
 HOP_BY_HOP_HEADERS = frozenset([
     "connection",
@@ -190,13 +196,20 @@ class RequestIdGenerator:
 
     Must run before any security addons to ensure:
     - request_id is available for logging decisions
-    - hop-by-hop headers don't leak to upstreams
+    - client hop headers are removed before streamed egress, except parsed
+      chunked Transfer-Encoding needed for outgoing framing
 
     WebSocket upgrade requests preserve Upgrade + Connection headers
     so mitmproxy can proxy the handshake to the upstream.
     """
 
     name = "request-id"
+
+    def requestheaders(self, flow: http.HTTPFlow):
+        """Clean headers before mitmproxy can forward a streamed request head."""
+        ensure_request_id(flow)
+        ensure_trace_opt_in(flow)
+        self._strip_request_headers(flow)
 
     def http_connect(self, flow: http.HTTPFlow):
         """Correlate CONNECT independently of HTTP requests inside the tunnel."""
@@ -223,17 +236,17 @@ class RequestIdGenerator:
         # per-request identity, so it doesn't inherit from an earlier hook.
         flow.metadata["start_time"] = time.time()
 
-        # 2. Consume trace marker BEFORE stripping. Presence of the header
-        #    (any non-empty value) opts this request into pipeline tracing;
-        #    the header itself is stripped below alongside other internal
-        #    correlation headers so it never reaches upstream services.
-        trace_header = flow.request.headers.get(TRACE_REQUEST_HEADER, "")
-        if trace_header:
-            flow.metadata["trace"] = True
+        # A buffered request reaches this hook with its headers still local;
+        # a streamed request reaches it after the sanitized head was sent.
+        ensure_trace_opt_in(flow)
+        self._strip_request_headers(flow)
 
-        # 3. Detect WebSocket upgrades before stripping headers
+    @staticmethod
+    def _strip_request_headers(flow: http.HTTPFlow):
+        """Strip client hop headers while keeping mitmproxy's chunked framing."""
+        # Detect WebSocket upgrades before stripping headers.
         is_websocket = _is_websocket_upgrade(flow)
-        if is_websocket:
+        if is_websocket and not flow.metadata.get("is_websocket"):
             flow.metadata["is_websocket"] = True
             log.info(
                 "WebSocket upgrade: %s%s",
@@ -241,10 +254,9 @@ class RequestIdGenerator:
                 sanitize_for_log(flow.request.path),
             )
 
-        # 4. Strip SafeYolo-internal correlation headers + hop-by-hop headers.
+        # Strip SafeYolo-internal correlation headers + hop-by-hop headers.
         #    A client-supplied X-SafeYolo-Request-Id must never be trusted as
-        #    identity or forwarded upstream; the trace marker was consumed in
-        #    step 2 and now needs the same treatment.
+        #    identity or forwarded upstream.
         # Honour any extra hop-by-hop names listed in the Connection header
         # (RFC 7230 §6.1 permits clients to nominate per-hop headers there).
         extra_hop_by_hop = _connection_tokens(flow)
@@ -255,6 +267,13 @@ class RequestIdGenerator:
         # Preserve Upgrade + Connection for WebSocket handshakes
         if is_websocket:
             headers_to_remove = headers_to_remove - WEBSOCKET_HEADERS
+        # The HTTP/1 parser has validated and decoded the incoming chunks.
+        # mitmproxy consults this same field when it writes outgoing chunks
+        # and the final zero chunk. Removing it, including when nominated by
+        # Connection, would leave the upstream request incomplete.
+        transfer = flow.request.headers.get("transfer-encoding", "")
+        if flow.request.is_http11 and transfer.split(",")[-1].strip().lower() == "chunked":
+            headers_to_remove = headers_to_remove - {"transfer-encoding"}
         for header in list(flow.request.headers.keys()):
             if header.lower() in headers_to_remove:
                 del flow.request.headers[header]

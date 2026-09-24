@@ -80,6 +80,7 @@ struct Closing {
     code: u16,
     from_client: Option<bool>,
     outcome: &'static str,
+    send_close: bool,
 }
 impl Closing {
     fn failure(code: u16, from_client: Option<bool>, outcome: &'static str) -> Self {
@@ -91,6 +92,17 @@ impl Closing {
             code,
             from_client,
             outcome,
+            send_close: true,
+        }
+    }
+
+    fn without_reply(from_client: Option<bool>, outcome: &'static str) -> Self {
+        Self {
+            payload: Vec::new(),
+            code: 1006,
+            from_client,
+            outcome,
+            send_close: false,
         }
     }
 }
@@ -130,16 +142,32 @@ async fn read_messages<R: AsyncRead + Unpin>(
         };
         let event = match event {
             Event::Close(payload) => {
-                return Finished::Reader(Closing {
+                inspection_lifetime.cancelled.store(true, Ordering::Release);
+                let close = Closing {
                     code: payload
                         .get(..2)
                         .map_or(1005, |bytes| u16::from_be_bytes([bytes[0], bytes[1]])),
-                    payload,
+                    payload: payload.clone(),
                     from_client: Some(from_client),
                     outcome: "peer_close",
-                });
+                    send_close: true,
+                };
+                // Each peer gets the other peer's Close. Keep the opposite
+                // reader alive until it supplies its own reply.
+                let forwarded = tokio::select! {
+                    biased;
+                    _ = closing.changed() => false,
+                    result = destination.send(Event::Close(payload)) => result.is_ok(),
+                };
+                if !forwarded {
+                    return Finished::Stopped;
+                }
+                return Finished::Reader(close);
             }
             Event::Message(message) => {
+                if inspection_lifetime.cancelled.load(Ordering::Acquire) {
+                    continue;
+                }
                 // Source appends complete unmasked/decompressed content before
                 // invoking hooks. Observe before either direction awaits its
                 // scanner, so diagnostic failure cannot erase received bytes.
@@ -247,6 +275,9 @@ async fn read_messages<R: AsyncRead + Unpin>(
             }
             control => control,
         };
+        if inspection_lifetime.cancelled.load(Ordering::Acquire) {
+            continue;
+        }
         tokio::select! {
             biased;
             _ = closing.changed() => return Finished::Stopped,
@@ -266,9 +297,15 @@ async fn write_messages<W: AsyncWrite + Unpin>(
             // Messages admitted before the close remain ordered before it.
             // In particular, DATA+CLOSE in one read must deliver the data.
             while let Ok(event) = messages.try_recv() {
+                if let Event::Close(payload) = event {
+                    writer.control(Control::Close, &payload).await?;
+                    return writer.shutdown().await;
+                }
                 write_event(&mut writer, event).await?;
             }
-            writer.control(Control::Close, &close.payload).await?;
+            if close.send_close {
+                writer.control(Control::Close, &close.payload).await?;
+            }
             return writer.shutdown().await;
         }
         let event = tokio::select! {
@@ -277,6 +314,10 @@ async fn write_messages<W: AsyncWrite + Unpin>(
             event = messages.recv() => event,
         };
         match event {
+            Some(Event::Close(payload)) => {
+                writer.control(Control::Close, &payload).await?;
+                return writer.shutdown().await;
+            }
             Some(event) => write_event(&mut writer, event).await?,
             None => {
                 closing.changed().await?;
@@ -293,7 +334,7 @@ async fn write_event<W: AsyncWrite + Unpin>(
         Event::Message(message) => writer.message(message).await,
         Event::Ping(payload) => writer.control(Control::Ping, &payload).await,
         Event::Pong(payload) => writer.control(Control::Pong, &payload).await,
-        Event::Close(_) => unreachable!("close belongs to the session owner"),
+        Event::Close(_) => unreachable!("close ends its destination writer"),
     }
 }
 
@@ -402,15 +443,37 @@ pub(crate) async fn relay(
             .await,
         )
     });
+    let mut first_close: Option<Closing> = None;
+    let mut close_deadline = None;
     let end = if *stop.borrow() {
         Closing::failure(1001, None, "shutdown")
     } else {
         loop {
+            let wait_for_reply = close_deadline;
             tokio::select! {
                 biased;
                 _ = stop.changed() => break Closing::failure(1001, None, "shutdown"),
+                _ = async move {
+                    if let Some(deadline) = wait_for_reply {
+                        tokio::time::sleep_until(deadline).await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break Closing::without_reply(first_close.as_ref().and_then(|c| c.from_client), "close_timeout"),
                 result = tasks.join_next() => match result {
-                    Some(Ok(Finished::Reader(end))) => break end,
+                    Some(Ok(Finished::Reader(end))) if end.outcome == "peer_close" => {
+                        if let Some(first) = first_close.take() {
+                            break first;
+                        }
+                        close_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(10));
+                        first_close = Some(end);
+                    },
+                    Some(Ok(Finished::Reader(end))) => {
+                        if let Some(first) = &first_close {
+                            break Closing::without_reply(first.from_client, end.outcome);
+                        }
+                        break end;
+                    },
                     Some(Ok(Finished::Writer(Err(_)))) => break Closing::failure(1006, None, "write_error"),
                     Some(Ok(Finished::Stopped | Finished::Writer(Ok(())))) => (),
                     Some(Err(_)) | None => break Closing::failure(1011, None, "task_error"),

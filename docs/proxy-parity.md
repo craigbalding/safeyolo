@@ -132,7 +132,7 @@ need a separate consumer check before deletion.
 | 4. `addons/admin_shield.py` | Block agent proxy requests and CONNECT attempts to protected host-local management endpoints; guard connection setup too. | Agents cannot reach operator management through proxy egress. Preserve configured protected ports. | Early route validation plus the common egress boundary; remove addon. | `test_admin_shield.py` |
 | 5. `addons/agent_api.py` | Serve authenticated reserved-host requests, including scoped evidence, policy queries, service access, declared test context, desktop presentation and coordination. | Shared bearer authentication does not identify the agent; sensitive operations also require trusted ingress identity. | Rust local routes with existing response contracts and state access; remove handler only when consumers pass. | `test_agent_api.py`, `test_agent_api_coord.py`, `test_agent_token.py` |
 | 6. `addons/agent_api_guard.py` | If the normal handler is absent, disabled, import-failed or unhandled, synthesize a local diagnostic failure before downstream addons. | Internal bearer tokens and queries do not enter ordinary inspection/logging or external resolution. | Structurally local dispatch independent of route success; remove guard after fault tests pass. | `test_agent_api.py`, `test_imports.py`, `test_transport_guard.py` |
-| 7. `addons/loop_guard.py` | Match this instance's RFC Via pseudonym and return 508 on a loop; otherwise append the pseudonym. | Nested legitimate proxies remain distinct; a loop does not recurse indefinitely. | HTTP ingress/egress header handling; remove addon. | `test_loop_guard.py`, `cli/tests/test_proxy.py` |
+| 7. `addons/loop_guard.py` | Match this instance's RFC Via pseudonym and return 508 on a loop; otherwise append the pseudonym. | Nested legitimate proxies remain distinct; a loop does not recurse indefinitely. | HTTP ingress/egress header handling; remove addon. | `test_loop_guard.py`, `cli/tests/test_proxy.py`, `tests/proxy_migration/test_http_contract.py` |
 | 8. `addons/request_id.py` | Generate request IDs; consume trace opt-in; strip spoofed internal/hop headers; return correlation IDs; relate CONNECT admission and inner requests. | Client-supplied correlation values cannot impersonate trusted observations. | Typed connection/request correlation and header handling; remove addon. | `test_request_id.py`, `test_connect_policy.py`, `test_trace_wire_vocabulary.py` |
 | 9. `addons/operator_provenance.py` | Observe duplicate, edit, replay, kill, resume and revert actions in the shared traffic view; audit source/resulting flow relationships. | Separate trusted operator initiation, original evidence ownership and transport identity. | Explicit operator operations and provenance; remove View observers after retained workflows pass. | `test_operator_provenance.py`, `test_agent_identity_resolution.py` |
 | 10. `addons/service_discovery.py` | Read the mtime-cached agent map and stamp resolved attribution for HTTP and CONNECT. | UDS identity is authoritative; conflicting trusted sources fail closed. Cached metadata is not a new identity source. | Listener-owned identity and compatible external attribution fields; remove IP lookup from the Rust path. | `test_service_discovery_file.py`, `test_agent_identity_resolution.py` |
@@ -364,10 +364,13 @@ peer Close or shutdown. The old fixture uses actual Python addons
 and policy code in a focused chain. These owner-run comparisons establish that
 development path; they do not establish complete production-chain acceptance.
 
-On closure, writers drain admitted messages before sending Close. Scanner VM
-cancellation is per session, and the relay waits for running inspection before
-reporting a clean drain. The existing ten-second closure grace can expire when
-an opaque regex-library search does not return. Such delegated searches remain
+On a peer Close, each proxy now forwards that frame only to the opposite peer
+and waits up to ten seconds for its own Close. A missing reply ends the transport
+without a fabricated clean Close. Rust writers drain admitted messages before
+sending Close. Rust scanner VM cancellation is per session. The relay waits for
+running inspection before reporting a clean drain. The existing ten-second
+closure grace can expire when an opaque regex-library search does not return.
+Such delegated searches remain
 a cancellation limitation. Content-free development events report message and
 session outcomes; production traffic capture, evidence access and storage
 failure integration still require work.
@@ -388,7 +391,7 @@ silently reduce accepted message sizes to a library default.
 | ID | Source-backed finding | Classification and required resolution |
 |---|---|---|
 | D1 | The baseline TLS document labels `mitmproxy-ca-cert.cer` as DER and describes `mitmproxy-ca.pem` only as the private key. The locked dependency writes PEM in `.cer`, and key plus certificate in `-ca.pem`. | Documentation corrected to the actual formats. Rust tests import a real mitmproxy RSA CA, issue a verified leaf, reload it in Rust and then reload it in mitmproxy. The opt-in `selected_python_native_python_native_ca_trust_transition` also completes native TLS handshakes before and after the old-Python reload, retaining root/key hashes and modes. The CA file remains byte-identical; PKCS#1 wrapping happens only in memory. |
-| D2 | Production sets `stream_large_bodies=10m`; the SSE addon sets response streaming. Its docstring says request bodies remain fully inspected, but large-body transport streaming and scanner `get_text()` require separate examination. Buffered-body hooks cannot establish inspection of bytes already forwarded. | Coverage boundary characterized by live request/response tests. Preserve configured streaming behavior and report actual coverage. A concrete bypass of an applicable blocking rule requires a regression and repair; do not claim full inspection from hook execution. Live request/response tests now record the actual coverage: a 10 MiB request body is scanned and blocked before the origin dial; an over-threshold body (known-length and chunked) forwards byte-exact with an empty retained snippet and no scan claim; URL scope still blocks an over-threshold request before upload; and an enabled SSE response streams with an unavailable body (188a5291). |
+| D2 | Production sets `stream_large_bodies=10m`; the SSE addon sets response streaming. Its docstring says request bodies remain fully inspected, but large-body transport streaming and scanner `get_text()` require separate examination. Buffered-body hooks cannot establish inspection of bytes already forwarded. | Coverage boundary characterized by live request/response tests. Preserve configured streaming behavior and report actual coverage. A concrete bypass of an applicable blocking rule requires a regression and repair; do not claim full inspection from hook execution. Live request/response tests record that a 10 MiB request body is scanned and blocked before the origin dial; an over-threshold body (known-length and chunked) reaches the origin byte-exact with an empty retained snippet and no scan claim; URL scope still blocks an over-threshold request before upload; and an enabled SSE response streams with an unavailable body (188a5291). The Python credential guard decides detected HTTP/1 header credentials at the head for announced large and unannounced chunked bodies. A denied head gets a local response before origin contact through per-flow integration with mitmproxy 12.2.3's private `HttpStream.start_request_stream`; revalidate this integration before upgrading the dependency. Allowed bodies retain the existing streaming path. Byte delivery alone did not establish complete HTTP/1.1 framing. The shared [allowed chunked fixture](../tests/proxy_migration/test_allowed_chunked_framing.py) separately requires a buffered request and a request one byte above the threshold to finish at an origin that waits for complete framing. It does not claim body inspection or capture beyond the streaming window. HTTP/2 credential-header denial remains open under #621 §5. |
 | D3 | Raw CONNECT tests use a client-first `raw-hello` exchange with `--tcp-hosts`; HTTPS/WSS live fixtures set `ssl_insecure=true`. | Test coverage limits. These fixtures prove neither real SSH/server-first/half-close nor upstream certificate validation. Keep separate real-client and invalid-certificate tests. |
 | D4 | CONNECT authority, inner Host/HTTP/2 authority, SNI and actual outbound target are represented separately by the framework. Existing admission tests do not establish the full mismatch matrix. | Unresolved authority-boundary coverage. Test each value independently. A changed inner authority must not inherit permission for another destination. Never fall back to opaque transport after parser/TLS failure. |
 | D5 | Routine credential events use fingerprints; FlowStore retains request/response bodies and ordinary headers, redacting the gateway-injected header; the trusted operator's interactive view is broader. `SECURITY.md` uses an unqualified statement that raw detected credentials are never stored/logged. | Evidence-scope documentation discrepancy. Preserve authorized raw evidence and injected-secret protection; verify each surface with synthetic secrets. Do not implement global redaction as an assumed parity requirement. |
@@ -2038,6 +2041,19 @@ source first-header Latin-1 decoding and first-comma selection; it is not truste
 agent identity. Failed-auth audit retains the full request target independently
 of route parsing. These operator call sites supply no agent attribution,
 decision or approval.
+
+Approval-bearing Agent API requests (`/gateway/request-access`,
+`/gateway/submit-binding`, `/desktop/present` and `/plumb/request-chat`) now
+return a pending success only after their own canonical audit event is written
+and closed. If the destination write fails, the queue is full or stopped, or
+the write does not complete within 5 seconds, the agent receives 500 rather
+than a claim that the operator can review the request. Other audit events remain
+asynchronous. A failed Plumb audit does not undo its already committed SQLite
+request; the operator approval views still require the canonical audit event.
+The write receipt does not promise filesystem sync or crash durability.
+[The focused approval delivery test](../proxy/tests/approval_audit_delivery.rs)
+checks all three stateless routes against the native admin and retained watch
+views before and after destination recovery in one process.
 
 The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
 It does not cover every canonical submission exception: circuit hook failures

@@ -45,6 +45,7 @@ from safeyolo.core.utils import (
     make_block_response,
     sanitize_for_log,
 )
+from safeyolo.mitm_addons.request_id import ensure_request_id, ensure_trace_opt_in
 
 log = logging.getLogger("safeyolo.credential-guard")
 
@@ -376,9 +377,59 @@ class CredentialGuard(SecurityAddon):
             # PolicyClient not configured - default to enabled
             return True
 
+    def _header_detections(self, flow: http.HTTPFlow) -> list[dict]:
+        entropy_config = self.config.get("entropy", {
+            "min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5
+        })
+        detection_level = self.config.get("detection_level", "standard")
+        standard_auth_headers = self.config.get("standard_auth_headers", [
+            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
+            "x-goog-api-key",
+        ])
+        return analyze_headers(
+            headers=dict(flow.request.headers),
+            rules=self.rules,
+            safe_headers_config=self.safe_headers_config,
+            entropy_config=entropy_config,
+            standard_auth_headers=standard_auth_headers,
+            detection_level=detection_level,
+        )
+
+    def requestheaders(self, flow: http.HTTPFlow):
+        """Decide header credentials before a body can stream upstream.
+
+        A request with no detected header credential keeps its normal request
+        hook. For a detected credential, evaluate once at the request head;
+        the result must not be re-evaluated after bytes have streamed upstream.
+        """
+        transfer_codings = flow.request.headers.get("transfer-encoding", "").lower().split(",")
+        chunked = (
+            not (flow.request.is_http2 or flow.request.is_http3)
+            and transfer_codings[-1].strip() == "chunked"
+        )
+        if not (flow.request.stream or chunked) or flow.response:
+            return
+        self._maybe_reload_rules()
+        if not self._header_detections(flow):
+            return
+        ensure_request_id(flow)
+        ensure_trace_opt_in(flow)
+        self.request(flow)
+        flow.metadata["credential_guard_head_checked"] = True
+        if flow.response:
+            flow.metadata["credential_guard_head_denied"] = True
+            if chunked:
+                # An unannounced body has not reached the streaming threshold.
+                # Enter the existing per-flow early-response path at the head.
+                flow.request.stream = True
+            # Do not send 100 Continue before the local denial.
+            flow.request.headers.pop("expect", None)
+
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Inspect request for credential leakage."""
+        if flow.metadata.pop("credential_guard_head_checked", False):
+            return
         # This addon owns its own prior-response short-circuit — the
         # decorator is observation-only and does NOT preempt the body.
         if flow.response:
@@ -412,23 +463,7 @@ class CredentialGuard(SecurityAddon):
         path = flow.request.path
         project_id = self._get_project_id(flow)
 
-        entropy_config = self.config.get("entropy", {
-            "min_length": 20, "min_charset_diversity": 0.5, "min_shannon_entropy": 3.5
-        })
-        detection_level = self.config.get("detection_level", "standard")
-        standard_auth_headers = self.config.get("standard_auth_headers", [
-            "authorization", "x-api-key", "api-key", "x-auth-token", "apikey",
-            "x-goog-api-key",
-        ])
-
-        detections = analyze_headers(
-            headers=dict(flow.request.headers),
-            rules=self.rules,
-            safe_headers_config=self.safe_headers_config,
-            entropy_config=entropy_config,
-            standard_auth_headers=standard_auth_headers,
-            detection_level=detection_level
-        )
+        detections = self._header_detections(flow)
 
         if not detections:
             self._trace_evaluated(flow, outcome=OUTCOME_NO_DETECTION)
