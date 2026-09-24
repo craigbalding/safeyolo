@@ -6,9 +6,14 @@ on:
     paths:
       - "proxy/**"
       - "tests/proxy_migration/**"
+      - "tests/blackbox/proxy_backend.py"
+      - "tests/blackbox/run-tests.sh"
+      - "tests/test_blackbox_harness.py"
       - "tests/test_proxy_rust_coord_fixture.py"
       - "tests/test_proxy_rust_ci_events.py"
       - "tests/test_proxy_cutover_deletion_map.py"
+      - "tests/blackbox/sinkhole/server.py"
+      - "tests/test_blackbox_sinkhole.py"
       - "tests/test_rust_temporary_policy.py"
       - "tests/test_workflow_action_pins.py"
       - "tools/proxy_migration/**"
@@ -54,7 +59,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.9.24"
+          version: "0.12.8"
           prune-cache: true
 
       - name: Install the historical comparator and temporary policy adapter
@@ -62,12 +67,15 @@ jobs:
           uv python install 3.12
           uv sync --frozen --group dev --python 3.12
 
-      - name: Test workflow, fixture, deletion, and adapter boundaries
+      - name: Test workflow, fixture, deletion, adapter, and blackbox runner boundaries
         run: |
           uv run --frozen pytest -q \
+            tests/test_blackbox_harness.py \
+            tests/proxy_migration/test_readiness.py \
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_proxy_cutover_deletion_map.py \
+            tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_rust_temporary_policy.py \
             tests/test_workflow_action_pins.py
 
@@ -78,7 +86,7 @@ jobs:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
           ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
-          ../scripts/cargo_with_space.sh test --locked --test gateway_workflow
+          ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
 
   http-slice:
     name: HTTP migration (${{ matrix.os }})
@@ -117,16 +125,15 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
-          version: "0.9.24"
+          version: "0.12.8"
           prune-cache: true
 
       - name: Install the historical comparator and temporary policy adapter
         run: |
-          uv python install 3.12
-          uv sync --frozen --group dev --python 3.12
+          uv python install 3.12.14
+          uv sync --frozen --group dev --python 3.12.14
 
       - name: Start the Python-owned Coord fixture
-        if: matrix.os == 'ubuntu-latest'
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
@@ -165,31 +172,27 @@ jobs:
           exit 1
 
       - name: Test and build the Rust proxy
-        timeout-minutes: 10
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 10 }}
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then
-            export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
-            export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
-            host_target="$(rustc -vV | sed -n 's/^host: //p')"
-            test -n "$host_target"
-            runner_variable="CARGO_TARGET_${host_target^^}_RUNNER"
-            runner_variable="${runner_variable//-/_}"
-            export CARGO_BUILD_TARGET="$host_target"
-            export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
-          fi
+          export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+          export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$host_target"
+          runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
+          runner_variable="CARGO_TARGET_${runner_target}_RUNNER"
+          export CARGO_BUILD_TARGET="$host_target"
+          export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
           ../scripts/cargo_with_space.sh test --locked
           ../scripts/cargo_with_space.sh build --locked
-          if [ "$RUNNER_OS" = Linux ]; then
-            rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
-            test -x "$rust_proxy"
-            printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
-          fi
+          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+          test -x "$rust_proxy"
+          printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
-        if: always() && matrix.os == 'ubuntu-latest'
+        if: always()
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
           SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
@@ -211,12 +214,21 @@ jobs:
           echo "Coord fixture did not finish its ownership-verified teardown" >&2
           exit 1
 
+      - name: Provide the macOS owned HTTP peer address
+        if: matrix.os == 'macos-latest'
+        run: |
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+
       - name: Run shared HTTP contracts against the historical Python comparator
+        env:
+          PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-py' || '' }}
         run: |
           uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
 
       - name: Run shared HTTP contracts against native Rust without the temporary adapter
         env:
+          PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
           SAFEYOLO_RUST_NATIVE_ONLY: "1"
         run: uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 
@@ -224,8 +236,46 @@ jobs:
         run: |
           uv run --frozen pytest -q tests/test_rust_temporary_policy.py
 
+      - name: Prepare pinned Python oracle source
+        env:
+          SAFEYOLO_COMPARATOR_COMMIT: 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
+        run: |
+          git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"
+          git worktree add --detach "$SAFEYOLO_STATE_PYTHON_SOURCE" "$SAFEYOLO_COMPARATOR_COMMIT"
+          cd "$SAFEYOLO_STATE_PYTHON_SOURCE"
+          uv sync --frozen --group dev --python 3.12.14
+
       - name: Compare native behavior with the historical implementation
         working-directory: proxy
         env:
-          SAFEYOLO_POLICY_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: ../scripts/cargo_with_space.sh test --locked -- --ignored --nocapture
+          SAFEYOLO_POLICY_PYTHON: ${{ runner.temp }}/safeyolo-comparator/.venv/bin/python
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_SOURCE_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_SOURCE_ROOT: ${{ github.workspace }}
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
+          SAFEYOLO_STATE_EVIDENCE_DIR: ${{ runner.temp }}/safeyolo-state-oracle
+        run: |
+          set -e -o pipefail
+          comparator_head="$(git -C "$SAFEYOLO_STATE_PYTHON_SOURCE" rev-parse HEAD)"
+          if [ "$comparator_head" != 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a ]; then
+            echo "Wrong Python comparator commit: $comparator_head" >&2
+            exit 1
+          fi
+          if [ -n "$(git -C "$SAFEYOLO_STATE_PYTHON_SOURCE" status --porcelain)" ]; then
+            echo "Python comparator checkout is not clean" >&2
+            exit 1
+          fi
+          "$SAFEYOLO_POLICY_PYTHON" -c "import platform, unicodedata; actual = (platform.python_version(), unicodedata.unidata_version); assert actual == ('3.12.14', '15.0.0'), f'Wrong Python oracle runtime: {actual}'"
+          mkdir -p "$SAFEYOLO_STATE_EVIDENCE_DIR"
+          ../scripts/cargo_with_space.sh test --locked -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/safeyolo-ignored-oracle.log"
+          awk '
+            /^test result: / { summaries++; passed += $4; ignored += $8 }
+            END {
+              if (summaries == 0 || passed == 0 || ignored != 0) {
+                printf "ignored-oracle lane did not execute cleanly: summaries=%d passed=%d ignored=%d\n", summaries, passed, ignored > "/dev/stderr"
+                exit 1
+              }
+              printf "ignored-oracle lane executed %d tests across %d summaries\n", passed, summaries
+            }
+          ' "$RUNNER_TEMP/safeyolo-ignored-oracle.log"

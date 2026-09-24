@@ -128,6 +128,7 @@ async fn owned_workflow(python: &std::ffi::OsStr) {
         [
             "network-guard",
             "circuit-breaker",
+            "credential-guard",
             "test-context",
             "probe-sink"
         ]
@@ -137,8 +138,8 @@ async fn owned_workflow(python: &std::ffi::OsStr) {
             .iter()
             .all(|step| step["state"] == "evaluated")
     );
-    assert_eq!(request_steps[3]["outcome"], "probe_terminated");
-    let missing = ["service-gateway", "credential-guard", "pattern-scanner"];
+    assert_eq!(request_steps[4]["outcome"], "probe_terminated");
+    let missing = ["service-gateway", "pattern-scanner"];
     assert_eq!(
         report["not_loaded"]
             .as_array()
