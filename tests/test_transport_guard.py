@@ -69,9 +69,10 @@ def _agent_api_flow(
 
 
 class TestRefusalForProbeHost:
-    def test_refuses_when_server_address_is_probe_host(self):
+    @pytest.mark.parametrize("host", [PROBE_HOST, PROBE_HOST + "."])
+    def test_refuses_when_server_address_is_probe_host(self, host):
         addon, refusal = _addon()
-        data = _hook_data(server_host=PROBE_HOST, server_port=80)
+        data = _hook_data(server_host=host, server_port=80)
 
         with patch("transport_guard.write_event", autospec=True) as mock_write:
             addon.server_connect(data)
@@ -95,12 +96,13 @@ class TestRefusalForProbeHost:
 
         assert data.server.error == refusal
 
-    def test_refuses_when_sni_is_probe_host(self):
+    @pytest.mark.parametrize("host", [PROBE_HOST, PROBE_HOST + "."])
+    def test_refuses_when_sni_is_probe_host(self, host):
         """TLS/CONNECT paths route by SNI, not by data.server.address host.
         The guard reads both so a probe destination reached via a
         connect-then-TLS path can't slip past."""
         addon, refusal = _addon()
-        data = _hook_data(server_host="unrelated.example.com", sni=PROBE_HOST)
+        data = _hook_data(server_host="unrelated.example.com", sni=host)
 
         with patch("transport_guard.write_event", autospec=True):
             addon.server_connect(data)
@@ -140,7 +142,9 @@ class TestAgentAPITransportRefusal:
         [
             ("_safeyolo.proxy.internal", None),
             ("_SAFEYOLO.PROXY.INTERNAL", None),
+            ("_safeyolo.proxy.internal.", None),
             ("unrelated.example.com", "_sAfEyOlO.pRoXy.InTeRnAl"),
+            ("unrelated.example.com", "_safeyolo.proxy.internal."),
         ],
     )
     def test_refuses_address_and_sni_case_insensitively(self, server_host, sni):

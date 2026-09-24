@@ -1,6 +1,7 @@
 """First shared HTTP contracts; transport/TLS/WS coverage remains explicit."""
 
 import concurrent.futures
+import json
 
 import pytest
 
@@ -22,6 +23,88 @@ def test_two_agent_http_policy_and_attribution(proxy_backend, tmp_path, parent):
 
 def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):
     reserved_scenario(proxy_backend, tmp_path / proxy_backend)
+
+
+def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_backend, tmp_path):
+    """A received Via pseudonym names this instance only when it matches exactly."""
+    directory = tmp_path / proxy_backend
+    own_token = "fixture-via-instance"
+    other_token = own_token + "-peer"
+    policy = 'budget = 12000\n[hosts]\n"*" = { egress = "allow" }\n'
+    loop_target = "http://target.invalid:8123/loop?canary=fixture-via-canary"
+    distinct_target = "http://target.invalid:8123/distinct?canary=fixture-via-canary"
+    control_target = "http://control.invalid:8123/control"
+    with origin_server() as parent:
+        parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
+        with launch_proxy(proxy_backend, directory, policy, parent_proxy=parent_url,
+                          native_policy=True, via_token=own_token) as proxy:
+            results = []
+            for target, via, expected_status, expected_accepts in (
+                (loop_target, f"1.0 earlier-instance, 1.1 {own_token.upper()}", 508, 0),
+                (distinct_target, f"1.1 {other_token}", 200, 1),
+                (control_target, None, 200, 2),
+            ):
+                headers = {"X-Fixture-Canary": "fixture-via-canary"}
+                if via is not None:
+                    headers["Via"] = via
+                status, response_headers, body = request(
+                    proxy.paths["alice"], target, headers=headers,
+                )
+                response_headers = {key.lower(): value for key, value in response_headers.items()}
+                identifier = response_headers.get("x-safeyolo-request-id")
+                assert identifier and identifier.startswith("req-")
+                assert status == expected_status, (status, body, parent.accepts, parent.requests)
+                assert parent.accepts == expected_accepts
+                assert len(parent.requests) == expected_accepts
+                assert len(proxy.events("proxy.egress")) == expected_accepts
+                if expected_status == 508:
+                    assert response_headers["x-blocked-by"] == "loop-guard"
+                    assert b"proxy loop" in body.lower()
+                else:
+                    assert body == b"hello"
+                results.append({"target": target, "via": via, "status": status,
+                                "request_id": identifier})
+
+            events = proxy.events("proxy.request")
+            assert len(events) == 3
+            for result, event in zip(results, events, strict=True):
+                assert event["request_id"] == result["request_id"]
+                assert event["agent"] == "alice"
+                assert (event["host"], event["port"], event["status"]) == (
+                    "control.invalid" if result["target"] == control_target else "target.invalid",
+                    8123, result["status"],
+                )
+            assert [event["decision"] for event in events] == ["deny", "allow", "allow"]
+            assert len({result["request_id"] for result in results}) == 3
+            assert [item["target"] for item in parent.requests] == [
+                distinct_target, control_target,
+            ]
+            assert parent.canary_headers == ["fixture-via-canary"] * 2
+            assert len(parent.via_headers) == 2
+            forwarded_via = ", ".join(parent.via_headers[0]).lower()
+            assert f"1.1 {other_token}" in forwarded_via
+            assert f"1.1 {own_token}" in forwarded_via
+            assert f"1.1 {own_token}" in ", ".join(parent.via_headers[1]).lower()
+            audit = read_events(directory / "audit.jsonl")
+            loop_audit = [row for row in audit if row.get("request_id") == results[0]["request_id"]]
+            if proxy_backend == "python":
+                assert any(row["event"] == "security.loop_guard" and row["agent"] == "alice"
+                           and row["decision"] == "deny" for row in loop_audit)
+            else:
+                assert any(row["event"] == "traffic.response" and row["agent"] == "alice"
+                           and row["details"]["blocked_by"] == "loop-guard"
+                           and row["details"]["block_reason"] == "proxy_loop"
+                           for row in loop_audit)
+            (directory / "via-loop-observation.json").write_text(json.dumps({
+                "requests": results,
+                "parent_accepts": parent.accepts,
+                "parent_requests": parent.requests,
+                "parent_via_headers": parent.via_headers,
+                "parent_canary_headers": parent.canary_headers,
+                "proxy_requests": events,
+                "proxy_egress": proxy.events("proxy.egress"),
+                "loop_audit": loop_audit,
+            }, indent=2) + "\n")
 
 
 def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_backend, tmp_path):

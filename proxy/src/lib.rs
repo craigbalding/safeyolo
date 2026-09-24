@@ -981,12 +981,21 @@ fn record_service_problem(writer: &audit::Writer, problem: &services::ServiceLoa
     }
 }
 
+pub(crate) const PROBE_HOST: &str = "_safeyolo.probe.internal";
+
+pub(crate) fn is_probe_host(host: &str) -> bool {
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .eq_ignore_ascii_case(PROBE_HOST)
+}
+
 pub(crate) fn is_reserved(host: &str) -> bool {
     // A DNS root dot denotes the same endpoint. Classify that spelling locally
     // too, so a parent proxy never receives a reserved API request or token.
-    let host = host.strip_suffix('.').unwrap_or(host);
-    host.eq_ignore_ascii_case("_safeyolo.proxy.internal")
-        || host.eq_ignore_ascii_case("_safeyolo.probe.internal")
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .eq_ignore_ascii_case("_safeyolo.proxy.internal")
+        || is_probe_host(host)
 }
 
 fn clear_readiness(path: &Path, instance_id: &str) {

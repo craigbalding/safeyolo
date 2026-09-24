@@ -178,6 +178,11 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     assert_eq!(agents.status, 200);
     assert_eq!(agents.json()["agents"].as_array().unwrap().len(), 1);
 
+    // The event stream starts at the current audit file offset. Let earlier
+    // mutations reach the file before subscribing so the next frame is live.
+    let audit_path = config.audit_log_path.as_ref().unwrap();
+    wait_for_audit_event(audit_path, "admin.approval_added", "approved.example").await;
+    wait_for_audit_event(audit_path, "admin.denial", "approved.example").await;
     let mut events = connect_events(port, token).await;
 
     let live_event = admin(
@@ -835,6 +840,28 @@ async fn read_event(stream: &mut TcpStream) -> Value {
     let (header, body) = read_ws_frame(stream).await;
     assert_eq!(header[0] & 0x0f, 1);
     serde_json::from_slice(&body).unwrap()
+}
+
+async fn wait_for_audit_event(path: &Path, event_name: &str, destination: &str) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let audit = match std::fs::read_to_string(path) {
+                Ok(audit) => audit,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => panic!("could not read audit log {path:?}: {error}"),
+            };
+            if audit.lines().any(|line| {
+                serde_json::from_str::<Value>(line).is_ok_and(|event| {
+                    event["event"] == event_name && event["details"]["destination"] == destination
+                })
+            }) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("audit event {event_name} for {destination} was not durable"));
 }
 
 async fn wait_for_pending(port: u16, token: &str, request_id: Option<&str>) -> Value {
