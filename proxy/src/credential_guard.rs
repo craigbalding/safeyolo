@@ -1050,10 +1050,7 @@ fn evaluate(pdp: &Pdp<'_>, request: &Request<'_>, finding: &Finding, now_ms: f64
             false,
         )
     };
-    if request
-        .host
-        .eq_ignore_ascii_case("_safeyolo.probe.internal")
-    {
+    if crate::is_probe_host(request.host) {
         return Decision {
             effect: PdpEffect::Allow,
             reason: "Internal pipeline probe (system-reserved)".into(),

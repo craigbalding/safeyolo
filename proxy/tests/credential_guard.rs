@@ -177,6 +177,22 @@ fn source_order_charges_credential_then_baseline_network_for_each_detection() {
         );
     }
 }
+
+#[test]
+fn root_dot_probe_uses_intrinsic_credential_decision() {
+    let guard = configured(sensor());
+    let denied = policy(credential_policy("deny"));
+    for host in ["_safeyolo.probe.internal", "_SAFEYOLO.PROBE.INTERNAL."] {
+        let row = json!({"headers":[["Authorization","key-first"]],"host":host});
+        let result = observed(&guard, &denied, &row);
+        assert_eq!(result["outcome"]["kind"], "allowed", "{host}");
+        assert_eq!(
+            result["outcome"]["evaluations"][0]["reason_codes"],
+            json!(["INTERNAL_PIPELINE_PROBE"]),
+            "{host}"
+        );
+    }
+}
 #[test]
 fn warn_conflict_prior_response_disabled_and_error_have_distinct_side_effects() {
     let guard = configured(sensor());
@@ -463,6 +479,9 @@ fn addon_wire_audit_trace_and_repeated_budget_charges_match_python() {
         rows.push(json!({"headers":[]}));
         rows.push(
             json!({"headers":[["Authorization","key-first"]],"host":"_safeyolo.probe.internal"}),
+        );
+        rows.push(
+            json!({"headers":[["Authorization","key-first"]],"host":"_SAFEYOLO.PROBE.INTERNAL."}),
         );
         rows.push(json!({"headers":[["Authorization","key-first"]],"method":"CONNECT","scheme":"","path":""}));
         scenarios.push(json!({"document":doc,"sensor":sensor(),"rows":rows}));

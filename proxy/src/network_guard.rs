@@ -633,12 +633,8 @@ fn hostname_violation(request: Request<'_>, enabled: bool) -> Option<Violation> 
 }
 
 fn evaluate_policy(policy: &Policy, request: Request<'_>, now_ms: f64) -> PdpDecision {
-    // Source predicate is case-insensitive but does not strip a trailing dot.
-    // This decision never authorizes a dial to the reserved local destination.
-    if request
-        .host
-        .eq_ignore_ascii_case("_safeyolo.probe.internal")
-    {
+    // Source and native policy both treat one DNS root dot as the same local probe.
+    if crate::is_probe_host(request.host) {
         return PdpDecision {
             effect: PdpEffect::Allow,
             reason: "Internal pipeline probe (system-reserved)".into(),

@@ -270,12 +270,8 @@ def reserved_scenario(backend, directory):
                             assert json.loads(body)["reason_code"] == "agent_api_unavailable", row
                             assert "security.agent_api_unavailable" in row["audit_events"], row
                     elif kind == "probe":
-                        native_root_dot = backend == "rust" and host.endswith(".")
-                        assert status == (503 if native_root_dot else 200), row
-                        if native_root_dot:
-                            assert json.loads(body)["error"] == "Local endpoint is not implemented in the development proxy", row
-                        else:
-                            assert json.loads(body)["probe_ok"] is True, row
+                        assert status == 200, row
+                        assert json.loads(body)["probe_ok"] is True, row
                     else:
                         assert status == 400, row
     return {"responses": responses, "origin_connections": parent.accepts,

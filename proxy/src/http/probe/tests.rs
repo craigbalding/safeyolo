@@ -16,20 +16,15 @@ const LIMIT: Duration = Duration::from_secs(5);
 const CLAIM: &str = "run=owned-probe;agent=claimed;test=pipeline-probe";
 
 #[test]
-fn exact_probe_host_matches_source_inputs_except_root_dot() {
+fn probe_host_matches_source_inputs() {
     let source: Value =
         serde_json::from_str(include_str!("../../../tests/probe_doctor_source.json")).unwrap();
     for row in source["matcher"].as_array().unwrap() {
         let host = row["host"].as_str().unwrap_or_default();
-        if host == "_safeyolo.probe.internal." {
-            // Python's sink now accepts one DNS root dot. Native still
-            // contains that spelling without treating it as a positive probe.
-            assert!(row["matches"].as_bool().unwrap());
-            assert!(!is_host(host));
-            assert!(crate::is_reserved(host));
-            continue;
-        }
         assert_eq!(is_host(host), row["matches"].as_bool().unwrap(), "{}", host);
+        if host == "_safeyolo.probe.internal." {
+            assert!(crate::is_reserved(host));
+        }
     }
 }
 
@@ -412,7 +407,7 @@ async fn streamed_probe_is_refused_without_draining_or_success_hooks() {
 }
 
 #[tokio::test]
-async fn prior_denial_and_reserved_alias_do_not_report_probe_success() {
+async fn prior_denial_preempts_probe_and_root_dot_reaches_local_sink() {
     let fixture = Fixture::new(false, true).await;
     let denied=fixture.exchange(&format!("GET http://{HOST}/ HTTP/1.0\r\nHost: {HOST}\r\nX-SafeYolo-Trace: 1\r\nConnection: close\r\n\r\n")).await;
     assert_eq!(status(&denied), 428);
@@ -429,7 +424,18 @@ async fn prior_denial_and_reserved_alias_do_not_report_probe_success() {
     let dotted = fixture
         .exchange(&request(&format!("{HOST}."), "GET", "/", "", ""))
         .await;
-    assert_eq!(status(&dotted), 503);
+    assert_eq!(status(&dotted), 200);
+    assert_eq!(
+        serde_json::from_slice::<Value>(body(&dotted)).unwrap()["probe_ok"],
+        true
+    );
+    assert!(
+        fixture.trace(&dotted)["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["outcome"] == "probe_terminated")
+    );
     let similar = fixture
         .exchange(&request(
             "_safeyolo.probe.internal.owned.invalid",

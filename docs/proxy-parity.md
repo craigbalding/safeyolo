@@ -395,7 +395,7 @@ silently reduce accepted message sizes to a library default.
 | D6 | Completed WS messages are inspected and retained/pruned, but the dependency assembles an incomplete message before the hook. | Memory/coverage limit requiring measurement. View pruning is not bounded transport assembly. Sol accepted the focused `afa279b1` regression: four sequential incomplete-fragment cancellations for both WS and WSS reclaimed all anonymous spools with zero origin frames. RSS/allocator retention, concurrent/compressed/completed workloads and large-pattern scans remain open before claiming a broader bound. |
 | D7 | `flow_recorder.py` collapses query parameters into a dictionary for one evidence column, while the original URL remains available. | Representation limitation. Preserve outbound query order/duplicates and original URL evidence; do not compare only the lossy dictionary or normalize away signed-query behavior. |
 | D8 | The default production command only explicitly selects lazy connections when sinkhole routing is enabled. The live denial fixtures vary eager/lazy for CONNECT, not every plain-HTTP security decision. | Side-effect coverage gap. Observe DNS and socket attempts independently for denied plain HTTP, CONNECT and malformed local requests. Do not equate an HTTP block response with zero egress. |
-| D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust removes one DNS root dot only for reserved-name classification, before policy and at the shared egress boundary. It also refuses these names as configured parents. Python now removes one root dot in both reserved-host matchers, which serve request routing and the transport backstop. Ordinary destinations keep their original request bytes. |
+| D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust classifies one DNS root dot in reserved-name containment, intrinsic probe policy, and the local probe sink. It also refuses these names as configured parents. Python removes one root dot in both reserved-host matchers, which serve request routing and the transport backstop. Ordinary destinations keep their original request bytes. |
 | D10 | Hyper normalizes identical duplicate Content-Length fields and removes Content-Length when Transfer-Encoding controls framing. The old parser rejects those requests. Hyper rejects unequal duplicate lengths. The initial Rust slice also accepted duplicate Host fields. | Protocol difference requiring explicit wire tests. Rust rejects duplicate Host fields before policy or upstream contact. Do not equate normalization to a demonstrated smuggling flaw, or add a second HTTP parser solely to reproduce every rejection. Verify one unambiguous outbound framing and exact delivered bytes. |
 | D11 | Independent review of `5b661dc9` sent 160 requests through the temporary serial Python adapter. At 8, 16 and 32 workers, 18, 10 and 62 requests returned unexpected 502 responses. The adapter socket backlog filled; no fail-open or cross-agent leak was observed. | Concrete availability defect. Repair `ffb189ca015a5e0074eb483675e818a18e49029e` serializes decision roundtrips with one async mutex shared across reload snapshots, without retrying policy decisions. The owner reports a passing 160-request, eight-worker regression for each backend. Independent recheck passed all 480 requests at 8/16/32 workers and 16 requests across reload. A subsequent client-disconnect crash in the adapter was repaired at `03437138` and independently rechecked with SIGSTOP/client cancellation/SIGCONT. The sustained Rust capture predates these repairs. |
 | D12 | Full production SIGTERM at checkout `4586a127` exits with status zero and removes readiness, but leaves both agent UDS pathnames. Subsequent connects return `ECONNREFUSED`. `proxy.py::stop_proxy` describes socket-file removal. | Concrete cleanup discrepancy. `test_full_production_shutdown_removes_socket_files` records a strict expected failure. No live listener remains. Fixture-directory teardown removes the dead files; that teardown does not repair production shutdown. |
@@ -2266,13 +2266,14 @@ traces. The diagnostic probe uses the real native producers described below.
 
 ### Reserved probe and doctor diagnostics
 
-The [probe route](../proxy/src/http/probe.rs) recognizes the exact
-`_safeyolo.probe.internal` host without regard to ASCII case. Method, path and
-port do not select the sink. Reserved CONNECT remains refused; a trailing-dot
-spelling remains contained under the existing native rule and is not a positive
-probe. Python's repaired probe matcher accepts one root dot as a positive local
-probe. Host-derived private state excludes probe records from FlowStore without
-excluding their audit events, traces, logger, metrics or memory observations.
+The [probe route](../proxy/src/http/probe.rs) recognizes
+`_safeyolo.probe.internal` without regard to ASCII case and accepts one trailing
+DNS root dot, matching Python's local probe matcher. The intrinsic native
+network and credential decisions use the same host predicate before user deny
+rules. Method, path and port do not select the sink. Reserved CONNECT remains
+refused; a second trailing dot is invalid. Host-derived private state excludes
+probe records from FlowStore without excluding their audit events, traces,
+logger, metrics or memory observations.
 
 Buffered requests use the existing request-body preparation and independent
 parser completion observer. The sink runs after the actual installed request
