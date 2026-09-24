@@ -29,6 +29,7 @@ from safeyolo.mitm_addons.request_id import RequestIdGenerator
 from safeyolo.mitm_addons.sse_streaming import SSEStreaming
 from safeyolo.mitm_addons.transport_guard import TransportGuard
 from safeyolo.proxy_modes.unix_listener import ensure_registered
+from safeyolo.websocket_close import install_websocket_close_handshake
 
 
 class Observations:
@@ -80,6 +81,7 @@ class Observations:
 
 async def run(config):
     ensure_registered()
+    install_websocket_close_handshake()
     configure_policy_client(PolicyClientConfig(baseline_path=config["policy_file"]))
     options = Options(
         mode=[f"unix:{item['socket_path']}" for item in config["listeners"]],

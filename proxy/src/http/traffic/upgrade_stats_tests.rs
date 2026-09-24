@@ -155,6 +155,10 @@ async fn websocket_handshake_logs_once_before_frames_and_relay_close() {
             panic!("relay Close expected")
         };
         assert_eq!(payload, 1000u16.to_be_bytes());
+        writer
+            .control(Control::Close, &1000u16.to_be_bytes())
+            .await
+            .unwrap();
     });
     let mut client = UnixStream::connect(directory.path().join("alice.sock"))
         .await

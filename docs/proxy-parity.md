@@ -364,10 +364,13 @@ peer Close or shutdown. The old fixture uses actual Python addons
 and policy code in a focused chain. These owner-run comparisons establish that
 development path; they do not establish complete production-chain acceptance.
 
-On closure, writers drain admitted messages before sending Close. Scanner VM
-cancellation is per session, and the relay waits for running inspection before
-reporting a clean drain. The existing ten-second closure grace can expire when
-an opaque regex-library search does not return. Such delegated searches remain
+On a peer Close, each proxy now forwards that frame only to the opposite peer
+and waits up to ten seconds for its own Close. A missing reply ends the transport
+without a fabricated clean Close. Rust writers drain admitted messages before
+sending Close. Rust scanner VM cancellation is per session. The relay waits for
+running inspection before reporting a clean drain. The existing ten-second
+closure grace can expire when an opaque regex-library search does not return.
+Such delegated searches remain
 a cancellation limitation. Content-free development events report message and
 session outcomes; production traffic capture, evidence access and storage
 failure integration still require work.
