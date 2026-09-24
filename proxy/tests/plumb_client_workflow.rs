@@ -852,6 +852,7 @@ async fn backing_state_failure_is_truthful_and_other_member_recovers() {
     let recovered_id = recovered.body["id"].as_str().unwrap();
     assert!(!recovered_id.is_empty());
 
+    proxy.shutdown().await;
     let events = fs::read_to_string(root_path.join("audit.jsonl"))
         .unwrap()
         .lines()
@@ -881,5 +882,4 @@ async fn backing_state_failure_is_truthful_and_other_member_recovers() {
             "limit":"transient SQLite writer-lock failure only; no corrupt-file or restart claim"
         })],
     );
-    proxy.shutdown().await;
 }
