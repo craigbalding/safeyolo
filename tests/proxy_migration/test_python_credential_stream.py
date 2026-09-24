@@ -133,7 +133,9 @@ def _production_proxy(tmp_path: Path):
     data = config / "data"
     logs = tmp_path / "logs"
     coord = tmp_path / "coord"
-    socket_root = tempfile.TemporaryDirectory(prefix="sy-credential-stream-")
+    # Darwin's default temp root leaves too little sun_path for this listener.
+    short_socket_root = "/tmp" if sys.platform == "darwin" else None
+    socket_root = tempfile.TemporaryDirectory(prefix="sy-credential-stream-", dir=short_socket_root)
     listener = Path(socket_root.name) / "10.0.0.2_alice"
     for directory in (config, data, logs, coord, listener, config / "services"):
         directory.mkdir(parents=True)
