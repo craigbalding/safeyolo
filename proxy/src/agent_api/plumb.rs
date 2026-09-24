@@ -1961,10 +1961,10 @@ mod tests {
         response
     }
 
-    async fn raw_admin_approval(port: u16, request_id: &str) -> Vec<u8> {
+    async fn raw_admin_approval(port: u16, request_id: &str) -> std::io::Result<Vec<u8>> {
         let body =
             serde_json::to_string(&json!({"request_id":request_id,"ttl_seconds":120})).unwrap();
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
         let request = format!(
             "POST /admin/plumb/approve HTTP/1.1\r\nHost: localhost\r\n\
              Authorization: Bearer {SHUTDOWN_OPERATOR_TOKEN}\r\nContent-Type: application/json\r\n\
@@ -1972,13 +1972,12 @@ mod tests {
             body.len(),
             body,
         );
-        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(request.as_bytes()).await?;
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
             .await
-            .expect("operator approval must finish")
-            .unwrap();
-        response
+            .expect("operator approval must finish")?;
+        Ok(response)
     }
 
     #[tokio::test]
@@ -2749,9 +2748,25 @@ mod tests {
         .await
         .expect("shutdown fence must close plumb admission");
 
+        // The admitted operation holds the memory lock while its SQLite call
+        // is blocked. The fence closes admission while holding the operations
+        // lock, then waits for memory. Shutdown may close the admin listener
+        // before this later request receives its 503.
         let declined = {
             let request_id = declined_request_id.clone();
             tokio::spawn(async move { raw_admin_approval(admin_port, &request_id).await })
+        };
+        // A closed transport cannot prove the owner rejected the request, so
+        // probe admission directly with the same pending row as well.
+        let declined_owner = {
+            let plumb = plumb.clone();
+            let writer = writer.clone();
+            let request_id = declined_request_id.clone();
+            tokio::spawn(async move {
+                plumb
+                    .approve_owned(request_id, Some(120), Some(writer))
+                    .await
+            })
         };
         let mut shutdown = tokio::spawn(proxy.shutdown());
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -2771,10 +2786,16 @@ mod tests {
         let control = tokio::time::timeout(Duration::from_secs(5), control)
             .await
             .expect("admitted control must finish after fixture release")
-            .unwrap();
+            .unwrap()
+            .expect("admitted control must receive an HTTP response");
         let declined = tokio::time::timeout(Duration::from_secs(5), declined)
             .await
             .expect("post-fence request must receive a terminal result")
+            .unwrap();
+        let declined_owner = tokio::time::timeout(Duration::from_secs(5), declined_owner)
+            .await
+            .expect("post-fence owner request must finish")
+            .unwrap()
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), &mut shutdown)
             .await
@@ -2791,11 +2812,9 @@ mod tests {
             "the admitted control must report its completed approval"
         );
         assert_eq!(
-            response_status(&declined),
-            503,
-            "the post-fence request must be declined before it starts"
+            declined_owner["status"], 503,
+            "the fence must deny an owned operation even if the listener closes"
         );
-
         let database = Connection::open(data_dir.join("plumb").join("plumb.db")).unwrap();
         let control_status: String = database
             .query_row(
@@ -2873,5 +2892,26 @@ mod tests {
             TcpStream::connect(("127.0.0.1", admin_port)).await.is_err(),
             "shutdown must release the authenticated admin listener"
         );
+        // Shutdown can close the listener or an accepted connection before
+        // it sends 503. The owner and durable-state checks above still prove
+        // that the later approval was not admitted.
+        match declined {
+            Ok(response) if response.is_empty() => {}
+            Ok(response) => assert_eq!(
+                response_status(&response),
+                503,
+                "the post-fence request must be declined before it starts"
+            ),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::NotConnected
+                ) => {}
+            Err(error) => panic!("unexpected post-fence transport failure: {error}"),
+        }
     }
 }
