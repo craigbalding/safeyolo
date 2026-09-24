@@ -879,6 +879,18 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
                         "temporary_policy_socket": None,
                         "temporary_policy_adapter": False,
                     }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust CONNECT tunnel event did not settle; "
+                            f"proxy exit status={proxy.process.poll()}; "
+                            f"log={tmp_path / proxy_backend / 'process.log'}:\n"
+                            + ((tmp_path / proxy_backend / "process.log").read_text(
+                                errors="replace"
+                            )[-4000:] or "<empty>")
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
                     assert events[0]["host"] == "127.0.0.1"
@@ -1584,6 +1596,18 @@ def test_incomplete_connect_client_half_close_does_not_dial_origin(
                         "temporary_policy_socket": None,
                         "temporary_policy_adapter": False,
                     }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust CONNECT tunnel event did not settle; "
+                            f"proxy exit status={proxy.process.poll()}; "
+                            f"log={tmp_path / proxy_backend / 'process.log'}:\n"
+                            + ((tmp_path / proxy_backend / "process.log").read_text(
+                                errors="replace"
+                            )[-4000:] or "<empty>")
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
                     assert events[0]["coverage"] == "opaque"
