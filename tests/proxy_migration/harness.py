@@ -135,7 +135,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
-                 agent_map=None, stream_large_bodies=None, credential_head_decision=False):
+                 agent_map=None, stream_large_bodies=None, credential_head_decision=False,
+                 via_token=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -189,6 +190,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
+        if via_token is not None:
+            config["via_token"] = via_token
         if admin_port is not None:
             config["admin_port"] = admin_port
         if admin_api_token_file is not None:
