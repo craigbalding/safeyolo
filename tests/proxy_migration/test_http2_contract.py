@@ -465,13 +465,14 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
     if proxy_backend == "python":
         request.node.add_marker(pytest.mark.xfail(
             strict=True,
-            reason="Python fixture has no production credential head guard until PR #698 is integrated",
+            reason="Python streams the announced 12 MiB request before header credential denial; rerun after PR #698",
         ))
     directory = tmp_path / proxy_backend
     directory.mkdir()
     CertStore.from_store(directory / "ca", "mitmproxy", 2048)
     pem, public = origin_certificate(directory)
     partial_body = b"held-open-body-prefix"
+    announced_body_bytes = 12 * 1024 * 1024
     with origin_server(pem) as origin:
         with launch_proxy(
             proxy_backend, directory, CREDENTIAL_POLICY, tls=True, upstream_ca=public,
@@ -489,7 +490,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
                 connection.send_headers(1, [
                     (":method", "POST"), (":scheme", "https"), (":authority", origin.authority),
                     (":path", "/denied-upload"), ("authorization", "Bearer key-denied"),
-                    ("content-length", str(len(partial_body) + 4096)),
+                    ("content-length", str(announced_body_bytes)),
                 ])
                 connection.send_data(1, partial_body)
                 stream.sendall(connection.data_to_send())
@@ -570,7 +571,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
             "backend": proxy_backend,
             "client_alpn": "h2",
             "held_body_bytes_sent_without_end_stream": len(partial_body),
-            "announced_body_bytes": len(partial_body) + 4096,
+            "announced_body_bytes": announced_body_bytes,
             "origin_accepts_before_denial": accepts_before_denial,
             "origin_accepts_after_denial": accepts_after_denial,
             "origin_http_requests_before_sibling": 0,
