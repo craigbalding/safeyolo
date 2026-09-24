@@ -630,7 +630,7 @@
     "python": "3.12.14",
     "mitmproxy": "12.2.3",
     "sha256": {
-      "cli/src/safeyolo/traffic_master.py": "b46e717c41d96de4893415721ee121023e1519e65ddd64facb4565e5497db344",
+      "cli/src/safeyolo/traffic_master.py": "57fad639b71b5478ff5edc97a84c0457b97143cf5afd216a5bb9acb880b1afee",
       "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
       "cli/src/safeyolo/mitm_addons/request_id.py": "ff780ba0898a2ea0b309e8ae30b44958b5f382bc7dc962a339b84a5d17dd97a6",
       "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
