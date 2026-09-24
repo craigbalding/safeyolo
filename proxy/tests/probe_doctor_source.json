@@ -26,6 +26,10 @@
     },
     {
       "host": "_safeyolo.probe.internal.",
+      "matches": true
+    },
+    {
+      "host": "_safeyolo.probe.internal..",
       "matches": false
     },
     {
@@ -302,8 +306,136 @@
     },
     {
       "input": {
-        "name": "trailing_dot_inert",
+        "name": "trailing_dot_reserved",
         "host": "_safeyolo.probe.internal."
+      },
+      "after_requestheaders": {
+        "metadata": {
+          "agent": "alice",
+          "trace": true,
+          "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "safeyolo_probe": true
+        },
+        "response": null
+      },
+      "error_class": null,
+      "metadata": {
+        "agent": "alice",
+        "trace": true,
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "safeyolo_probe": true
+      },
+      "response": {
+        "status": 200,
+        "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-SafeYolo-Request-Id",
+            "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          ],
+          [
+            "content-length",
+            "108"
+          ]
+        ]
+      },
+      "prior_response_retained": false,
+      "trace": {
+        "request_id": "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "agent_id": "alice",
+        "created_at": 100.0,
+        "truncated": false,
+        "steps": [
+          {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal.",
+            "port": 80
+          }
+        ],
+        "not_loaded": [
+          {
+            "addon": "service-gateway",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "network-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "circuit-breaker",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "credential-guard",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "pattern-scanner",
+            "state": "not_loaded"
+          },
+          {
+            "addon": "test-context",
+            "state": "not_loaded"
+          }
+        ]
+      },
+      "timeline": [
+        {
+          "kind": "trace",
+          "step": {
+            "addon": "probe-sink",
+            "hook": "request",
+            "state": "evaluated",
+            "outcome": "probe_terminated",
+            "reason": null,
+            "duration_us": "<measured>",
+            "details": {
+              "host": "_safeyolo.probe.internal"
+            },
+            "connection_id": "owned-probe-connection",
+            "method": "GET",
+            "host": "_safeyolo.probe.internal.",
+            "port": 80
+          },
+          "accepted": true,
+          "response": {
+            "status": 200,
+            "body_text": "{\"probe_ok\": true, \"host\": \"_safeyolo.probe.internal\", \"request_id\": \"req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+            "headers": [
+              [
+                "Content-Type",
+                "application/json"
+              ],
+              [
+                "X-SafeYolo-Request-Id",
+                "req-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              ],
+              [
+                "content-length",
+                "108"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "input": {
+        "name": "double_dot_inert",
+        "host": "_safeyolo.probe.internal.."
       },
       "after_requestheaders": {
         "metadata": {
@@ -2749,7 +2881,7 @@
   "scope": "selected actual sink hooks and actual classifier over synthetic store reports; no full pipeline, fallback, transport or acceptance claim",
   "normalization": "non-null duration_us -> <measured>; fixed trace wall clock/default factories; synthetic connection ID",
   "source_sha256": {
-    "cli/src/safeyolo/core/probe.py": "cf33ff4dbd252b174278e3d72062f59d8d05643bfeb8a5c899c6e3c9fe1ebd67",
+    "cli/src/safeyolo/core/probe.py": "fa1732b9585cb58248223bff1e64cd2ed0eb38932604ab7d168a26ac7e3dfad4",
     "cli/src/safeyolo/core/trace.py": "7574231ab6c7d597b24c28c84bbd75dd9fdf1e9596e7d9350dee196fb00ef1ff",
     "cli/src/safeyolo/mitm_addons/probe_sink.py": "5a26b667bf5050e3a9727e16654cc6301fb4bcfe29fe7d4fc1f36c85b3604c2e",
     "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
