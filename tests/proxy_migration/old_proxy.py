@@ -119,7 +119,15 @@ async def run(config):
         from safeyolo.mitm_addons.credential_guard import CredentialGuard
 
         addons.append(CredentialGuard())
-    master.addons.add(*addons, ProbeSink(), TransportGuard())
+    master.addons.add(*addons)
+    if config.get("flow_store_enabled", False):
+        from safeyolo.mitm_addons.flow_recorder import FlowRecorder
+        from safeyolo.mitm_addons.test_context import TestContext
+
+        master.addons.add(TestContext(), FlowRecorder())
+        master.options.update(flow_store_enabled=True,
+                              flow_store_db_path=config["flow_store_db_path"])
+    master.addons.add(ProbeSink(), TransportGuard())
     master.options.update(**{name: config[name] for name in (
         "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
     ) if name in config})

@@ -28,6 +28,17 @@ The shared assertions cover:
 
 - Two simultaneously active agent listeners, alternating allowed and denied
   HTTP requests, forged agent/request identifiers, and evidence attribution.
+- The origin-controlled request-ID cases join each HTTP response ID to its own
+  trusted-agent runtime event, complete `/explain` audit result, and untruncated
+  `/trace` decision. CONNECT admission IDs resolve to scoped audit and trace
+  records; the Python fixture has no CONNECT runtime event. An allowed HTTP
+  request with explicit test context must
+  also resolve to a persisted, agent-owned flow. The other agent cannot read
+  its trace, audit events, or flow detail. An early network denial and CONNECT
+  admission have no applied test context and therefore no FlowStore row; the
+  fixture checks that absence instead of claiming one. The CONNECT admission
+  and inner request have different IDs and one shared connection ID. The owned
+  origin records each socket accept and application request separately.
 - Allowed HTTP/1.1 chunked uploads reach an owned origin with complete framing
   and exact body bytes. The fixture checks a buffered request and a request
   one byte above the configured 10 MiB streaming threshold. The origin waits
