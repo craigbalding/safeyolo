@@ -90,6 +90,8 @@ async def run(config):
 
     master.options.update(connection_strategy=config.get("connection_strategy", "lazy"),
                           ignore_hosts=build_ignore_patterns(config.get("ignore_hosts", [])))
+    if "stream_large_bodies" in config:
+        master.options.update(stream_large_bodies=config["stream_large_bodies"])
     if config.get("upstream_ca_file"):
         master.options.update(ssl_verify_upstream_trusted_ca=config["upstream_ca_file"])
     admin_api = None

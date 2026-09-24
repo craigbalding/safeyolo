@@ -28,6 +28,13 @@ The shared assertions cover:
 
 - Two simultaneously active agent listeners, alternating allowed and denied
   HTTP requests, forged agent/request identifiers, and evidence attribution.
+- Allowed HTTP/1.1 chunked uploads reach an owned origin with complete framing
+  and exact body bytes. The fixture checks a buffered request and a request
+  one byte above the configured 10 MiB streaming threshold. The origin waits
+  for the final zero chunk or an exact Content-Length before it sends 200.
+  A direct request controls the origin. This checks transport completion and
+  hop-header removal; it does not establish body inspection or capture beyond
+  the configured streaming window.
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
   per-agent connection identities across reuse.
