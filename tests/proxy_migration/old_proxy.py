@@ -79,6 +79,10 @@ class Observations:
 
 
 async def run(config):
+    if config.get("fixture_credential_head_decision", False):
+        from safeyolo.early_credential_response import install_early_credential_response
+
+        install_early_credential_response()
     ensure_registered()
     configure_policy_client(PolicyClientConfig(baseline_path=config["policy_file"]))
     options = Options(
@@ -108,10 +112,12 @@ async def run(config):
         from safeyolo.mitm_addons.agent_api import AgentAPI
 
         master.addons.add(AgentAPI())
-    master.addons.add(
-        AgentAPIRequestGuard(), NetworkGuard(),
-        SSEStreaming(), ProbeSink(), TransportGuard(),
-    )
+    addons = [AgentAPIRequestGuard(), NetworkGuard(), SSEStreaming()]
+    if config.get("fixture_credential_head_decision", False):
+        from safeyolo.mitm_addons.credential_guard import CredentialGuard
+
+        addons.append(CredentialGuard())
+    master.addons.add(*addons, ProbeSink(), TransportGuard())
     master.options.update(**{name: config[name] for name in (
         "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
     ) if name in config})

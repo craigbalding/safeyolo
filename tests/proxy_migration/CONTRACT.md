@@ -67,13 +67,12 @@ The shared assertions cover:
   owned origin byte for byte. The origin observes END_STREAM before it replies.
   A separate header-detectable credential case announces 12 MiB, above that
   threshold, but sends only a 21-byte prefix without END_STREAM. It checks
-  that the native guard replies before the origin sees an application request.
+  that the credential guard replies before the origin sees an application request.
   The allowed CONNECT can open the origin TLS connection first; the denied
   inner request creates no additional origin accept or outbound event. A
-  sibling stream on the same client connection completes. The Python case is
-  a strict expected failure: current production streams the held prefix to
-  the origin before a credential-head decision. Rerun the case after PR #698
-  is integrated to establish whether its head guard closes this gap.
+  sibling stream on the same client connection completes. The Python comparator
+  opts into the production credential guard and early head-response hook for
+  this case; other comparator scenarios keep their existing addon chain.
 - Opaque CONNECT, server-first traffic and both TCP half-close directions.
   The old half-close defects remain two strict expected failures.
 - A client EOF before the terminating CONNECT header line is a canceled request:

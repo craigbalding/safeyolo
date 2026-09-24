@@ -135,7 +135,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
-                 agent_map=None, stream_large_bodies=None):
+                 agent_map=None, stream_large_bodies=None, credential_head_decision=False):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -223,6 +223,9 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             if stream_large_bodies is not None:
                 config["stream_large_bodies"] = stream_large_bodies
+            if credential_head_decision:
+                config["fixture_credential_head_decision"] = True
+                env["SAFEYOLO_DATA_DIR"] = config["data_dir"]
             config["fixture_agent_api"] = agent_api
             selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
             command = [str(selected_python or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]

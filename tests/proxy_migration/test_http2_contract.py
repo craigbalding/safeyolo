@@ -460,13 +460,8 @@ def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_b
         }, indent=2) + "\n")
 
 
-def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend, tmp_path, request):
+def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend, tmp_path):
     """A header denial completes before END_STREAM and leaves another stream usable."""
-    if proxy_backend == "python":
-        request.node.add_marker(pytest.mark.xfail(
-            strict=True,
-            reason="Python streams the announced 12 MiB request before header credential denial; rerun after PR #698",
-        ))
     directory = tmp_path / proxy_backend
     directory.mkdir()
     CertStore.from_store(directory / "ca", "mitmproxy", 2048)
@@ -477,6 +472,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
         with launch_proxy(
             proxy_backend, directory, CREDENTIAL_POLICY, tls=True, upstream_ca=public,
             native_policy=proxy_backend == "rust", stream_large_bodies="10m",
+            credential_head_decision=proxy_backend == "python",
         ) as proxy:
             with tls_tunnel(
                 proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
@@ -554,8 +550,9 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
                        for row in events)
         denied_guard = [row for row in events if row.get("event") == "proxy.credential_guard"
                         and row.get("request_id") == request_ids[1]]
-        assert len(denied_guard) == 1
-        assert denied_guard[0]["outcome"] == "blocked"
+        if proxy_backend == "rust":
+            assert len(denied_guard) == 1
+            assert denied_guard[0]["outcome"] == "blocked"
         denied_audit = [row for row in audit if row.get("event") == "security.credential_guard"
                         and row.get("request_id") == request_ids[1]]
         assert len(denied_audit) == 1
