@@ -1265,6 +1265,8 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
             samples = [batch_before, batch_after]
             for item in observations:
                 samples.extend(item[key] for key in ("resources_before", "resources_during", "resources_after"))
+            # Some procfs implementations omit VmHWM; retain a null peak in that case.
+            hwm_samples = [sample["hwm_kib"] for sample in samples if sample["hwm_kib"] is not None]
             (directory / "resource-cancellation.json").write_text(json.dumps({
                 "backend": proxy_backend,
                 "tls": tls,
@@ -1284,7 +1286,7 @@ def test_repeated_compressed_fragment_cancellation_records_process_resources(pro
                     "batch_before": batch_before,
                     "batch_after": batch_after,
                     "max_rss_kib": max(sample["rss_kib"] for sample in samples),
-                    "max_hwm_kib": max(sample["hwm_kib"] for sample in samples),
+                    "max_hwm_kib": max(hwm_samples, default=None),
                     "max_threads": max(sample["threads"] for sample in samples),
                     "max_fd_count": max(sample["fd_count"] for sample in samples),
                     "max_anonymous_spool_bytes": max(sample["anonymous_spool_bytes"] for sample in samples),
