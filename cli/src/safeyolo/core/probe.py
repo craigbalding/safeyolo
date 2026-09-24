@@ -64,9 +64,9 @@ PROBE_PATH: str = "/__pipeline_probe"
 def is_probe_host(host: str | None) -> bool:
     """True iff `host` is the reserved pipeline-probe destination.
 
-    Case-insensitive by convention (DNS names). Callers use this instead
-    of hardcoding the string so any future rename lands in one place.
+    DNS names are case-insensitive and may end in one root dot. Callers use
+    this matcher for both local routing and the transport backstop.
     """
     if not host:
         return False
-    return host.lower() == PROBE_HOST
+    return host.lower().removesuffix(".") == PROBE_HOST

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from tests.proxy_migration.harness import launch_proxy, request
+from tests.proxy_migration.harness import launch_proxy, read_events, request
 
 POLICY = '''budget = 12000
 [hosts]
@@ -118,9 +118,14 @@ def request_evidence(proxy, agent, identifier, *, host, port, method, status, de
 class Origin(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port=0, *, stream_seconds=2.0, response_delay=0.0):
+    def __init__(self, port=0, *, stream_seconds=2.0, response_delay=0.0,
+                 capture_heads=False):
         self.accepts = 0
         self.requests = []
+        self.capture_heads = capture_heads
+        self.request_heads = []
+        self.via_headers = []
+        self.canary_headers = []
         self.websocket_frames = []
         self.keep_alive = False
         self.connection_ids = {}
@@ -149,10 +154,14 @@ class OriginHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.server.capture_heads:
+            self.server.request_heads.append(self.raw_requestline + self.headers.as_bytes())
         observation = {"method": self.command, "target": self.path}
         if self.server.keep_alive:
             observation["connection_id"] = self.server.connection_ids[id(self.connection)]
         self.server.requests.append(observation)
+        self.server.via_headers.append(self.headers.get_all("Via", []))
+        self.server.canary_headers.append(self.headers.get("X-Fixture-Canary"))
         if self.path in {"/stream", "/stream-control", "/stream-cancel"}:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -222,8 +231,10 @@ class OriginHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False, response_delay=0.0):
-    server = Origin(port, stream_seconds=stream_seconds, response_delay=response_delay)
+def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False, response_delay=0.0,
+                  capture_heads=False):
+    server = Origin(port, stream_seconds=stream_seconds, response_delay=response_delay,
+                    capture_heads=capture_heads)
     server.keep_alive = keep_alive
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -321,19 +332,64 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
 
 
 def reserved_scenario(backend, directory):
-    """Invalid/missing local handlers cannot send even a DNS/connect attempt."""
-    with origin_server() as parent:
+    """Reserved names stay local while the configured parent serves ordinary hosts."""
+    api_hosts = ("_safeyolo.proxy.internal", "_SAFEYOLO.PROXY.INTERNAL", "_safeyolo.proxy.internal.")
+    probe_hosts = ("_safeyolo.probe.internal", "_SAFEYOLO.PROBE.INTERNAL", "_safeyolo.probe.internal.")
+    responses = []
+    with origin_server(capture_heads=True) as parent:
         parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
-        with launch_proxy(backend, directory, POLICY, parent_proxy=parent_url) as proxy:
-            responses = []
-            for host in ("_safeyolo.proxy.internal", "_SAFEYOLO.PROXY.INTERNAL", "_safeyolo.probe.internal"):
-                status, headers, body = request(
-                    proxy.paths["alice"], f"http://{host}/missing?secret=synthetic",
-                    headers={"Authorization": "Bearer synthetic-local-token"},
-                )
-                assert status in {200, 503}, (status, body)
-                assert parent.accepts == 0
-                assert proxy.events("proxy.egress") == []
-                responses.append({"host": host, "status": status})
-        assert parent.requests == []
-        return {"responses": responses, "origin_connections": parent.accepts, "egress_attempts": 0}
+        for enabled in (False, True):
+            state = "wrong-token" if enabled else "unavailable"
+            run_dir = directory / state
+            with launch_proxy(backend, run_dir, POLICY, parent_proxy=parent_url,
+                              agent_api=enabled, native_policy=True) as proxy:
+                rows = [(host, "api", "/lookup" if enabled else "/health") for host in api_hosts]
+                rows += [(host, "probe", "/__pipeline_probe") for host in probe_hosts]
+                rows += [("_safeyolo.proxy.internal..", "invalid", "/health"),
+                         ("_safeyolo.probe.internal..", "invalid", "/__pipeline_probe"),
+                         ("control.invalid", "control", "/ordinary")]
+                for host, kind, path in rows:
+                    bearer = f"synthetic-bearer-{uuid.uuid4().hex}"
+                    query = f"synthetic-query-{uuid.uuid4().hex}"
+                    before_accepts = parent.accepts
+                    before_egress = len(proxy.events("proxy.egress"))
+                    before_audit = len(read_events(run_dir / "audit.jsonl"))
+                    status, _headers, body = request(
+                        proxy.paths["alice"], f"http://{host}{path}?secret={query}",
+                        headers={"Authorization": f"Bearer {bearer}"},
+                    )
+                    heads = parent.request_heads
+                    audit = read_events(run_dir / "audit.jsonl")[before_audit:]
+                    row = {"state": state, "host": host, "kind": kind, "status": status,
+                           "body": body.decode("utf-8", errors="replace"),
+                           "parent_accepts": parent.accepts - before_accepts,
+                           "egress_attempts": len(proxy.events("proxy.egress")) - before_egress,
+                           "audit_events": [event["event"] for event in audit],
+                           "parent_heads_hex": [head.hex() for head in heads],
+                           "bearer": bearer, "query": query}
+                    with (run_dir / "reserved-wire.jsonl").open("a") as output:
+                        output.write(json.dumps(row) + "\n")
+                    responses.append(row)
+                    if kind == "control":
+                        assert status == 200 and body == b"hello", row
+                        assert row["parent_accepts"] == row["egress_attempts"] == 1, row
+                        assert bearer.encode() in heads[-1] and query.encode() in heads[-1], row
+                        continue
+                    assert row["parent_accepts"] == row["egress_attempts"] == 0, row
+                    assert all(bearer.encode() not in head and query.encode() not in head
+                               for head in heads), row
+                    if kind == "api":
+                        assert status == (401 if enabled else 503), row
+                        if enabled:
+                            assert json.loads(body) == {"error": "Invalid agent token"}, row
+                            assert "security.agent_auth_failed" in row["audit_events"], row
+                        else:
+                            assert json.loads(body)["reason_code"] == "agent_api_unavailable", row
+                            assert "security.agent_api_unavailable" in row["audit_events"], row
+                    elif kind == "probe":
+                        assert status == 200, row
+                        assert json.loads(body)["probe_ok"] is True, row
+                    else:
+                        assert status == 400, row
+    return {"responses": responses, "origin_connections": parent.accepts,
+            "egress_attempts": sum(row["egress_attempts"] for row in responses)}
