@@ -41,6 +41,14 @@ The shared assertions cover:
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
+- Configured `network:request` limits of one request per minute exhaust at
+  the real proxy boundary. The shared fixture records the 429 response,
+  agent and destination events, and exact parent accepts and application
+  requests. A neighboring host remains allowed after per-host exhaustion but
+  is denied after global exhaustion. An authenticated operator budget reset
+  restores the limited host. The bounded sequence stays clear of the generic
+  cell rate algorithm (GCRA) refill boundary. `network:connect` counters remain
+  a separate case.
 - Local containment of unavailable Agent API handlers and the reserved probe,
   including mixed-case Agent API hostnames and synthetic bearer credentials.
 - Readiness and graceful process shutdown.
