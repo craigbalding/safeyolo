@@ -61,6 +61,13 @@ The shared assertions cover:
   witness; it does not claim TLS matrices, OCSP/CRL or renegotiation coverage.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
+- Separate `network:connect` global and per-host limits on fresh tunnels.
+  The fixture counts admitted origin connections and local HTTP 429 denials,
+  checks a second destination, and sends a direct HTTP request to show its
+  independent `network:request` counter. An unauthenticated reset cannot clear
+  the exhausted limit; an authenticated reset permits another connection.
+  CONNECT creates no origin application request in this fixture. Both backends
+  record CONNECT in the security audit; Rust also emits `proxy.request` rows.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
 - An HTTP/2 upload one byte above the 10 MiB streaming threshold reaches the
