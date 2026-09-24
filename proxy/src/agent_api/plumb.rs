@@ -1689,7 +1689,7 @@ where
     if let Some(outcome) = owner.unavailable() {
         return Ok(outcome);
     }
-    let path = request.path_and_query.split('?').next().unwrap_or_default();
+    let path = super::route(request);
     if request.method == "GET" && path == "/plumb/conversations" {
         return Ok(result_response(owner.list_conversations(agent_name).await));
     }

@@ -111,6 +111,30 @@ def test_agent_api_path_and_host_routing(proxy_backend, tmp_path, host, path, au
             assert {"/health", "/lookup"} <= set(body["endpoints"])
 
 
+def test_agent_api_plumb_conversations_trailing_slash(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    with origin_server() as parent:
+        with policy_proxy(proxy_backend, directory, POLICY, agent_api=True,
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            expected = {"conversations": []}
+            assert_api_response(api_request(proxy, "/plumb/conversations/"), 200, expected)
+            assert_api_response(api_request(proxy, "/plumb/conversations"), 200, expected)
+            assert_api_response(api_request(proxy, "/plumb/conversations/", auth=None), 401, AUTH_REQUIRED)
+            local_accepts = parent.accepts
+            assert local_accepts == 0 and parent.requests == []
+            assert proxy.events("proxy.egress") == []
+
+            status, _, body = send_request(proxy.paths["alice"],
+                                           "http://target.invalid:8123/ordinary-control")
+            assert status == 200 and body == b"hello"
+            assert parent.accepts == 1 and len(parent.requests) == 1
+            (directory / "plumb-origin-observation.json").write_text(json.dumps({
+                "after_local_api_accepts": local_accepts,
+                "after_ordinary_host_accepts": parent.accepts,
+                "ordinary_host_requests": parent.requests,
+            }, indent=2) + "\n")
+
+
 def test_agent_api_trailing_dot_alias_remains_local(proxy_backend, tmp_path, request):
     """D9: the reserved hostname's root-dot alias uses authenticated local API."""
     with origin_server() as parent:
