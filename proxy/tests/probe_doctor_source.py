@@ -51,7 +51,8 @@ def sink_cases():
     return [
         {"name": "canonical"},
         {"name": "mixed_case_other_method_path_port", "host": HOST.upper(), "method": "POST", "path": "/elsewhere?q=1", "port": 8123},
-        {"name": "trailing_dot_inert", "host": HOST + "."},
+        {"name": "trailing_dot_reserved", "host": HOST + "."},
+        {"name": "double_dot_inert", "host": HOST + ".."},
         {"name": "other_host_inert", "host": "owned.invalid"},
         {"name": "headers_hook_not_reached", "requestheaders": False},
         {"name": "request_id_absent", "request_id": None},
@@ -200,7 +201,9 @@ def check_contract(sinks, classifiers):
     assert "blocked_by" not in good["metadata"]
     assert good["timeline"][0]["response"] == good["response"]
     assert good["trace"]["steps"][0]["outcome"] == "probe_terminated"
-    for name in ["trailing_dot_inert", "other_host_inert", "headers_hook_not_reached"]:
+    assert by_name["trailing_dot_reserved"]["response"]["status"] == 200
+    assert by_name["trailing_dot_reserved"]["trace"]["steps"][0]["outcome"] == "probe_terminated"
+    for name in ["double_dot_inert", "other_host_inert", "headers_hook_not_reached"]:
         assert by_name[name]["response"] is None and by_name[name]["trace"] is None
     assert by_name["mixed_case_other_method_path_port"]["response"]["status"] == 200
     for name, rid in [("request_id_absent", None), ("request_id_empty", "")]:
@@ -255,9 +258,9 @@ def run():
             from safeyolo.mitm_addons import probe_sink
 
             assert trace.EXPECTED_ADDONS == EXPECTED
-            hosts = [None, "", HOST, HOST.upper(), HOST + ".", "prefix." + HOST, HOST + ".owned.invalid", "owned.invalid"]
+            hosts = [None, "", HOST, HOST.upper(), HOST + ".", HOST + "..", "prefix." + HOST, HOST + ".owned.invalid", "owned.invalid"]
             matcher = [{"host": host, "matches": probe.is_probe_host(host)} for host in hosts]
-            assert [row["matches"] for row in matcher] == [False, False, True, True, False, False, False, False]
+            assert [row["matches"] for row in matcher] == [False, False, True, True, True, False, False, False, False]
             audit_attempts = []
             with patch.object(trace, "time", SimpleNamespace(time=now, perf_counter_ns=time.perf_counter_ns)), patch.object(audit_writer, "put_event", side_effect=lambda entry: audit_attempts.append(entry)):
                 sinks = [observe_sink(spec, trace, probe_sink, http, tflow) for spec in sink_cases()]
