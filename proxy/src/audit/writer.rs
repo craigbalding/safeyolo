@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 use time::OffsetDateTime;
+use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
 use super::{Error, ErrorKind, Event, Result, envelope::Record};
@@ -77,7 +78,7 @@ pub enum Submission {
 }
 
 enum Item {
-    Record(Record),
+    Record(Record, Option<oneshot::Sender<bool>>),
     Stop,
 }
 #[derive(Default)]
@@ -110,7 +111,7 @@ impl Queue {
         pending.inflight -= count;
         self.changed.notify_all();
     }
-    fn next(&self) -> Option<(Vec<Record>, bool)> {
+    fn next(&self) -> Option<(Vec<Record>, Vec<oneshot::Sender<bool>>, bool)> {
         let mut pending = self.pending.lock().ok()?;
         while pending.items.is_empty() {
             if pending.closed {
@@ -119,10 +120,16 @@ impl Queue {
             pending = self.changed.wait(pending).ok()?;
         }
         let mut records = Vec::new();
+        let mut receipts = Vec::new();
         let mut stop = false;
         while let Some(item) = pending.items.pop_front() {
             match item {
-                Item::Record(record) => records.push(record),
+                Item::Record(record, receipt) => {
+                    records.push(record);
+                    if let Some(receipt) = receipt {
+                        receipts.push(receipt);
+                    }
+                }
                 Item::Stop => {
                     stop = true;
                     break;
@@ -130,7 +137,7 @@ impl Queue {
             }
         }
         self.changed.notify_all();
-        Some((records, stop))
+        Some((records, receipts, stop))
     }
 }
 
@@ -193,6 +200,28 @@ impl Writer {
         self.emit_at(event, OffsetDateTime::now_utc())
     }
     pub fn emit_at(&self, event: Event, at: OffsetDateTime) -> Result<Submission> {
+        self.enqueue(event, at, None)
+    }
+    /// Approval responses may claim operator-visible submission only after the
+    /// specific event has been written and closed at the configured audit path.
+    /// This does not promise fsync or make unrelated emissions synchronous.
+    pub async fn emit_confirmed(&self, event: Event) -> Result<()> {
+        let (send, receipt) = oneshot::channel();
+        match self.enqueue(event, OffsetDateTime::now_utc(), Some(send))? {
+            Submission::Queued => {}
+            Submission::QueueFull | Submission::Stopped => return Err(Error(ErrorKind::Io)),
+        }
+        match tokio::time::timeout(Duration::from_secs(5), receipt).await {
+            Ok(Ok(true)) => Ok(()),
+            _ => Err(Error(ErrorKind::Io)),
+        }
+    }
+    fn enqueue(
+        &self,
+        event: Event,
+        at: OffsetDateTime,
+        receipt: Option<oneshot::Sender<bool>>,
+    ) -> Result<Submission> {
         let record = event.record(at);
         let mut worker = self.worker.lock().map_err(|_| Error(ErrorKind::Poisoned))?;
         if worker.stopped {
@@ -207,12 +236,15 @@ impl Writer {
                 .name("safeyolo-audit-writer".into())
                 .spawn(move || {
                     let mut healthy = true;
-                    while let Some((batch, stop)) = queue.next() {
+                    while let Some((batch, receipts, stop)) = queue.next() {
                         let reservation = ActiveBatch(&queue, batch.len());
-                        let encoded = flush(&path, &settings, &batch).is_ok();
+                        let write = flush(&path, &settings, &batch);
+                        for receipt in receipts {
+                            let _ = receipt.send(matches!(write, Ok(true)));
+                        }
                         drop(reservation);
-                        healthy &= encoded;
-                        if stop || !encoded {
+                        healthy &= write.is_ok();
+                        if stop || write.is_err() {
                             break;
                         }
                     }
@@ -244,7 +276,7 @@ impl Writer {
             return Ok(Submission::QueueFull);
         }
         pending.inflight += 1;
-        pending.items.push_back(Item::Record(record));
+        pending.items.push_back(Item::Record(record, receipt));
         self.queue.changed.notify_one();
         Ok(Submission::Queued)
     }
@@ -314,7 +346,7 @@ impl Writer {
                     .items
                     .drain(..)
                     .filter_map(|item| match item {
-                        Item::Record(record) => Some(record),
+                        Item::Record(record, _) => Some(record),
                         Item::Stop => None,
                     })
                     .collect();
@@ -443,7 +475,7 @@ pub(super) fn close(file: std::fs::File) -> Result<()> {
         Err(Error(ErrorKind::Io))
     }
 }
-fn flush(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
+fn flush(path: &Path, settings: &Settings, batch: &[Record]) -> Result<bool> {
     if let Err(error) = append(path, settings, batch) {
         writeln!(
             io::stderr().lock(),
@@ -454,8 +486,9 @@ fn flush(path: &Path, settings: &Settings, batch: &[Record]) -> Result<()> {
         for record in batch {
             fallback(record, "Event")?;
         }
+        return Ok(false);
     }
-    Ok(())
+    Ok(true)
 }
 fn fallback(record: &Record, label: &str) -> Result<()> {
     let encoded = record.encode()?;

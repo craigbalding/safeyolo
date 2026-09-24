@@ -393,13 +393,10 @@ impl Outcome<'_> {
         }
     }
 
-    /// Apply a synchronous producer-submission failure before returning the
-    /// local response. Declaration mutation is already committed: source's
-    /// handler catches the exception and returns 500 without undoing it. The
-    /// same source rule applies to a request-access approval event: its event
-    /// construction has happened before the success response is exposed.
-    /// Async file failures and successful queue-full/stopped results are not
-    /// submission errors and must never call this method.
+    /// Apply an audit-submission failure before returning the local response.
+    /// Declaration mutation is already committed: source's handler catches a
+    /// producer error and returns 500 without undoing it. Approval claims also
+    /// fail when their own canonical write fails, is dropped, or stops.
     pub fn audit_submission_failed(
         self,
         request: Request<'_>,
