@@ -87,7 +87,9 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
-    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == 10
+    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
+        "${{ matrix.os == 'macos-latest' && 20 || 10 }}"
+    )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
     peer = steps["Provide the macOS owned HTTP peer address"]
     assert peer["if"] == "matrix.os == 'macos-latest'"
