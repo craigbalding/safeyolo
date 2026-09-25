@@ -219,7 +219,15 @@ The shared assertions cover:
 
 The HTTPS fixture creates a fresh mitmproxy CA in private fixture state. Rust
 receives that combined file through `tls_ca_file`. It never replaces an existing
-operator CA. Native transport tests separately exercise inner authority/SNI
+operator CA. The shared upstream-trust case sends `allowed.invalid:443` through
+a loopback parent to independent TLS origins. The
+[`test_https_trust_continuity.py`](test_https_trust_continuity.py) controls check
+SNI, extra-CA success and absence, wrong-name, untrusted and future-dated
+failures with live-origin and client-trust observations, then run Python, Rust
+and restarted Rust against one unchanged Python-generated CA. Chain-shape and
+configured passthrough fixtures remain separate.
+
+Native transport tests separately exercise inner authority/SNI
 confusion, parent CONNECT, idle TLS shutdown and active HTTPS response drain
 during shutdown. Native HTTP/2 tests also verify cancellation releases a paused
 upstream response and shutdown drains its remaining bytes. The paired HTTP/2

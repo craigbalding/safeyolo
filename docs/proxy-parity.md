@@ -1591,6 +1591,21 @@ This does not claim mTLS/client-certificate, OCSP/CRL, TLS 1.3, cipher-matrix
 or renegotiation coverage; the separate TLS 1.2/cipher control records that
 single supported negotiation path.
 
+The shared upstream-trust control also routes `allowed.invalid:443` through a
+loopback parent to a separate physical TLS origin. Both backends send the logical
+name in upstream SNI and accept a leaf whose only DNS name is that logical name
+when its private CA is configured. The same live origin is rejected when the
+extra CA is absent. Trusted wrong-name, untrusted same-name, and not-yet-valid
+same-name origins are contacted but receive no HTTP request. Direct controls
+confirm that the wrong-name and untrusted origins work with their appropriate
+names and trust roots; a pinned-certificate direct call confirms the future
+origin is live. In every proxy case the client verifies the interception CA,
+so a client trust failure cannot be confused with an upstream 502. A disposable
+Python-generated CA serves a Python proxy, a Rust proxy, and a restarted Rust
+proxy without any of its six CA files changing; the same CA-trusting client
+completes HTTPS through each process. This does not extend the separate
+chain-shape or configured passthrough matrix.
+
 `ignore_hosts` accepts canonical exact entries produced by the existing CLI
 normalizer. `SAFEYOLO_IGNORE_CIDRS` supplies the existing constrained IPv4 ranges;
 the builtin endpoint remains included. These exemptions select passthrough only
