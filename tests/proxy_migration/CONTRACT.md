@@ -88,6 +88,12 @@ The shared assertions cover:
   origin. If the parent deliberately routes the allowed CONNECT to a wrong-name
   TLS origin, both proxies reject its certificate before sending application
   bytes. A direct client trusts that same certificate for its own name.
+- An IDNA A-label destination remains the admitted authority through a Host
+  routing parent, an HTTP/1 CONNECT request, and HTTP/2 conversion to an
+  HTTP/1 origin request. The parent and TLS origin observe an ASCII A-label
+  Host and the exact credential. Changed and malformed inner authorities are
+  denied before origin application bytes. An absolute IPv6 target with a
+  conflicting Host forwards the bracketed admitted authority to the parent.
 - Configured `network:request` limits of one request per minute exhaust at
   the real proxy boundary. The shared fixture records the 429 response,
   agent and destination events, and exact parent accepts and application

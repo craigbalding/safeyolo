@@ -149,18 +149,36 @@ class NetworkGuard(SecurityAddon):
     def _same_authority(flow: http.HTTPFlow, authority: str) -> bool:
         """Compare a wire authority with the destination mitmproxy will use."""
         try:
-            host, port = url.parse_authority(authority, check=True)
-        except ValueError:
+            if authority.isascii():
+                # mitmproxy IDNA-decodes byte authorities, including the
+                # CONNECT host, before putting them in request.host.
+                source = authority.lower().encode("ascii")
+            else:
+                authority.encode("utf-8")  # Reject surrogate-escaped wire bytes.
+                source = authority
+            host, port = url.parse_authority(source, check=True)
+        except (UnicodeError, ValueError):
             return False
         if port is None:
             port = url.default_port(flow.request.scheme)
         destination = flow.request.host
-        # ASCII case does not change a DNS destination. Keep other source
-        # spellings distinct so they cannot borrow this destination's policy.
+        # ASCII case does not change a DNS destination. Keep other Unicode
+        # source spellings distinct so they cannot borrow its policy.
         same_host = (host.lower() == destination.lower()
                      if host.isascii() and destination.isascii()
                      else host == destination)
         return same_host and port == flow.request.port
+
+    @staticmethod
+    def _wire_authority(request: http.Request) -> str | None:
+        """Spell the admitted destination as an HTTP wire Host."""
+        try:
+            authority = destination_key(request.host.encode("idna").decode("ascii"),
+                                        request.port)
+            url.parse_authority(authority.encode("ascii"), check=True)
+            return authority
+        except (UnicodeError, ValueError):
+            return None
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         """Keep the policy destination and the forwarded authority together."""
@@ -183,8 +201,25 @@ class NetworkGuard(SecurityAddon):
             conflicting |= any(not self._same_authority(flow, host) for host in hosts)
         elif hosts and not self._same_authority(flow, hosts[0]):
             # An absolute-form target supplies the policy and dial destination.
-            # A parent may route by Host, so forward that same destination.
-            request.host_header = url.hostport(request.scheme, request.host, request.port)
+            # A parent may route by Host, so forward that same destination in
+            # a valid wire spelling, with brackets around an IPv6 literal.
+            admitted = self._wire_authority(request)
+            if admitted is None:
+                conflicting = True
+            else:
+                request.host_header = admitted
+
+        if (not conflicting and (request.is_http2 or request.is_http3)
+                and authority and not hosts and not authority.isascii()):
+            # mitmproxy decodes :authority to Unicode, then uses that text as
+            # Host if it converts HTTP/2 to HTTP/1. Reuse the original ASCII
+            # wire spelling when possible, including case and explicit port.
+            admitted = (request.data.authority if request.data.authority.isascii()
+                        else self._wire_authority(request))
+            if admitted is None:
+                conflicting = True
+            else:
+                request.headers.insert(0, "Host", admitted)
 
         if not conflicting:
             return

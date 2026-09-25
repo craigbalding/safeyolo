@@ -26,6 +26,8 @@ from tests.proxy_migration.test_http2_contract import h2_requests, headers
 
 ALLOWED = "allowed.invalid"
 FORBIDDEN = "forbidden.invalid"
+IDN_WIRE = "xn--mnchen-3ya.invalid"
+IDN_NAME = "münchen.invalid"
 SECRET = b"key-authority-owned"
 BODY = b"part=one%2Ftwo&part=three\x00signed"
 TARGET = "/signed/%2F?part=one&part=two%2Fthree&empty="
@@ -183,7 +185,7 @@ class ParentRequest(socketserver.BaseRequestHandler):
                     self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                     self._relay(upstream)
             else:
-                host = _host(head).split(":", 1)[0].lower()
+                host = urlsplit("http://" + _host(head)).hostname.lower()
                 origin = self.server.http[host]
                 parsed = urlsplit(target.decode("ascii"))
                 path = (parsed.path or "/") + ("?" + parsed.query if parsed.query else "")
@@ -543,3 +545,104 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
         assert b"/direct-cert-control" in forbidden.requests[-1]["head"]
         assert SECRET not in forbidden.requests[-1]["head"]
         assert all(SECRET not in item["head"] for item in forbidden.requests)
+
+
+def test_idna_authority_keeps_credential_on_admitted_route(proxy_backend, tmp_path):
+    """A wire A-label and mitmproxy's decoded policy name are one authority."""
+    directory = tmp_path / proxy_backend
+    with _peers(directory / "peers") as (parent, peers, trust):
+        _, forbidden, _, forbidden_tls = peers
+        tls_context, certificate = _certificate(directory / "peers", IDN_WIRE)
+        trust.write_bytes(trust.read_bytes() + certificate)
+        with _server(Origin("idn-http")) as idn_http, \
+             _server(Origin("idn-tls", tls_context=tls_context)) as idn_tls:
+            parent.http[IDN_WIRE] = idn_http
+            parent.tls[IDN_WIRE] = idn_tls
+            CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+            with launch_proxy(proxy_backend, directory / "proxy", POLICY.replace(ALLOWED, IDN_NAME),
+                              native_policy=True, credential_head_decision=True, tls=True,
+                              upstream_ca=trust,
+                              parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+                path = proxy.paths["alice"]
+                wire = IDN_WIRE.encode()
+                plain = _raw_http(path, b"http://" + wire + b"/idn-plain", wire, secret=True)
+                assert plain[0] == 200 and plain[2] == b"idn-http", plain
+                assert parent.requests[-1]["route"] == "idn-http"
+                assert _host(parent.requests[-1]["head"]).split(":", 1)[0] == IDN_WIRE
+                assert SECRET in idn_http.requests[-1]["head"]
+                assert forbidden.accepts == 0
+
+                conflict = _raw_http(path, b"http://" + wire + b"/idn-conflict",
+                                     FORBIDDEN.encode(), secret=True)
+                assert conflict[0] == 200 and conflict[2] == b"idn-http", conflict
+                assert parent.requests[-1]["route"] == "idn-http"
+                assert _host(parent.requests[-1]["head"]).split(":", 1)[0] == IDN_WIRE
+                assert forbidden.accepts == 0 and forbidden.requests == []
+
+                ca = directory / "proxy/ca/mitmproxy-ca-cert.pem"
+                admitted = f"{IDN_WIRE}:443".encode()
+                status, stream = _connect(path, admitted, IDN_WIRE, ca)
+                assert status == 200
+                with stream:
+                    stream.sendall(b"GET /idn-h1 HTTP/1.1\r\nHost: " + admitted
+                                   + b"\r\nAuthorization: Bearer " + SECRET
+                                   + b"\r\nConnection: close\r\n\r\n")
+                    response = http.client.HTTPResponse(stream)
+                    response.begin()
+                    assert response.status == 200 and response.read() == b"idn-tls"
+                assert _host(idn_tls.requests[-1]["head"]) == f"{IDN_WIRE}:443"
+                assert SECRET in idn_tls.requests[-1]["head"]
+
+                status, stream = _connect(path, admitted, IDN_WIRE, ca, offers=("h2",))
+                assert status == 200
+                with stream:
+                    result = h2_requests(stream, [headers(f"{IDN_WIRE}:443", "/idn-h2", [
+                        ("authorization", "Bearer " + SECRET.decode()),
+                    ])])[0]
+                assert result["headers"][":status"] == "200", result
+                assert _host(idn_tls.requests[-1]["head"]) == f"{IDN_WIRE}:443"
+                assert SECRET in idn_tls.requests[-1]["head"]
+
+                before = len(idn_tls.requests)
+                status, stream = _connect(path, admitted, IDN_WIRE, ca, offers=("h2",))
+                assert status == 200
+                with stream:
+                    denied = h2_requests(stream, [headers(f"{FORBIDDEN}:443", "/idn-h2-denied", [
+                        ("authorization", "Bearer " + SECRET.decode()),
+                    ])], allow_rejection=True)[0]
+                assert denied["headers"][":status"] == "400", denied
+                assert len(idn_tls.requests) == before
+                assert forbidden_tls.accepts == 0 and forbidden_tls.requests == []
+
+                for inner_host in (FORBIDDEN.encode() + b":443", b"xn--bad-.invalid:443"):
+                    status, stream = _connect(path, admitted, IDN_WIRE, ca)
+                    assert status == 200
+                    with stream:
+                        stream.sendall(b"GET /idn-denied HTTP/1.1\r\nHost: " + inner_host
+                                       + b"\r\nAuthorization: Bearer " + SECRET
+                                       + b"\r\nConnection: close\r\n\r\n")
+                        response = http.client.HTTPResponse(stream)
+                        response.begin()
+                        assert response.status == 400
+                        response.read()
+                    assert len(idn_tls.requests) == before
+                    assert forbidden_tls.accepts == 0 and forbidden_tls.requests == []
+
+
+def test_absolute_ipv6_conflict_forwards_bracketed_admitted_host(proxy_backend, tmp_path):
+    """An IPv6 rewrite must retain an unambiguous wire Host and parent route."""
+    directory = tmp_path / proxy_backend
+    with _peers(directory / "peers") as (parent, peers, _):
+        allowed, forbidden, _, _ = peers
+        parent.http["2001:db8::1"] = allowed
+        policy = 'budget = 12000\n[[permissions]]\naction = "network:request"\nresource = "*"\neffect = "allow"\n'
+        with launch_proxy(proxy_backend, directory / "proxy", policy,
+                          native_policy=True,
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            response = _raw_http(proxy.paths["alice"],
+                                 b"http://[2001:db8::1]:8443/ipv6-conflict",
+                                 FORBIDDEN.encode())
+            assert response[0] == 200 and response[2] == b"allowed-http", response
+            assert parent.requests[-1]["route"] == "allowed-http"
+            assert _host(parent.requests[-1]["head"]) == "[2001:db8::1]:8443"
+            assert forbidden.accepts == 0 and forbidden.requests == []
