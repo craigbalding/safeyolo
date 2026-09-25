@@ -2,7 +2,7 @@ name: Rust proxy migration
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "proxy/**"
       - "tests/proxy_migration/**"
@@ -33,7 +33,10 @@ concurrency:
 jobs:
   focused-pr:
     name: Focused Rust proxy (Ubuntu)
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref != 'master' && github.base_ref != 'main' &&
+      github.event.action != 'ready_for_review'
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: "1"
@@ -91,8 +94,12 @@ jobs:
 
   http-slice:
     name: HTTP migration (${{ matrix.os }})
-    # Run on default-branch pushes and explicit integration checkpoints.
-    if: github.event_name == 'push'
+    # Run on default/checkpoint pushes and ready release PRs into master or main.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       (github.base_ref == 'master' || github.base_ref == 'main') &&
+       github.event.pull_request.draft == false)
     strategy:
       fail-fast: false
       matrix:
@@ -101,11 +108,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Verify the event's exact head
         env:
-          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
 
       - name: Install the pinned Rust toolchain

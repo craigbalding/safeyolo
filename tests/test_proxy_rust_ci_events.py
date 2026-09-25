@@ -23,6 +23,7 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         "opened",
         "reopened",
         "synchronize",
+        "ready_for_review",
     }
     assert set(events["push"]["branches"]) == {"master", "main", "ci/proxy-rust-620"}
     assert "paths" not in events["push"]
@@ -42,7 +43,11 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
 
 def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     job = rust_workflow()["jobs"]["focused-pr"]
-    assert job["if"] == "github.event_name == 'pull_request'"
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'pull_request' && "
+        "github.base_ref != 'master' && github.base_ref != 'main' && "
+        "github.event.action != 'ready_for_review'"
+    )
     assert job["runs-on"] == "ubuntu-latest"
     assert job["env"]["CARGO_BUILD_JOBS"] == "1"
     checkout = job["steps"][0]
@@ -72,10 +77,15 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
 
 def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
     job = rust_workflow()["jobs"]["http-slice"]
-    assert job["if"] == "github.event_name == 'push'"
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'pull_request' && "
+        "(github.base_ref == 'master' || github.base_ref == 'main') && "
+        "github.event.pull_request.draft == false)"
+    )
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
     checkout = job["steps"][0]
-    expected_head = "${{ github.sha }}"
+    expected_head = "${{ github.event.pull_request.head.sha || github.sha }}"
     assert checkout["with"]["ref"] == expected_head
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
