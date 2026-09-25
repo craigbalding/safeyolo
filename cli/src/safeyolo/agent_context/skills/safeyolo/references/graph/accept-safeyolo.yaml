@@ -181,7 +181,7 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
+          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: scripts/check_test_assurance.py
@@ -553,7 +553,7 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
+          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/requirements-stress.txt
@@ -607,7 +607,7 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
+          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/pyproject.toml
