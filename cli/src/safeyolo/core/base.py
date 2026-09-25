@@ -230,6 +230,7 @@ class SecurityAddon:
             addon=self.name,
             approval=approval,
             details=details if details else None,
+            confirm_append=approval is not None and decision == Decision.REQUIRE_APPROVAL,
         )
 
     def block(

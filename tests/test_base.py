@@ -251,6 +251,7 @@ def test_log_decision_emits_schema_values_and_attribution():
         },
         addon="test-addon",
         approval=None,
+        confirm_append=False,
         details={
             "reason": "policy denied",
             "method": flow.request.method,

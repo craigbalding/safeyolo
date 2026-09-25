@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     convert::Infallible,
     future::Future,
     io::BufReader,
@@ -1164,6 +1165,9 @@ async fn decide(
                 },
             )
         });
+        let deferred_approval = Cell::new(false);
+        let mut approval_event = None;
+        let mut approval_trace = None;
         let result = runtime.network_guard.enforce_with_audit_and_trace(
             Pdp::Ready(policy),
             Request {
@@ -1185,13 +1189,28 @@ async fn decide(
             },
             crate::policy::current_time_ms(),
             |intent| {
-                runtime
-                    .audit
-                    .emit(intent.event(identity.audit_attribution()))
-                    .map(|_| ())
-                    .map_err(|error| crate::network_guard::GuardError(error.to_string()))
+                let event = intent.event(identity.audit_attribution());
+                if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+                    // The synchronous guard callback cannot await the writer.
+                    // Hold only approval evidence until the guard has returned.
+                    deferred_approval.set(true);
+                    approval_event = Some(event);
+                    Ok(())
+                } else {
+                    runtime
+                        .audit
+                        .emit(event)
+                        .map(|_| ())
+                        .map_err(|error| crate::network_guard::GuardError(error.to_string()))
+                }
             },
-            |intent| network_trace::observe(trace.as_ref(), intent),
+            |intent| {
+                if deferred_approval.get() {
+                    approval_trace = Some(intent.clone());
+                } else {
+                    network_trace::observe(trace.as_ref(), intent);
+                }
+            },
         );
         if result.is_err()
             && let Some(trace) = &trace
@@ -1201,6 +1220,17 @@ async fn decide(
             trace.error("GuardError");
         }
         let outcome = result?;
+        if let Some(event) = approval_event {
+            if let Err(error) = runtime.audit.emit_confirmed(event).await {
+                if let Some(trace) = &trace {
+                    trace.error("AuditError");
+                }
+                return Err(error.into());
+            }
+            if let Some(intent) = approval_trace.as_ref() {
+                network_trace::observe(trace.as_ref(), intent);
+            }
+        }
         // Development guard evidence excludes the URL query and application
         // bytes. Canonical security audit has its own process-owned writer.
         runtime.record(json!({
@@ -2540,9 +2570,12 @@ where
         // Canonical audit is emitted exactly once per guard intent. The
         // attribution is trusted UDS identity; no credential value enters it.
         for intent in &outcome.audit {
-            runtime
-                .audit
-                .emit(intent.event(identity.audit_attribution()))?;
+            let event = intent.event(identity.audit_attribution());
+            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+                runtime.audit.emit_confirmed(event).await?;
+            } else {
+                runtime.audit.emit(event)?;
+            }
         }
         runtime.record(json!({
             "event": "proxy.credential_guard",
@@ -2967,9 +3000,12 @@ where
         };
         publish_credential_trace(guard_trace.as_ref(), &outcome.trace);
         for intent in &outcome.audit {
-            runtime
-                .audit
-                .emit(intent.event(identity.audit_attribution()))?;
+            let event = intent.event(identity.audit_attribution());
+            if intent.decision == crate::network_guard::AuditDecision::RequireApproval {
+                runtime.audit.emit_confirmed(event).await?;
+            } else {
+                runtime.audit.emit(event)?;
+            }
         }
         runtime.record(json!({
             "event": "proxy.credential_guard",

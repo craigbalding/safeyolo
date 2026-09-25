@@ -729,7 +729,7 @@
   "source_sha256": {
     "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
     "cli/src/safeyolo/mitm_addons/admin_api.py": "2663a85acf80df80fd145b26a4fc31bd5dc0496f59044547db1e4c1d481bd85a",
-    "cli/src/safeyolo/mitm_addons/network_guard.py": "449485737c3ae3ee1a048639daee715f7b55f3f2ed3f2097aef1c71a4eec8e24",
+    "cli/src/safeyolo/mitm_addons/network_guard.py": "788a02d92fc088793264ee2b471c7d253b47cc1bdcd5238b6979060fc4322a85",
     "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
     "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",
     "cli/src/safeyolo/mitm_addons/policy_engine.py": "d8172f26729bb661eb003bae2f6a9e50fb6dc96e0abd6e26a581bf6191ed1999",
@@ -738,7 +738,7 @@
     "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",
     "cli/src/safeyolo/policy/budget_tracker.py": "0547aa7e063228330bd115bef1ba1a53b1f80cda712c7887cb18ccf36ba7f53a",
     "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
-    "cli/src/safeyolo/core/base.py": "cd0dbae78069684fc8c5a034f1675095c422327b38a6f0fba30ddc21ad97c6aa",
+    "cli/src/safeyolo/core/base.py": "93c34a0b63dbcbd01b034541a5dbcfcd31c9a88c208b7d408662446bcba8c672",
     "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
     "cli/src/safeyolo/core/utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",
     "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
