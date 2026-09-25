@@ -2105,6 +2105,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let pipeline_probe = probe::is_host(&destination.host);
+    let client_version = request.version();
     // CONNECT has no ordinary traffic request hook; retain its source
     // observation at the reached admission point after the snapshot exists.
     if request.method() == Method::CONNECT
@@ -2228,7 +2229,6 @@ where
     // copy before source hygiene removes hop-by-hop fields from the policy and
     // recording view; the forwarded body still needs these declarations.
     let request_trailer = request.headers().get(header::TRAILER).cloned();
-    let request_te = request.headers().get(header::TE).cloned();
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
     let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
     if let Some(live) = &live {
@@ -3145,9 +3145,6 @@ where
     if let Some(trailer) = request_trailer {
         request.headers_mut().insert(header::TRAILER, trailer);
     }
-    if let Some(te) = request_te {
-        request.headers_mut().insert(header::TE, te);
-    }
     if websocket.is_some() {
         request
             .headers_mut()
@@ -3408,9 +3405,32 @@ where
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect::<Vec<_>>();
+    // Hyper removes chunk framing while reading the upstream response, but it
+    // leaves any earlier transfer codings in the body. Regenerate the final
+    // chunk framing and retain the coding declaration for an HTTP/1.1 client.
+    let transfer_coding = upstream
+        .headers()
+        .get_all(header::TRANSFER_ENCODING)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_non_chunked_transfer_coding = transfer_coding.iter().any(|value| {
+        value
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .any(|coding| !coding.trim_ascii().eq_ignore_ascii_case(b"chunked"))
+    });
+    if has_non_chunked_transfer_coding && client_version != hyper::Version::HTTP_11 {
+        return Err("upstream transfer coding cannot be relayed to this client protocol".into());
+    }
     let (mut parts, body) = upstream.into_parts();
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
+    if has_non_chunked_transfer_coding {
+        for value in transfer_coding {
+            parts.headers.append(header::TRANSFER_ENCODING, value);
+        }
+    }
     if response_buffering {
         let prepared = request_body::prepare(body, response_length, false).await?;
         if prepared.unvalidated_content.is_some() && completion.response_incomplete() {

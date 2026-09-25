@@ -46,6 +46,13 @@ The shared assertions cover:
   A direct request controls the origin. This checks transport completion and
   hop-header removal; it does not establish body inspection or capture beyond
   the configured streaming window.
+- A raw origin and one persistent client UDS connection check response transfer
+  coding. The origin sends `gzip, chunked` or plain `chunked`, then an ordinary
+  second response. The fixture checks the client's exact coded body, coding
+  declaration, canary, and second response. It also checks that a client
+  `TE: gzip` nominated by `Connection: TE` does not reach the origin. The
+  gzip case runs with and without client `TE`; this fixture does not test
+  HTTP/2 transfer-coding conversion.
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
   per-agent connection identities across reuse.
