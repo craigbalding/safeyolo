@@ -12,8 +12,31 @@ from __future__ import annotations
 import time
 from importlib.metadata import version
 
+from mitmproxy import http
 from mitmproxy.proxy import commands
 from mitmproxy.proxy.layers.http import HttpResponseHeadersHook, HttpStream
+
+
+def request_may_stream(request: http.Request) -> bool:
+    """Select heads that can release body bytes before the request hook."""
+    if request.method == "CONNECT":
+        # Tunnel admission uses the dedicated http_connect hook.
+        return False
+    if request.stream:
+        return True
+    # Chunked HTTP/1 and HTTP/2 bodies can cross the buffering threshold
+    # after requestheaders, even when HTTP/2 announces a smaller length.
+    if request.is_http2 or request.is_http3:
+        return True
+    codings = request.headers.get("transfer-encoding", "").lower().split(",")
+    return codings[-1].strip() == "chunked"
+
+
+def deny_request_head(flow: http.HTTPFlow) -> None:
+    """Use the pinned early-response path for a local head decision."""
+    flow.metadata["request_head_denied"] = True
+    flow.request.stream = True
+    flow.request.headers.pop("expect", None)
 
 
 def install_early_request_response() -> None:

@@ -47,6 +47,7 @@ from safeyolo.detection.patterns import (
     load_builtin_set,
     load_patterns_from_config,
 )
+from safeyolo.early_request_response import deny_request_head, request_may_stream
 
 log = logging.getLogger("safeyolo.pattern-scanner")
 
@@ -503,6 +504,9 @@ class PatternScanner(SecurityAddon):
     def _scan_request_content(
         self,
         flow: http.HTTPFlow,
+        *,
+        scan_head: bool = True,
+        scan_body: bool = True,
     ) -> tuple[PatternRule | None, str, str | None]:
         """Scan request URL, headers, and body based on rule scopes.
 
@@ -513,7 +517,7 @@ class PatternScanner(SecurityAddon):
         """
         # Scan the bounded raw path/query and exactly one percent-decoded form.
         # This is inspection-only; the request target is never rewritten.
-        if self._has_url_rules(self.rules, "request"):
+        if scan_head and self._has_url_rules(self.rules, "request"):
             inspection = _bounded_url_representations(flow.request.path)
             if not inspection.inspectable:
                 return None, "", inspection.status
@@ -524,17 +528,19 @@ class PatternScanner(SecurityAddon):
             return rule, "url", None
 
         # Scan headers
-        for header_name, header_value in flow.request.headers.items():
-            rule = self._scan_for_scope(self.rules, "headers", header_value, "request")
-            if rule:
-                return rule, _safe_location(f"header:{header_name}"), None
+        if scan_head:
+            for header_name, header_value in flow.request.headers.items():
+                rule = self._scan_for_scope(self.rules, "headers", header_value, "request")
+                if rule:
+                    return rule, _safe_location(f"header:{header_name}"), None
 
         # Scan body
-        body = flow.request.get_text(strict=False)
-        if body:
-            rule = self._scan_for_scope(self.rules, "body", body, "request")
-            if rule:
-                return rule, "body", None
+        if scan_body:
+            body = flow.request.get_text(strict=False)
+            if body:
+                rule = self._scan_for_scope(self.rules, "body", body, "request")
+                if rule:
+                    return rule, "body", None
 
         return None, "", None
 
@@ -648,17 +654,42 @@ class PatternScanner(SecurityAddon):
             **details,
         )
 
+    def requestheaders(self, flow: http.HTTPFlow) -> None:
+        """Decide URL and header rules before a body can stream upstream."""
+        if flow.response or not request_may_stream(flow.request):
+            return
+        self._maybe_reload_patterns()
+        if not self.rules:
+            return
+        rule, location, failure = self._scan_request_content(flow, scan_body=False)
+        if failure:
+            self._block_url_inspection_failure(flow, failure)
+        elif rule:
+            self._decide_request(flow, rule, location)
+            if not flow.response:
+                flow.metadata["pattern_scanner_head_match_hash"] = self._last_policy_hash
+        else:
+            flow.metadata["pattern_scanner_head_hash"] = self._last_policy_hash
+        if flow.response:
+            deny_request_head(flow)
+
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Scan request for user-defined patterns."""
+        head_match_hash = flow.metadata.pop("pattern_scanner_head_match_hash", None)
         # Reload patterns if policy changed
         self._maybe_reload_patterns()
+        if head_match_hash is not None and head_match_hash == self._last_policy_hash:
+            return
 
         if not self.rules:
             self._trace_evaluated(flow, outcome=OUTCOME_NO_RULES)
             return
 
-        rule, location, inspection_failure = self._scan_request_content(flow)
+        head_hash = flow.metadata.pop("pattern_scanner_head_hash", None)
+        rule, location, inspection_failure = self._scan_request_content(
+            flow, scan_head=head_hash != self._last_policy_hash,
+        )
         if inspection_failure:
             self._block_url_inspection_failure(flow, inspection_failure)
             return
@@ -666,6 +697,9 @@ class PatternScanner(SecurityAddon):
             self._trace_evaluated(flow, outcome=OUTCOME_NO_MATCH, rules_evaluated=len(self.rules))
             return
 
+        self._decide_request(flow, rule, location)
+
+    def _decide_request(self, flow: http.HTTPFlow, rule: PatternRule, location: str) -> None:
         safe_name = _safe_rule_name(rule)
         safe_host = _safe_host(flow)
         safe_rule_id = _safe_rule_id(rule, safe_name)
