@@ -492,7 +492,7 @@ impl Destination {
         if authority.as_str().contains('@') {
             return Err("request authority cannot contain user information".into());
         }
-        let policy_host = policy_hostname(
+        let mut policy_host = policy_hostname(
             &source_host,
             uri.authority().is_some(),
             request.version() != hyper::Version::HTTP_2 && uri.scheme().is_some(),
@@ -522,6 +522,14 @@ impl Destination {
             && (host != tunnel.host || port != tunnel.port || scheme != tunnel.scheme)
         {
             return Err("inner authority differs from admitted CONNECT destination".into());
+        }
+        if let Some(tunnel) = tunnel
+            && source_host.is_ascii()
+            && source_host.eq_ignore_ascii_case(&tunnel.host)
+        {
+            // ASCII case does not change this admitted CONNECT hostname.
+            // Keep other source spellings for their own hostname inspection.
+            policy_host = tunnel.policy_host.clone();
         }
         if request.version() == hyper::Version::HTTP_2
             && let Some(host) = request.headers().get(header::HOST)
@@ -4505,6 +4513,40 @@ mod tests {
         .await
         .unwrap_err();
         assert_phase_timeout(error, RefreshPhase::HttpBody);
+    }
+
+    #[test]
+    fn inner_authority_reuses_connect_policy_name_only_for_ascii_case() {
+        let connect = Request::builder()
+            .method(Method::CONNECT)
+            .uri("ss.invalid:443")
+            .body(())
+            .unwrap();
+        let mut tunnel = Destination::from_request(&connect, None).unwrap();
+        tunnel.scheme = "https".into();
+
+        let upper = Request::builder()
+            .uri("/signed")
+            .header(header::HOST, "SS.INVALID:443")
+            .body(())
+            .unwrap();
+        assert_eq!(
+            Destination::from_request(&upper, Some(&tunnel))
+                .unwrap()
+                .policy_host,
+            "ss.invalid"
+        );
+
+        // IDNA2003 sends this spelling to the same socket, but the source
+        // hostname still needs its own inspection and policy decision.
+        let unicode = Request::builder()
+            .uri("/signed")
+            .header(header::HOST, "ß.invalid:443")
+            .body(())
+            .unwrap();
+        let inner = Destination::from_request(&unicode, Some(&tunnel)).unwrap();
+        assert_eq!(inner.host, "ss.invalid");
+        assert_eq!(inner.policy_host, "ß.invalid");
     }
 
     #[test]
