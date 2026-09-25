@@ -115,12 +115,25 @@ async def run(config):
         from safeyolo.mitm_addons.agent_api import AgentAPI
 
         master.addons.add(AgentAPI())
-    addons = [AgentAPIRequestGuard(), NetworkGuard(), SSEStreaming()]
+    addons = [AgentAPIRequestGuard()]
+    if config.get("fixture_gateway", False):
+        from safeyolo.mitm_addons.service_gateway import ServiceGateway
+
+        addons.append(ServiceGateway())
+    addons.extend((NetworkGuard(), SSEStreaming()))
     if config.get("fixture_credential_head_decision", False):
         from safeyolo.mitm_addons.credential_guard import CredentialGuard
 
         addons.append(CredentialGuard())
     master.addons.add(*addons, ProbeSink(), TransportGuard())
+    if config.get("fixture_gateway", False):
+        master.options.update(
+            gateway_enabled=True,
+            gateway_services_dir=config["gateway_services_dir"],
+            gateway_builtin_services_dir=config["gateway_builtin_services_dir"],
+            gateway_vault_path=str(Path(config["data_dir"]) / "vault.yaml.enc"),
+            gateway_vault_key=str(Path(config["data_dir"]) / "vault.key"),
+        )
     master.options.update(**{name: config[name] for name in (
         "network_guard_enabled", "network_guard_block", "network_guard_homoglyph",
     ) if name in config})

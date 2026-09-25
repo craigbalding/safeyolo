@@ -1668,6 +1668,8 @@ class TestGrantConsumption:
 
         # Simulate response flow
         flow = tflow.tflow()
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", flow.id) == grant
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", "other-flow") is None
         flow.metadata["gateway_grant_id"] = grant.grant_id
         flow.response = http.Response.make(200)
 
@@ -1683,6 +1685,7 @@ class TestGrantConsumption:
         grant = gateway.add_grant("agent-1", "svc", "DELETE", "/api/item")
 
         flow = tflow.tflow()
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", flow.id) == grant
         flow.metadata["gateway_grant_id"] = grant.grant_id
         flow.response = http.Response.make(404)
 
@@ -1690,6 +1693,20 @@ class TestGrantConsumption:
             gateway.response(flow)
 
         assert len(gateway.list_grants()) == 1
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", "retry") == grant
+
+    def test_once_grant_released_when_flow_errors(self, gateway):
+        """A cancelled request releases its reservation without consuming approval."""
+        from mitmproxy.test import tflow
+
+        grant = gateway.add_grant("agent-1", "svc", "DELETE", "/api/item")
+        flow = tflow.tflow()
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", flow.id) == grant
+        flow.metadata["gateway_grant_id"] = grant.grant_id
+
+        gateway.error(flow)
+
+        assert gateway._check_grant("agent-1", "svc", "DELETE", "/api/item", "retry") == grant
 
     def test_session_grant_not_consumed(self, gateway):
         """Session-scope grant survives 2xx response."""
