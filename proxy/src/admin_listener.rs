@@ -375,7 +375,8 @@ async fn serve_connection(
                 },
             )
             .await?
-            .submit_audit(&runtime.audit, &client_ip, &path)?;
+            .submit_audit_with_desktop_confirmation(&runtime.audit, &client_ip, &path)
+            .await?;
             let audits = outcome.audit().map(|intent| match intent {
                 admin_api::Audit::AuthenticationFailed => vec![json!({
                     "event":"proxy.admin_api", "audit_intent":"admin.auth_failure",

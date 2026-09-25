@@ -138,11 +138,15 @@ async fn exchange_unix(socket: &Path, bytes: &[u8]) -> Reply {
 }
 
 async fn exchange_admin(port: u16, bytes: &[u8]) -> Reply {
+    parse_reply(&exchange_admin_raw(port, bytes).await)
+}
+
+async fn exchange_admin_raw(port: u16, bytes: &[u8]) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(bytes).await.unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
-    parse_reply(&response)
+    response
 }
 
 fn admin_port(root: &Path) -> u16 {
@@ -352,6 +356,11 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     assert_eq!(presented.body["agent"], "alice");
     assert_eq!(presented.body["agent_id"], "durable-alice");
     assert_eq!(presented.body["reused"], false);
+    let audit_at_success = fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
+    assert!(
+        audit_at_success.contains("admin.desktop_presented"),
+        "a successful presentation must have its resolution on disk"
+    );
     observations
         .push(json!({"step":"operator_present","status":presented.status,"body":presented.body}));
 
@@ -380,6 +389,66 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     assert!(!audit.contains(AGENT_TOKEN));
     assert!(!audit.contains(OPERATOR_TOKEN));
     write_evidence(root.path(), &observations, "success");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // The process-global presenter environment spans this native workflow.
+async fn failed_resolution_write_cannot_report_success_or_clear_pending_approval() {
+    let _lock = test_lock();
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/agent_token"), AGENT_TOKEN).unwrap();
+    fs::write(root.path().join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let helper = preview_helper(root.path(), false);
+    unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &helper) };
+    let proxy = Proxy::start(config(root.path())).await.unwrap();
+    let port = admin_port(root.path());
+
+    let requested = exchange_unix(
+        &root.path().join("alice.sock"),
+        &agent_request("/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(requested.status, 202);
+    let request_id = requested.body["request_id"].as_str().unwrap();
+    let body = serde_json::to_vec(&json!({"approval_request_id":request_id})).unwrap();
+    let path = root.path().join("audit.jsonl");
+    let held = root.path().join("pending-audit.jsonl");
+    fs::rename(&path, &held).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    let failed = exchange_admin_raw(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", &body),
+    )
+    .await;
+    assert!(
+        failed.is_empty(),
+        "audit failure must close without a response: {failed:?}"
+    );
+    assert_eq!(helper_pids(&helper).len(), 1, "presenter ran");
+    fs::remove_dir(&path).unwrap();
+    fs::rename(&held, &path).unwrap();
+    assert!(
+        !fs::read_to_string(&path)
+            .unwrap()
+            .contains("admin.desktop_presented")
+    );
+    let pending = exchange_admin(port, &admin_request("GET", "/admin/approvals", b"")).await;
+    assert_eq!(pending.status, 200);
+    assert_eq!(pending.body["approvals"][0]["request_id"], request_id);
+
+    let retried = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", &body),
+    )
+    .await;
+    assert_eq!(retried.status, 200);
+    assert_eq!(retried.body["reused"], true);
+    let resolved = exchange_admin(port, &admin_request("GET", "/admin/approvals", b"")).await;
+    assert_eq!(resolved.body["approvals"], json!([]));
+    proxy.shutdown().await;
+    unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -225,6 +225,9 @@ operator sends that exact request ID to the native desktop route. A harmless
 executable fixture proves the fixed host-helper invocation and listener-derived
 agent binding. The same witness records the real `503` unavailable result and
 keeps the failed request pending, with the approval ID in the failure audit.
+The native operator route confirms the resolution audit write before it sends
+200. If that write fails, the route does not report success and the durable
+request remains pending.
 This Linux fixture does not prove a real supported-platform presentation; the
 Tart/macOS guest lane, missing-target and host-operation failure cases remain
 open.
