@@ -218,8 +218,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if python_config_dir is not None:
             env["SAFEYOLO_CONFIG_DIR"] = str(python_config_dir)
         if agent_api:
-            api_data = directory / "api-data"
-            api_data.mkdir()
+            api_data = directory / ("data" if backend == "python" and credential_head_decision else "api-data")
+            api_data.mkdir(exist_ok=True)
             if agent_api_token is not None:
                 token_file = api_data / "agent_token"
                 token_file.touch(mode=0o600)

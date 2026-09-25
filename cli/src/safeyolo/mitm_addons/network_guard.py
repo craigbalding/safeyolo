@@ -55,6 +55,7 @@ from safeyolo.core.destination import destination_key, network_approval_key
 from safeyolo.core.identity import IdentityStatus
 from safeyolo.core.trace import REASON_ADDON_DISABLED, trace_addon_hook
 from safeyolo.core.utils import get_client_ip, sanitize_for_log
+from safeyolo.early_request_response import deny_request_head, request_may_stream
 
 # Add pdp to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -222,17 +223,22 @@ class NetworkGuard(SecurityAddon):
                 request.headers.insert(0, "Host", admitted)
 
         if not conflicting:
+            if request_may_stream(request):
+                # The request hook runs after streamed bytes can reach the
+                # origin. Evaluate this request once before that first dial.
+                self._enforce(flow)
+                flow.metadata["network_guard_head_checked"] = True
+                if flow.response:
+                    deny_request_head(flow)
             return
         # mitmproxy 12.2.3 otherwise starts a streamed origin request despite
         # the response set at requestheaders. Use the existing early response
         # path, and do not emit 100 Continue for a request that is denied.
-        flow.metadata["request_head_denied"] = True
-        request.stream = True
-        request.headers.pop("expect", None)
         self.block(flow, 400, {
             "error": "Request authority conflicts with proxy destination",
             "reason": "request_authority_conflict",
         })
+        deny_request_head(flow)
         self.log_decision(
             flow, Decision.DENY, severity=Severity.HIGH,
             summary="Request authority differs from its admitted destination",
@@ -242,6 +248,8 @@ class NetworkGuard(SecurityAddon):
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):
         """Enforce network policy: homoglyphs, access control, rate limits."""
+        if flow.metadata.pop("network_guard_head_checked", False):
+            return
         self._enforce(flow)
 
     @trace_addon_hook("http_connect")

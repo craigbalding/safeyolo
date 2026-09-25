@@ -169,6 +169,7 @@ async def run(config):
             raise ValueError("The historical fixture uses one policy file")
         master.addons.add(PatternScanner())
         master.options.update(
+            pattern_block_request=inspection.get("block_request", False),
             pattern_block_websocket_request=inspection.get("block_websocket_request", False),
             pattern_block_websocket_response=inspection.get("block_websocket_response", False),
         )
