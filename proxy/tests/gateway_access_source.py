@@ -303,6 +303,7 @@ def assert_contract(document_data: dict) -> None:
         "host": HOST,
         "agent": TRUSTED_AGENT,
         "addon": "agent-api",
+        "confirm_append": True,
         "approval": {
             "required": True,
             "approval_type": "service",
@@ -381,6 +382,7 @@ def assert_contract(document_data: dict) -> None:
     assert audit_failure["body"] == {"error": "Internal error: RuntimeError"}
     assert len(audit_failure["audit"]) == 1
     assert audit_failure["audit"][0]["event"] == "gateway.request_access"
+    assert audit_failure["audit"][0]["confirm_append"] is True
     assert audit_failure["identity"]["status"] == "resolved"
 
 

@@ -14315,7 +14315,7 @@
   "source_sha256": {
     "cli/src/safeyolo/core/trace.py": "7574231ab6c7d597b24c28c84bbd75dd9fdf1e9596e7d9350dee196fb00ef1ff",
     "cli/src/safeyolo/core/base.py": "cd0dbae78069684fc8c5a034f1675095c422327b38a6f0fba30ddc21ad97c6aa",
-    "cli/src/safeyolo/core/utils.py": "79fc8b4717cae81601be0fde170eff51250bdf23755964c57e6a317d1e84e651",
+    "cli/src/safeyolo/core/utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",
     "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
     "cli/src/safeyolo/core/audit_schema.py": "495e070c1ce788a02139ab085b23a93818e4294812d4776bdec8049526fa1072",
     "cli/src/safeyolo/core/config_cache.py": "2de3f28e8e71d56fcbd05833cd0ace0bc23559cd453c7adff696882fb4854ad1",

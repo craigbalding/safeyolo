@@ -3,6 +3,7 @@
 import asyncio
 import json
 import secrets
+import threading
 from unittest.mock import create_autospec, patch
 
 import pytest
@@ -130,6 +131,37 @@ class TestAPIRouting:
         assert approval.key == "desktop.present"
         assert approval.target == "desktop:ag-forge"
         assert approval.scope_hint == {"agent_id": "ag-forge"}
+        assert write_event.call_args.kwargs["confirm_append"] is True
+
+    def test_pending_approval_wait_does_not_block_other_agent_api_calls(self, api, agent_token):
+        approval = _make_api_flow("/desktop/present", method="POST", token=agent_token)
+        health = _make_api_flow("/health", token=agent_token)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def delayed_append(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(timeout=2)
+
+        async def exercise():
+            pending = asyncio.create_task(api.request(approval))
+            try:
+                assert await asyncio.to_thread(entered.wait, 2)
+                assert not pending.done() and approval.response is None
+                await api.request(health)
+                assert health.response.status_code == 200
+            finally:
+                release.set()
+                await pending
+            assert approval.response.status_code == 202
+
+        with (
+            _patch_active_token(agent_token),
+            patch.object(api, "_resolve_agent_id", return_value="forge", autospec=True),
+            patch("safeyolo.agents_store.get_or_mint_agent_id", return_value="ag-forge", autospec=True),
+            patch("agent_api.write_event", autospec=True, side_effect=delayed_append),
+        ):
+            asyncio.run(exercise())
 
 
 class TestAuth:
@@ -1693,7 +1725,7 @@ capabilities:
             ),
             patch("agent_api.write_event", autospec=True) as write_event_mock,
         ):
-            api._handle_gateway_submit_binding(flow)
+            asyncio.run(api._handle_gateway_submit_binding(flow))
 
         assert flow.response.status_code == 200
         body = json.loads(flow.response.content)
