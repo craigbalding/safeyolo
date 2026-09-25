@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 
 from tests.proxy_migration.harness import launch_proxy, read_events, request
-from tests.proxy_migration.scenarios import origin_server
+from tests.proxy_migration.scenarios import origin_server, wait_for_reserved_audit
 from tests.proxy_migration.test_tunnel_contract import read_all, read_exact, read_until
 
 HTTP_HOST = "parent-http.invalid"
@@ -175,16 +175,23 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
 
             before = parent.accepts
             egress_before = len(proxy.events("proxy.egress"))
+            audit_path = directory / "parent" / "audit.jsonl"
             for path, target, method in (
                 (proxy.paths["alice"], parent_url + "/physical-denied", "GET"),
                 (proxy.paths["bob"], http_url, "GET"),
                 (proxy.paths["bob"], TUNNEL_AUTHORITY, "CONNECT"),
             ):
+                before_audit = len(read_events(audit_path))
                 status, headers, _ = request(path, target, method=method)
                 assert status == 403
-                assert {name.lower(): value for name, value in headers.items()}["x-blocked-by"] == "network-guard"
+                response_headers = {name.lower(): value for name, value in headers.items()}
+                assert response_headers["x-blocked-by"] == "network-guard"
                 assert parent.accepts == before and direct_origin.accepts == 1
                 assert len(proxy.events("proxy.egress")) == egress_before
+                wait_for_reserved_audit(
+                    audit_path, before_audit, "security.network_guard",
+                    request_id=response_headers["x-safeyolo-request-id"],
+                )
 
             assert parent.accepts == 4
             assert egress_before == 4
@@ -208,7 +215,7 @@ def test_configured_parent_http_connect_failure_and_direct_control(proxy_backend
             ]
             guard = [
                 row
-                for row in read_events(directory / "parent" / "audit.jsonl")
+                for row in read_events(audit_path)
                 if row["event"] == "security.network_guard"
             ]
             assert [(row["agent"], row["host"], row["details"]["method"], row["decision"]) for row in guard] == [
