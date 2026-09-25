@@ -1,9 +1,13 @@
 """First shared HTTP contracts; transport/TLS/WS coverage remains explicit."""
 
 import concurrent.futures
+import http.client
 import json
+import socket
+import ssl
 
 import pytest
+from mitmproxy.certs import CertStore
 
 from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
 from tests.proxy_migration.run import (
@@ -13,12 +17,125 @@ from tests.proxy_migration.run import (
     streamed_control_workload,
     streamed_slow_admin_workload,
 )
-from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
+from tests.proxy_migration.scenarios import (
+    FORGED_REQUEST_ID,
+    POLICY,
+    network_scenario,
+    origin_server,
+    request_evidence,
+    reserved_scenario,
+)
+from tests.proxy_migration.test_http2_contract import origin_certificate
+from tests.proxy_migration.test_http2_contract import origin_server as tls_origin_server
+from tests.proxy_migration.test_websocket_contract import read_head
 
 
 @pytest.mark.parametrize("parent", [False, True], ids=["direct", "parent"])
 def test_two_agent_http_policy_and_attribution(proxy_backend, tmp_path, parent):
     network_scenario(proxy_backend, tmp_path / proxy_backend, parent=parent)
+
+
+def test_connect_and_inner_request_ids_keep_scoped_connection_evidence(proxy_backend, tmp_path):
+    """An admitted tunnel and its inner decision have distinct owned IDs."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    pem, public = origin_certificate(directory)
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    policy = '''[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { method = "CONNECT" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { agent = "alice", method = "GET" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+'''
+    observations = []
+    run = "request-ids-connect"
+    with tls_origin_server(pem, ("http/1.1",)) as origin:
+        with launch_proxy(proxy_backend, directory, policy, native_policy=True, tls=True,
+                          upstream_ca=public, eager_connect=True, agent_api=True,
+                          flow_store_enabled=True) as proxy:
+            for agent, expected in (("bob", 403), ("alice", 200)):
+                before = (origin.accepts, len(origin.requests))
+                raw = socket.socket(socket.AF_UNIX)
+                raw.settimeout(5)
+                try:
+                    raw.connect(proxy.paths[agent])
+                    connect_request = (f"CONNECT {origin.authority} HTTP/1.1\r\n"
+                                       f"Host: {origin.authority}\r\n"
+                                       f"X-SafeYolo-Request-Id: {FORGED_REQUEST_ID}\r\n"
+                                       "X-SafeYolo-Trace: 1\r\n\r\n").encode()
+                    raw.sendall(connect_request)
+                    connect_status, connect_headers = read_head(raw)
+                    assert connect_status.startswith("HTTP/1.1 200 "), connect_status
+                    assert len(connect_headers["x-safeyolo-request-id"]) == 1
+                    connect_id = connect_headers["x-safeyolo-request-id"][0]
+                    outer = request_evidence(
+                        proxy, agent, connect_id, host="127.0.0.1", port=origin.server_address[1],
+                        method="CONNECT", status=200, decision="allow", run=run,
+                    )
+                    assert origin.accepts == before[0] + 1
+                    context = ssl.create_default_context(cafile=directory / "ca/mitmproxy-ca-cert.pem")
+                    stream = context.wrap_socket(raw, server_hostname="127.0.0.1")
+                    client = http.client.HTTPConnection("127.0.0.1", origin.server_address[1], timeout=5)
+                    client.sock = stream
+                    try:
+                        client.request("GET", "/inner", headers={
+                            "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
+                            "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
+                            "X-SafeYolo-Trace": "1",
+                            "X-SafeYolo-Test-Context": f"run={run};agent={agent};test=request-ids",
+                        })
+                        response = client.getresponse()
+                        inner_headers = dict(response.getheaders())
+                        body = response.read()
+                        assert response.status == expected, body
+                        inner_id = {name.lower(): value for name, value in inner_headers.items()}[
+                            "x-safeyolo-request-id"]
+                        assert inner_id != connect_id
+                        inner = request_evidence(
+                            proxy, agent, inner_id, host="127.0.0.1", port=origin.server_address[1],
+                            method="GET", status=expected,
+                            decision="allow" if expected == 200 else "deny", run=run,
+                            path="/inner", flow_expected=expected == 200,
+                        )
+                        assert inner["connection_id"] == outer["connection_id"]
+                        assert origin.accepts == before[0] + 1
+                        assert len(origin.requests) == before[1] + int(expected == 200)
+                        if expected == 200:
+                            assert body == b"hello"
+                            assert origin.requests[-1]["head"].startswith("GET /inner HTTP/1.1\r\n")
+                        observations.append({
+                            "agent": agent, "connect_request_hex": connect_request.hex(),
+                            "connect_status": connect_status, "connect_headers": connect_headers,
+                            "connect_id": connect_id, "outer": outer,
+                            "inner_status": expected, "inner_headers": inner_headers,
+                            "inner_body_hex": body.hex(), "inner_id": inner_id, "inner": inner,
+                            "origin_accepts_before": before[0], "origin_accepts_after": origin.accepts,
+                            "origin_requests_before": before[1],
+                            "origin_requests_after": list(origin.requests),
+                        })
+                    finally:
+                        client.close()
+                finally:
+                    raw.close()
+            assert observations[0]["outer"]["connection_id"] != observations[1]["outer"]["connection_id"]
+            for observation in observations:
+                events = [event for event in proxy.events("proxy.request")
+                          if event.get("request_id") == observation["inner_id"]]
+                assert len(events) == 1 and events[0]["status"] == observation["inner_status"]
+                assert events[0]["connection_id"] == observation["inner"]["connection_id"]
+                assert events[0]["agent"] == observation["agent"]
+        (directory / "connect-request-id-observations.json").write_text(
+            json.dumps(observations, indent=2) + "\n"
+        )
 
 
 def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):

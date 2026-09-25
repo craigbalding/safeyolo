@@ -136,7 +136,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
                  agent_map=None, stream_large_bodies=None, credential_head_decision=False,
-                 via_token=None):
+                 flow_store_enabled=False, via_token=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -175,7 +175,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             # Keep native policy/evidence state inside this fixture. The Rust
             # default (/safeyolo/data) is unavailable in ordinary runs.
             "data_dir": str(directory / "data"),
-            "flow_store_enabled": False,
+            "flow_store_enabled": flow_store_enabled,
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
         Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
