@@ -172,12 +172,17 @@ proxy negotiates HTTP/1 on both sides. Native opaque CONNECT now shares the
 authorized egress path with HTTP/TLS. Native passthrough tests preserve the
 origin's certificate and restore interception after removing an exact entry.
 WebSockets and the documented passthrough matching gaps remain unfinished.
-
-The separate native WebSocket module has codec and handshake tests, including
-an actual Python wsproto oracle, complete-message scanner calls, compression
-context after message drops, UTF-8 fragments and private spooling. It remains
-inactive in the HTTP transport. The scanner's documented Python-regex gaps
-also block activation; passing codec tests are not WS/WSS proxy acceptance.
+The native WebSocket module is active after an HTTP/1 upgrade, including
+intercepted HTTPS. Its codec tests use a Python wsproto oracle, but codec tests
+alone do not establish WS/WSS proxy acceptance. The shared
+`test_websocket_contract.py` fixture exercises both real proxies through their
+listeners. Its storage-transition test compares direct and proxied peer bytes
+at 65,536 and 65,537 decoded bytes in both directions over WS and WSS. Plain
+fragmented messages carry an interleaved Ping; compressed fragmented messages
+exercise blocking and logged delivery separately because Python's D32 defect
+affects compression across control frames. Native events check the storage
+spill and scanner outcome. This fixture does not impose a message-size limit or
+resolve the scanner's documented Python-regex compatibility gaps.
 
 The earlier focused launcher keeps lazy connection setup by default. Tunnel
 fixtures explicitly select the old production eager behavior; native CONNECT

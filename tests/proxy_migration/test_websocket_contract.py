@@ -542,6 +542,155 @@ def test_scan_pattern_split_across_fragments_with_interleaved_control(
         proxy_backend, tmp_path, tls, direction, mode)
 
 
+STORAGE_SAFE = b"safe-after-storage-transition"
+STORAGE_PING = b"storage-ping"
+STORAGE_CASES = (
+    ("edge-block", 65536, b"PROJ-12345", False, True, True, "match_blocked"),
+    ("spill-block", 65537, b"PROJ-12345", False, True, True, "match_blocked"),
+    ("spill-near-miss", 65537, b"PROJ-1234X", False, True, False, "no_match"),
+    ("deflate-block", 65537, b"PROJ-12345", True, False, True, "match_blocked"),
+    ("deflate-warn", 65537, b"WARN-12345", True, False, False, "match_logged"),
+)
+STORAGE_WARN_PATTERN = '''
+[[scan_patterns]]
+name = "storage-warning"
+pattern = "WARN-[0-9]{5}"
+target = "both"
+scope = ["body"]
+action = "log"
+'''
+
+
+def send_storage_message(peer, payload, *, compressed, ping):
+    """Place the last pattern byte in a plain continuation frame."""
+    if compressed:
+        # Python's recorded D32 defect loses compression state if a control
+        # frame interrupts compressed fragments. Keep that gap explicit.
+        peer.send(1, payload, fragmented=True)
+        return
+    wire = frame(1, payload[:-1], final=False, masked=peer.client)
+    if ping:
+        wire += frame(9, STORAGE_PING, masked=peer.client)
+    wire += frame(0, payload[-1:], masked=peer.client)
+    peer.stream.sendall(wire)
+
+
+def storage_exchange(origin, *, direction, payload, compressed, ping, path=None, ca=None):
+    """Return exact destination messages and both peers' control observations."""
+    with connect_peer(origin, path=path, ca=ca, compressed=compressed) as client:
+        if direction == "request":
+            send_storage_message(client, payload, compressed=compressed, ping=ping)
+            client.send(1, STORAGE_SAFE)
+            assert client.receive() == (1, b"ack")
+            client_messages = []
+        else:
+            client_messages = []
+            while not client_messages or client_messages[-1] != (1, STORAGE_SAFE):
+                client_messages.append(client.receive())
+            client.send(1, b"ack")
+        client.close()
+        assert client.receive() == (8, struct.pack("!H", 1000) + b"fixture complete")
+        client_controls = list(client.controls)
+    origin_messages, origin_controls = origin.results.get(timeout=5)
+    destination = origin_messages if direction == "request" else client_messages
+    return destination, origin_controls, client_controls
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+@pytest.mark.parametrize("direction", ["request", "response"])
+def test_scanner_across_websocket_storage_transition(proxy_backend, tmp_path, tls, direction):
+    """Inspect decoded WS/WSS messages across the 64 KiB storage transition."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    policy = POLICY + PATTERN + STORAGE_WARN_PATTERN
+    inspection = {"block_websocket_request": True, "block_websocket_response": True}
+    observations = []
+
+    with launch_proxy(proxy_backend, directory, policy, tls=tls, upstream_ca=public,
+                      inspection=inspection) as proxy:
+        for name, size, marker, compressed, ping, blocked, outcome in STORAGE_CASES:
+            payload = b"A" * (size - len(marker)) + marker
+            assert len(payload) == size
+
+            def script(peer, results):
+                if direction == "response":
+                    send_storage_message(peer, payload, compressed=compressed, ping=ping)
+                    peer.send(1, STORAGE_SAFE)
+                    assert peer.receive() == (1, b"ack")
+                    received = []
+                else:
+                    received = []
+                    while not received or received[-1] != (1, STORAGE_SAFE):
+                        received.append(peer.receive())
+                    peer.send(1, b"ack")
+                assert peer.receive() == (8, struct.pack("!H", 1000) + b"fixture complete")
+                peer.close()
+                results.put((received, list(peer.controls)))
+
+            with origin_server(script, pem=pem, compressed=compressed) as origin:
+                direct, direct_origin_controls, direct_client_controls = storage_exchange(
+                    origin, direction=direction, payload=payload, compressed=compressed,
+                    ping=ping, ca=public if tls else None,
+                )
+                before = len(proxy.events("proxy.websocket.message"))
+                proxied, origin_controls, client_controls = storage_exchange(
+                    origin, direction=direction, payload=payload, compressed=compressed,
+                    ping=ping, path=proxy.paths["alice"], ca=proxy_ca if tls else None,
+                )
+                events = proxy.events("proxy.websocket.message")[before:]
+
+            observations.append({
+                "case": name,
+                "direction": direction,
+                "transport": "wss" if tls else "ws",
+                "source_base64": base64.b64encode(payload).decode(),
+                "direct_base64": [base64.b64encode(body).decode() for _, body in direct],
+                "proxied_base64": [base64.b64encode(body).decode() for _, body in proxied],
+                "origin_controls": [[opcode, base64.b64encode(body).decode()]
+                                    for opcode, body in origin_controls],
+                "client_controls": [[opcode, base64.b64encode(body).decode()]
+                                    for opcode, body in client_controls],
+                "native_events": events,
+            })
+            (directory / "storage-observations.json").write_text(json.dumps(observations, indent=2))
+
+            assert direct == [(1, payload), (1, STORAGE_SAFE)], name
+            assert proxied == ([(1, STORAGE_SAFE)] if blocked else direct), name
+            if ping:
+                receivers = ((direct_origin_controls, origin_controls) if direction == "request"
+                             else (direct_client_controls, client_controls))
+                senders = ((direct_client_controls, client_controls) if direction == "request"
+                           else (direct_origin_controls, origin_controls))
+                for controls in receivers:
+                    assert (9, STORAGE_PING) in controls, name
+                for controls in senders:
+                    assert (10, STORAGE_PING) in controls, name
+            if proxy_backend == "rust":
+                target = [row for row in events if row["message_bytes"] == size
+                          and row["from_client"] == (direction == "request")]
+                assert len(target) == 1, (name, events)
+                assert target[0]["fragments"] == 2, (name, target)
+                assert target[0]["spilled"] == (size > 65536), (name, target)
+                assert target[0]["dropped"] is blocked, (name, target)
+                assert target[0]["inspection"]["outcome"] == outcome, (name, target)
+                assert target[0]["failure"] is None, (name, target)
+                if outcome != "no_match":
+                    assert target[0]["inspection"]["finding"]["rule_name"] == (
+                        "storage-warning" if name == "deflate-warn" else "project-id"
+                    ), (name, target)
+    if proxy_backend == "python":
+        decisions = [row for row in read_events(directory / "audit.jsonl")
+                     if row["event"] == "security.pattern_scanner"
+                     and row["details"].get("location") == "websocket_message"]
+        assert [(row["details"]["direction"], row["details"]["rule_name"], row["decision"])
+                for row in decisions] == [
+                    (direction, "project-id", "deny"),
+                    (direction, "project-id", "deny"),
+                    (direction, "project-id", "deny"),
+                    (direction, "storage-warning", "log"),
+                ]
+
+
 @pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
 def test_first_server_message_survives_coalesced_101_handoff(proxy_backend, tmp_path, tls):
     """Preserve a server frame sent in the same write as the 101 response."""
