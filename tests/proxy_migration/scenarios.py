@@ -331,6 +331,23 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
                                   for event in events]}
 
 
+def wait_for_reserved_audit(path, before_count, expected_event, *, request_id=None,
+                            timeout_seconds=2):
+    """Wait for the expected event among this request's newly written rows."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        new_rows = read_events(path)[before_count:]
+        rows = new_rows
+        if request_id is not None:
+            rows = [row for row in rows if row.get("request_id") == request_id]
+        if any(row.get("event") == expected_event for row in rows):
+            return rows
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError((expected_event, request_id, new_rows))
+        time.sleep(min(0.01, remaining))
+
+
 def reserved_scenario(backend, directory):
     """Reserved names stay local while the configured parent serves ordinary hosts."""
     api_hosts = ("_safeyolo.proxy.internal", "_SAFEYOLO.PROXY.INTERNAL", "_safeyolo.proxy.internal.")
@@ -359,37 +376,46 @@ def reserved_scenario(backend, directory):
                         headers={"Authorization": f"Bearer {bearer}"},
                     )
                     heads = parent.request_heads
-                    audit = read_events(run_dir / "audit.jsonl")[before_audit:]
                     row = {"state": state, "host": host, "kind": kind, "status": status,
                            "body": body.decode("utf-8", errors="replace"),
                            "parent_accepts": parent.accepts - before_accepts,
                            "egress_attempts": len(proxy.events("proxy.egress")) - before_egress,
-                           "audit_events": [event["event"] for event in audit],
                            "parent_heads_hex": [head.hex() for head in heads],
                            "bearer": bearer, "query": query}
-                    with (run_dir / "reserved-wire.jsonl").open("a") as output:
-                        output.write(json.dumps(row) + "\n")
                     responses.append(row)
                     if kind == "control":
                         assert status == 200 and body == b"hello", row
                         assert row["parent_accepts"] == row["egress_attempts"] == 1, row
                         assert bearer.encode() in heads[-1] and query.encode() in heads[-1], row
-                        continue
-                    assert row["parent_accepts"] == row["egress_attempts"] == 0, row
-                    assert all(bearer.encode() not in head and query.encode() not in head
-                               for head in heads), row
+                    else:
+                        assert row["parent_accepts"] == row["egress_attempts"] == 0, row
+                        assert all(bearer.encode() not in head and query.encode() not in head
+                                   for head in heads), row
                     if kind == "api":
                         assert status == (401 if enabled else 503), row
                         if enabled:
                             assert json.loads(body) == {"error": "Invalid agent token"}, row
-                            assert "security.agent_auth_failed" in row["audit_events"], row
+                            expected_event = "security.agent_auth_failed"
+                            request_id = None  # AuthenticationFailed has no audit request ID.
                         else:
-                            assert json.loads(body)["reason_code"] == "agent_api_unavailable", row
-                            assert "security.agent_api_unavailable" in row["audit_events"], row
+                            response = json.loads(body)
+                            assert response["reason_code"] == "agent_api_unavailable", row
+                            request_id = response["request_id"]
+                            assert REQUEST_ID.fullmatch(request_id), row
+                            expected_event = "security.agent_api_unavailable"
+                        audit = wait_for_reserved_audit(
+                            run_dir / "audit.jsonl", before_audit, expected_event,
+                            request_id=request_id,
+                        )
                     elif kind == "probe":
                         assert status == 200, row
                         assert json.loads(body)["probe_ok"] is True, row
-                    else:
+                    elif kind != "control":
                         assert status == 400, row
+                    if kind != "api":
+                        audit = read_events(run_dir / "audit.jsonl")[before_audit:]
+                    row["audit_events"] = [event["event"] for event in audit]
+                    with (run_dir / "reserved-wire.jsonl").open("a") as output:
+                        output.write(json.dumps(row) + "\n")
     return {"responses": responses, "origin_connections": parent.accepts,
             "egress_attempts": sum(row["egress_attempts"] for row in responses)}

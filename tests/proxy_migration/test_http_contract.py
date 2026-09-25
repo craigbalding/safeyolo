@@ -5,10 +5,12 @@ import http.client
 import json
 import socket
 import ssl
+import threading
 
 import pytest
 from mitmproxy.certs import CertStore
 
+from tests.proxy_migration import scenarios
 from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
 from tests.proxy_migration.run import (
     cancelled_sse_workload,
@@ -24,6 +26,7 @@ from tests.proxy_migration.scenarios import (
     origin_server,
     request_evidence,
     reserved_scenario,
+    wait_for_reserved_audit,
 )
 from tests.proxy_migration.test_http2_contract import origin_certificate
 from tests.proxy_migration.test_http2_contract import origin_server as tls_origin_server
@@ -140,6 +143,77 @@ effect = "deny"
 
 def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):
     reserved_scenario(proxy_backend, tmp_path / proxy_backend)
+
+
+@pytest.mark.parametrize(
+    ("expected_event", "request_id", "before_count"),
+    [
+        ("security.agent_api_unavailable", "req-" + "1" * 32, 0),
+        ("security.agent_auth_failed", None, 1),
+    ],
+    ids=["request-id", "new-row-delta"],
+)
+def test_reserved_audit_wait_accepts_a_late_matching_row(
+    tmp_path, monkeypatch, expected_event, request_id, before_count
+):
+    audit_path = tmp_path / "audit.jsonl"
+    old = {"event": expected_event}
+    late = {"event": expected_event}
+    if request_id is not None:
+        old["request_id"] = "req-" + "2" * 32
+        late["request_id"] = request_id
+    audit_path.write_text(json.dumps(old) + "\n")
+    first_read = threading.Event()
+    original_read = scenarios.read_events
+
+    def read_then_signal(path):
+        rows = original_read(path)
+        first_read.set()
+        return rows
+
+    monkeypatch.setattr(scenarios, "read_events", read_then_signal)
+
+    def append_late_row():
+        if first_read.wait(1):
+            with audit_path.open("a") as output:
+                output.write(json.dumps(late) + "\n")
+
+    writer = threading.Thread(target=append_late_row)
+    writer.start()
+    try:
+        rows = wait_for_reserved_audit(
+            audit_path, before_count, expected_event, request_id=request_id,
+            timeout_seconds=0.5,
+        )
+    finally:
+        writer.join(timeout=1)
+    assert not writer.is_alive()
+    assert rows == [late]
+
+
+@pytest.mark.parametrize(
+    ("rows", "before_count", "request_id"),
+    [
+        ([], 0, "req-" + "1" * 32),
+        ([{"event": "security.agent_api_unavailable", "request_id": "req-" + "2" * 32},
+          {"event": "traffic.response", "request_id": "req-" + "1" * 32}], 0, "req-" + "1" * 32),
+        ([{"event": "security.agent_auth_failed"}, {"event": "traffic.response"}], 1, None),
+    ],
+    ids=["absent", "wrong-request-and-event", "no-new-auth-row"],
+)
+def test_reserved_audit_wait_rejects_absent_or_wrong_rows(
+    tmp_path, rows, before_count, request_id
+):
+    audit_path = tmp_path / "audit.jsonl"
+    audit_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    expected_event = (
+        "security.agent_auth_failed" if request_id is None else "security.agent_api_unavailable"
+    )
+    with pytest.raises(AssertionError, match=expected_event):
+        wait_for_reserved_audit(
+            audit_path, before_count, expected_event, request_id=request_id,
+            timeout_seconds=0.03,
+        )
 
 
 def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_backend, tmp_path):
