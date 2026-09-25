@@ -3021,18 +3021,25 @@ inspection and the exposed edit/replay workflows are deferred under the
 not been removed or cut over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs focused Ubuntu
-checks for each relevant pull-request update, including draft updates. A
-factory-owned implementation pull request starts as a draft. After its focused
-check passes, Relay marks the unchanged head ready for review. That transition
-runs the complete Ubuntu/macOS migration matrix. A correction returns the pull
-request to draft before another push, then repeats the focused check and ready
-transition at the new head. Pushes to `feat/rust-proxy-620`, `master`, and
-`main` also run the complete matrix.
+checks for relevant feature-branch pull-request updates, including draft
+updates. Marking that pull request ready does not start the full matrix. The
+focused job omits the shared WebSocket close suite; changes to that boundary
+need focused local checks and independent review.
 
-Focused checks do not establish release acceptance. Relay and Lens must confirm
-that the full-matrix run belongs to the exact reviewed head and that both jobs
-completed successfully. A pending, skipped, stale-head, canceled, or failed
-full job does not satisfy that condition. A workflow definition is not evidence
+The complete Ubuntu/macOS matrix runs when Relay advances
+`ci/proxy-rust-620` to an exact integrated commit, when a release pull request
+into `master` or `main` is ready, and after a push to either default branch.
+Routine pushes to `feat/rust-proxy-620` do not start it. Relay selects a
+checkpoint after a coherent set of related changes is integrated and before
+the final cutover. The matrix includes the shared WebSocket tests against
+both backends.
+
+Focused checks and an older full run do not establish final release acceptance.
+Relay confirms that each required full run belongs to the exact candidate it
+is meant to prove and that both platform jobs completed successfully. Lens
+judges the affected acceptance items from independent evidence without waiting
+only to poll CI. A pending, skipped, stale-head, canceled, or failed required
+job does not satisfy that condition. A workflow definition is not evidence
 that the jobs, the macOS VM relay, or the Linux guest mount have passed.
 
 
