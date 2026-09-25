@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from . import rust_proxy
+from .agent_token import ensure_agent_token
 from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
 from .ignore_hosts import (
     build_ignore_patterns,
@@ -417,13 +418,7 @@ def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
     # running sandbox (401 on agent API) until it restarts. The threat
     # model does not benefit from rotation — the guest always holds the
     # current value via /app/agent_token.
-    agent_token_file = data_dir / "agent_token"
-    if agent_token_file.exists():
-        agent_token = agent_token_file.read_text().strip()
-    else:
-        agent_token = secrets.token_hex(32)
-        agent_token_file.write_text(agent_token)
-        agent_token_file.chmod(0o600)
+    agent_token = ensure_agent_token(data_dir)
 
     return admin_token, agent_token
 

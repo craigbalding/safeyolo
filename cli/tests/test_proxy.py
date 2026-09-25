@@ -689,6 +689,20 @@ class TestEnsureTokens:
 
         assert agent1 == agent2
 
+    def test_replaces_empty_agent_token_placeholder(self, tmp_path):
+        """Bootstrap's empty placeholder must become a usable private token."""
+        from safeyolo.proxy import _ensure_tokens
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        token_file = data_dir / "agent_token"
+        token_file.write_text(" \n")
+        _, token = _ensure_tokens(data_dir)
+
+        assert len(token) == 64
+        assert token_file.read_text() == token
+        assert token_file.stat().st_mode & 0o777 == 0o600
+
     def test_sets_file_permissions_to_600(self, tmp_path):
         """Both token files get 0o600 permissions."""
         from safeyolo.proxy import _ensure_tokens

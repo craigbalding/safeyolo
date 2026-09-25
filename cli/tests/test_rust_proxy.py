@@ -14,7 +14,7 @@ from unittest.mock import create_autospec
 import pytest
 
 from safeyolo import config as safeyolo_config
-from safeyolo import proxy, runtime_identity, rust_proxy, traffic_session
+from safeyolo import proxy, runtime_identity, rust_proxy, traffic_session, vm
 
 PID = 24680
 TOKEN = "owned-process-generation"
@@ -153,6 +153,57 @@ def test_selected_rust_launch_skips_python_setup_and_publishes_owned_receipt(lau
     assert rust_proxy.read_process().pid == PID
     assert (rust_proxy.get_data_dir() / "proxy.pid").read_text() == f"{PID}\n"
     launch.http.assert_not_called()
+
+
+@pytest.mark.parametrize("initial_token", [None, "", " \n", "existing-agent-token"])
+def test_rust_start_stages_usable_agent_token_and_reuses_it_on_restart(launch, initial_token):
+    token_path = safeyolo_config.get_agent_token_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    if initial_token is not None:
+        token_path.write_text(initial_token)
+        token_path.chmod(0o600)
+    existing_inode = token_path.stat().st_ino if initial_token == "existing-agent-token" else None
+    ssh_key = token_path.parent / "vm_ssh_key"
+    ssh_key.write_text("test-private-key")
+    ssh_key.with_suffix(".pub").write_text("ssh-ed25519 AAAA test@safeyolo")
+
+    def launched(*_args, **kwargs):
+        assert token_path.read_text().strip(), "Rust must have a token before launch"
+        assert kwargs["env"]["SAFEYOLO_DATA_DIR"] == str(token_path.parent.absolute())
+        launch.ready.write_text(json.dumps(marker()))
+        return PID
+
+    launch.begin.side_effect = launched
+    proxy.start_proxy()
+    first_token = token_path.read_text().strip()
+    if initial_token and initial_token.strip():
+        assert first_token == initial_token
+        assert token_path.stat().st_ino == existing_inode
+    else:
+        assert len(first_token) == 64 and all(char in "0123456789abcdef" for char in first_token)
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    share = vm.prepare_config_share("alice", str(launch.root))
+    assert (share / "agent_token").read_text().strip() == first_token
+
+    launch.kill.side_effect = lambda _pid, _signal: setattr(launch.alive, "return_value", False)
+    proxy.stop_proxy()
+    launch.alive.return_value = True
+    proxy.start_proxy()
+    assert token_path.read_text().strip() == first_token
+    share = vm.prepare_config_share("alice", str(launch.root))
+    assert (share / "agent_token").read_text().strip() == first_token
+
+
+def test_rust_start_rejects_unreadable_agent_token_path_before_launch(launch):
+    token_path = safeyolo_config.get_agent_token_path()
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.mkdir()
+
+    with pytest.raises(IsADirectoryError):
+        proxy.start_proxy()
+
+    launch.begin.assert_not_called()
+    assert not rust_proxy.state_file().exists()
 
 
 def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, monkeypatch):
