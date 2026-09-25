@@ -1059,10 +1059,7 @@ def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_
 
 
 @pytest.mark.parametrize("mutation", ["authority_host", "authority_port", "host_header", "duplicate_host"])
-def test_http2_inner_authorities_cannot_change_destination(proxy_backend, tmp_path, request, mutation):
-    if proxy_backend == "python" and mutation.startswith("authority_"):
-        request.node.add_marker(pytest.mark.xfail(
-            strict=True, reason="Existing H2 tunnel overwrites policy host/port while forwarding changed :authority"))
+def test_http2_inner_authorities_cannot_change_destination(proxy_backend, tmp_path, mutation):
     directory = tmp_path / proxy_backend
     directory.mkdir()
     CertStore.from_store(directory / "ca", "mitmproxy", 2048)
@@ -1081,10 +1078,9 @@ def test_http2_inner_authorities_cannot_change_destination(proxy_backend, tmp_pa
                 extra = [("host", authority), ("host", authority)]
             with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
                 response = h2_requests(stream, [headers(authority, "/forbidden", extra)], allow_rejection=True)[0]
-            # The old stack sends GOAWAY on Host disagreement; native rejects
-            # the request with 400. Preserve that visible difference while
-            # checking the shared no-application-request boundary.
-            if proxy_backend == "rust":
+            # Python's HTTP/2 parser sends GOAWAY on a separate Host field
+            # disagreement; both backends reject changed :authority with 400.
+            if proxy_backend == "rust" or mutation.startswith("authority_"):
                 assert response["headers"][":status"] == "400", response
             else:
                 assert response.get("goaway") == 1 or response.get("reset") == 1, response
