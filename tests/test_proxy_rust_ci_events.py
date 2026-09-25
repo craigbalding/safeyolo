@@ -35,6 +35,10 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         "tests/test_blackbox_harness.py",
         "tests/test_proxy_rust_ci_events.py",
         "tests/test_proxy_rust_coord_fixture.py",
+        "cli/src/safeyolo/desktop_presenter*.py",
+        "cli/src/safeyolo/preview.py",
+        "cli/tests/test_agent_preview.py",
+        "cli/tests/test_desktop_presenter*.py",
         ".github/workflows/proxy-rust.yml",
         "scripts/cargo_with_space.sh",
     ):
@@ -61,6 +65,12 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    assert "socat" in steps["Install preview test system dependency"]["run"]
+    step_names = list(steps)
+    assert step_names.index("Install preview test system dependency") < step_names.index(
+        "Test the desktop presenter protocol"
+    )
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
@@ -68,6 +78,9 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
+        "cli/tests/test_desktop_presenter.py",
+        "cli/tests/test_desktop_presenter_rpc.py",
+        "cli/tests/test_agent_preview.py",
         "tests/test_blackbox_harness.py",
         "tests/proxy_migration/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",

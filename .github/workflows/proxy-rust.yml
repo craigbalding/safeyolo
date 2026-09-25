@@ -17,6 +17,10 @@ on:
       - "tests/test_rust_temporary_policy.py"
       - "tests/test_workflow_action_pins.py"
       - "tools/proxy_migration/**"
+      - "cli/src/safeyolo/desktop_presenter*.py"
+      - "cli/src/safeyolo/preview.py"
+      - "cli/tests/test_agent_preview.py"
+      - "cli/tests/test_desktop_presenter*.py"
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
@@ -72,6 +76,11 @@ jobs:
           uv python install 3.12
           uv sync --frozen --group dev --python 3.12
 
+      - name: Install preview test system dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat
+
       - name: Test workflow, fixture, deletion, adapter, and blackbox runner boundaries
         run: |
           uv run --frozen pytest -q \
@@ -83,6 +92,13 @@ jobs:
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_rust_temporary_policy.py \
             tests/test_workflow_action_pins.py
+
+      - name: Test the desktop presenter protocol
+        run: |
+          uv run --frozen pytest -q \
+            cli/tests/test_desktop_presenter.py \
+            cli/tests/test_desktop_presenter_rpc.py \
+            cli/tests/test_agent_preview.py
 
       - name: Test focused native boundaries
         timeout-minutes: 10

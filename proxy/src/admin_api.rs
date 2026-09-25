@@ -1645,7 +1645,9 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     approval_request_id.as_deref(),
                 ));
             }
-            Err(crate::desktop_present::Error::Failed) => {
+            Err(
+                crate::desktop_present::Error::Failed | crate::desktop_present::Error::Transport,
+            ) => {
                 return Ok(desktop_failure(
                     agent_id,
                     StatusCode::CONFLICT,
