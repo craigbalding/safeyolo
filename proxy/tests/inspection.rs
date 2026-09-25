@@ -552,14 +552,11 @@ fn concurrent_scans_share_counts_and_use_one_complete_rules_snapshot() {
 }
 
 fn python(script: &str, input: &Value) -> Value {
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
-    };
+    use std::process::{Command, Stdio};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
-    let mut child = Command::new(
+    let child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
     .args(["-c", script])
@@ -572,19 +569,64 @@ fn python(script: &str, input: &Value) -> Value {
     .stderr(Stdio::piped())
     .spawn()
     .unwrap();
-    child
+    python_child_output(child, input)
+}
+
+fn python_child_output(mut child: std::process::Child, input: &Value) -> Value {
+    use std::io::Write;
+
+    let write_result = child
         .stdin
         .take()
         .unwrap()
-        .write_all(serde_json::to_string(input).unwrap().as_bytes())
-        .unwrap();
+        .write_all(serde_json::to_string(input).unwrap().as_bytes());
     let result = child.wait_with_output().unwrap();
+    if let Err(error) = write_result {
+        panic!(
+            "Python inspection oracle stdin write failed ({:?}: {error}); child status: {}; stderr: {}",
+            error.kind(),
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     assert!(
         result.status.success(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
     serde_json::from_slice(&result.stdout).unwrap()
+}
+
+#[test]
+fn python_oracle_reports_early_child_exit_on_stdin_failure() {
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("sh")
+        .args(["-c", "printf 'oracle exited early\\n' >&2; exit 7"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Child::wait closes stdin, so observe the exit without removing the pipe
+    // that the oracle helper must attempt to write.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(std::time::Instant::now() < deadline, "oracle did not exit");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    assert_eq!(status.code(), Some(7));
+
+    let failure = std::panic::catch_unwind(|| python_child_output(child, &Value::Null))
+        .expect_err("writing to an exited oracle must fail");
+    let message = failure.downcast_ref::<String>().unwrap();
+    assert!(message.contains("stdin write failed"), "{message}");
+    assert!(message.contains("BrokenPipe"), "{message}");
+    assert!(message.contains("exit status: 7"), "{message}");
+    assert!(message.contains("oracle exited early"), "{message}");
 }
 
 fn options(case: &Value) -> Options {
