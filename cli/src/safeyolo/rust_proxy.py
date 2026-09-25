@@ -28,7 +28,6 @@ from .config import (
 )
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
-from .sockets import remove_stale_sockets
 from .traffic_session import (
     capture_session,
     session_process_id,
@@ -133,12 +132,9 @@ def clear_process(process: RustProcess) -> None:
         marker = None
     if not isinstance(marker, dict) or marker.get("pid") == process.pid:
         readiness.unlink(missing_ok=True)
-    try:
-        remove_stale_sockets()
-    except OSError as exc:
-        # A stale socket is secondary cleanup; retain the successful process
-        # receipt cleanup while making the obstacle visible to diagnostics.
-        log.warning("Could not remove stale Rust proxy sockets: %s", exc)
+    # The native listener removes only socket inodes it owns. Sweeping the
+    # shared bridge directory here could unlink another live instance's UDS
+    # after this process exits during a partial listener bind.
     state_file().unlink(missing_ok=True)
 
 

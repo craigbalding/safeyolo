@@ -4,6 +4,8 @@ on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
+      - "cli/src/safeyolo/rust_proxy.py"
+      - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
       - "tests/proxy_migration/**"
       - "tests/blackbox/proxy_backend.py"
@@ -84,6 +86,8 @@ jobs:
       - name: Test workflow, fixture, deletion, adapter, and blackbox runner boundaries
         run: |
           uv run --frozen pytest -q \
+            cli/tests/test_rust_proxy.py \
+            cli/tests/test_sockets.py \
             tests/test_blackbox_harness.py \
             tests/proxy_migration/test_readiness.py \
             tests/test_proxy_rust_coord_fixture.py \

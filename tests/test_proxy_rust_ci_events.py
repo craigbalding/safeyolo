@@ -29,6 +29,8 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
     assert "paths" not in events["push"]
     paths = events["pull_request"]["paths"]
     for path in (
+        "cli/src/safeyolo/rust_proxy.py",
+        "cli/tests/test_rust_proxy.py",
         "proxy/**",
         "tests/blackbox/proxy_backend.py",
         "tests/blackbox/run-tests.sh",
@@ -75,6 +77,8 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
         "cargo_with_space.sh clippy --locked --all-targets -- -D warnings",
+        "cli/tests/test_rust_proxy.py",
+        "cli/tests/test_sockets.py",
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
