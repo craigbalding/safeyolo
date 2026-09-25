@@ -228,16 +228,17 @@ def _server(server):
         assert server.errors == [], server.errors
 
 
-def _certificate(directory, host):
+def _certificate(directory, host, *, filename=None, not_before=None, not_after=None):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)])
     now = datetime.now(UTC)
     certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
                    .public_key(key.public_key()).serial_number(x509.random_serial_number())
-                   .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+                   .not_valid_before(not_before or now - timedelta(days=1))
+                   .not_valid_after(not_after or now + timedelta(days=1))
                    .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), False)
                    .sign(key, hashes.SHA256()))
-    pem = directory / f"{host}.pem"
+    pem = directory / f"{filename or host}.pem"
     pem.write_bytes(key.private_bytes(serialization.Encoding.PEM,
                                       serialization.PrivateFormat.PKCS8,
                                       serialization.NoEncryption())
