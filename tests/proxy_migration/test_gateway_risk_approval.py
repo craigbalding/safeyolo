@@ -1,4 +1,4 @@
-"""Running service-gateway approval and once-grant contract on both proxies."""
+"""Running service-gateway grant contracts on both proxies."""
 
 from __future__ import annotations
 
@@ -166,9 +166,7 @@ def _gateway_token(proxy):
     return token
 
 
-def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
-    """A real operator approval allows one effect, even with an overlapping retry."""
-    directory = tmp_path / proxy_backend
+def _gateway_files(directory):
     directory.mkdir()
     services = directory / "services"
     builtin = directory / "builtin"
@@ -183,10 +181,11 @@ def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
     vault.store(VaultCredential(name=VAULT_NAME, type="bearer", value=VAULT_VALUE))
     operator_token_file = directory / "operator-token"
     operator_token_file.write_text("fixture-operator-token\n")
+    return services, builtin, operator_token_file
 
-    with _origin() as origin:
-        port = origin.server_address[1]
-        policy = f"""\
+
+def _gateway_policy(port):
+    return f"""\
 budget = 12000
 [hosts."127.0.0.1"]
 service = "{SERVICE}"
@@ -209,6 +208,16 @@ tactics = ["impact"]
 decision = "require_approval"
 approval_default = "once"
 """
+
+
+def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):
+    """A real operator approval allows one effect, even with an overlapping retry."""
+    directory = tmp_path / proxy_backend
+    services, builtin, operator_token_file = _gateway_files(directory)
+
+    with _origin() as origin:
+        port = origin.server_address[1]
+        policy = _gateway_policy(port)
         with policy_proxy(
             proxy_backend, directory, policy, agent_api=True,
             agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
@@ -326,4 +335,111 @@ approval_default = "once"
                 "approval_request_id": event["request_id"], "grant_id": grant_id,
                 "first_status": first["response"][0], "second_status": second["response"][0],
                 "grant_consumed": True, "post_consumption_status": status,
+            }, indent=2) + "\n")
+
+
+def test_running_gateway_session_grant_revocation(proxy_backend, tmp_path):
+    """Revoking a live session grant stops only its risky route."""
+    directory = tmp_path / proxy_backend
+    services, builtin, operator_token_file = _gateway_files(directory)
+
+    with _origin() as origin:
+        origin.release_post.set()
+        port = origin.server_address[1]
+        with policy_proxy(
+            proxy_backend, directory, _gateway_policy(port), agent_api=True,
+            agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
+            admin_api_token_file=operator_token_file,
+            gateway_services_dir=services,
+            gateway_builtin_services_dir=builtin,
+        ) as proxy:
+            marker = json.loads(proxy.readiness_file.read_text())
+            api = AdminAPI(base_url=f"http://127.0.0.1:{marker['admin_port']}",
+                           token=operator_token_file.read_text().strip())
+            assert api.authorize_service("alice", SERVICE, "operator", VAULT_NAME)["status"] in {
+                "authorized", "ok",
+            }
+            gateway_token = _gateway_token(proxy)
+            destination = (port, RISK_PATH)
+
+            status, _, _ = _agent_request(proxy, "alice", destination, gateway_token, method="POST")
+            assert status == 428 and origin.accepts == 0
+
+            added = api.add_gateway_grant("alice", SERVICE, "POST", RISK_PATH, "session")
+            grant_id = added["grant_id"]
+            assert added["status"] == "granted" and grant_id
+            assert any(g["grant_id"] == grant_id and g["scope"] == "session"
+                       for g in api.list_gateway_grants()["grants"])
+            for expected_deliveries in (1, 2):
+                status, _, body = _agent_request(
+                    proxy, "alice", destination, gateway_token, method="POST")
+                assert (status, body) == (200, b"done")
+                assert len(origin.deliveries) == expected_deliveries
+                assert origin.deliveries[-1]["authorization_is_vaulted"]
+                assert origin.deliveries[-1]["gateway_token_absent"]
+
+            assert any(g["grant_id"] == grant_id for g in api.list_gateway_grants()["grants"])
+            allowed_accepts = origin.accepts
+            status, _, _ = _agent_request(proxy, "bob", destination, gateway_token, method="POST")
+            assert status == 403
+            status, _, _ = _agent_request(proxy, "alice", (port, "/v1/other"), gateway_token)
+            assert status == 403
+            assert origin.accepts == allowed_accepts
+
+            revoked = api.revoke_gateway_grant(grant_id)
+            assert revoked == {"status": "revoked", "grant_id": grant_id}
+            assert all(g["grant_id"] != grant_id for g in api.list_gateway_grants()["grants"])
+            status, headers, _ = _agent_request(proxy, "alice", destination, gateway_token, method="POST")
+            assert status == 428 and origin.accepts == allowed_accepts
+            denied_request_id = next(
+                value for name, value in headers.items()
+                if name.lower() == "x-safeyolo-request-id"
+            )
+
+            # The same token and origin still work after revocation.
+            status, _, body = _agent_request(proxy, "alice", (port, "/v1/status"), gateway_token)
+            assert (status, body) == (200, b"status")
+            renewed = api.add_gateway_grant("alice", SERVICE, "POST", RISK_PATH, "session")
+            assert renewed["grant_id"] != grant_id
+            status, _, body = _agent_request(proxy, "alice", destination, gateway_token, method="POST")
+            assert (status, body) == (200, b"done")
+            assert len(origin.deliveries) == 4
+            assert all(row["authorization_is_vaulted"] and row["gateway_token_absent"]
+                       for row in origin.deliveries)
+
+            audit = _wait_for(
+                lambda: read_events(directory / "audit.jsonl")
+                if any(row.get("event") == "gateway.risky_route"
+                       and row.get("request_id") == denied_request_id
+                       for row in read_events(directory / "audit.jsonl")) else None,
+                "post-revocation risky-route audit",
+            )
+            assert any(row.get("event") == "admin.gateway_grant"
+                       and row.get("details", {}).get("grant_id") == grant_id
+                       and row.get("details", {}).get("agent") == "alice"
+                       and row.get("details", {}).get("scope") == "session" for row in audit)
+            assert any(row.get("event") == "admin.gateway_grant_revoked"
+                       and row.get("details", {}).get("grant_id") == grant_id for row in audit)
+            denied_audit = next(row for row in audit
+                                if row.get("event") == "gateway.risky_route"
+                                and row.get("request_id") == denied_request_id)
+            assert denied_audit["agent"] == "alice"
+            assert denied_audit["decision"] == "require_approval"
+            if proxy_backend == "rust":
+                attribution = denied_audit["details"]["attribution"]
+                assert attribution["evidence_owner"] == "alice"
+                assert attribution["trusted_transport_identity"] == "alice"
+                assert attribution["attribution_provenance"] == {
+                    "transport_source": "uds", "uds_agent": "alice",
+                }
+            (directory / "gateway-session-observations.json").write_text(json.dumps({
+                "backend": proxy_backend,
+                "logical_host": "127.0.0.1", "dial_host": origin.server_address[0],
+                "dial_port": port, "grant_id": grant_id,
+                "renewed_grant_id": renewed["grant_id"],
+                "allowed_accepts_before_revoke": allowed_accepts,
+                "denied_accepts_after_revoke": allowed_accepts,
+                "post_revoke_denial_request_id": denied_request_id,
+                "origin_deliveries": origin.deliveries,
+                "revoke_status": revoked["status"],
             }, indent=2) + "\n")
