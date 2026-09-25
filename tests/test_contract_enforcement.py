@@ -521,6 +521,9 @@ class TestPathTricks:
         assert reject_path_tricks("/api/items%2a") is not None
         assert "non-canonical" in reject_path_tricks("/api/items%2a")
 
+    def test_encoded_unreserved_rejected(self):
+        assert reject_path_tricks("/api/%69tems") == "encoded unreserved character in path"
+
     def test_empty_segments_rejected(self):
         assert reject_path_tricks("/api//items") is not None
         assert "empty path segment" in reject_path_tricks("/api//items")

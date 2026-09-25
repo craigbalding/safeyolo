@@ -618,6 +618,11 @@ class ServiceGateway:
         path = path_no_query(flow)  # Strip query string
         method = flow.request.method
 
+        # Capability routes normalize paths for matching. Reject ambiguous raw
+        # spellings before that decision can authorize credential injection.
+        if self._reject_gateway_path(flow, path):
+            return
+
         # 1. Capability route check — delegate to PDP (compiled permissions)
         from pdp import get_policy_client, is_policy_client_configured
 
@@ -1552,11 +1557,25 @@ class ServiceGateway:
         }
     )
 
+    def _reject_gateway_path(self, flow, path: str) -> bool:
+        trick = reject_path_tricks(path)
+        if not trick:
+            return False
+        self._deny(
+            flow,
+            403,
+            f"Path trick detected: {sanitize_for_log(trick)}",
+            "TRANSPORT_PATH_TRICK",
+            action="self_correct",
+            reflection=f"The request path contains a bypass trick: {trick}.",
+        )
+        return True
+
     def _enforce_contract(self, flow, binding_state, service, capability, method, path) -> bool:
         """Enforce contract constraints. Returns True if allowed, False if denied.
 
         Three-phase enforcement:
-          Phase 1: Raw rejection (on raw request, before any parsing)
+          Phase 1: Raw rejection (on raw request, before canonical parsing)
           Phase 2: Canonical parse (build CanonicalRequest)
           Phase 3: Contract enforcement (on canonical object only)
 
@@ -1566,19 +1585,7 @@ class ServiceGateway:
         auth_header = service.auth.header.lower() if service.auth else "authorization"
 
         # ── Phase 1: Raw rejection ──────────────────────────────────────
-        raw_path = path_no_query(flow)
-
-        # Path tricks (dot segments, encoded separators, double encoding, etc.)
-        trick = reject_path_tricks(raw_path)
-        if trick:
-            self._deny(
-                flow,
-                403,
-                f"Path trick detected: {sanitize_for_log(trick)}",
-                "TRANSPORT_PATH_TRICK",
-                action="self_correct",
-                reflection=f"The request path contains a bypass trick: {trick}.",
-            )
+        if self._reject_gateway_path(flow, path_no_query(flow)):
             return False
 
         # Duplicate headers (check raw tuples before mitmproxy folds them)
@@ -1608,7 +1615,7 @@ class ServiceGateway:
             return False
 
         # ── Phase 2: Canonical parse ────────────────────────────────────
-        canonical_path = normalize_path(raw_path)
+        canonical_path = normalize_path(path)
 
         # Match operation (needs canonical path)
         op = contract.match_operation(method, canonical_path)

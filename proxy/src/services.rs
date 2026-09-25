@@ -1561,6 +1561,11 @@ fn select_binding(
         return denied(403, "HOST_MISMATCH");
     }
     let path = request.request.target.split('?').next().unwrap_or_default();
+    // Route matching normalizes the path. Do not use that result to inject a
+    // credential when the raw path can name a different upstream resource.
+    if crate::contracts::reject_path_tricks(path) {
+        return denied(403, "TRANSPORT_PATH_TRICK");
+    }
     let permitted = match request.route_mode {
         RouteMode::CompiledPolicy(policy) => {
             policy
