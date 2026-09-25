@@ -131,6 +131,7 @@ def wait_ready(process, paths, log, *, readiness_file=None, expected_backend=Non
 @contextmanager
 def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=False, upstream_ca=None,
                  ignore_hosts=(), eager_connect=False, inspection=None, native_policy=False,
+                 audit_passthrough=False,
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
@@ -234,6 +235,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
         if backend == "python":
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
+            if audit_passthrough:
+                config["fixture_audit_passthrough"] = True
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
             if stream_large_bodies is not None:
                 config["stream_large_bodies"] = stream_large_bodies

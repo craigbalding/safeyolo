@@ -137,6 +137,11 @@ async def run(config):
         master.options.update(flow_store_enabled=True,
                               flow_store_db_path=config["flow_store_db_path"])
     master.addons.add(ProbeSink(), TransportGuard())
+    if config.get("fixture_audit_passthrough", False):
+        from safeyolo.mitm_addons.ignored_host_logger import IgnoredHostLogger
+        from safeyolo.mitm_addons.request_logger import RequestLogger
+
+        master.addons.add(IgnoredHostLogger(), RequestLogger())
     if config.get("fixture_gateway", False):
         master.options.update(
             gateway_enabled=True,
