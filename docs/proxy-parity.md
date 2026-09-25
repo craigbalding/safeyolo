@@ -1500,6 +1500,14 @@ in this case. Wire fixtures assert both exact forms and the unchanged path/query
 The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
+The shared [HTTP/1.1 response-handoff fixture](../tests/proxy_migration/test_http1_handoff_contract.py)
+holds a chunked event response after its first client-visible bytes. The client
+then closes, and the origin observes its own connection closing. A completed
+response before cancellation, one denied request from the other agent, and two
+exact responses on a reused client connection check the later policy and
+framing state. The separate close-delimited SSE workload still records its
+Python cancellation limitation; this finite framed case does not replace that
+resource observation.
 Both reserved local destinations remain local. The Agent API implements the
 bounded reads above. The diagnostic probe now runs the installed native request
 checks; unimplemented producer stages remain visible as missing. Other Agent API

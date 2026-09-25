@@ -49,6 +49,13 @@ The shared assertions cover:
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
   per-agent connection identities across reuse.
+- A framed HTTP/1.1 response sends its first chunk to the client, then holds
+  the terminal chunk. The client closes deliberately. The origin observes the
+  resulting socket close, while a completed response before cancellation and
+  two later responses on one new client connection deliver exact body bytes.
+  The other agent remains denied and creates no origin request. This finite
+  handoff does not cover close-delimited Server-Sent Events (SSE) or repeated
+  resource growth.
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
