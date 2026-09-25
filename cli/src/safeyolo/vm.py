@@ -482,11 +482,14 @@ def _guest_src_dir() -> Path:
 
 
 def _guest_sudo_source() -> Path:
-    """Return the sudo shim from the editable source checkout."""
+    """Return the sudo shim from the wheel or editable source checkout."""
+    bundled = Path(__file__).parent / "safeyolo-sudo"
+    if bundled.is_file():
+        return bundled
     source = _guest_src_dir() / "rootfs" / "safeyolo-sudo"
     if source.is_file():
         return source
-    raise VMError("SafeYolo guest sudo helper is missing from the source checkout")
+    raise VMError("SafeYolo guest sudo helper is missing from the package and source checkout")
 
 
 def build_custom_rootfs(name: str, script_path: Path) -> Path:
