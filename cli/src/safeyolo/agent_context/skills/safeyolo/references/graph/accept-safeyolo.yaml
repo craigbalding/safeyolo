@@ -280,7 +280,7 @@ nodes:
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
-          sha256: e37468081ea4c747579cda673a6d0f082084e45ec6a6d18c2222469e4ffe98ff
+          sha256: 46abbe3230c09f8d08f8eeedaa1b6704ffa89f42e3e710c11cc9cf5bc410fe33
       setup: "Use an approved Linux host; run the product bootstrap/setup path and preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostic evidence."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh cli/src/safeyolo/commands/setup.py cli/src/safeyolo/platform/linux.py && runsc --version && safeyolo doctor --json"
       run:

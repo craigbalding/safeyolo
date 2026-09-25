@@ -234,7 +234,7 @@ def _run(
     capture: bool = True,
     detach: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run a command without sudo.
+    """Run a non-interactive command without sudo.
 
     detach=True: for commands that fork daemons (runsc create spawns
     sandbox + gofer). Uses a tempfile for stderr to avoid blocking on
@@ -264,6 +264,7 @@ def _run(
         )
     return subprocess.run(
         cmd,
+        stdin=subprocess.DEVNULL,
         capture_output=capture,
         text=True,
         check=check,
@@ -1290,9 +1291,13 @@ class LinuxPlatform(AgentPlatform):
         else:
             cmd.extend(["/bin/bash", "-l"])
 
+        # runsc may make its inherited stdin nonblocking. The caller's stdin
+        # can be the presenter's long-lived protocol pipe, so a guest command
+        # that does not use stdin must not share that pipe's file description.
+        stdin = subprocess.DEVNULL if command and not interactive else None
         if on_start is None:
-            return subprocess.run(cmd).returncode
-        with subprocess.Popen(cmd) as process:
+            return subprocess.run(cmd, stdin=stdin).returncode
+        with subprocess.Popen(cmd, stdin=stdin) as process:
             on_start(process)
             return process.wait()
 
