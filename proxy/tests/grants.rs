@@ -1112,6 +1112,7 @@ def gateway(path):
 def respond(g,grant,status):
  flow=tflow.tflow();flow.metadata['gateway_grant_id']=grant.grant_id
  flow.response=http.Response.make(status) if status is not None else None
+ g._check_grant(grant.agent,grant.service,grant.method,grant.path,flow.id)
  g.response(flow)
 def add_binding(g,agent='alice',number=137):
  return g.add_contract_binding(agent,'gmail','read_messages','gmail.read_messages.v1',{'number':number},['list_messages'])
