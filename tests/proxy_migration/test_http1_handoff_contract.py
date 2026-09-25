@@ -22,6 +22,7 @@ from socketserver import BaseRequestHandler, ThreadingTCPServer
 import pytest
 
 from tests.proxy_migration.harness import launch_proxy
+from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.run import proxy_identity
 from tests.proxy_migration.scenarios import POLICY
 
@@ -125,6 +126,10 @@ class _HandoffOrigin(ThreadingTCPServer):
         self.records = []
         self.headers_received = []
         self.body_bytes_received = []
+        self.response_started = threading.Event()
+        self.cancel_observed = threading.Event()
+        self.cancel_result = None
+        self.cancel_observed_at = None
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), _HandoffHandler)
 
@@ -182,6 +187,31 @@ class _HandoffHandler(BaseRequestHandler):
                     "trailers": trailers,
                 })
 
+            if target == "/cancel-response":
+                # The missing terminating chunk holds the response open until
+                # the downstream closes. Observe the origin socket separately
+                # from the client's received prefix.
+                self.request.sendall(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Connection: keep-alive\r\n\r\n"
+                    b"D\r\ndata: first\n\n\r\n"
+                )
+                self.server.response_started.set()
+                self.request.settimeout(_LIMIT)
+                try:
+                    remaining = self.request.recv(1)
+                except ConnectionResetError:
+                    result = "reset"
+                except TimeoutError:
+                    result = "timeout"
+                else:
+                    result = "eof" if not remaining else f"unexpected:{remaining.hex()}"
+                with self.server.lock:
+                    self.server.cancel_result = result
+                    self.server.cancel_observed_at = time.monotonic()
+                self.server.cancel_observed.set()
+                return
             if method == "HEAD":
                 response = (
                     b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"
@@ -234,6 +264,7 @@ def _retain_evidence(name, proxy, origin, **details):
             "headers_received": origin.headers_received,
             "body_bytes_received": origin.body_bytes_received,
             "records": origin.records,
+            "cancel_result": origin.cancel_result,
         },
         "proxy_events": {
             "request": proxy.events("proxy.request"),
@@ -321,6 +352,89 @@ def test_http1_handoff_preserves_expect_and_bodyless_followups(proxy_backend, tm
         assert origin.records[1]["method"] == "HEAD"
         assert origin.records[2]["target"] == "/empty"
         assert origin.records[3]["target"] == "/after"
+
+
+def test_http1_response_cancel_keeps_next_request_and_agent_decision_clean(
+    proxy_backend, tmp_path
+):
+    """A canceled, unterminated response cannot contaminate later traffic."""
+    with _origin() as origin:
+        authority = f"127.0.0.1:{origin.server_address[1]}"
+        with launch_proxy(
+            proxy_backend, tmp_path / proxy_backend, POLICY, native_policy=True
+        ) as proxy:
+            status, _, body = send_request(
+                proxy.paths["alice"], f"http://{authority}/before"
+            )
+            assert status == 200 and body == b"hello"
+
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(_LIMIT)
+            client.connect(proxy.paths["alice"])
+            try:
+                client.sendall((
+                    f"GET http://{authority}/cancel-response HTTP/1.1\r\n"
+                    f"Host: {authority}\r\nConnection: keep-alive\r\n\r\n"
+                ).encode())
+                parser = _RawHttp(client)
+                response_head = parser._until(b"\r\n\r\n")
+                first, _ = parser._headers(response_head)
+                assert first.startswith(b"HTTP/1.1 200 "), response_head
+                response_prefix = parser._until(b"data: first\n\n")
+                assert origin.response_started.is_set()
+                assert not origin.cancel_observed.is_set(), "origin closed before client cancel"
+            finally:
+                # This is the deliberate cancellation, after the first body
+                # bytes reached the client and before the terminal zero chunk.
+                client_close_started_at = time.monotonic()
+                client.close()
+
+            denied_status, _, denied_body = send_request(
+                proxy.paths["bob"], f"http://{authority}/denied"
+            )
+            assert denied_status == 403
+            assert b"data: first" not in denied_body
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as followup:
+                followup.settimeout(_LIMIT)
+                followup.connect(proxy.paths["alice"])
+                followup.sendall((
+                    f"GET http://{authority}/after-cancel HTTP/1.1\r\n"
+                    f"Host: {authority}\r\nConnection: keep-alive\r\n\r\n"
+                ).encode())
+                after = _RawHttp(followup)
+                response = after.message()
+                assert response["status"] == 200 and response["body"] == b"hello"
+                assert not after.buffer, "later response contained extra bytes"
+                followup.sendall((
+                    f"GET http://{authority}/after-cancel-again HTTP/1.1\r\n"
+                    f"Host: {authority}\r\nConnection: close\r\n\r\n"
+                ).encode())
+                response_again = after.message()
+                assert response_again["status"] == 200
+                assert response_again["body"] == b"hello"
+                assert not after.buffer, "reused client received stale response bytes"
+
+            _wait_until(origin.cancel_observed.is_set)
+            _retain_evidence(
+                "response-cancel", proxy, origin, backend=proxy_backend,
+                outcome="client closed after first response bytes; fresh denied and allowed requests",
+                response_head_hex=response_head.hex(),
+                response_prefix_hex=response_prefix.hex(),
+                denied_status=denied_status,
+                denied_body_hex=denied_body.hex(),
+                followup_response=response,
+                followup_again_response=response_again,
+                followup_extra_bytes=0,
+                origin_close_after_client_ms=round(
+                    (origin.cancel_observed_at - client_close_started_at) * 1000, 3
+                ),
+            )
+            assert origin.cancel_result in {"eof", "reset"}, origin.cancel_result
+            assert origin.cancel_observed_at >= client_close_started_at
+            assert [record["target"] for record in origin.records] == [
+                "/before", "/cancel-response", "/after-cancel", "/after-cancel-again"
+            ]
 
 
 def test_http1_handoff_preserves_request_trailers(proxy_backend, tmp_path, request):
