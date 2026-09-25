@@ -28,7 +28,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A feature PR's ready transition has no job; keep its in-flight focused check.
+  cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
 
 jobs:
   focused-pr:

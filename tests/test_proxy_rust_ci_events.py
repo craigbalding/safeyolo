@@ -41,6 +41,14 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
         assert path in paths
 
 
+def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
+    workflow = rust_workflow()
+    assert workflow["concurrency"]["group"] == "${{ github.workflow }}-${{ github.ref }}"
+    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event.action != 'ready_for_review' }}"
+    assert "ready_for_review" in workflow[True]["pull_request"]["types"]
+    assert "github.event.action != 'ready_for_review'" in workflow["jobs"]["focused-pr"]["if"]
+
+
 def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     job = rust_workflow()["jobs"]["focused-pr"]
     assert " ".join(job["if"].split()) == (
