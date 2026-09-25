@@ -353,8 +353,9 @@ existing policy file and request/response blocking flags. A successful reload
 updates existing sessions; an invalid candidate retains the previous runtime.
 This does not replace the production configuration or evidence interfaces.
 
-The paired [wire fixture](../tests/proxy_migration/test_websocket_contract.py)
-passed 104 Rust cases on Linux aarch64. Python passed 84 cases and reproduced
+At the earlier accepted revision, the paired
+[wire fixture](../tests/proxy_migration/test_websocket_contract.py) passed
+104 Rust cases on Linux aarch64. Python passed 84 cases and reproduced
 16 strict expected failures for D32. The matrix includes WS/WSS, text/binary,
 compression and control frames, directional blocking, denied handshakes with
 zero origin contact, reload retention, data followed immediately by Close,
@@ -363,6 +364,17 @@ pending-message spool removal and cancellation of an executing VM search after
 peer Close or shutdown. The old fixture uses actual Python addons
 and policy code in a focused chain. These owner-run comparisons establish that
 development path; they do not establish complete production-chain acceptance.
+
+The shared `test_scanner_across_websocket_storage_transition` fixture checks
+65,536- and 65,537-byte decoded messages in both directions over WS and WSS.
+It compares direct and proxied peer bytes for blocking, a one-byte near miss,
+and logged delivery. Plain fragments put the last pattern byte after an
+interleaved Ping. The receiver observes the Ping, the sender observes the
+Pong, and both peers complete Close.
+Fragmented permessage-deflate messages separately check blocking and logged
+delivery. Native events identify the 64 KiB spill and scanner result; the
+Python audit identifies block and log decisions. The compressed-fragment/control
+combination remains the documented Python D32 defect, outside this fixture.
 
 On a peer Close, each proxy now forwards that frame only to the opposite peer
 and waits up to ten seconds for its own Close. A missing reply ends the transport
