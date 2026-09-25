@@ -14,7 +14,7 @@ def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
-def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> None:
+def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_workflow() -> None:
     workflow = rust_workflow()
     # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.
     events = workflow[True]
@@ -23,10 +23,8 @@ def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> No
         "opened",
         "reopened",
         "synchronize",
-        "converted_to_draft",
-        "ready_for_review",
     }
-    assert set(events["push"]["branches"]) == {"master", "main", "feat/rust-proxy-620"}
+    assert set(events["push"]["branches"]) == {"master", "main", "ci/proxy-rust-620"}
     assert "paths" not in events["push"]
     paths = events["pull_request"]["paths"]
     for path in (
@@ -72,17 +70,12 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
-def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() -> None:
+def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
     job = rust_workflow()["jobs"]["http-slice"]
-    assert " ".join(job["if"].split()) == (
-        "github.event_name == 'push' || "
-        "(github.event_name == 'pull_request' && "
-        "github.event.action == 'ready_for_review' && "
-        "github.event.pull_request.draft == false)"
-    )
+    assert job["if"] == "github.event_name == 'push'"
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
     checkout = job["steps"][0]
-    expected_head = "${{ github.event.pull_request.head.sha || github.sha }}"
+    expected_head = "${{ github.sha }}"
     assert checkout["with"]["ref"] == expected_head
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
