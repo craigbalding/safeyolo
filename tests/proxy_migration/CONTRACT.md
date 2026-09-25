@@ -143,6 +143,15 @@ The shared assertions cover:
   different ordering (its own 200 precedes opening the parent, so the
   parent server-first marker cannot precede client data) remains a named strict
   expected failure.
+- The combined configured-parent case sends an absolute-form HTTP request and
+  an opaque CONNECT to permitted logical hosts. The parent sends its CONNECT
+  response and first tunnel bytes in one write; both backends deliver those
+  bytes and the later client payload. Parent HTTP and CONNECT refusals leave a
+  live direct-origin canary untouched. A request addressed to the parent's
+  physical IP and two requests from the denied agent create no egress. An
+  allowed direct request reaches the same origin when no parent is configured.
+  On parent CONNECT refusal, Rust returns 502 before tunnel admission; the
+  Python comparator has already sent 200 and then closes the tunnel.
 - After one parent CONNECT refusal, a later independent CONNECT recovers through
   the same configured parent while the direct-origin canary remains untouched.
   This proves per-request recovery; the single-parent setting does not claim
