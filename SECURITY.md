@@ -107,10 +107,13 @@ stamps the accepted connection. The agent cannot choose another agent's socket
 path. On Linux, a synthetic loopback address supplies the `<ip>` attribution
 value. It is not an external interface or a direct egress path.
 
-SafeYolo rejects noncanonical paths, duplicate security-sensitive headers, and
-invalid encodings before policy evaluation. Homoglyph detection catches
-mixed-script domain spoofing. Generic Cell Rate Algorithm (GCRA) rate limits
-contain runaway request loops.
+For a resolved service-gateway token, SafeYolo rejects a path spelling if
+service route normalization changes it. This includes dot segments, encoded
+separators, encoded unreserved characters, doubled slashes, and a trailing
+slash on a non-root path. Bound service contracts also reject duplicate
+headers and ambiguous encodings before contract enforcement.
+Homoglyph detection catches mixed-script domain spoofing. Generic Cell Rate
+Algorithm (GCRA) rate limits contain runaway request loops.
 
 **Audit trail.**
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.

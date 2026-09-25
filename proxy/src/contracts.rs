@@ -395,6 +395,13 @@ fn percent_problem(value: &str, path: bool) -> bool {
         if a.is_ascii_lowercase() || b.is_ascii_lowercase() {
             return true;
         }
+        if path {
+            let decoded =
+                ((a as char).to_digit(16).unwrap() * 16 + (b as char).to_digit(16).unwrap()) as u8;
+            if decoded.is_ascii_alphanumeric() || b"-._~".contains(&decoded) {
+                return true;
+            }
+        }
         if path && ((a == b'2' && b == b'F') || (a == b'5' && b == b'C')) {
             return true;
         }

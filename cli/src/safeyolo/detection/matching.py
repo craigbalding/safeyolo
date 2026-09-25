@@ -75,6 +75,9 @@ def reject_path_tricks(raw_path: str) -> str | None:  # DOC: SECURITY.md
         hex_part = m.group(1)
         if hex_part != hex_part.upper():
             return "non-canonical percent encoding in path"
+        decoded = int(hex_part, 16)
+        if decoded in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~":
+            return "encoded unreserved character in path"
 
     # Empty segments (//)
     if "//" in path_only:
