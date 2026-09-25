@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .agent_command_supervisor import _write_json, _write_text
+from .agent_token import ensure_agent_token
 from .config import (
     DEFAULT_NATIVE_CONFIG,
     get_agent_map_path,
@@ -505,6 +506,9 @@ def start(config: dict) -> None:
     launch = prepare(config)
     if session_process_id() is not None:
         raise RuntimeError("The traffic session is still running; stop it before launching Rust")
+    # The CLI stages this same state file into every guest config share.
+    # Bootstrap may have created an empty placeholder before first start.
+    ensure_agent_token(get_data_dir())
     launch.readiness.unlink(missing_ok=True)
     log.warning(
         "Starting Rust proxy from native JSON; HTTP credential inspection, "
