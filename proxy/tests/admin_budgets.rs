@@ -67,7 +67,7 @@ fn decode_hex(value: &str) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn source_reset_bytes_audit_and_state_with_two_explicit_repairs() {
+async fn source_reset_bytes_audit_and_state() {
     let fixture = fixture();
     let registry = Registry::default();
     registry
@@ -93,7 +93,10 @@ async fn source_reset_bytes_audit_and_state_with_two_explicit_repairs() {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("audit.jsonl");
             let writer = safeyolo_proxy::audit::Writer::new(path.clone(), Default::default());
-            if row["intentional_repair"] == true {
+            if matches!(name, "malformed_json" | "invalid_utf8") {
+                assert_eq!(row["replies"].as_array().unwrap().len(), 1, "{name}");
+                assert_eq!(row["replies"][0]["status"], 400, "{name}");
+                assert!(row["events"].as_array().unwrap().is_empty(), "{name}");
                 assert_eq!(outcome.status(), StatusCode::BAD_REQUEST, "{name}");
                 assert!(outcome.audit().is_none(), "{name}");
                 let body: Value = serde_json::from_str(&text(outcome).await).unwrap();
@@ -153,11 +156,7 @@ async fn source_reset_bytes_audit_and_state_with_two_explicit_repairs() {
         }
         assert_eq!(
             policy.budget_stats(NOW).unwrap()["tracked_keys"],
-            if row["intentional_repair"] == true {
-                json!(1)
-            } else {
-                row["tracked_keys"].clone()
-            },
+            row["tracked_keys"],
             "{name}"
         );
         assert_eq!(

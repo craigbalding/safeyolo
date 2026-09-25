@@ -1,8 +1,8 @@
 """Real operator reset workflow over the same budget state agents consume.
 
-All endpoints, tokens and peers are owned by the fixture. Source malformed-body
-mutation is captured before a strict historical xfail; it is not accepted as
-native behavior. The existing rate=1, thirty-second no-refill bound is reused.
+All endpoints, tokens and peers are owned by the fixture. Rejected malformed
+reset bodies must leave the shared budget state unchanged. The existing rate=1,
+thirty-second no-refill bound is reused.
 """
 
 import json
@@ -118,7 +118,7 @@ def budget_proxy(backend, tmp_path, policy, monkeypatch):
 
 
 def operator_wire(proxy, port, method, path, *, body=b"", token=TOKEN):
-    """Read complete response bytes, including the source's second error reply."""
+    """Read complete response bytes, including any unexpected second reply."""
     head = f"{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n".encode()
     if token is not None:
         head += f"Authorization: Bearer {token}\r\n".encode()
@@ -366,12 +366,15 @@ def test_operator_all_reset_clears_global_limit_with_auth_and_shield_boundaries(
         assert_no_refill(started)
 
 
-@pytest.mark.parametrize("payload", [b"{", b"\xff"], ids=["malformed-json", "invalid-utf8"])
+@pytest.mark.parametrize(
+    "payload",
+    [b"{", b"\xff"],
+    ids=["malformed-json", "invalid-utf8"],
+)
 def test_operator_malformed_budget_reset_is_terminal_without_mutation(
     proxy_backend,
     tmp_path,
     monkeypatch,
-    request,
     payload,
 ):
     with budget_proxy(proxy_backend, tmp_path, POLICY, monkeypatch) as (proxy, parent, _client, port):
@@ -384,36 +387,31 @@ def test_operator_malformed_budget_reset_is_terminal_without_mutation(
         assert reset_audits(proxy, proxy_backend) == []
         before = parent.accepts, len(proxy.events("proxy.egress"))
         responses = operator_wire(proxy, port, "POST", "/admin/budgets/reset", body=payload)
+        assert len(responses) == 1
         assert responses[0]["status"] == 400
         assert responses[0]["body"]["error"] == "Malformed JSON in request body"
         assert (parent.accepts, len(proxy.events("proxy.egress"))) == before
-        if proxy_backend == "python":
-            # Establish the actual source defect before marking its final
-            # terminal-response assertion as a historical expected failure.
-            assert [row["status"] for row in responses] == [400, 200]
-            assert responses[1]["body"] == {"status": "ok", "resource": "all", "reset_count": 0}
-            after = report()
-            read_shared(proxy, parent, port, after)
-            audits = reset_audits(proxy, proxy_backend)
-            assert audits == RESET_EVENTS
-            retry_status = 200
-        else:
-            assert len(responses) == 1
-            after = exhausted
-            read_shared(proxy, parent, port, after)
-            audits = reset_audits(proxy, proxy_backend)
-            assert audits == []
-            retry_status = 429
-        hit(proxy, parent, "alpha.invalid", retry_status)
+        read_shared(proxy, parent, port, exhausted)
+        assert reset_audits(proxy, proxy_backend) == []
+        hit(proxy, parent, "alpha.invalid", 429)
+
+        empty_body = operator_wire(proxy, port, "POST", "/admin/budgets/reset")
+        assert len(empty_body) == 1 and empty_body[0]["status"] == 200
+        assert empty_body[0]["body"] == {"status": "ok", "resource": "all", "reset_count": 0}
+        read_shared(proxy, parent, port, report())
+        assert reset_audits(proxy, proxy_backend) == RESET_EVENTS
+        hit(proxy, parent, "alpha.invalid", 200)
         (proxy.event_log.parent / "operator-budget-malformed.json").write_text(
             json.dumps(
                 {
                     "input_hex": payload.hex(),
-                    "responses": responses,
+                    "rejected_responses": responses,
                     "before": exhausted,
-                    "after": after,
-                    "reset_audits": audits,
-                    "retry_status": retry_status,
+                    "after_rejection": exhausted,
+                    "reset_audits_after_rejection": [],
+                    "rejected_retry_status": 429,
+                    "empty_body_responses": empty_body,
+                    "reset_audits_after_empty_body": RESET_EVENTS,
                     "origin_accepts": parent.accepts,
                 },
                 indent=2,
@@ -421,11 +419,23 @@ def test_operator_malformed_budget_reset_is_terminal_without_mutation(
             + "\n"
         )
         assert_no_refill(started)
-    # All source state/audit/teardown evidence has passed before this marker.
-    if proxy_backend == "python":
-        request.node.add_marker(
-            pytest.mark.xfail(
-                strict=True, reason=("Source malformed reset sends 400 then resets all budgets and sends 200")
-            )
-        )
-    assert len(responses) == 1
+
+
+def test_operator_python_rejected_numeric_body_does_not_reset_budget(tmp_path, monkeypatch):
+    """A Python JSON conversion error must not become an all-budget reset."""
+    with budget_proxy("python", tmp_path, POLICY, monkeypatch) as (proxy, parent, _client, port):
+        started = time.monotonic()
+        hit(proxy, parent, "alpha.invalid", 200)
+        hit(proxy, parent, "alpha.invalid", 200)
+        hit(proxy, parent, "alpha.invalid", 429)
+        exhausted = report([ALPHA])
+        read_shared(proxy, parent, port, exhausted)
+        payload = b'{"resource":' + b"1" * 5000 + b"}"
+        responses = operator_wire(proxy, port, "POST", "/admin/budgets/reset", body=payload)
+        assert len(responses) == 1
+        assert responses[0]["status"] == 400
+        assert responses[0]["body"]["error"] == "Invalid request body"
+        read_shared(proxy, parent, port, exhausted)
+        assert reset_audits(proxy, "python") == []
+        hit(proxy, parent, "alpha.invalid", 429)
+        assert_no_refill(started)

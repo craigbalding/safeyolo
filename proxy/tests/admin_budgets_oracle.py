@@ -1,7 +1,7 @@
 """Finite actual operator budget hooks, real local PDP, no sockets or tokens.
 
-Method/auth/listener validation belongs to native/source wire tests. The two
-malformed-input rows deliberately retain the source reset-after-400 defect.
+Method/auth/listener validation belongs to native/source wire tests. Malformed
+budget resets preserve the exhausted source state after one error response.
 """
 
 from __future__ import annotations
@@ -132,7 +132,6 @@ def run():
                     "events": list(events),
                     "tracked_keys": len(engine._budget_tracker.get_stats()["keys"]),
                     "evaluations_unchanged": count == engine._evaluations,
-                    "intentional_repair": name in ("malformed_json", "invalid_utf8"),
                 }
             )
         client.reset_budgets()
@@ -207,9 +206,11 @@ def run():
         len(row["events"]) == (2 if row["replies"] and row["replies"][-1]["status"] == 200 else 0) for row in rows
     )
     assert all(
-        [reply["status"] for reply in row["replies"]] == [400, 200] and row["tracked_keys"] == 0
+        [reply["status"] for reply in row["replies"]] == [400]
+        and row["events"] == []
+        and row["tracked_keys"] == 1
         for row in rows
-        if row["intentional_repair"]
+        if row["name"] in ("malformed_json", "invalid_utf8")
     )
     paths = [
         "cli/src/safeyolo/mitm_addons/admin_api.py",
