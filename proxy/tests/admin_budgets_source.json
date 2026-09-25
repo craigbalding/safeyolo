@@ -69,8 +69,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "null_body",
@@ -128,8 +127,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "false_body",
@@ -187,8 +185,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "zero_body",
@@ -246,8 +243,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "empty_string_body",
@@ -305,8 +301,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "empty_array_body",
@@ -364,8 +359,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "empty_object_body",
@@ -423,8 +417,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "exact_key",
@@ -482,8 +475,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "wildcard_literal",
@@ -541,8 +533,7 @@
         }
       ],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "truthy_nonobject",
@@ -551,8 +542,7 @@
       "exception": "AttributeError",
       "events": [],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "true_resource",
@@ -610,8 +600,7 @@
         }
       ],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "float_resource",
@@ -669,8 +658,7 @@
         }
       ],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "underflow_resource",
@@ -728,8 +716,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "negative_zero_resource",
@@ -787,8 +774,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "huge_integer_resource",
@@ -846,8 +832,7 @@
         }
       ],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "control_resource",
@@ -905,8 +890,7 @@
         }
       ],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "list_resource",
@@ -920,8 +904,7 @@
       "exception": null,
       "events": [],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "object_resource",
@@ -935,8 +918,7 @@
       "exception": null,
       "events": [],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "duplicate_last_wins",
@@ -994,8 +976,7 @@
         }
       ],
       "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "authored_number_object",
@@ -1009,8 +990,7 @@
       "exception": null,
       "events": [],
       "tracked_keys": 1,
-      "evaluations_unchanged": true,
-      "intentional_repair": false
+      "evaluations_unchanged": true
     },
     {
       "name": "malformed_json",
@@ -1019,61 +999,12 @@
         {
           "status": 400,
           "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"Expecting property name enclosed in double quotes: line 1 column 2 (char 1)\"\n}"
-        },
-        {
-          "status": 200,
-          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
         }
       ],
       "exception": null,
-      "events": [
-        {
-          "name": "admin.budget_reset",
-          "addon": "policy-engine",
-          "kind": "admin",
-          "severity": "medium",
-          "summary": "All budgets reset",
-          "resource_json": "\"all\"",
-          "safe_resource": "all",
-          "resource_falsy": false,
-          "canonical": {
-            "schema_version": 1,
-            "event": "admin.budget_reset",
-            "kind": "admin",
-            "severity": "medium",
-            "summary": "All budgets reset",
-            "addon": "policy-engine",
-            "details": {
-              "resource": "all"
-            }
-          }
-        },
-        {
-          "name": "admin.budgets_reset",
-          "addon": "admin-api",
-          "kind": "admin",
-          "severity": "medium",
-          "summary": "Budget counters reset: all",
-          "resource_json": "null",
-          "safe_resource": "all",
-          "resource_falsy": true,
-          "canonical": {
-            "schema_version": 1,
-            "event": "admin.budgets_reset",
-            "kind": "admin",
-            "severity": "medium",
-            "summary": "Budget counters reset: all",
-            "addon": "admin-api",
-            "details": {
-              "client_ip": "127.0.0.1",
-              "resource": null
-            }
-          }
-        }
-      ],
-      "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": true
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true
     },
     {
       "name": "invalid_utf8",
@@ -1082,61 +1013,12 @@
         {
           "status": 400,
           "text": "{\n  \"error\": \"Malformed JSON in request body\",\n  \"detail\": \"'utf-8' codec can't decode byte 0xff in position 0: invalid start byte\"\n}"
-        },
-        {
-          "status": 200,
-          "text": "{\n  \"status\": \"ok\",\n  \"resource\": \"all\",\n  \"reset_count\": 0\n}"
         }
       ],
       "exception": null,
-      "events": [
-        {
-          "name": "admin.budget_reset",
-          "addon": "policy-engine",
-          "kind": "admin",
-          "severity": "medium",
-          "summary": "All budgets reset",
-          "resource_json": "\"all\"",
-          "safe_resource": "all",
-          "resource_falsy": false,
-          "canonical": {
-            "schema_version": 1,
-            "event": "admin.budget_reset",
-            "kind": "admin",
-            "severity": "medium",
-            "summary": "All budgets reset",
-            "addon": "policy-engine",
-            "details": {
-              "resource": "all"
-            }
-          }
-        },
-        {
-          "name": "admin.budgets_reset",
-          "addon": "admin-api",
-          "kind": "admin",
-          "severity": "medium",
-          "summary": "Budget counters reset: all",
-          "resource_json": "null",
-          "safe_resource": "all",
-          "resource_falsy": true,
-          "canonical": {
-            "schema_version": 1,
-            "event": "admin.budgets_reset",
-            "kind": "admin",
-            "severity": "medium",
-            "summary": "Budget counters reset: all",
-            "addon": "admin-api",
-            "details": {
-              "client_ip": "127.0.0.1",
-              "resource": null
-            }
-          }
-        }
-      ],
-      "tracked_keys": 0,
-      "evaluations_unchanged": true,
-      "intentional_repair": true
+      "events": [],
+      "tracked_keys": 1,
+      "evaluations_unchanged": true
     }
   ],
   "get": {
@@ -1229,7 +1111,7 @@
   "network_attempts": 0,
   "tokens_read_or_minted": 0,
   "source_sha256": {
-    "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac",
+    "cli/src/safeyolo/mitm_addons/admin_api.py": "2663a85acf80df80fd145b26a4fc31bd5dc0496f59044547db1e4c1d481bd85a",
     "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
     "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
     "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",

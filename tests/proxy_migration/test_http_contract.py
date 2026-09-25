@@ -1,8 +1,13 @@
 """First shared HTTP contracts; transport/TLS/WS coverage remains explicit."""
 
 import concurrent.futures
+import http.client
+import json
+import socket
+import ssl
 
 import pytest
+from mitmproxy.certs import CertStore
 
 from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
 from tests.proxy_migration.run import (
@@ -12,7 +17,17 @@ from tests.proxy_migration.run import (
     streamed_control_workload,
     streamed_slow_admin_workload,
 )
-from tests.proxy_migration.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
+from tests.proxy_migration.scenarios import (
+    FORGED_REQUEST_ID,
+    POLICY,
+    network_scenario,
+    origin_server,
+    request_evidence,
+    reserved_scenario,
+)
+from tests.proxy_migration.test_http2_contract import origin_certificate
+from tests.proxy_migration.test_http2_contract import origin_server as tls_origin_server
+from tests.proxy_migration.test_websocket_contract import read_head
 
 
 @pytest.mark.parametrize("parent", [False, True], ids=["direct", "parent"])
@@ -20,8 +35,193 @@ def test_two_agent_http_policy_and_attribution(proxy_backend, tmp_path, parent):
     network_scenario(proxy_backend, tmp_path / proxy_backend, parent=parent)
 
 
+def test_connect_and_inner_request_ids_keep_scoped_connection_evidence(proxy_backend, tmp_path):
+    """An admitted tunnel and its inner decision have distinct owned IDs."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    pem, public = origin_certificate(directory)
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    policy = '''[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { method = "CONNECT" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "allow"
+condition = { agent = "alice", method = "GET" }
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+'''
+    observations = []
+    run = "request-ids-connect"
+    with tls_origin_server(pem, ("http/1.1",)) as origin:
+        with launch_proxy(proxy_backend, directory, policy, native_policy=True, tls=True,
+                          upstream_ca=public, eager_connect=True, agent_api=True,
+                          flow_store_enabled=True) as proxy:
+            for agent, expected in (("bob", 403), ("alice", 200)):
+                before = (origin.accepts, len(origin.requests))
+                raw = socket.socket(socket.AF_UNIX)
+                raw.settimeout(5)
+                try:
+                    raw.connect(proxy.paths[agent])
+                    connect_request = (f"CONNECT {origin.authority} HTTP/1.1\r\n"
+                                       f"Host: {origin.authority}\r\n"
+                                       f"X-SafeYolo-Request-Id: {FORGED_REQUEST_ID}\r\n"
+                                       "X-SafeYolo-Trace: 1\r\n\r\n").encode()
+                    raw.sendall(connect_request)
+                    connect_status, connect_headers = read_head(raw)
+                    assert connect_status.startswith("HTTP/1.1 200 "), connect_status
+                    assert len(connect_headers["x-safeyolo-request-id"]) == 1
+                    connect_id = connect_headers["x-safeyolo-request-id"][0]
+                    outer = request_evidence(
+                        proxy, agent, connect_id, host="127.0.0.1", port=origin.server_address[1],
+                        method="CONNECT", status=200, decision="allow", run=run,
+                    )
+                    assert origin.accepts == before[0] + 1
+                    context = ssl.create_default_context(cafile=directory / "ca/mitmproxy-ca-cert.pem")
+                    stream = context.wrap_socket(raw, server_hostname="127.0.0.1")
+                    client = http.client.HTTPConnection("127.0.0.1", origin.server_address[1], timeout=5)
+                    client.sock = stream
+                    try:
+                        client.request("GET", "/inner", headers={
+                            "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
+                            "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
+                            "X-SafeYolo-Trace": "1",
+                            "X-SafeYolo-Test-Context": f"run={run};agent={agent};test=request-ids",
+                        })
+                        response = client.getresponse()
+                        inner_headers = dict(response.getheaders())
+                        body = response.read()
+                        assert response.status == expected, body
+                        inner_id = {name.lower(): value for name, value in inner_headers.items()}[
+                            "x-safeyolo-request-id"]
+                        assert inner_id != connect_id
+                        inner = request_evidence(
+                            proxy, agent, inner_id, host="127.0.0.1", port=origin.server_address[1],
+                            method="GET", status=expected,
+                            decision="allow" if expected == 200 else "deny", run=run,
+                            path="/inner", flow_expected=expected == 200,
+                        )
+                        assert inner["connection_id"] == outer["connection_id"]
+                        assert origin.accepts == before[0] + 1
+                        assert len(origin.requests) == before[1] + int(expected == 200)
+                        if expected == 200:
+                            assert body == b"hello"
+                            assert origin.requests[-1]["head"].startswith("GET /inner HTTP/1.1\r\n")
+                        observations.append({
+                            "agent": agent, "connect_request_hex": connect_request.hex(),
+                            "connect_status": connect_status, "connect_headers": connect_headers,
+                            "connect_id": connect_id, "outer": outer,
+                            "inner_status": expected, "inner_headers": inner_headers,
+                            "inner_body_hex": body.hex(), "inner_id": inner_id, "inner": inner,
+                            "origin_accepts_before": before[0], "origin_accepts_after": origin.accepts,
+                            "origin_requests_before": before[1],
+                            "origin_requests_after": list(origin.requests),
+                        })
+                    finally:
+                        client.close()
+                finally:
+                    raw.close()
+            assert observations[0]["outer"]["connection_id"] != observations[1]["outer"]["connection_id"]
+            for observation in observations:
+                events = [event for event in proxy.events("proxy.request")
+                          if event.get("request_id") == observation["inner_id"]]
+                assert len(events) == 1 and events[0]["status"] == observation["inner_status"]
+                assert events[0]["connection_id"] == observation["inner"]["connection_id"]
+                assert events[0]["agent"] == observation["agent"]
+        (directory / "connect-request-id-observations.json").write_text(
+            json.dumps(observations, indent=2) + "\n"
+        )
+
+
 def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):
     reserved_scenario(proxy_backend, tmp_path / proxy_backend)
+
+
+def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_backend, tmp_path):
+    """A received Via pseudonym names this instance only when it matches exactly."""
+    directory = tmp_path / proxy_backend
+    own_token = "fixture-via-instance"
+    other_token = own_token + "-peer"
+    policy = 'budget = 12000\n[hosts]\n"*" = { egress = "allow" }\n'
+    loop_target = "http://target.invalid:8123/loop?canary=fixture-via-canary"
+    distinct_target = "http://target.invalid:8123/distinct?canary=fixture-via-canary"
+    control_target = "http://control.invalid:8123/control"
+    with origin_server() as parent:
+        parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
+        with launch_proxy(proxy_backend, directory, policy, parent_proxy=parent_url,
+                          native_policy=True, via_token=own_token) as proxy:
+            results = []
+            for target, via, expected_status, expected_accepts in (
+                (loop_target, f"1.0 earlier-instance, 1.1 {own_token.upper()}", 508, 0),
+                (distinct_target, f"1.1 {other_token}", 200, 1),
+                (control_target, None, 200, 2),
+            ):
+                headers = {"X-Fixture-Canary": "fixture-via-canary"}
+                if via is not None:
+                    headers["Via"] = via
+                status, response_headers, body = request(
+                    proxy.paths["alice"], target, headers=headers,
+                )
+                response_headers = {key.lower(): value for key, value in response_headers.items()}
+                identifier = response_headers.get("x-safeyolo-request-id")
+                assert identifier and identifier.startswith("req-")
+                assert status == expected_status, (status, body, parent.accepts, parent.requests)
+                assert parent.accepts == expected_accepts
+                assert len(parent.requests) == expected_accepts
+                assert len(proxy.events("proxy.egress")) == expected_accepts
+                if expected_status == 508:
+                    assert response_headers["x-blocked-by"] == "loop-guard"
+                    assert b"proxy loop" in body.lower()
+                else:
+                    assert body == b"hello"
+                results.append({"target": target, "via": via, "status": status,
+                                "request_id": identifier})
+
+            events = proxy.events("proxy.request")
+            assert len(events) == 3
+            for result, event in zip(results, events, strict=True):
+                assert event["request_id"] == result["request_id"]
+                assert event["agent"] == "alice"
+                assert (event["host"], event["port"], event["status"]) == (
+                    "control.invalid" if result["target"] == control_target else "target.invalid",
+                    8123, result["status"],
+                )
+            assert [event["decision"] for event in events] == ["deny", "allow", "allow"]
+            assert len({result["request_id"] for result in results}) == 3
+            assert [item["target"] for item in parent.requests] == [
+                distinct_target, control_target,
+            ]
+            assert parent.canary_headers == ["fixture-via-canary"] * 2
+            assert len(parent.via_headers) == 2
+            forwarded_via = ", ".join(parent.via_headers[0]).lower()
+            assert f"1.1 {other_token}" in forwarded_via
+            assert f"1.1 {own_token}" in forwarded_via
+            assert f"1.1 {own_token}" in ", ".join(parent.via_headers[1]).lower()
+            audit = read_events(directory / "audit.jsonl")
+            loop_audit = [row for row in audit if row.get("request_id") == results[0]["request_id"]]
+            if proxy_backend == "python":
+                assert any(row["event"] == "security.loop_guard" and row["agent"] == "alice"
+                           and row["decision"] == "deny" for row in loop_audit)
+            else:
+                assert any(row["event"] == "traffic.response" and row["agent"] == "alice"
+                           and row["details"]["blocked_by"] == "loop-guard"
+                           and row["details"]["block_reason"] == "proxy_loop"
+                           for row in loop_audit)
+            (directory / "via-loop-observation.json").write_text(json.dumps({
+                "requests": results,
+                "parent_accepts": parent.accepts,
+                "parent_requests": parent.requests,
+                "parent_via_headers": parent.via_headers,
+                "parent_canary_headers": parent.canary_headers,
+                "proxy_requests": events,
+                "proxy_egress": proxy.events("proxy.egress"),
+                "loop_audit": loop_audit,
+            }, indent=2) + "\n")
 
 
 def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_backend, tmp_path):

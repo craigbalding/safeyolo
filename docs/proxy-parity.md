@@ -132,15 +132,15 @@ need a separate consumer check before deletion.
 | 4. `addons/admin_shield.py` | Block agent proxy requests and CONNECT attempts to protected host-local management endpoints; guard connection setup too. | Agents cannot reach operator management through proxy egress. Preserve configured protected ports. | Early route validation plus the common egress boundary; remove addon. | `test_admin_shield.py` |
 | 5. `addons/agent_api.py` | Serve authenticated reserved-host requests, including scoped evidence, policy queries, service access, declared test context, desktop presentation and coordination. | Shared bearer authentication does not identify the agent; sensitive operations also require trusted ingress identity. | Rust local routes with existing response contracts and state access; remove handler only when consumers pass. | `test_agent_api.py`, `test_agent_api_coord.py`, `test_agent_token.py` |
 | 6. `addons/agent_api_guard.py` | If the normal handler is absent, disabled, import-failed or unhandled, synthesize a local diagnostic failure before downstream addons. | Internal bearer tokens and queries do not enter ordinary inspection/logging or external resolution. | Structurally local dispatch independent of route success; remove guard after fault tests pass. | `test_agent_api.py`, `test_imports.py`, `test_transport_guard.py` |
-| 7. `addons/loop_guard.py` | Match this instance's RFC Via pseudonym and return 508 on a loop; otherwise append the pseudonym. | Nested legitimate proxies remain distinct; a loop does not recurse indefinitely. | HTTP ingress/egress header handling; remove addon. | `test_loop_guard.py`, `cli/tests/test_proxy.py` |
+| 7. `addons/loop_guard.py` | Match this instance's RFC Via pseudonym and return 508 on a loop; otherwise append the pseudonym. | Nested legitimate proxies remain distinct; a loop does not recurse indefinitely. | HTTP ingress/egress header handling; remove addon. | `test_loop_guard.py`, `cli/tests/test_proxy.py`, `tests/proxy_migration/test_http_contract.py` |
 | 8. `addons/request_id.py` | Generate request IDs; consume trace opt-in; strip spoofed internal/hop headers; return correlation IDs; relate CONNECT admission and inner requests. | Client-supplied correlation values cannot impersonate trusted observations. | Typed connection/request correlation and header handling; remove addon. | `test_request_id.py`, `test_connect_policy.py`, `test_trace_wire_vocabulary.py` |
 | 9. `addons/operator_provenance.py` | Observe duplicate, edit, replay, kill, resume and revert actions in the shared traffic view; audit source/resulting flow relationships. | Separate trusted operator initiation, original evidence ownership and transport identity. | Explicit operator operations and provenance; remove View observers after retained workflows pass. | `test_operator_provenance.py`, `test_agent_identity_resolution.py` |
 | 10. `addons/service_discovery.py` | Read the mtime-cached agent map and stamp resolved attribution for HTTP and CONNECT. | UDS identity is authoritative; conflicting trusted sources fail closed. Cached metadata is not a new identity source. | Listener-owned identity and compatible external attribution fields; remove IP lookup from the Rust path. | `test_service_discovery_file.py`, `test_agent_identity_resolution.py` |
 | 11. `addons/sse_streaming.py` | Stream `text/event-stream` and `application/x-ndjson`; stream JSON when explicitly configured; honor global/domain disablement. | Response-body streaming has an inspection/capture limitation. See discrepancy D2. | Incremental HTTP bodies with explicit coverage; remove callback. | `test_sse_streaming.py` checks hooks; wire timing required. |
 | 12. `addons/policy_engine.py` | Configure and stop the global PolicyClient; actual policy lives in `policy/`, `pdp/` and shared caches. | Preserve a coherent active policy and failure behavior. | Temporary network-only adapter in M2; Rust policy/state in M3; remove configurator and adapter when no longer used. | `test_pdp_client.py`, `test_policy_engine.py`, `test_policy_loader.py` |
-| 13. `addons/service_gateway.py` | Bind `sgw_` tokens to agent/service/capability; validate routes and contracts; obtain risk grants; inject authorized vault credentials; refresh OAuth credentials; consume applicable grants after responses. | A token cannot move to another agent, service, route or unsupported transport. Injected secrets must not appear in agent-readable evidence. | Rust service decisions and credential lifecycle; remove addon after route/injection/state tests pass. | `test_service_gateway.py`, `test_contract_enforcement.py`, `test_oauth2_flow.py`, `test_service_loader.py` |
+| 13. `addons/service_gateway.py` | Bind `sgw_` tokens to agent/service/capability; validate routes and contracts; obtain risk grants; inject authorized vault credentials; refresh OAuth credentials; reserve once grants during requests and consume them after successful responses. | A token cannot move to another agent, service, route or unsupported transport. Injected secrets must not appear in agent-readable evidence. | Rust service decisions and credential lifecycle; remove addon after route/injection/state tests pass. | `test_service_gateway.py`, `test_contract_enforcement.py`, `test_oauth2_flow.py`, `test_service_loader.py`, `test_gateway_risk_approval.py` |
 | 14. `addons/network_guard.py` | Evaluate HTTP and CONNECT host/agent/port policy; map deny to 403, prompt to 428, exhausted budget to 429; preserve warn/block and homoglyph configuration. | No cross-agent/port approval leakage; missing or erroneous PDP fails closed. | Rust policy call before outbound effects; remove addon after decision/effect comparison. | `test_network_guard.py`, `test_connect_policy.py`, `test_agent_scoped_egress.py`, `test_destination_ports.py` |
-| 15. `addons/circuit_breaker.py` | Maintain closed/open/half-open circuits, backoff, configured thresholds, persistence, reset and force-open operations; open circuits return 503. | Preserve configured fail-fast behavior and recovery without inventing lower limits. | Rust circuit state and API controls; remove addon after restart/reload checks. | `test_circuit_breaker.py` |
+| 15. `addons/circuit_breaker.py` | Maintain closed/open/half-open circuits, backoff, configured thresholds, persistence, reset and force-open operations; open circuits return 503. | Preserve configured fail-fast behavior and recovery without inventing lower limits. | Rust circuit state and API controls; remove addon after restart/reload checks. | `test_circuit_breaker.py`, `tests/proxy_migration/test_circuit_failure_recovery.py` |
 | 16. `addons/credential_guard.py` | Detect HTTP request-header credentials, evaluate destination-first permissions and budgets, and return configured block/warn outcomes. | Native H1 request-head and H2-inside-owned-TLS request-head integration run after network/circuit admission and before observation/body/dial; policy events use keyed fingerprints and identity conflicts fail closed. Bodies and WebSockets belong to the pattern scanner. | Native header detection/selection and policy evaluation are active for `policy_file`; malformed header bytes cross a reversible private source-text adapter and controlled H1/H2 wires prove matching warn/block plus nonmatching raw forwarding. Body/query scanning remains outside this adapter. D33 broader regex grammar and uncovered Unicode properties/casefold behavior remain declared compatibility limitations, unsupported HTTP text fails closed rather than decoding, and streamed bodies above the 10 MiB threshold and configured SSE responses forward with an unavailable body (proved at 188a5291); full production-chain integration remains a #621/#636/#637/#640 dependency; the finite Python Unicode name and nesting domains are pinned in scanner tests/data. | `test_credential_guard.py`, `test_credential_catalog.py`, `test_policy_budget_contract.py`, `credential_http.rs`, `http::traffic::tests::ordinary_h2_inside_owned_tls_logs_inner_exchange_only` |
 | 17. `addons/pattern_scanner.py` | Apply ordered URL/header/body rules and built-in sets; scan raw and once-decoded bounded URLs without rewriting them; inspect complete text/binary WebSocket messages in each direction. | Block/log modes and directional overrides remain; WebSocket inspection errors drop the message with content-free evidence. | Native HTTP request/response scanner calls use the parser-ordered byte adapter and existing content/text decoders; message-aware WS/WSS relay remains active. | `test_pattern_scanner.py`, `test_shipped_security_config.py`; compressed/fragmented wire cases required. |
 | 18. `addons/test_context.py` | Parse/remove explicit test-context headers; enforce declared target rules; inherit valid agent/source-bound declarations with TTL; explicit valid headers win. | Malformed explicit context cannot borrow a declaration; cross-agent declarations cannot leak. | Rust context parsing, declaration state and evidence scope; remove addon. | `test_test_context.py`, `test_test_context_contract.py`, `cli/tests/test_test_context_cli.py` |
@@ -225,6 +225,9 @@ operator sends that exact request ID to the native desktop route. A harmless
 executable fixture proves the fixed host-helper invocation and listener-derived
 agent binding. The same witness records the real `503` unavailable result and
 keeps the failed request pending, with the approval ID in the failure audit.
+The native operator route confirms the resolution audit write before it sends
+200. If that write fails, the route does not report success and the durable
+request remains pending.
 This Linux fixture does not prove a real supported-platform presentation; the
 Tart/macOS guest lane, missing-target and host-operation failure cases remain
 open.
@@ -353,8 +356,9 @@ existing policy file and request/response blocking flags. A successful reload
 updates existing sessions; an invalid candidate retains the previous runtime.
 This does not replace the production configuration or evidence interfaces.
 
-The paired [wire fixture](../tests/proxy_migration/test_websocket_contract.py)
-passed 104 Rust cases on Linux aarch64. Python passed 84 cases and reproduced
+At the earlier accepted revision, the paired
+[wire fixture](../tests/proxy_migration/test_websocket_contract.py) passed
+104 Rust cases on Linux aarch64. Python passed 84 cases and reproduced
 16 strict expected failures for D32. The matrix includes WS/WSS, text/binary,
 compression and control frames, directional blocking, denied handshakes with
 zero origin contact, reload retention, data followed immediately by Close,
@@ -364,10 +368,24 @@ peer Close or shutdown. The old fixture uses actual Python addons
 and policy code in a focused chain. These owner-run comparisons establish that
 development path; they do not establish complete production-chain acceptance.
 
-On closure, writers drain admitted messages before sending Close. Scanner VM
-cancellation is per session, and the relay waits for running inspection before
-reporting a clean drain. The existing ten-second closure grace can expire when
-an opaque regex-library search does not return. Such delegated searches remain
+The shared `test_scanner_across_websocket_storage_transition` fixture checks
+65,536- and 65,537-byte decoded messages in both directions over WS and WSS.
+It compares direct and proxied peer bytes for blocking, a one-byte near miss,
+and logged delivery. Plain fragments put the last pattern byte after an
+interleaved Ping. The receiver observes the Ping, the sender observes the
+Pong, and both peers complete Close.
+Fragmented permessage-deflate messages separately check blocking and logged
+delivery. Native events identify the 64 KiB spill and scanner result; the
+Python audit identifies block and log decisions. The compressed-fragment/control
+combination remains the documented Python D32 defect, outside this fixture.
+
+On a peer Close, each proxy now forwards that frame only to the opposite peer
+and waits up to ten seconds for its own Close. A missing reply ends the transport
+without a fabricated clean Close. Rust writers drain admitted messages before
+sending Close. Rust scanner VM cancellation is per session. The relay waits for
+running inspection before reporting a clean drain. The existing ten-second
+closure grace can expire when an opaque regex-library search does not return.
+Such delegated searches remain
 a cancellation limitation. Content-free development events report message and
 session outcomes; production traffic capture, evidence access and storage
 failure integration still require work.
@@ -388,14 +406,14 @@ silently reduce accepted message sizes to a library default.
 | ID | Source-backed finding | Classification and required resolution |
 |---|---|---|
 | D1 | The baseline TLS document labels `mitmproxy-ca-cert.cer` as DER and describes `mitmproxy-ca.pem` only as the private key. The locked dependency writes PEM in `.cer`, and key plus certificate in `-ca.pem`. | Documentation corrected to the actual formats. Rust tests import a real mitmproxy RSA CA, issue a verified leaf, reload it in Rust and then reload it in mitmproxy. The opt-in `selected_python_native_python_native_ca_trust_transition` also completes native TLS handshakes before and after the old-Python reload, retaining root/key hashes and modes. The CA file remains byte-identical; PKCS#1 wrapping happens only in memory. |
-| D2 | Production sets `stream_large_bodies=10m`; the SSE addon sets response streaming. Its docstring says request bodies remain fully inspected, but large-body transport streaming and scanner `get_text()` require separate examination. Buffered-body hooks cannot establish inspection of bytes already forwarded. | Coverage boundary characterized by live request/response tests. Preserve configured streaming behavior and report actual coverage. A concrete bypass of an applicable blocking rule requires a regression and repair; do not claim full inspection from hook execution. Live request/response tests now record the actual coverage: a 10 MiB request body is scanned and blocked before the origin dial; an over-threshold body (known-length and chunked) forwards byte-exact with an empty retained snippet and no scan claim; URL scope still blocks an over-threshold request before upload; and an enabled SSE response streams with an unavailable body (188a5291). |
+| D2 | Production sets `stream_large_bodies=10m`; the SSE addon sets response streaming. Its docstring says request bodies remain fully inspected, but large-body transport streaming and scanner `get_text()` require separate examination. Buffered-body hooks cannot establish inspection of bytes already forwarded. | Coverage boundary characterized by live request/response tests. Preserve configured streaming behavior and report actual coverage. A concrete bypass of an applicable blocking rule requires a regression and repair; do not claim full inspection from hook execution. Live request/response tests record that a 10 MiB request body is scanned and blocked before the origin dial; an over-threshold body (known-length and chunked) reaches the origin byte-exact with an empty retained snippet and no scan claim; URL scope still blocks an over-threshold request before upload; and an enabled SSE response streams with an unavailable body (188a5291). The Python credential guard decides detected HTTP/1 header credentials at the head for announced large and unannounced chunked bodies. A denied head gets a local response before origin contact through per-flow integration with mitmproxy 12.2.3's private `HttpStream.start_request_stream`; revalidate this integration before upgrading the dependency. Allowed bodies retain the existing streaming path. Byte delivery alone did not establish complete HTTP/1.1 framing. The shared [allowed chunked fixture](../tests/proxy_migration/test_allowed_chunked_framing.py) separately requires a buffered request and a request one byte above the threshold to finish at an origin that waits for complete framing. It does not claim body inspection or capture beyond the streaming window. HTTP/2 credential-header denial remains open under #621 §5. |
 | D3 | Raw CONNECT tests use a client-first `raw-hello` exchange with `--tcp-hosts`; HTTPS/WSS live fixtures set `ssl_insecure=true`. | Test coverage limits. These fixtures prove neither real SSH/server-first/half-close nor upstream certificate validation. Keep separate real-client and invalid-certificate tests. |
 | D4 | CONNECT authority, inner Host/HTTP/2 authority, SNI and actual outbound target are represented separately by the framework. Existing admission tests do not establish the full mismatch matrix. | Unresolved authority-boundary coverage. Test each value independently. A changed inner authority must not inherit permission for another destination. Never fall back to opaque transport after parser/TLS failure. |
 | D5 | Routine credential events use fingerprints; FlowStore retains request/response bodies and ordinary headers, redacting the gateway-injected header; the trusted operator's interactive view is broader. `SECURITY.md` uses an unqualified statement that raw detected credentials are never stored/logged. | Evidence-scope documentation discrepancy. Preserve authorized raw evidence and injected-secret protection; verify each surface with synthetic secrets. Do not implement global redaction as an assumed parity requirement. |
 | D6 | Completed WS messages are inspected and retained/pruned, but the dependency assembles an incomplete message before the hook. | Memory/coverage limit requiring measurement. View pruning is not bounded transport assembly. Sol accepted the focused `afa279b1` regression: four sequential incomplete-fragment cancellations for both WS and WSS reclaimed all anonymous spools with zero origin frames. RSS/allocator retention, concurrent/compressed/completed workloads and large-pattern scans remain open before claiming a broader bound. |
 | D7 | `flow_recorder.py` collapses query parameters into a dictionary for one evidence column, while the original URL remains available. | Representation limitation. Preserve outbound query order/duplicates and original URL evidence; do not compare only the lossy dictionary or normalize away signed-query behavior. |
 | D8 | The default production command only explicitly selects lazy connections when sinkhole routing is enabled. The live denial fixtures vary eager/lazy for CONNECT, not every plain-HTTP security decision. | Side-effect coverage gap. Observe DNS and socket attempts independently for denied plain HTTP, CONNECT and malformed local requests. Do not equate an HTTP block response with zero egress. |
-| D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust now removes one DNS root dot only for reserved-name classification, before policy and at the shared egress boundary. It also refuses these names as configured parents. Original request bytes for other destinations are unchanged. The historical Python baseline retains the defect; its repair is tracked separately. |
+| D9 | Independent wire review found that the baseline's exact reserved-host matchers permit the DNS root-dot spelling, such as `_safeyolo.proxy.internal.`, to reach a configured parent with a bearer header. | Concrete containment defect. Rust classifies one DNS root dot in reserved-name containment, intrinsic probe policy, and the local probe sink. It also refuses these names as configured parents. Python removes one root dot in both reserved-host matchers, which serve request routing and the transport backstop. Ordinary destinations keep their original request bytes. |
 | D10 | Hyper normalizes identical duplicate Content-Length fields and removes Content-Length when Transfer-Encoding controls framing. The old parser rejects those requests. Hyper rejects unequal duplicate lengths. The initial Rust slice also accepted duplicate Host fields. | Protocol difference requiring explicit wire tests. Rust rejects duplicate Host fields before policy or upstream contact. Do not equate normalization to a demonstrated smuggling flaw, or add a second HTTP parser solely to reproduce every rejection. Verify one unambiguous outbound framing and exact delivered bytes. |
 | D11 | Independent review of `5b661dc9` sent 160 requests through the temporary serial Python adapter. At 8, 16 and 32 workers, 18, 10 and 62 requests returned unexpected 502 responses. The adapter socket backlog filled; no fail-open or cross-agent leak was observed. | Concrete availability defect. Repair `ffb189ca015a5e0074eb483675e818a18e49029e` serializes decision roundtrips with one async mutex shared across reload snapshots, without retrying policy decisions. The owner reports a passing 160-request, eight-worker regression for each backend. Independent recheck passed all 480 requests at 8/16/32 workers and 16 requests across reload. A subsequent client-disconnect crash in the adapter was repaired at `03437138` and independently rechecked with SIGSTOP/client cancellation/SIGCONT. The sustained Rust capture predates these repairs. |
 | D12 | Full production SIGTERM at checkout `4586a127` exits with status zero and removes readiness, but leaves both agent UDS pathnames. Subsequent connects return `ECONNREFUSED`. `proxy.py::stop_proxy` describes socket-file removal. | Concrete cleanup discrepancy. `test_full_production_shutdown_removes_socket_files` records a strict expected failure. No live listener remains. Fixture-directory teardown removes the dead files; that teardown does not repair production shutdown. |
@@ -407,7 +425,7 @@ silently reduce accepted message sizes to a library default.
 | D18 | The initial native service YAML loader silently dropped merged binding constraints, allowing a forbidden value or an unbound operation. | Services now use the shared structural YAML frontend, including merge-list and explicit-key precedence. Native route-selection tests reject mismatched and unresolved values. Independent review confirmed the repair at `cc859353`. |
 | D19 | The initial Rust HTTPS path canceled upgraded connections immediately at shutdown, truncating an active response that plain HTTP would drain. | Inner HTTP receives the listener shutdown signal and drains active responses under the ten-second transport shutdown grace. Idle TLS handshakes cancel promptly. Independent review at `cc859353` confirmed that a paused TLS response delivers its final bytes after shutdown begins. |
 | D20 | Native JSON parsing rounded integers larger than `u64` to floating point. Different integer IDs could falsely satisfy a service `equals_var` binding. | JSON integers retain their exact decimal values; integer/float comparison uses the float's represented value. Strict body parsing also keeps authored private-number-marker objects as objects. The expanded contract oracle covers 2,218 outcomes, with only D16's 16 expected differences. Independent numeric and contract rechecks passed at `cc859353`. |
-| D21 | Python can admit two risky requests using the same once grant before either receives a response. | Native grants reserve one request at a time, release on failure/cancellation, and consume after a successful response. A controlled Python oracle proves the old reuse; native concurrency and stale-lease tests enforce one reservation. Reservations remain process-local, without an exactly-once side-effect claim across persistence failure and restart. |
+| D21 | Python previously admitted two risky requests using the same once grant before either received a response. | Both gateways now reserve a once grant before an approved request reaches the origin. A second concurrent request requires its own approval. Failed or cancelled requests release their reservation; a successful response consumes it. The shared live gateway fixture covers approval, retry, concurrent use and a denied reuse on both backends. It also checks repeated session-grant use, operator revocation, and a fresh grant on the same route through both running proxies. The session check stays within one process because session grants do not survive restart. Reservations remain process-local, without an exactly-once side-effect claim across persistence failure and restart. |
 | D22 | Python tomlkit persists integers beyond TOML's signed 64-bit range exactly; toml_edit has only an i64 syntax node. | The native retained binding workflow masks out-of-range integer literals only while toml_edit edits the document, restores the original integer syntax before saving, and converts it back to an exact JSON number on load/reload. Focused grants and operator-route tests cover 2^63 and 2^64+1, structured values, exact persisted text, and rejection of a nested null without a second audit success. |
 | D23 | Independent review at `cc859353` found that missing legacy grant IDs or creation times regenerate during each transaction. A held once reservation can disappear, allowing a second admission. Missing binding IDs also make revocation unstable. | The native store now persists generated defaults under the existing policy file lock before publishing the initial snapshot, and normalizes later legacy additions inside the transaction. Tests cover all combinations of missing grant fields, both TOML array forms, restart, consumption and rollback. The opt-in grants/bindings transition observes generated IDs in Python after native normalization, retains the legacy binding through the Python write, compares the legacy grant's creation/expiry/scope and both binding metadata sets across the Python write and fresh native reopen, and revokes the bindings in final native cleanup. Independent recheck passed at `d2f154b3`. |
 | D24 | Rust's whitespace predicate omits four control characters that Python strips from host-list lines. A listed denial can therefore fall through to an allow rule. | The list reader now uses Python's whitespace set, including U+001C–U+001F. A 29-character denial matrix and live Python list-reload comparisons cover the repair. The independent 102-request recheck passed at `d2f154b3`. |
@@ -435,7 +453,7 @@ silently reduce accepted message sizes to a library default.
 | D46 | The source admin shield checks textual hosts before DNS. Numeric aliases, a root dot, mapped IPv6 and a DNS alias can reach a protected loopback endpoint. Configured extra ports have the same hole. Malformed digit-only extra ports raise inside both hooks; the dispatcher swallows those failures and permits the connection. An ephemeral bind or a changed port option can also leave the running listener unprotected. Admin bearer authentication remains a separate boundary. | Native request and CONNECT checks retain the source host/port rules. Before connecting, the sole egress path checks each selected socket against the protected local addresses and the actual startup-owned listener. The same numeric port at a remote address or 127.0.0.2 remains allowed. Invalid numeric extra-port configuration rejects the candidate and preserves the previous live snapshot. The [shield tests](../proxy/tests/admin_shield.rs) retain actual source socket and dispatcher witnesses; the [operator transport tests](../proxy/tests/admin_transport.rs) exercise the integrated boundary. The proxy checks the immediate configured parent socket; origin resolution beyond that parent remains the parent's responsibility. |
 | D47 | A malformed operator JSON or UTF-8 body makes the source task PUT handler write two final 400 responses for one request. Its Content-Length parser also accepts a negative length by reading until EOF, maps non-numeric lengths to a body error, and can disconnect on overflow. | The native operator facade sends one terminal malformed-body 400 with a native decoder diagnostic. Hyper rejects invalid framing before dispatch. Normal task responses retain exact source JSON bytes; decoder wording and transport rejection order are explicit differences. The [operator facade tests](../proxy/src/admin_api.rs) compare valid, auth, method, raw-document and failure contracts. These changes do not add an application body limit or a second HTTP parser. |
 | D48 | The earlier native request cleanup skips an entire Connection value when HeaderValue::to_str rejects non-ASCII bytes. A valid UTF-8 whitespace token therefore leaves its nominated header on the upstream request, while Python removes it. HeaderMap deletion also changes the first-match order needed by credential inspection. | The [ordered header owner](../proxy/src/request_headers.rs) uses fields captured by the existing H1/H2 parsers, preserves first spelling and duplicate order, and applies source header hygiene before network evaluation. Native credential inspection and the pattern scanner now consume that ordered view before egress. The focused wire proof covers first spelling, duplicate grouping and D48 nomination. Invalid value bytes remain lossless through the private source-text adapter, with `\uDCxx` source-pattern escapes mapped to their one-byte identities and source regex backslash parity preserved; controlled H1/H2 wires prove matching warn/block, escaped-literal nonmatching and raw forwarding. HMAC fingerprints deliberately recover the source bytes before signing because strict source encoding rejects lone surrogates. D33's declared compatibility limitations (broader Unicode properties, some Python regex grammar, opaque delegated-search mid-search cancellation) stay open, with unsupported HTTP text failing closed and the streamed-body boundary recorded in D33; the measured parser depth boundary (495 accepted / 496 rejected) and WS fragmentation/compression coverage are recorded parity, not open gaps. |
-| D49 | A malformed JSON or UTF-8 budget-reset body makes the source parser send 400 and return None. The reset handler treats that result as an absent body, clears every budget, emits two success audit events and sends a second 200 response. | The native operator handler sends one terminal 400 and preserves the counters. Intentionally absent bodies and valid falsy JSON still reset all counters. The source handler/state probe and [operator workflow](../tests/proxy_migration/test_operator_budgets.py) retain this concrete defect separately from compatible reset behavior. |
+| D49 | Before the source repair, a malformed JSON or UTF-8 budget-reset body produced a 400 followed by a reset of every budget, two success audit events and a second 200 response. A Python JSON numeric-conversion error also fell through to an all-budget reset. | The Python reset handler now stops after either parse failure, without changing counters or emitting reset events. Native also sends one terminal 400 for malformed JSON and UTF-8 and preserves the counters. Intentionally absent bodies and valid falsy JSON still reset all counters. The source handler/state probe and [operator workflow](../tests/proxy_migration/test_operator_budgets.py) check the corrected behavior; independent acceptance remains pending. |
 
 
 | D50 | The source HTTP/1 parser raises NotImplementedError on nonempty response trailers and never runs the circuit response hook. Its HTTP/2 parser accepts valid trailers. | Native Hyper already supports both trailer forms; completion metadata retains that admission behavior. A valid native HTTP/1 trailer response therefore completes and counts. Source and native parser/transport controls retain this difference rather than adding a second parser or a new rejection. |
@@ -455,6 +473,8 @@ silently reduce accepted message sizes to a library default.
 | D64 | Source probes that cross the existing streaming threshold attempt transport before the request sink, even when that sink is installed. The transport guard refuses locally. Source HTTP/1 returns HTML 502 without a request-ID header; its error hook records `error_type: Error`. | Native preserves the buffered/streamed distinction and refuses streamed probes without draining the remaining upload or publishing sink success. Its existing error response is correlated JSON 502, with the native trace category `NativeProbeTransportRefused`. Earlier native network/circuit admission still has the request-head timing described for the HTTP pipeline. Source lifecycle evidence is static; owned native HTTP/1 controls verify the local behavior. |
 | D65 | Source baseline loading publishes before its success audit submission. A synchronous submission failure attempts `ops.policy_error`, then returns false or raises even though the policy changed; subsequent callbacks are skipped. Catalog synchronization can then attempt a separate rollback and reload. | Native keeps policy, catalog, routes and tokens in one accepted snapshot. Audit failure attempts the source-shaped error event once and reports an evidence failure separately; it does not change a successful load result or roll back the catalog alone. A rejected load retains its original error if error-event submission also fails. The source failure behavior remains in the policy reload oracle. |
 | D66 | Source baseline loading publishes its validated model, then advances file timestamps before rebuilding permission indexes. A later file-observation failure can leave the new model, old indexes and partially advanced timestamps together while reporting a load failure. | Native compiles and observes all baseline/addon/list timestamps before publishing the candidate. An observation failure retains the previous policy and all accepted timestamps and attempts the existing later-load error event. This preserves atomic policy/catalog ownership; it does not claim an atomic filesystem snapshot. |
+| D67 | For `get http://_safeyolo.proxy.internal/api/test-context/current HTTP/1.1`, mitmproxy 12.2.3 uppercases the method before source Agent API dispatch. The source returns 401 without authentication and 200 with the agent's own context when authenticated. | Native retains the raw, case-sensitive method token, consistent with RFC 9110 §9.1, and returns a local 405 before authentication. After #640, the lowercase request receives 405 instead of the source response. The [retained-wire review](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819540681) found no authorization bypass, state change or origin contact. |
+| D68 | At `31df5ceb`, native HTTP restores client `TE: gzip` after removing `Connection: TE`, so an origin receives a nominated hop header. It also strips an upstream `Transfer-Encoding: gzip, chunked` declaration while forwarding the gzip coded bytes. The Python comparator removes the nominated request field and relays the response coding. | The native candidate removes the request `TE` restoration while keeping the separate request `Trailer` declaration. It retains the upstream non-chunked transfer coding when Hyper regenerates HTTP/1.1 chunk framing. If the client protocol cannot carry that coding, the proxy returns 502 before releasing the response body. The shared [raw-wire fixture](../tests/proxy_migration/test_te_gzip_handoff.py) covers the gzip cases, a plain-chunked control, and a second response on the same client connection. Independent review remains pending. |
 
 ## Development CLI process selection
 
@@ -1044,12 +1064,13 @@ peers; readiness, socket and process cleanup passed. The artifact scan found
 no raw or hex minted-bearer patterns. Process observations came from the
 fixtures; this run had no external process sampler.
 
-The paired source run passed both normal operator workflows and an existing
-budget-preview case. Its two malformed-body cases reproduced D49, including
-the unintended clear, dual audit events and newly allowed retry, before their
-strict historical expected-failure assertion. Native counterparts preserve
-the exhausted state and denied retry. These are implementation results;
-independent acceptance and the remaining migration work are pending.
+An earlier paired source run passed both normal operator workflows and an existing
+budget-preview case. Its two malformed-body cases reproduced the former D49
+defect: an unintended clear, dual audit events and a newly allowed retry.
+The current shared workflow requires both backends to return one 400, retain
+the exhausted budget and deny the retry. An empty-body reset remains an
+explicit positive control. These are implementation results; independent
+acceptance and the remaining migration work are pending.
 
 Owner validation of `/budgets` on Linux aarch64 passed 201 wire cases against
 one immutable binary: 61 API, 36 network-policy and 104 WebSocket cases. All
@@ -1495,6 +1516,14 @@ in this case. Wire fixtures assert both exact forms and the unchanged path/query
 The fixture checks decisions, delivered bytes, destination ports, generated
 IDs and trusted attribution. Its `proxy.request` and `proxy.egress` events are
 migration evidence, not replacements for production JSONL or traffic APIs.
+The shared [HTTP/1.1 response-handoff fixture](../tests/proxy_migration/test_http1_handoff_contract.py)
+holds a chunked event response after its first client-visible bytes. The client
+then closes, and the origin observes its own connection closing. A completed
+response before cancellation, one denied request from the other agent, and two
+exact responses on a reused client connection check the later policy and
+framing state. The separate close-delimited SSE workload still records its
+Python cancellation limitation; this finite framed case does not replace that
+resource observation.
 Both reserved local destinations remain local. The Agent API implements the
 bounded reads above. The diagnostic probe now runs the installed native request
 checks; unimplemented producer stages remain visible as missing. Other Agent API
@@ -2039,6 +2068,19 @@ agent identity. Failed-auth audit retains the full request target independently
 of route parsing. These operator call sites supply no agent attribution,
 decision or approval.
 
+Approval-bearing Agent API requests (`/gateway/request-access`,
+`/gateway/submit-binding`, `/desktop/present` and `/plumb/request-chat`) now
+return a pending success only after their own canonical audit event is written
+and closed. If the destination write fails, the queue is full or stopped, or
+the write does not complete within 5 seconds, the agent receives 500 rather
+than a claim that the operator can review the request. Other audit events remain
+asynchronous. A failed Plumb audit does not undo its already committed SQLite
+request; the operator approval views still require the canonical audit event.
+The write receipt does not promise filesystem sync or crash durability.
+[The focused approval delivery test](../proxy/tests/approval_audit_delivery.rs)
+checks all three stateless routes against the native admin and retained watch
+views before and after destination recovery in one process.
+
 The native `X-SafeYolo-Evidence-Error` header reports selected diagnostic failures.
 It does not cover every canonical submission exception: circuit hook failures
 and a TestContext head-hook failure can omit the header while preserving their
@@ -2266,12 +2308,14 @@ traces. The diagnostic probe uses the real native producers described below.
 
 ### Reserved probe and doctor diagnostics
 
-The [probe route](../proxy/src/http/probe.rs) recognizes the exact
-`_safeyolo.probe.internal` host without regard to ASCII case. Method, path and
-port do not select the sink. Reserved CONNECT remains refused; a trailing-dot
-spelling remains contained under the existing native rule and is not a positive
-probe. Host-derived private state excludes probe records from FlowStore without
-excluding their audit events, traces, logger, metrics or memory observations.
+The [probe route](../proxy/src/http/probe.rs) recognizes
+`_safeyolo.probe.internal` without regard to ASCII case and accepts one trailing
+DNS root dot, matching Python's local probe matcher. The intrinsic native
+network and credential decisions use the same host predicate before user deny
+rules. Method, path and port do not select the sink. Reserved CONNECT remains
+refused; a second trailing dot is invalid. Host-derived private state excludes
+probe records from FlowStore without excluding their audit events, traces,
+logger, metrics or memory observations.
 
 Buffered requests use the existing request-body preparation and independent
 parser completion observer. The sink runs after the actual installed request
@@ -2993,18 +3037,25 @@ inspection and the exposed edit/replay workflows are deferred under the
 not been removed or cut over.
 
 [Rust migration CI](../.github/workflows/proxy-rust.yml) runs focused Ubuntu
-checks for each relevant pull-request update, including draft updates. A
-factory-owned implementation pull request starts as a draft. After its focused
-check passes, Relay marks the unchanged head ready for review. That transition
-runs the complete Ubuntu/macOS migration matrix. A correction returns the pull
-request to draft before another push, then repeats the focused check and ready
-transition at the new head. Pushes to `feat/rust-proxy-620`, `master`, and
-`main` also run the complete matrix.
+checks for relevant feature-branch pull-request updates, including draft
+updates. Marking that pull request ready does not start the full matrix. The
+focused job omits the shared WebSocket close suite; changes to that boundary
+need focused local checks and independent review.
 
-Focused checks do not establish release acceptance. Relay and Lens must confirm
-that the full-matrix run belongs to the exact reviewed head and that both jobs
-completed successfully. A pending, skipped, stale-head, canceled, or failed
-full job does not satisfy that condition. A workflow definition is not evidence
+The complete Ubuntu/macOS matrix runs when Relay advances
+`ci/proxy-rust-620` to an exact integrated commit, when a release pull request
+into `master` or `main` is ready, and after a push to either default branch.
+Routine pushes to `feat/rust-proxy-620` do not start it. Relay selects a
+checkpoint after a coherent set of related changes is integrated and before
+the final cutover. The matrix includes the shared WebSocket tests against
+both backends.
+
+Focused checks and an older full run do not establish final release acceptance.
+Relay confirms that each required full run belongs to the exact candidate it
+is meant to prove and that both platform jobs completed successfully. Lens
+judges the affected acceptance items from independent evidence without waiting
+only to poll CI. A pending, skipped, stale-head, canceled, or failed required
+job does not satisfy that condition. A workflow definition is not evidence
 that the jobs, the macOS VM relay, or the Linux guest mount have passed.
 
 

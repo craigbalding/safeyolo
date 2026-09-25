@@ -14,7 +14,7 @@ def rust_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
-def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> None:
+def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_workflow() -> None:
     workflow = rust_workflow()
     # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.
     events = workflow[True]
@@ -23,10 +23,9 @@ def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> No
         "opened",
         "reopened",
         "synchronize",
-        "converted_to_draft",
         "ready_for_review",
     }
-    assert set(events["push"]["branches"]) == {"master", "main", "feat/rust-proxy-620"}
+    assert set(events["push"]["branches"]) == {"master", "main", "ci/proxy-rust-620"}
     assert "paths" not in events["push"]
     paths = events["pull_request"]["paths"]
     for path in (
@@ -38,20 +37,42 @@ def test_relevant_pr_updates_and_integration_pushes_trigger_the_workflow() -> No
         "tests/test_blackbox_harness.py",
         "tests/test_proxy_rust_ci_events.py",
         "tests/test_proxy_rust_coord_fixture.py",
+        "cli/src/safeyolo/desktop_presenter*.py",
+        "cli/src/safeyolo/preview.py",
+        "cli/tests/test_agent_preview.py",
+        "cli/tests/test_desktop_presenter*.py",
         ".github/workflows/proxy-rust.yml",
         "scripts/cargo_with_space.sh",
     ):
         assert path in paths
 
 
+def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
+    workflow = rust_workflow()
+    assert workflow["concurrency"]["group"] == "${{ github.workflow }}-${{ github.ref }}"
+    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event.action != 'ready_for_review' }}"
+    assert "ready_for_review" in workflow[True]["pull_request"]["types"]
+    assert "github.event.action != 'ready_for_review'" in workflow["jobs"]["focused-pr"]["if"]
+
+
 def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     job = rust_workflow()["jobs"]["focused-pr"]
-    assert job["if"] == "github.event_name == 'pull_request'"
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'pull_request' && "
+        "github.base_ref != 'master' && github.base_ref != 'main' && "
+        "github.event.action != 'ready_for_review'"
+    )
     assert job["runs-on"] == "ubuntu-latest"
     assert job["env"]["CARGO_BUILD_JOBS"] == "1"
     checkout = job["steps"][0]
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    assert "socat" in steps["Install preview test system dependency"]["run"]
+    step_names = list(steps)
+    assert step_names.index("Install preview test system dependency") < step_names.index(
+        "Test the desktop presenter protocol"
+    )
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
@@ -61,6 +82,9 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
+        "cli/tests/test_desktop_presenter.py",
+        "cli/tests/test_desktop_presenter_rpc.py",
+        "cli/tests/test_agent_preview.py",
         "tests/test_blackbox_harness.py",
         "tests/proxy_migration/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",
@@ -76,12 +100,12 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
-def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() -> None:
+def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
     job = rust_workflow()["jobs"]["http-slice"]
     assert " ".join(job["if"].split()) == (
         "github.event_name == 'push' || "
         "(github.event_name == 'pull_request' && "
-        "github.event.action == 'ready_for_review' && "
+        "(github.base_ref == 'master' || github.base_ref == 'main') && "
         "github.event.pull_request.draft == false)"
     )
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
@@ -91,7 +115,9 @@ def test_full_matrix_requires_ready_transition_or_branch_push_at_exact_head() ->
     assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
-    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == 10
+    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
+        "${{ matrix.os == 'macos-latest' && 20 || 10 }}"
+    )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
     peer = steps["Provide the macOS owned HTTP peer address"]
     assert peer["if"] == "matrix.os == 'macos-latest'"

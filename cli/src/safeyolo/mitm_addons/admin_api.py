@@ -170,13 +170,13 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_json(self) -> dict | None:
+    def _read_json(self, *, malformed_result: dict | None = None) -> dict | None:
         """Read JSON from request body.
 
         Returns the parsed dict on success, or None if no body was sent.
-        On malformed JSON, sends a 400 response directly and returns None
-        so the caller's `if not data` check short-circuits correctly with
-        the right error message already sent.
+        On malformed JSON, sends a 400 response and returns malformed_result.
+        Callers that allow an absent body can use a distinct result to stop
+        after the error response.
         """
         try:
             content_length = int(self.headers.get("Content-Length", 0))
@@ -187,10 +187,12 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             log.warning("Malformed JSON in request body: %s: %s", type(e).__name__, e)
             self._send_json({"error": "Malformed JSON in request body", "detail": str(e)}, 400)
-            return None
+            return malformed_result
         except ValueError as e:
             log.warning("Invalid request body: %s: %s", type(e).__name__, e)
-            return None
+            if malformed_result is not None:
+                self._send_json({"error": "Invalid request body", "detail": str(e)}, 400)
+            return malformed_result
 
     def _read_optional_json_object(self) -> dict | None:
         """Read an optional JSON object, distinguishing an empty request body."""
@@ -1165,7 +1167,11 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         """POST /admin/budgets/reset - Reset budget counters."""
         client = get_policy_client()
 
-        data = self._read_json() or {}
+        malformed = {}
+        data = self._read_json(malformed_result=malformed)
+        if data is malformed:
+            return
+        data = data or {}
         resource = data.get("resource")  # Optional: reset specific resource
 
         result = client.reset_budgets(resource=resource)

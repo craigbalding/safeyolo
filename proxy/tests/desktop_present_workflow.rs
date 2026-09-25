@@ -5,15 +5,19 @@
 //! durable approval, and the exact request ID is passed to the admin desktop
 //! route. A harmless executable stands in for the host helper on this Linux
 //! lane. The second witness removes that capability and records the real
-//! unavailable response and correlated failure event.
+//! unavailable response and correlated failure event. The lifetime tests
+//! keep their process-global helper separate from the library test process.
 
 use safeyolo_proxy::{AgentListener, Config, Proxy};
 use serde_json::{Value, json};
 use std::{
     fs,
+    io::{Read, Write},
+    net::TcpStream as PreviewStream,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 use tempfile::TempDir;
 use tokio::{
@@ -76,6 +80,16 @@ fn config(root: &Path) -> Config {
     }
 }
 
+fn config_with_sibling(root: &Path) -> Config {
+    let mut config = config(root);
+    config.listeners.push(AgentListener {
+        agent_id: "bob".into(),
+        socket_path: root.join("bob.sock"),
+        source_id: None,
+    });
+    config
+}
+
 fn agent_request(path: &str, body: &[u8]) -> Vec<u8> {
     format!(
         "POST http://_safeyolo.proxy.internal{path} HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer {AGENT_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -124,11 +138,15 @@ async fn exchange_unix(socket: &Path, bytes: &[u8]) -> Reply {
 }
 
 async fn exchange_admin(port: u16, bytes: &[u8]) -> Reply {
+    parse_reply(&exchange_admin_raw(port, bytes).await)
+}
+
+async fn exchange_admin_raw(port: u16, bytes: &[u8]) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(bytes).await.unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
-    parse_reply(&response)
+    response
 }
 
 fn admin_port(root: &Path) -> u16 {
@@ -154,6 +172,93 @@ printf '%s\n' '{"agent_id":"durable-alice","agent":"alice","url":"http://127.0.0
     permissions.set_mode(0o755);
     fs::set_permissions(&script, permissions).unwrap();
     script
+}
+
+fn preview_helper(root: &Path, protocol_failure: bool) -> PathBuf {
+    let script = root.join("desktop-presenter-preview");
+    let body = r#"#!/usr/bin/env python3
+import http.server
+import json
+import os
+import sys
+import threading
+
+PROTOCOL_FAILURE = __PROTOCOL_FAILURE__
+
+class Preview(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"preview-alive")
+
+    def log_message(self, *_args):
+        pass
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Preview)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+with open(__file__ + ".pids", "a", encoding="utf-8") as pids:
+    pids.write(str(os.getpid()) + "\n")
+url = "http://127.0.0.1:%s/vnc.html" % server.server_port
+seen = False
+try:
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request.get("shutdown"):
+            break
+        if request["agent_id"] == "bob":
+            print("not-json" if PROTOCOL_FAILURE else '{"kind":"failed","error":"fixture"}', flush=True)
+        else:
+            print(json.dumps({"agent_id":"durable-alice","agent":"alice","url":url,
+                              "unlock_code":"fixture","reused":seen}), flush=True)
+            seen = True
+finally:
+    server.shutdown()
+    server.server_close()
+    with open(__file__ + ".closed", "a", encoding="utf-8") as closed:
+        closed.write(str(os.getpid()) + "\n")
+"#
+    .replace(
+        "__PROTOCOL_FAILURE__",
+        if protocol_failure { "True" } else { "False" },
+    );
+    fs::write(&script, body).unwrap();
+    let mut permissions = fs::metadata(&script).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script, permissions).unwrap();
+    script
+}
+
+fn helper_pids(script: &Path) -> Vec<u32> {
+    fs::read_to_string(script.with_extension("pids"))
+        .unwrap()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect()
+}
+
+fn preview_replies(url: &str) -> bool {
+    let port = url
+        .split(':')
+        .nth(2)
+        .and_then(|value| value.split('/').next())
+        .and_then(|value| value.parse::<u16>().ok())
+        .expect("preview URL port");
+    let Ok(mut stream) = PreviewStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .is_err()
+        || stream
+            .write_all(b"GET /vnc.html HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok()
+        && response.starts_with("HTTP/1.0 200")
+        && response.contains("preview-alive")
 }
 
 fn test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -251,6 +356,11 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     assert_eq!(presented.body["agent"], "alice");
     assert_eq!(presented.body["agent_id"], "durable-alice");
     assert_eq!(presented.body["reused"], false);
+    let audit_at_success = fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
+    assert!(
+        audit_at_success.contains("admin.desktop_presented"),
+        "a successful presentation must have its resolution on disk"
+    );
     observations
         .push(json!({"step":"operator_present","status":presented.status,"body":presented.body}));
 
@@ -279,6 +389,66 @@ async fn pending_agent_request_operator_approval_reaches_native_presenter() {
     assert!(!audit.contains(AGENT_TOKEN));
     assert!(!audit.contains(OPERATOR_TOKEN));
     write_evidence(root.path(), &observations, "success");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // The process-global presenter environment spans this native workflow.
+async fn failed_resolution_write_cannot_report_success_or_clear_pending_approval() {
+    let _lock = test_lock();
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("data")).unwrap();
+    fs::write(root.path().join("data/agent_token"), AGENT_TOKEN).unwrap();
+    fs::write(root.path().join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let helper = preview_helper(root.path(), false);
+    unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &helper) };
+    let proxy = Proxy::start(config(root.path())).await.unwrap();
+    let port = admin_port(root.path());
+
+    let requested = exchange_unix(
+        &root.path().join("alice.sock"),
+        &agent_request("/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(requested.status, 202);
+    let request_id = requested.body["request_id"].as_str().unwrap();
+    let body = serde_json::to_vec(&json!({"approval_request_id":request_id})).unwrap();
+    let path = root.path().join("audit.jsonl");
+    let held = root.path().join("pending-audit.jsonl");
+    fs::rename(&path, &held).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    let failed = exchange_admin_raw(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", &body),
+    )
+    .await;
+    assert!(
+        failed.is_empty(),
+        "audit failure must close without a response: {failed:?}"
+    );
+    assert_eq!(helper_pids(&helper).len(), 1, "presenter ran");
+    fs::remove_dir(&path).unwrap();
+    fs::rename(&held, &path).unwrap();
+    assert!(
+        !fs::read_to_string(&path)
+            .unwrap()
+            .contains("admin.desktop_presented")
+    );
+    let pending = exchange_admin(port, &admin_request("GET", "/admin/approvals", b"")).await;
+    assert_eq!(pending.status, 200);
+    assert_eq!(pending.body["approvals"][0]["request_id"], request_id);
+
+    let retried = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", &body),
+    )
+    .await;
+    assert_eq!(retried.status, 200);
+    assert_eq!(retried.body["reused"], true);
+    let resolved = exchange_admin(port, &admin_request("GET", "/admin/approvals", b"")).await;
+    assert_eq!(resolved.body["approvals"], json!([]));
+    proxy.shutdown().await;
+    unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -341,4 +511,131 @@ async fn approved_request_reports_unavailable_host_presenter_without_false_succe
         })],
         "unavailable",
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // One integration-test process owns the global helper and its environment.
+async fn typed_sibling_failure_keeps_shared_preview_alive() {
+    let _lock = test_lock();
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("data")).unwrap();
+    fs::write(root.path().join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let helper = preview_helper(root.path(), false);
+    unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &helper) };
+    let proxy = Proxy::start(config_with_sibling(root.path()))
+        .await
+        .unwrap();
+    let port = admin_port(root.path());
+
+    let first = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(first.status, 200);
+    let url = first.body["url"].as_str().unwrap().to_owned();
+    let first_pid = helper_pids(&helper)[0];
+    assert!(preview_replies(&url), "initial preview must serve requests");
+
+    let failed = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/bob/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(failed.status, 409);
+    assert_eq!(failed.body["error"], "Desktop presentation failed");
+    assert_eq!(helper_pids(&helper), [first_pid]);
+    assert!(!helper.with_extension("closed").exists());
+    assert!(
+        preview_replies(&url),
+        "failed sibling must not close preview"
+    );
+
+    let again = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(again.status, 200);
+    assert_eq!(again.body["url"], url);
+    assert_eq!(again.body["reused"], true);
+    assert!(preview_replies(&url));
+
+    proxy.shutdown().await;
+    assert_eq!(
+        fs::read_to_string(helper.with_extension("closed")).unwrap(),
+        format!("{first_pid}\n")
+    );
+    assert!(!preview_replies(&url), "shutdown must close preview");
+    unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::await_holding_lock)] // One integration-test process owns the global helper and its environment.
+async fn broken_protocol_closes_preview_before_replacing_helper() {
+    let _lock = test_lock();
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("data")).unwrap();
+    fs::write(root.path().join("admin-token"), OPERATOR_TOKEN).unwrap();
+    let helper = preview_helper(root.path(), true);
+    unsafe { std::env::set_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON", &helper) };
+    let proxy = Proxy::start(config_with_sibling(root.path()))
+        .await
+        .unwrap();
+    let port = admin_port(root.path());
+
+    let first = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(first.status, 200);
+    let url = first.body["url"].as_str().unwrap().to_owned();
+    let first_pid = helper_pids(&helper)[0];
+    assert!(preview_replies(&url));
+
+    let failed = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/bob/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(failed.status, 500);
+    assert_eq!(
+        failed.body["error"],
+        "desktop presenter returned an invalid result"
+    );
+    assert_eq!(
+        fs::read_to_string(helper.with_extension("closed")).unwrap(),
+        format!("{first_pid}\n")
+    );
+    assert!(
+        !preview_replies(&url),
+        "retirement must close the old preview"
+    );
+
+    let again = exchange_admin(
+        port,
+        &admin_request("POST", "/admin/agents/alice/desktop/present", b"{}"),
+    )
+    .await;
+    assert_eq!(again.status, 200);
+    assert_eq!(again.body["reused"], false);
+    let replacement_pid = helper_pids(&helper)[1];
+    assert_ne!(replacement_pid, first_pid);
+    let new_url = again.body["url"].as_str().unwrap();
+    assert!(
+        preview_replies(new_url),
+        "replacement preview must serve requests"
+    );
+
+    proxy.shutdown().await;
+    assert_eq!(
+        fs::read_to_string(helper.with_extension("closed")).unwrap(),
+        format!("{first_pid}\n{replacement_pid}\n")
+    );
+    assert!(
+        !preview_replies(new_url),
+        "shutdown must close replacement preview"
+    );
+    unsafe { std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON") };
 }

@@ -19,12 +19,12 @@ AGENT_API_RESPONSE_METADATA = "safeyolo_agent_api_response"
 def is_agent_api_host(host: str | None) -> bool:
     """Return whether ``host`` is the Agent API destination.
 
-    DNS hostnames are case-insensitive. This matcher is used for both request
-    routing and the transport backstop so casing cannot change the boundary.
+    DNS hostnames are case-insensitive and may end in one root dot. This matcher
+    is used for request routing and the transport backstop.
     """
     if not host:
         return False
-    return host.lower() == AGENT_API_HOST
+    return host.lower().removesuffix(".") == AGENT_API_HOST
 
 
 __all__ = [

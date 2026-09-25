@@ -129,10 +129,11 @@ Evidence requested as a repository deliverable belongs in the repository.
   correctness.
 - Exercise the real system boundary when the issue depends on it; do not mock
   away the behaviour that needs proving.
-- Run focused tests while developing. Repository CI is the broad regression
-  execution for a published head; do not run the repository-wide test suite or
-  reproduce its matrix locally. Diagnose a failure with the smallest useful
-  local reproducer.
+- Run focused tests while developing, including each changed behavior boundary.
+  The repository workflow and trusted brief decide when hosted checks run;
+  neither a focused PR check nor an absent broad matrix proves full regression.
+  Do not run the repository-wide test suite or reproduce its matrix locally for
+  every candidate. Diagnose a failure with the smallest useful local reproducer.
 - When a required hosted check is still running, use one bounded foreground
   wait such as `gh run watch` and inspect its terminal result once. Do not spend
   repeated model turns issuing equivalent sleep-and-query requests.

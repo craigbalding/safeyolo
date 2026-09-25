@@ -115,7 +115,8 @@ class UDSProxyTransport(httpx.BaseTransport):
             conn.connect()
             body = request.read()
             headers = dict(request.headers)
-            headers.setdefault("Host", _host_header(request))
+            if not any(name.lower() == "host" for name in headers):
+                headers["Host"] = _host_header(request)
             # http.client's request() sends the URL as-is for the
             # request line — full absolute form → proxy-form.
             conn.request(request.method, str(request.url), body=body, headers=headers)
@@ -140,7 +141,8 @@ class UDSProxyTransport(httpx.BaseTransport):
             conn.connect()
             body = request.read()
             headers = dict(request.headers)
-            headers.setdefault("Host", _host_header(request))
+            if not any(name.lower() == "host" for name in headers):
+                headers["Host"] = _host_header(request)
             # Origin-form path (everything after the authority).
             path = request.url.raw_path.decode() or "/"
             conn.request(request.method, path, body=body, headers=headers)

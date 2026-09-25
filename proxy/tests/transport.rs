@@ -2502,24 +2502,33 @@ async fn configured_parent_receives_absolute_target_without_origin_dns() {
 async fn reserved_root_dot_aliases_never_expose_tokens_to_a_parent() {
     let directory = tempfile::tempdir().unwrap();
     let mut config = config(&directory);
-    let policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
+    let _policy = Policy::start(config.temporary_policy_socket.as_deref().unwrap()).await;
     let (parent_address, accepted, parent_task) = origin().await;
     config.parent_proxy = Some(format!("http://{parent_address}"));
     let proxy = Proxy::start(config.clone()).await.unwrap();
-    for host in ["_safeyolo.proxy.internal.", "_SAFEYOLO.PROBE.INTERNAL."] {
+    for (host, expected_status, expected_body) in [
+        ("_safeyolo.proxy.internal.", "HTTP/1.1 503", None),
+        (
+            "_SAFEYOLO.PROBE.INTERNAL.",
+            "HTTP/1.1 200",
+            Some("\"probe_ok\": true"),
+        ),
+    ] {
         let result = request(
             &config.listeners[0].socket_path,
             &format!("http://{host}/secret?key=synthetic"),
             "Authorization: Bearer synthetic-local-secret\r\n",
         )
         .await;
-        assert!(result.starts_with("HTTP/1.1 503"), "{result}");
+        assert!(result.starts_with(expected_status), "{host}: {result}");
+        if let Some(expected_body) = expected_body {
+            assert!(result.contains(expected_body), "{host}: {result}");
+        }
         let mut invalid_parent = config.clone();
         invalid_parent.parent_proxy = Some(format!("http://{host}:8080"));
         assert!(invalid_parent.validate().is_err());
     }
     assert_eq!(accepted.load(Ordering::SeqCst), 0);
-    assert!(policy.requests.lock().unwrap().is_empty());
     assert!(
         events(&config)
             .iter()

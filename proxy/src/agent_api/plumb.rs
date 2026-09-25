@@ -1167,9 +1167,12 @@ impl PlumbOwner {
                 let intent = (result["status"].as_u64() == Some(202))
                     .then(|| audit_request_values(&request_id, &requester, result.clone()));
                 let audit_owned = writer.is_some() && intent.is_some();
-                let audit_failed = intent
-                    .as_ref()
-                    .is_some_and(|intent| submit_agent_audit(writer.as_ref(), intent).is_err());
+                let audit_failed =
+                    if let (Some(writer), Some(intent)) = (writer.as_ref(), intent.as_ref()) {
+                        writer.emit_confirmed(intent.to_event()).await.is_err()
+                    } else {
+                        false
+                    };
                 OwnedAgentResult {
                     value: if audit_failed {
                         json!({"status":500,"error":"Internal error: RuntimeError"})
@@ -1686,7 +1689,7 @@ where
     if let Some(outcome) = owner.unavailable() {
         return Ok(outcome);
     }
-    let path = request.path_and_query.split('?').next().unwrap_or_default();
+    let path = super::route(request);
     if request.method == "GET" && path == "/plumb/conversations" {
         return Ok(result_response(owner.list_conversations(agent_name).await));
     }
@@ -1961,10 +1964,10 @@ mod tests {
         response
     }
 
-    async fn raw_admin_approval(port: u16, request_id: &str) -> Vec<u8> {
+    async fn raw_admin_approval(port: u16, request_id: &str) -> std::io::Result<Vec<u8>> {
         let body =
             serde_json::to_string(&json!({"request_id":request_id,"ttl_seconds":120})).unwrap();
-        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await?;
         let request = format!(
             "POST /admin/plumb/approve HTTP/1.1\r\nHost: localhost\r\n\
              Authorization: Bearer {SHUTDOWN_OPERATOR_TOKEN}\r\nContent-Type: application/json\r\n\
@@ -1972,13 +1975,12 @@ mod tests {
             body.len(),
             body,
         );
-        stream.write_all(request.as_bytes()).await.unwrap();
+        stream.write_all(request.as_bytes()).await?;
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response))
             .await
-            .expect("operator approval must finish")
-            .unwrap();
-        response
+            .expect("operator approval must finish")?;
+        Ok(response)
     }
 
     #[tokio::test]
@@ -2372,6 +2374,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_audit_destination_failure_does_not_claim_operator_submission() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = PlumbOwner::for_data_dir(directory.path());
+        let path = directory.path().join("audit.jsonl");
+        std::fs::create_dir(&path).unwrap();
+        let writer = Arc::new(crate::audit::Writer::new(
+            path.clone(),
+            crate::audit::Settings::default(),
+        ));
+        let failed = owner
+            .request_chat_owned(
+                "unwritten-plumb-request".into(),
+                "alice".into(),
+                vec![json!("bob")],
+                None,
+                None,
+                None,
+                Some(writer.clone()),
+            )
+            .await;
+        assert_eq!(failed.value["status"], 500);
+        assert_eq!(failed.failure, Some(super::super::Failure::AuditWrite));
+        assert!(path.is_dir());
+
+        std::fs::remove_dir(&path).unwrap();
+        let healthy = owner
+            .request_chat_owned(
+                "written-plumb-request".into(),
+                "alice".into(),
+                vec![json!("bob")],
+                None,
+                None,
+                None,
+                Some(writer.clone()),
+            )
+            .await;
+        assert_eq!(healthy.value["status"], 202);
+        let audit = std::fs::read_to_string(&path).unwrap();
+        assert!(audit.contains("written-plumb-request"));
+        assert!(!audit.contains("unwritten-plumb-request"));
+        owner.stop_admission().await;
+        owner.drain().await;
+        assert!(writer.shutdown(std::time::Duration::from_secs(2)).unwrap());
+    }
+
+    #[tokio::test]
     async fn admin_audit_submission_failure_keeps_committed_projection() {
         let directory = tempfile::tempdir().unwrap();
         let owner = PlumbOwner::for_data_dir(directory.path());
@@ -2749,9 +2797,25 @@ mod tests {
         .await
         .expect("shutdown fence must close plumb admission");
 
+        // The admitted operation holds the memory lock while its SQLite call
+        // is blocked. The fence closes admission while holding the operations
+        // lock, then waits for memory. Shutdown may close the admin listener
+        // before this later request receives its 503.
         let declined = {
             let request_id = declined_request_id.clone();
             tokio::spawn(async move { raw_admin_approval(admin_port, &request_id).await })
+        };
+        // A closed transport cannot prove the owner rejected the request, so
+        // probe admission directly with the same pending row as well.
+        let declined_owner = {
+            let plumb = plumb.clone();
+            let writer = writer.clone();
+            let request_id = declined_request_id.clone();
+            tokio::spawn(async move {
+                plumb
+                    .approve_owned(request_id, Some(120), Some(writer))
+                    .await
+            })
         };
         let mut shutdown = tokio::spawn(proxy.shutdown());
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -2771,10 +2835,16 @@ mod tests {
         let control = tokio::time::timeout(Duration::from_secs(5), control)
             .await
             .expect("admitted control must finish after fixture release")
-            .unwrap();
+            .unwrap()
+            .expect("admitted control must receive an HTTP response");
         let declined = tokio::time::timeout(Duration::from_secs(5), declined)
             .await
             .expect("post-fence request must receive a terminal result")
+            .unwrap();
+        let declined_owner = tokio::time::timeout(Duration::from_secs(5), declined_owner)
+            .await
+            .expect("post-fence owner request must finish")
+            .unwrap()
             .unwrap();
         tokio::time::timeout(Duration::from_secs(5), &mut shutdown)
             .await
@@ -2791,11 +2861,9 @@ mod tests {
             "the admitted control must report its completed approval"
         );
         assert_eq!(
-            response_status(&declined),
-            503,
-            "the post-fence request must be declined before it starts"
+            declined_owner["status"], 503,
+            "the fence must deny an owned operation even if the listener closes"
         );
-
         let database = Connection::open(data_dir.join("plumb").join("plumb.db")).unwrap();
         let control_status: String = database
             .query_row(
@@ -2873,5 +2941,26 @@ mod tests {
             TcpStream::connect(("127.0.0.1", admin_port)).await.is_err(),
             "shutdown must release the authenticated admin listener"
         );
+        // Shutdown can close the listener or an accepted connection before
+        // it sends 503. The owner and durable-state checks above still prove
+        // that the later approval was not admitted.
+        match declined {
+            Ok(response) if response.is_empty() => {}
+            Ok(response) => assert_eq!(
+                response_status(&response),
+                503,
+                "the post-fence request must be declined before it starts"
+            ),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::NotConnected
+                ) => {}
+            Err(error) => panic!("unexpected post-fence transport failure: {error}"),
+        }
     }
 }

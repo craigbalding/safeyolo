@@ -220,6 +220,7 @@ class ServiceGateway:
         self._token_map: dict[str, TokenBinding] = {}
         self._host_map: dict[str, str] = {}
         self._grants: dict[str, GrantEntry] = {}  # grant_id -> GrantEntry
+        self._grant_reservations: dict[str, str] = {}  # once grant -> in-flight flow ID
         self._contract_bindings: dict[tuple[str, str, str], ContractBindingState] = {}
         self._grant_ttl: int = DEFAULT_GRANT_TTL_SECONDS
         self._lock = threading.RLock()
@@ -665,7 +666,7 @@ class ServiceGateway:
         # 2. Risky route check (grant bypass → PDP)
         risky = self._match_risky_route(method, path, service.risky_routes)
         if risky:
-            grant = self._check_grant(binding.agent, service.name, method, path)
+            grant = self._check_grant(binding.agent, service.name, method, path, flow.id)
             if grant:
                 # Grant exists — skip PDP, stamp for response() hook
                 flow.metadata["gateway_grant_id"] = grant.grant_id
@@ -898,6 +899,7 @@ class ServiceGateway:
             self._persist_grant_delta(remove_ids=(grant_id,))
             with self._lock:
                 self._grants.pop(grant_id, None)
+                self._grant_reservations.pop(grant_id, None)
             log.info(f"Grant revoked: {sanitize_for_log(grant_id)}")
             write_event(
                 "gateway.grant_revoked",
@@ -911,16 +913,20 @@ class ServiceGateway:
             return True
         return False
 
-    def _check_grant(self, agent: str, service: str, method: str, path: str) -> GrantEntry | None:
-        """Find a matching grant for the given request. Cleans up expired grants."""
+    def _check_grant(self, agent: str, service: str, method: str, path: str,
+                     flow_id: str | None = None) -> GrantEntry | None:
+        """Reserve a matching once grant before its request can reach the origin."""
         expired = []
         result = None
         with self._lock:
             for grant in self._grants.values():
-                if grant.is_expired():
+                if grant.is_expired() and grant.grant_id not in self._grant_reservations:
                     expired.append(grant)
-                elif result is None and grant.matches(agent, service, method, path):
+                elif (result is None and grant.grant_id not in self._grant_reservations
+                      and grant.matches(agent, service, method, path)):
                     result = grant
+                    if grant.scope == "once" and flow_id is not None:
+                        self._grant_reservations[grant.grant_id] = flow_id
 
         if expired:
             self._persist_grant_delta(
@@ -951,6 +957,7 @@ class ServiceGateway:
         self._persist_grant_delta(remove_ids=(grant.grant_id,))
         with self._lock:
             self._grants.pop(grant.grant_id, None)
+            self._grant_reservations.pop(grant.grant_id, None)
         log.info(f"Grant consumed (once): {sanitize_for_log(grant.grant_id)}")
         write_event(
             "gateway.grant_consumed",
@@ -1261,9 +1268,14 @@ class ServiceGateway:
         if flow.response and 200 <= flow.response.status_code < 300:
             with self._lock:
                 grant = self._grants.get(grant_id)
-            if grant and grant.scope == "once":
+                reserved_for_flow = self._grant_reservations.get(grant_id) == flow.id
+            if grant and grant.scope == "once" and reserved_for_flow:
                 self._consume_grant(grant)
                 consumed = True
+        if not consumed:
+            with self._lock:
+                if self._grant_reservations.get(grant_id) == flow.id:
+                    self._grant_reservations.pop(grant_id, None)
         trace_evaluated(
             flow,
             addon=self.name,
@@ -1271,6 +1283,14 @@ class ServiceGateway:
             outcome=OUTCOME_GRANT_CONSUMED if consumed else OUTCOME_GRANT_RETAINED,
             grant_id=grant_id,
         )
+
+    def error(self, flow: http.HTTPFlow):
+        """Release a once grant when its request has no successful response."""
+        grant_id = flow.metadata.get("gateway_grant_id")
+        if grant_id:
+            with self._lock:
+                if self._grant_reservations.get(grant_id) == flow.id:
+                    self._grant_reservations.pop(grant_id, None)
 
     def _extract_sgw_token(self, flow: http.HTTPFlow) -> str | None:
         """Extract sgw_ token from the service-specific auth header.

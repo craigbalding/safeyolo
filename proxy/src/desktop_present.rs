@@ -21,6 +21,7 @@ pub(crate) enum Error {
     Unavailable,
     NotFound,
     Failed,
+    Transport,
     Protocol,
 }
 
@@ -32,6 +33,7 @@ struct PresenterOwner {
 struct PresenterIo {
     input: BufWriter<ChildStdin>,
     output: BufReader<ChildStdout>,
+    retired: bool,
 }
 
 static PRESENTER: Mutex<Option<Arc<PresenterOwner>>> = Mutex::new(None);
@@ -56,7 +58,7 @@ fn spawn_presenter(python: &Path) -> Result<PresenterOwner, Error> {
         .args(["-m", "safeyolo.desktop_presenter_rpc", "--daemon"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|_| Error::Unavailable)?;
     let Some(input) = child.stdin.take() else {
@@ -74,6 +76,7 @@ fn spawn_presenter(python: &Path) -> Result<PresenterOwner, Error> {
         io: Mutex::new(PresenterIo {
             input: BufWriter::new(input),
             output: BufReader::new(output),
+            retired: false,
         }),
     })
 }
@@ -111,26 +114,41 @@ fn decode_response(value: Value) -> Result<Value, Error> {
 
 fn request(owner: &PresenterOwner, agent_id: &str) -> Result<Value, Error> {
     let Ok(mut io) = owner.io.lock() else {
-        return Err(Error::Failed);
+        return Err(Error::Transport);
     };
-    serde_json::to_writer(&mut io.input, &json!({"agent_id": agent_id}))
-        .map_err(|_| Error::Failed)?;
-    io.input.write_all(b"\n").map_err(|_| Error::Failed)?;
-    io.input.flush().map_err(|_| Error::Failed)?;
-    let mut line = String::new();
-    if io.output.read_line(&mut line).map_err(|_| Error::Failed)? == 0 {
-        return Err(Error::Failed);
+    if io.retired {
+        return Err(Error::Transport);
     }
-    let value: Value = serde_json::from_str(&line).map_err(|_| Error::Protocol)?;
-    let value = decode_response(value)?;
-    // The accepted listener identity selects the target.  The helper may
-    // return a durable agent_id, but its human-facing `agent` must still be
-    // the requested listener name.  Otherwise a faulty or compromised helper
-    // could make an operator present a different agent than the one approved.
-    if value.get("agent").and_then(Value::as_str) != Some(agent_id) {
-        return Err(Error::Protocol);
+    let result = (|| {
+        serde_json::to_writer(&mut io.input, &json!({"agent_id": agent_id}))
+            .map_err(|_| Error::Transport)?;
+        io.input.write_all(b"\n").map_err(|_| Error::Transport)?;
+        io.input.flush().map_err(|_| Error::Transport)?;
+        let mut line = String::new();
+        if io
+            .output
+            .read_line(&mut line)
+            .map_err(|_| Error::Transport)?
+            == 0
+        {
+            return Err(Error::Transport);
+        }
+        let value: Value = serde_json::from_str(&line).map_err(|_| Error::Protocol)?;
+        let value = decode_response(value)?;
+        // The accepted listener identity selects the target. The helper may
+        // return a durable agent_id, but its human-facing `agent` must still
+        // be the requested listener name.
+        if value.get("agent").and_then(Value::as_str) != Some(agent_id) {
+            return Err(Error::Protocol);
+        }
+        Ok(value)
+    })();
+    // A waiting sibling request must not write to a helper whose response
+    // stream has become untrustworthy while the owner is being retired.
+    if matches!(result, Err(Error::Transport | Error::Protocol)) {
+        io.retired = true;
     }
-    Ok(value)
+    result
 }
 
 pub(crate) async fn present(agent_id: String) -> Result<Value, Error> {
@@ -149,18 +167,16 @@ pub(crate) async fn present(agent_id: String) -> Result<Value, Error> {
         let owner = presenter.as_ref().expect("presenter initialized").clone();
         drop(presenter);
         let result = request(&owner, &agent_id);
-        if matches!(
-            result,
-            Err(Error::Failed | Error::Protocol | Error::Unavailable)
-        ) {
-            if let Ok(mut presenter) = PRESENTER.lock()
-                && presenter
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &owner))
-            {
-                presenter.take();
-            }
-            terminate_presenter(owner);
+        if matches!(result, Err(Error::Transport | Error::Protocol))
+            && let Ok(mut presenter) = PRESENTER.lock()
+            && presenter
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &owner))
+        {
+            presenter.take().expect("matching presenter is installed");
+            // Do not start a replacement before this helper has closed
+            // the previews it owns and exited.
+            stop_presenter(owner);
         }
         result
     })
@@ -176,7 +192,11 @@ pub(crate) fn shutdown() {
     let Some(owner) = presenter.take() else {
         return;
     };
-    drop(presenter);
+    // The global owner stays unavailable until the old helper has stopped.
+    stop_presenter(owner);
+}
+
+fn stop_presenter(owner: Arc<PresenterOwner>) {
     // A request may own the protocol lock while blocked waiting for the
     // helper's response.  In that case the shutdown message cannot be sent;
     // killing the independently owned child is the only bounded way to
@@ -193,7 +213,7 @@ pub(crate) fn shutdown() {
         })
         .is_some();
     if shutdown_sent {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             let exited = owner
                 .child

@@ -295,6 +295,28 @@ impl Audit {
 }
 
 impl Outcome {
+    /// A successful desktop presentation resolves a pending approval in the
+    /// audit file that the operator API reads. Confirm that write before the
+    /// response can report success; retain ordinary submission for other routes.
+    pub async fn submit_audit_with_desktop_confirmation(
+        self,
+        writer: &Writer,
+        client_ip: &str,
+        target: &str,
+    ) -> Result<Self, Error> {
+        if let Some(intent @ Audit::DesktopPresented(_)) = self.audit() {
+            for event in intent.canonical_events(client_ip, target) {
+                writer
+                    .emit_confirmed(event)
+                    .await
+                    .map_err(|error| Error::Audit(error.kind()))?;
+            }
+            Ok(self)
+        } else {
+            self.submit_audit(writer, client_ip, target)
+        }
+    }
+
     /// Mutations have committed. A budget-engine enqueue exception maps to the
     /// source PDP failure response; other operator enqueue exceptions terminate
     /// the handler. Async writer failures do not reach this boundary.
