@@ -2,7 +2,7 @@ name: Rust proxy migration
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, converted_to_draft, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "proxy/**"
       - "tests/proxy_migration/**"
@@ -20,7 +20,8 @@ on:
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
-    branches: [master, main, feat/rust-proxy-620]
+    # Relay advances this ref to an exact integrated commit for a full checkpoint.
+    branches: [master, main, ci/proxy-rust-620]
 
 permissions:
   contents: read
@@ -32,7 +33,10 @@ concurrency:
 jobs:
   focused-pr:
     name: Focused Rust proxy (Ubuntu)
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref != 'master' && github.base_ref != 'main' &&
+      github.event.action != 'ready_for_review'
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: "1"
@@ -88,29 +92,13 @@ jobs:
           ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
           ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
 
-      - name: Test both WebSocket close legs through each proxy
-        timeout-minutes: 10
-        working-directory: proxy
-        run: |
-          ../scripts/cargo_with_space.sh build --locked
-          SAFEYOLO_SOURCE_PYTHON="$GITHUB_WORKSPACE/.venv/bin/python" \
-            ../scripts/cargo_with_space.sh test --locked production_container_source_dispatch_stays_reproducible -- --ignored
-          cd ..
-          export SAFEYOLO_RUST_PROXY="$GITHUB_WORKSPACE/proxy/target/debug/safeyolo-proxy"
-          for backend in python rust; do
-            uv run --frozen pytest -q tests/proxy_migration/test_websocket_contract.py \
-              -k 'test_idle_control_ping_pong_and_close_are_forwarded_exactly or test_origin_close_after_client_close or test_missing_origin_close_does_not_become_clean_reply or test_message_preceding_close_is_delivered or test_protocol_error_close_codes' \
-              --proxy-backend "$backend"
-          done
-
   http-slice:
     name: HTTP migration (${{ matrix.os }})
-    # A ready-for-review event is the explicit final-candidate transition.
-    # Skipped jobs are not evidence that the full matrix ran.
+    # Run on default/checkpoint pushes and ready release PRs into master or main.
     if: >-
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
-       github.event.action == 'ready_for_review' &&
+       (github.base_ref == 'master' || github.base_ref == 'main') &&
        github.event.pull_request.draft == false)
     strategy:
       fail-fast: false

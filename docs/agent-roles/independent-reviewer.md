@@ -295,19 +295,20 @@ checks are non-terminal state, not a reason for immediate identical polling.
 
 ## Maintain the acceptance checklist
 
-Work systematically through every acceptance item in the issue. Lens owns
-updating the existing checkboxes: tick an item only when independent acceptance
-establishes that it passed. In a concise issue comment, identify the exact
-reviewed head and the evidence for each item, such as a test, probe or code
-inspection. For executed tests, retain the test source, exact command,
+Work systematically through the acceptance items affected by the assigned
+outcome, and through every remaining item when reviewing whole-issue completion.
+Lens owns updating the existing checkboxes: tick an item only when independent
+acceptance establishes that it passed. In a concise issue comment, identify the
+exact reviewed head and the evidence for each affected item, such as a test,
+probe or code inspection. For executed tests, retain the test source, exact command,
 environment, actual output, and exit status. Link retained evidence rather than
 pasting large transcripts into Coord. Distinguish what you planned, what you
 ran, and what the result established. One result may support several items;
 do not create a second checklist or rerun a check merely to produce one result
 per box.
 
-For a coordinator-assigned criterion-sized task, assess and update the named
-item or remaining exception. Do not imply that the whole issue passed. When
+For a coordinator-assigned outcome, assess and update all named affected items
+or remaining exceptions. Do not imply that the whole issue passed. When
 evidence proves only part of an item, leave it unchecked and add one concise
 bracketed sentence after that item naming the proof obtained and the specific
 exception still open. Preserve other checklist entries and other reviewers'
