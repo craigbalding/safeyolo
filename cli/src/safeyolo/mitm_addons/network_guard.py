@@ -375,14 +375,23 @@ class NetworkGuard(SecurityAddon):
                 sanitize_for_log(method), sanitize_for_log(domain),
                 sanitize_for_log(path), sanitize_for_log(client),
             )
-            self.log_decision(
-                flow, Decision.REQUIRE_APPROVAL,
-                severity=Severity.MEDIUM,
-                summary=f"Egress to {sanitize_for_log(destination_key(domain, flow.request.port))} requires approval",
-                host=domain,
-                approval=approval,
-                decision_type="egress_approval_required",
-            )
+            try:
+                self.log_decision(
+                    flow, Decision.REQUIRE_APPROVAL,
+                    severity=Severity.MEDIUM,
+                    summary=f"Egress to {sanitize_for_log(destination_key(domain, flow.request.port))} requires approval",
+                    host=domain,
+                    approval=approval,
+                    decision_type="egress_approval_required",
+                )
+            except Exception as exc:
+                log.error("Egress approval audit confirmation failed: %s", type(exc).__name__)
+                self.block(flow, 503, {
+                    "error": "Approval request could not be recorded",
+                    "type": "approval_audit_unavailable",
+                    "action": "retry",
+                })
+                return
             self.block(
                 flow,
                 428,

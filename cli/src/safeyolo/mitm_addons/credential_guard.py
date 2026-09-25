@@ -547,14 +547,25 @@ class CredentialGuard(SecurityAddon):
 
             if self.should_block():
                 flow.metadata["blocked_by"] = self.name
-                self.log_decision(
-                    flow, audit_decision,
-                    severity=Severity.CRITICAL,
-                    summary=f"Credential {rule_name} blocked to {sanitize_for_log(host)}: {reason_str}",
-                    host=host,
-                    approval=approval,
-                    **detail_fields,
-                )
+                try:
+                    self.log_decision(
+                        flow, audit_decision,
+                        severity=Severity.CRITICAL,
+                        summary=f"Credential {rule_name} blocked to {sanitize_for_log(host)}: {reason_str}",
+                        host=host,
+                        approval=approval,
+                        **detail_fields,
+                    )
+                except Exception as exc:
+                    if effect != Effect.REQUIRE_APPROVAL:
+                        raise
+                    log.error("Credential approval audit confirmation failed: %s", type(exc).__name__)
+                    self.block(flow, 503, {
+                        "error": "Approval request could not be recorded",
+                        "type": "approval_audit_unavailable",
+                        "action": "retry",
+                    })
+                    return
                 # Use PDP's immediate_response if available
                 pdp_decision = context.get("decision")
                 if pdp_decision:
