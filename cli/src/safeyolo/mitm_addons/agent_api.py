@@ -20,6 +20,7 @@ Usage:
     mitmdump -s addons/agent_api.py --set admin_api_token=<token>
 """
 
+import asyncio
 import base64
 import hmac
 import json
@@ -469,7 +470,9 @@ class AgentAPI:
             return
 
         try:
-            handler(flow)
+            result = handler(flow)
+            if asyncio.iscoroutine(result):
+                await result
         except Exception as exc:
             log.error(f"Agent API handler error: {type(exc).__name__}: {exc}")
             self._respond(flow, 500, {"error": f"Internal error: {type(exc).__name__}"})
@@ -1163,7 +1166,7 @@ class AgentAPI:
             },
         )
 
-    def _handle_desktop_present(self, flow: http.HTTPFlow):
+    async def _handle_desktop_present(self, flow: http.HTTPFlow):
         """Request the operator to present this agent's desktop."""
         agent_name = self._resolve_agent_id(flow)
         if agent_name is None:
@@ -1179,7 +1182,8 @@ class AgentAPI:
             return
 
         request_id = flow.metadata.get("request_id")
-        write_event(
+        await asyncio.to_thread(
+            write_event,
             "agent.desktop_present_requested",
             kind=EventKind.AGENT,
             severity=Severity.HIGH,
@@ -1195,6 +1199,7 @@ class AgentAPI:
                 target=f"desktop:{agent_id}",
                 scope_hint={"agent_id": agent_id},
             ),
+            confirm_append=True,
         )
         self._respond(
             flow,
@@ -1208,7 +1213,7 @@ class AgentAPI:
             },
         )
 
-    def _handle_gateway_request_access(self, flow: http.HTTPFlow):
+    async def _handle_gateway_request_access(self, flow: http.HTTPFlow):
         """POST /gateway/request-access - Agent requests access to a service capability.
 
         Body: {"service": "gmail", "capability": "read_and_send", "reason": "Need to read inbox"}
@@ -1305,7 +1310,8 @@ class AgentAPI:
             return
 
         # No contract: existing behavior — write approval event
-        write_event(
+        await asyncio.to_thread(
+            write_event,
             "gateway.request_access",
             kind=EventKind.GATEWAY,
             severity=Severity.CRITICAL,
@@ -1330,6 +1336,7 @@ class AgentAPI:
                     "proposed_lifetime": "session",
                 },
             ),
+            confirm_append=True,
         )
         log.info(
             "Access request: agent=%s service=%s capability=%s",
@@ -1351,7 +1358,7 @@ class AgentAPI:
             },
         )
 
-    def _handle_gateway_submit_binding(self, flow: http.HTTPFlow):
+    async def _handle_gateway_submit_binding(self, flow: http.HTTPFlow):
         """POST /gateway/submit-binding - Agent submits contract binding values.
 
         Body: {"service": "gmail", "capability": "read_messages",
@@ -1500,7 +1507,8 @@ class AgentAPI:
         if purpose_code:
             scope_hint["purpose_code"] = purpose_code
 
-        write_event(
+        await asyncio.to_thread(
+            write_event,
             "gateway.submit_binding",
             kind=EventKind.GATEWAY,
             severity=Severity.CRITICAL,
@@ -1521,6 +1529,7 @@ class AgentAPI:
                 "purpose_code": purpose_code,
                 "note": note,
             },
+            confirm_append=True,
         )
 
         log.info(

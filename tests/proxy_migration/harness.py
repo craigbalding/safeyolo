@@ -137,7 +137,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
                  agent_map=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
-                 gateway_services_dir=None, gateway_builtin_services_dir=None):
+                 gateway_services_dir=None, gateway_builtin_services_dir=None,
+                 agents=("alice", "bob"), services_dir=None, python_config_dir=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -149,7 +150,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
     with tempfile.TemporaryDirectory(prefix="sy-migration-", dir=socket_root) as sockets, ExitStack() as stack:
         if agent_map is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
-                     for index, name in enumerate(("alice", "bob"), 2)}
+                     for index, name in enumerate(agents, 2)}
         else:
             from safeyolo.sockets import path_for
 
@@ -202,6 +203,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["admin_port"] = admin_port
         if admin_api_token_file is not None:
             config["admin_api_token_file"] = str(admin_api_token_file)
+        if services_dir is not None:
+            config["services_dir"] = str(services_dir)
         if circuit_breaker_enabled is not None or circuit_state_file is not None:
             config["circuit_breaker_enabled"] = True if circuit_breaker_enabled is None else circuit_breaker_enabled
             config["circuit_state_file"] = str(directory / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
@@ -211,6 +214,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
         env = python_proxy_environment(python_source=python_source)
         env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
+        if python_config_dir is not None:
+            env["SAFEYOLO_CONFIG_DIR"] = str(python_config_dir)
         if agent_api:
             api_data = directory / "api-data"
             api_data.mkdir()

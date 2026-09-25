@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import queue
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -13,7 +16,7 @@ import pytest
 _ADDONS_DIR = Path(__file__).resolve().parent.parent / "addons"
 sys.path.insert(0, str(_ADDONS_DIR))
 
-from safeyolo.core.audit_writer import _AuditWriter  # noqa: E402
+from safeyolo.core.audit_writer import AuditAppendError, _AuditWriter  # noqa: E402
 
 
 @pytest.fixture
@@ -121,6 +124,99 @@ class TestFlushFailure:
         assert "synthetic" in err
         # The event itself is echoed as a last-ditch record.
         assert "\"event\": \"failure\"" in err
+
+
+class TestConfirmedAppend:
+    def test_receipt_waits_for_append_and_ordinary_event_stays_async(self, tmp_log):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_rotate():
+            entered.set()
+            assert release.wait(timeout=2)
+
+        writer = _AuditWriter(lambda: tmp_log, slow_rotate, max_queue=10)
+        writer.put_event({"event": "ordinary"})
+        assert entered.wait(timeout=2)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            receipt = pool.submit(writer.put_event_confirmed, {"event": "approval"})
+            assert not receipt.done()
+            assert _read_entries(tmp_log) == []
+            release.set()
+            receipt.result(timeout=2)
+        assert writer.wait_for_drain(timeout_s=2)
+        assert _read_entries(tmp_log) == [{"event": "ordinary"}, {"event": "approval"}]
+
+    def test_failed_destination_rejects_receipt_and_same_writer_recovers(self, tmp_log, tmp_path):
+        blocked_parent = tmp_path / "not-a-directory"
+        blocked_parent.write_text("occupied")
+        destination = [blocked_parent / "audit.jsonl"]
+        writer = _AuditWriter(lambda: destination[0], lambda: None, max_queue=10)
+        with pytest.raises(AuditAppendError, match="append failed"):
+            writer.put_event_confirmed({"event": "lost"})
+        assert not tmp_log.exists()
+        destination[0] = tmp_log
+        writer.put_event_confirmed({"event": "restored"})
+        assert _read_entries(tmp_log) == [{"event": "restored"}]
+
+    def test_queue_full_and_stopped_reject_confirmed_events(self, tmp_log, monkeypatch):
+        writer = _make_writer(tmp_log)
+        original_put = writer._queue.put_nowait  # noqa: SLF001 — forced queue failure
+
+        def full(_item):
+            raise queue.Full()
+
+        monkeypatch.setattr(writer._queue, "put_nowait", full)  # noqa: SLF001
+        with pytest.raises(AuditAppendError, match="queue full"):
+            writer.put_event_confirmed({"event": "unaccepted"})
+        assert writer.pending_count() == 0
+        monkeypatch.setattr(writer._queue, "put_nowait", original_put)  # noqa: SLF001
+        writer.put_event_confirmed({"event": "accepted"})
+        writer._shutdown()  # noqa: SLF001 — test post-shutdown rejection
+        with pytest.raises(AuditAppendError, match="stopped"):
+            writer.put_event_confirmed({"event": "too-late"})
+        assert _read_entries(tmp_log) == [{"event": "accepted"}]
+
+    def test_bounded_wait_never_claims_unconfirmed_append(self, tmp_log):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_rotate():
+            entered.set()
+            assert release.wait(timeout=2)
+
+        writer = _AuditWriter(lambda: tmp_log, slow_rotate, max_queue=10)
+        try:
+            with pytest.raises(AuditAppendError, match="timed out"):
+                writer.put_event_confirmed({"event": "slow"}, timeout_s=0.05)
+            assert entered.is_set() and not tmp_log.exists()
+        finally:
+            release.set()
+        assert writer.wait_for_drain(timeout_s=2)
+
+    def test_full_shutdown_queue_rejects_discarded_receipt(self, tmp_log):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_rotate():
+            entered.set()
+            assert release.wait(timeout=2)
+
+        writer = _AuditWriter(lambda: tmp_log, slow_rotate, max_queue=1, flush_timeout_s=0.05)
+        writer.put_event({"event": "active"})
+        assert entered.wait(timeout=2)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            receipt = pool.submit(writer.put_event_confirmed, {"event": "discarded"}, timeout_s=1)
+            deadline = time.monotonic() + 2
+            while writer.pending_count() < 2:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            writer._shutdown()  # noqa: SLF001 — force full-queue shutdown branch
+            with pytest.raises(AuditAppendError, match="append failed"):
+                receipt.result(timeout=2)
+        release.set()
+        assert writer.wait_for_drain(timeout_s=2)
+        assert _read_entries(tmp_log) == [{"event": "active"}]
 
 
 class TestShutdown:
