@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from proxy.tests import coord_fixture
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = REPOSITORY_ROOT / "proxy" / "tests" / "coord_fixture.py"
 RUNNER = REPOSITORY_ROOT / "proxy" / "tests" / "coord_test_runner.sh"
@@ -152,6 +154,43 @@ def test_fixture_creates_the_shared_nats_and_python_state(running_coord_fixture)
     ]
     assert update["native_generation"]["db_sha256"] == native_hash
     assert len(update["db_sha256"]) == 64
+
+
+def test_teardown_waits_for_the_fixture_owner(running_coord_fixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second process requests shutdown without stopping the owner's child."""
+    from safeyolo.coord import nats_runtime
+
+    root, environment, process = running_coord_fixture
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", environment["SAFEYOLO_NATS_TEST_INSTANCE"])
+
+    def reject_cross_process_stop() -> None:
+        pytest.fail("teardown stopped the fixture owner's NATS child")
+
+    monkeypatch.setattr(nats_runtime, "stop_server", reject_cross_process_stop)
+    coord_fixture.stop_fixture(root)
+    assert process.wait(timeout=15) == 0
+    assert (root / "fixture.stopped").is_file()
+    assert not (root / "nats" / "nats.pid.json").exists()
+
+
+def test_teardown_reports_a_missing_owner_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing owner receipt triggers bounded verified cleanup, not success."""
+    from safeyolo.coord import nats_runtime
+
+    root = tmp_path / "owner-exited"
+    root.mkdir()
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(root))
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_INSTANCE", f"proxy-rust-{secrets.token_hex(8)}")
+    monkeypatch.setattr(coord_fixture, "FIXTURE_STOP_TIMEOUT_S", 0.0)
+    cleanup_calls: list[bool] = []
+    monkeypatch.setattr(nats_runtime, "stop_server", lambda: cleanup_calls.append(True))
+
+    with pytest.raises(TimeoutError, match="fixture owner did not confirm NATS shutdown"):
+        coord_fixture.stop_fixture(root)
+    assert cleanup_calls == [True]
+    assert (root / "fixture.stop").is_file()
+    assert not (root / "fixture.stopped").exists()
 
 
 def test_fixture_rejects_an_unowned_nats_environment(tmp_path: Path) -> None:
@@ -319,30 +358,32 @@ def test_runner_exposes_the_fixture_only_to_coord_test_binaries(tmp_path: Path) 
 
 
 def test_rust_workflow_orders_fixture_setup_and_teardown() -> None:
-    """The ordinary Rust test step must run between fixture ownership steps."""
+    """Both matrix platforms run Rust tests between owned fixture steps."""
     workflow = WORKFLOW.read_text(encoding="utf-8")
     setup = workflow.index("- name: Start the Python-owned Coord fixture")
     test = workflow.index("- name: Test and build the Rust proxy")
     teardown = workflow.index("- name: Stop the Python-owned Coord fixture")
     assert setup < test < teardown
     setup_block = workflow[setup:test]
-    assert "if: matrix.os == 'ubuntu-latest'" in setup_block
+    assert "if: matrix.os == 'ubuntu-latest'" not in setup_block
     assert "coord_fixture.py" in setup_block
     assert "SAFEYOLO_NATS_TEST_INSTANCE" in setup_block
     assert workflow.count("SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture") == 2
     assert "teardown failed after startup failure" in setup_block
     test_block = workflow[test:teardown]
-    assert 'if [ "$RUNNER_OS" = Linux ]; then' in test_block
     assert "export SAFEYOLO_PROXY_COORD_DATA_DIR" in test_block
     assert "export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture" in test_block
     assert 'host_target="$(rustc -vV' in test_block
     assert "runner_variable=" in test_block
+    assert "tr '[:lower:]-' '[:upper:]_'" in test_block
     assert "export CARGO_BUILD_TARGET" in test_block
     assert "coord_test_runner.sh" in test_block
+    assert 'if [ "$RUNNER_OS" = Linux ]; then' not in test_block
     assert "export SAFEYOLO_COORD_DATA_DIR" not in test_block
     assert "export SAFEYOLO_NATS_TEST_INSTANCE" not in test_block
     teardown_block = workflow[teardown:]
-    assert "if: always() && matrix.os == 'ubuntu-latest'" in teardown_block
+    assert "if: always()" in teardown_block
+    assert "if: always() && matrix.os == 'ubuntu-latest'" not in teardown_block
     assert "coord_fixture.py --teardown" in teardown_block
 
 

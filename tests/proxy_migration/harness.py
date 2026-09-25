@@ -135,14 +135,18 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
-                 agent_map=None):
+                 agent_map=None, stream_large_bodies=None, credential_head_decision=False,
+                 flow_store_enabled=False, via_token=None,
+                 gateway_services_dir=None, gateway_builtin_services_dir=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / f"policy.{policy_format}"
     policy.write_text(policy_text)
-    with tempfile.TemporaryDirectory(prefix="sy-migration-") as sockets, ExitStack() as stack:
+    # Darwin's default temp root leaves too little sun_path for reloaded listeners.
+    socket_root = "/tmp" if sys.platform == "darwin" else None
+    with tempfile.TemporaryDirectory(prefix="sy-migration-", dir=socket_root) as sockets, ExitStack() as stack:
         if agent_map is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
                      for index, name in enumerate(("alice", "bob"), 2)}
@@ -166,14 +170,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             # file even when the gateway fixture is not enabled.  Keep that
             # state inside this run so the selected Rust process never falls
             # back to the host's /safeyolo/data path.
-            "data_dir": str(directory / "data"),
             "readiness_file": str(directory / "ready"),
             "audit_log_path": str(directory / "audit.jsonl"),
             "event_log": str(directory / "events.jsonl"),
             # Keep native policy/evidence state inside this fixture. The Rust
             # default (/safeyolo/data) is unavailable in ordinary runs.
             "data_dir": str(directory / "data"),
-            "flow_store_enabled": False,
+            "flow_store_enabled": flow_store_enabled,
             "flow_store_db_path": str(directory / "flows.sqlite3"),
         }
         Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
@@ -188,6 +191,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 config[name] = value
         if upstream_ca:
             config["upstream_ca_file"] = str(upstream_ca)
+        if via_token is not None:
+            config["via_token"] = via_token
+        if gateway_services_dir is not None:
+            if gateway_builtin_services_dir is None:
+                raise ValueError("Gateway fixture requires both service directories")
+            config["gateway_services_dir"] = str(gateway_services_dir)
+            config["gateway_builtin_services_dir"] = str(gateway_builtin_services_dir)
         if admin_port is not None:
             config["admin_port"] = admin_port
         if admin_api_token_file is not None:
@@ -220,7 +230,14 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if backend == "python":
             config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
             config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
+            if stream_large_bodies is not None:
+                config["stream_large_bodies"] = stream_large_bodies
+            if credential_head_decision:
+                config["fixture_credential_head_decision"] = True
+                env["SAFEYOLO_DATA_DIR"] = config["data_dir"]
             config["fixture_agent_api"] = agent_api
+            if gateway_services_dir is not None:
+                config["fixture_gateway"] = True
             selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
             command = [str(selected_python or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]
         elif backend == "rust":

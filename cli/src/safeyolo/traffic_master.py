@@ -26,6 +26,7 @@ from mitmproxy.tools.console.master import ConsoleMaster
 from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
+from .early_credential_response import install_early_credential_response
 from .events import EventKind, Severity, write_event
 from .mitm_addons import ProductionAddons
 from .proxy_modes.unix_listener import ensure_registered as _ensure_unix_listener_registered
@@ -42,6 +43,7 @@ from .timing import phase as _profile_phase
 from .timing import record_process_imports as _record_process_imports
 from .timing import uninstall_mitmproxy_addon_profiling as _uninstall_addon_profiling
 from .websocket_body_filter import install_websocket_body_filter_cache
+from .websocket_close import install_websocket_close_handshake
 from .websocket_console import install_bounded_websocket_renderer
 
 log = logging.getLogger("safeyolo.traffic-master")
@@ -867,6 +869,8 @@ class TrafficMaster(ConsoleMaster):
 
 def main_entry(arguments: list[str] | None = None) -> None:
     """Run the hybrid master using mitmproxy's native CLI processing."""
+    install_early_credential_response()
+    install_websocket_close_handshake()
     initialize_runtime_identity_from_environment()
     _record_process_imports("traffic-master: Python and module imports")
     _install_addon_profiling()

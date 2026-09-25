@@ -13,10 +13,10 @@ use crate::{
 
 use super::{Body, Destination, flow_recording::Recording, request_context::RequestContext};
 
-pub(super) const HOST: &str = "_safeyolo.probe.internal";
+pub(super) const HOST: &str = crate::PROBE_HOST;
 
 pub(super) fn is_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case(HOST)
+    crate::is_probe_host(host)
 }
 
 #[derive(Clone)]

@@ -497,10 +497,10 @@ fn response_bytes_headers_metadata_errors_and_probe_are_explicit() {
             1000.,
         )
         .unwrap();
+    assert_eq!(root_dot.kind, OutcomeKind::Allowed);
     assert_eq!(
-        root_dot.kind,
-        OutcomeKind::Blocked,
-        "intrinsic PDP probe predicate is separate from transport's stronger local containment"
+        root_dot.pdp.unwrap().reason_codes,
+        vec!["INTERNAL_PIPELINE_PROBE"]
     );
     let mut invalid = request("api");
     invalid.port = 0;

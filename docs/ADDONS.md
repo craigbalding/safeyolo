@@ -624,10 +624,15 @@ Approvals are stored in the policy file as host entries:
 
 ```bash
 --set credguard_block=true          # Block mode (default: true)
---set credguard_scan_urls=false     # Scan URL query params (default: false)
---set credguard_scan_bodies=false   # Scan request bodies (default: false)
---set credguard_log_path=/path.jsonl # Separate log file (optional)
 ```
+
+The Python credential guard registers `credguard_scan_urls` and
+`credguard_scan_bodies` with a default of `false`, but its request hook does not
+read them. Setting either option to `true` does not enable credential scanning
+of URLs or request bodies. The native proxy has no equivalent options. The
+separate pattern scanner has its own URL and body rules and inspection limits.
+The Python addon also does not register `credguard_log_path`; that setting
+cannot select a separate log file.
 
 ### Related Features
 

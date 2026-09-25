@@ -307,6 +307,15 @@ async fn duplex_relay_retains_dropped_and_spooled_messages_and_open_session() {
             .unwrap(),
         Event::Close(_)
     ));
+    server_write
+        .write_all(&frame(
+            OpCode::Control(Control::Close),
+            true,
+            false,
+            &1000_u16.to_be_bytes(),
+        ))
+        .await
+        .unwrap();
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(2), client_read.read())
             .await
@@ -462,6 +471,22 @@ async fn compressed_fragmented_relay_inspects_both_directions_and_keeps_controls
             OpCode::Control(Control::Close),
             true,
             true,
+            &1000_u16.to_be_bytes(),
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), server_read.read())
+            .await
+            .unwrap()
+            .unwrap(),
+        Event::Close(_)
+    ));
+    server_write
+        .write_all(&frame(
+            OpCode::Control(Control::Close),
+            true,
+            false,
             &1000_u16.to_be_bytes(),
         ))
         .await

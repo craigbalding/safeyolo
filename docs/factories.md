@@ -1,5 +1,8 @@
 # Supervised factories
 
+For GitHub release planning, use the [issue-planning guide](issue-planning.md).
+Factory checkpoints still identify active assignments.
+
 SafeYolo factory files are small, explicit bindings for existing supervised
 agents. Markdown remains the role contract; TOML says which approved agent has
 each role, which one coord room the factory uses, and which exact handoffs may

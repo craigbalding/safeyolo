@@ -28,12 +28,59 @@ The shared assertions cover:
 
 - Two simultaneously active agent listeners, alternating allowed and denied
   HTTP requests, forged agent/request identifiers, and evidence attribution.
+- The origin-controlled request-ID cases join each HTTP response ID to its own
+  trusted-agent runtime event, complete `/explain` audit result, and untruncated
+  `/trace` decision. CONNECT admission IDs resolve to scoped audit and trace
+  records; the Python fixture has no CONNECT runtime event. An allowed HTTP
+  request with explicit test context must
+  also resolve to a persisted, agent-owned flow. The other agent cannot read
+  its trace, audit events, or flow detail. An early network denial and CONNECT
+  admission have no applied test context and therefore no FlowStore row; the
+  fixture checks that absence instead of claiming one. The CONNECT admission
+  and inner request have different IDs and one shared connection ID. The owned
+  origin records each socket accept and application request separately.
+- Allowed HTTP/1.1 chunked uploads reach an owned origin with complete framing
+  and exact body bytes. The fixture checks a buffered request and a request
+  one byte above the configured 10 MiB streaming threshold. The origin waits
+  for the final zero chunk or an exact Content-Length before it sends 200.
+  A direct request controls the origin. This checks transport completion and
+  hop-header removal; it does not establish body inspection or capture beyond
+  the configured streaming window.
+- A raw origin and one persistent client UDS connection check response transfer
+  coding. The origin sends `gzip, chunked` or plain `chunked`, then an ordinary
+  second response. The fixture checks the client's exact coded body, coding
+  declaration, canary, and second response. It also checks that a client
+  `TE: gzip` nominated by `Connection: TE` does not reach the origin. The
+  gzip case runs with and without client `TE`; this fixture does not test
+  HTTP/2 transfer-coding conversion.
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
   per-agent connection identities across reuse.
+- A framed HTTP/1.1 response sends its first chunk to the client, then holds
+  the terminal chunk. The client closes deliberately. The origin observes the
+  resulting socket close, while a completed response before cancellation and
+  two later responses on one new client connection deliver exact body bytes.
+  The other agent remains denied and creates no origin request. This finite
+  handoff does not cover close-delimited Server-Sent Events (SSE) or repeated
+  resource growth.
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
+- Configured `network:request` limits of one request per minute exhaust at
+  the real proxy boundary. The shared fixture records the 429 response,
+  agent and destination events, and exact parent accepts and application
+  requests. A neighboring host remains allowed after per-host exhaustion but
+  is denied after global exhaustion. An authenticated operator budget reset
+  restores the limited host. The bounded sequence stays clear of the generic
+  cell rate algorithm (GCRA) refill boundary. `network:connect` counters remain
+  a separate case.
+- A configured circuit opens after two complete 500 responses from an owned
+  parent. While it is open, later requests for that host return local 503
+  without another parent connection. A different permitted host remains usable.
+  After the configured timeout, one successful half-open probe closes the
+  circuit. The shared case checks wire IDs, parent counts, circuit state and
+  scoped events on both backends; reset, persistence and other thresholds have
+  separate tests.
 - Local containment of unavailable Agent API handlers and the reserved probe,
   including mixed-case Agent API hostnames and synthetic bearer credentials.
 - Readiness and graceful process shutdown.
@@ -54,8 +101,25 @@ The shared assertions cover:
   witness; it does not claim TLS matrices, OCSP/CRL or renegotiation coverage.
 - Authority-form CONNECT metadata with no HTTP path or scheme, including
   opposing path-conditioned allow and deny rules.
+- Separate `network:connect` global and per-host limits on fresh tunnels.
+  The fixture counts admitted origin connections and local HTTP 429 denials,
+  checks a second destination, and sends a direct HTTP request to show its
+  independent `network:request` counter. An unauthenticated reset cannot clear
+  the exhausted limit; an authenticated reset permits another connection.
+  CONNECT creates no origin application request in this fixture. Both backends
+  record CONNECT in the security audit; Rust also emits `proxy.request` rows.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
+- An HTTP/2 upload one byte above the 10 MiB streaming threshold reaches the
+  owned origin byte for byte. The origin observes END_STREAM before it replies.
+  A separate header-detectable credential case announces 12 MiB, above that
+  threshold, but sends only a 21-byte prefix without END_STREAM. It checks
+  that the credential guard replies before the origin sees an application request.
+  The allowed CONNECT can open the origin TLS connection first; the denied
+  inner request creates no additional origin accept or outbound event. A
+  sibling stream on the same client connection completes. The Python comparator
+  opts into the production credential guard and early head-response hook for
+  this case; other comparator scenarios keep their existing addon chain.
 - Opaque CONNECT, server-first traffic and both TCP half-close directions.
   The old half-close defects remain two strict expected failures.
 - A client EOF before the terminating CONNECT header line is a canceled request:

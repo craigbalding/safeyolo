@@ -176,6 +176,62 @@ fn ordinary_sink_failure_completes_attempt_without_claiming_persistence() {
     assert!(directory.path().is_dir());
 }
 
+#[tokio::test]
+async fn confirmed_write_rejects_failed_destination_and_recovers_in_same_writer() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("audit.jsonl");
+    fs::create_dir(&path).unwrap();
+    let writer = Writer::new(path.clone(), Settings::default());
+    assert_eq!(
+        writer.emit_confirmed(event(0)).await.unwrap_err().kind(),
+        ErrorKind::Io
+    );
+    assert!(path.is_dir());
+    fs::remove_dir(&path).unwrap();
+    writer.emit_confirmed(event(1)).await.unwrap();
+    assert_eq!(values(&path).len(), 1);
+    assert_eq!(values(&path)[0]["details"]["index"], 1);
+    assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn confirmed_write_rejects_full_and_stopped_queue() {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("blocked-fifo");
+    let name = CString::new(path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let writer = Writer::new(
+        path.clone(),
+        Settings {
+            max_queue: 1.into(),
+            ..Settings::default()
+        },
+    );
+    writer.emit(event(0)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !writer.queue.pending.lock().unwrap().items.is_empty() {
+        assert!(Instant::now() < deadline, "writer did not dequeue");
+        tokio::task::yield_now().await;
+    }
+    writer.emit(event(1)).unwrap();
+    assert_eq!(
+        writer.emit_confirmed(event(2)).await.unwrap_err().kind(),
+        ErrorKind::Io
+    );
+    let _reader = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    assert!(writer.shutdown(Duration::from_secs(2)).unwrap());
+    assert_eq!(
+        writer.emit_confirmed(event(3)).await.unwrap_err().kind(),
+        ErrorKind::Io
+    );
+}
+
 #[test]
 fn encoder_failure_cannot_claim_successful_shutdown() {
     let directory = tempfile::tempdir().unwrap();

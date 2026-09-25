@@ -31,9 +31,18 @@ def adapter(tmp_path, policy):
             )
             try:
                 deadline = time.monotonic() + 10
-                while not socket_path.exists():
+                while True:
                     assert child.poll() is None, (tmp_path / "adapter.log").read_text()
                     assert time.monotonic() < deadline
+                    # Binding creates the pathname before the server starts listening.
+                    if socket_path.exists():
+                        with socket.socket(socket.AF_UNIX) as ready:
+                            try:
+                                ready.connect(str(socket_path))
+                            except (ConnectionRefusedError, FileNotFoundError):
+                                pass
+                            else:
+                                break
                     time.sleep(0.02)
                 yield socket_path, policy_path
             finally:

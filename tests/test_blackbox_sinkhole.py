@@ -9,8 +9,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
+import httpx
 import pytest
 
 from tests.blackbox.sinkhole.models import CapturedRequest
@@ -236,8 +237,7 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 
     payload = b"\x00\xffnot-utf8\xe2\x28\xa1"
-    response = Mock()
-    response.json.return_value = {
+    response_data = {
         "requests": [
             {
                 "timestamp": 1.0,
@@ -251,9 +251,13 @@ def test_sinkhole_client_decodes_exact_body_bytes_from_control_api():
             }
         ]
     }
+    response = httpx.Response(
+        200, json=response_data,
+        request=httpx.Request("GET", "http://sinkhole.invalid:9999/requests"),
+    )
     client = SinkholeClient("http://sinkhole.invalid:9999")
     try:
-        with patch.object(client._client, "get", return_value=response):
+        with patch.object(client._client, "get", return_value=response, autospec=True):
             requests = client.get_requests()
     finally:
         client.close()
@@ -360,6 +364,86 @@ def test_sinkhole_fixture_preserves_ordered_duplicate_headers_and_reversal():
         ("X-Duplicate", "first"),
         ("Connection", "close"),
     ]
+
+
+def test_sinkhole_head_has_get_headers_no_body_and_control_observation():
+    server_module = _load_sinkhole_server()
+    server_module.clear_requests()
+    receiver = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.SinkholeHandler
+    )
+    receiver_thread = threading.Thread(target=receiver.serve_forever, daemon=True)
+    receiver_thread.start()
+    control = server_module.NoReverseDNSThreadingHTTPServer(
+        ("127.0.0.1", 0), server_module.ControlAPIHandler
+    )
+    control_thread = threading.Thread(target=control.serve_forever, daemon=True)
+    control_thread.start()
+    target = "/head-probe?scope=read&sig=a%2Fb"
+
+    def request(method):
+        return (
+            f"{method} {target} HTTP/1.1\r\n"
+            "Host: head.test\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+        ).encode("ascii")
+
+    try:
+        head_wire = _send_raw_request(receiver.server_port, request("HEAD"))
+        get_wire = _send_raw_request(receiver.server_port, request("GET"))
+        control_client = http.client.HTTPConnection("127.0.0.1", control.server_port, timeout=5)
+        try:
+            control_client.request("GET", "/requests?host=head.test")
+            requests_response = control_client.getresponse()
+            requests = json.loads(requests_response.read())
+            assert requests_response.status == 200
+            control_client.request("GET", "/connections")
+            connections_response = control_client.getresponse()
+            connections = json.loads(connections_response.read())
+            assert connections_response.status == 200
+        finally:
+            control_client.close()
+    finally:
+        receiver.shutdown()
+        receiver.server_close()
+        receiver_thread.join(timeout=5)
+        control.shutdown()
+        control.server_close()
+        control_thread.join(timeout=5)
+
+    head_header_block, head_separator, head_body = head_wire.partition(b"\r\n\r\n")
+    get_header_block, get_separator, get_body = get_wire.partition(b"\r\n\r\n")
+    assert head_separator == get_separator == b"\r\n\r\n"
+    assert head_header_block.startswith(b"HTTP/1.0 200 OK\r\n")
+    assert get_header_block.startswith(b"HTTP/1.0 200 OK\r\n")
+    head_headers = dict(line.split(b": ", 1) for line in head_header_block.split(b"\r\n")[1:])
+    get_headers = dict(line.split(b": ", 1) for line in get_header_block.split(b"\r\n")[1:])
+    assert {name: value for name, value in head_headers.items() if name != b"Date"} == {
+        name: value for name, value in get_headers.items() if name != b"Date"
+    }
+    assert get_body
+    assert head_headers[b"Content-Length"] == str(len(get_body)).encode("ascii")
+    assert head_body == b""
+
+    assert requests["count"] == 2
+    assert [request["method"] for request in requests["requests"]] == ["HEAD", "GET"]
+    head_request = requests["requests"][0]
+    assert head_request["raw_target"] == target
+    assert head_request["raw_query"] == "scope=read&sig=a%2Fb"
+    assert head_request["body_hex"] == ""
+    assert head_request["body_expected_bytes"] == 0
+    assert head_request["body_received_bytes"] == 0
+    assert head_request["body_complete"] is True
+    assert head_request["connection_accepted"] is True
+    head_connection = next(
+        connection for connection in connections["connections"]
+        if connection["connection_id"] == head_request["connection_id"]
+    )
+    assert head_connection["state"] == "closed"
+    assert head_connection["request_state"] == "received"
+    assert head_connection["request_count"] == 1
+    assert head_connection["accepted_at"] <= head_connection["closed_at"]
 
 
 def test_sinkhole_fixture_distinguishes_partial_and_chunked_body_receipt():
@@ -527,8 +611,7 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 
     target = "/signed?scope=read&scope=write%2Fitems&signature=abc%2B%2F%3D"
-    response = Mock()
-    response.json.return_value = {
+    response_data = {
         "requests": [
             {
                 "timestamp": 1.0,
@@ -559,9 +642,13 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
             }
         ]
     }
+    response = httpx.Response(
+        200, json=response_data,
+        request=httpx.Request("GET", "http://sinkhole.invalid:9999/requests"),
+    )
     client = SinkholeClient("http://sinkhole.invalid:9999")
     try:
-        with patch.object(client._client, "get", return_value=response):
+        with patch.object(client._client, "get", return_value=response, autospec=True):
             requests = client.get_requests()
     finally:
         client.close()
@@ -584,8 +671,7 @@ def test_sinkhole_client_exposes_raw_target_and_query_from_control_api():
 def test_sinkhole_client_exposes_connection_observations():
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 
-    response = Mock()
-    response.json.return_value = {
+    response_data = {
         "count": 2,
         "connections": [
             {
@@ -608,9 +694,13 @@ def test_sinkhole_client_exposes_connection_observations():
             },
         ],
     }
+    response = httpx.Response(
+        200, json=response_data,
+        request=httpx.Request("GET", "http://sinkhole.invalid:9999/connections"),
+    )
     client = SinkholeClient("http://sinkhole.invalid:9999")
     try:
-        with patch.object(client._client, "get", return_value=response):
+        with patch.object(client._client, "get", return_value=response, autospec=True):
             connections = client.get_connections()
     finally:
         client.close()

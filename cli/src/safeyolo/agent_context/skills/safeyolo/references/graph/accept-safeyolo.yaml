@@ -181,7 +181,7 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
+          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: scripts/check_test_assurance.py
@@ -240,11 +240,11 @@ nodes:
       obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
       sources:
         - path: install.sh
-          sha256: 6d335859ba859517d6dc47792c0d07cd1c2708224f0744f92aa02a8142db1263
+          sha256: f4891e8f8b40ff59dd0bdcd744d8c700b7013dd3d5eb14875b888c35321a46e5
         - path: tests/blackbox/run-lane.sh
-          sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
+          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
         - path: tests/blackbox/run-tests.sh
-          sha256: 6fd663f4c52157c97e831c3642a5e6d0f5561f80f331516bcc34723e1a4ccbc7
+          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
@@ -274,9 +274,9 @@ nodes:
       obtain_from: "runsc from gVisor's official signed apt repository, or its official tarball plus published SHA-512, through trusted-base safeyolo setup"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
+          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
         - path: tests/blackbox/run-tests.sh
-          sha256: 6fd663f4c52157c97e831c3642a5e6d0f5561f80f331516bcc34723e1a4ccbc7
+          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
@@ -312,7 +312,7 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: 091934297a817e2f9a82b8e9c2277582d6885869aa2dac8ac6b2479b1efeb820
+          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
@@ -338,7 +338,7 @@ nodes:
         - path: cli/tests/test_coord_kernel_upgrade_acceptance.py
           sha256: c92ee94eba54e99b58d99e29e799919835d543a24b21c3808d51feaa9f997086
         - path: cli/tests/test_coord_jetstream_acceptance.py
-          sha256: abb3e9019ab4fc45ad7e2b4a2dd850c5dca3c3638e361111a3f385d1c2bb40ff
+          sha256: d83f40987910945ae959d13091f4e9df4d0630a3f595f47257cc3f873181adaf
         - path: cli/src/safeyolo/coord/nats_runtime.py
           sha256: acc60bfeb919063121c561a2dbdd3f8b493a296de783f39a800dce4b2ddd66d0
       setup: "Use the trusted base's locked Python environment; the tests allocate their own NATS ports."
@@ -359,11 +359,11 @@ nodes:
       obtain_from: "the exact operator-approved trusted-base SafeYolo Git object"
       sources:
         - path: cli/tests/test_codex_coord_supervisor.py
-          sha256: ada1fc3d2a10861b198e19fafb7d6b74f777ca9618117c2c3155ff184e647f05
+          sha256: cf7a373d2be2cff23d0425fa28a887d932964dcec61c6c68fde2fd78481c4b2e
         - path: cli/tests/test_agent_command_supervisor.py
-          sha256: a2ae4936c10dc138508a9c8ae61d45c7a13651e45a2e07883c6b31717d16f254
+          sha256: 9ce240016d99bd717eb479e4f6f88d54a26a4cf3d6be44b9b0962d2e4b63c68c
         - path: cli/tests/test_factory_doctor.py
-          sha256: c60580f35fb85d75f49278654ae21d292520cc2c540062dd8507150401510ba5
+          sha256: 859dd3717121449622a6116b702cb82c288dd3aad6e038a4aa0d2d864b668004
       setup: "Use the trusted base's locked Python environment."
       verify: "sha256sum cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
       run: "uv run pytest -q cli/tests/test_codex_coord_supervisor.py cli/tests/test_agent_command_supervisor.py cli/tests/test_factory_doctor.py"
@@ -470,9 +470,9 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and focused pytest sources; Python tools hash-locked in uv.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 6fd663f4c52157c97e831c3642a5e6d0f5561f80f331516bcc34723e1a4ccbc7
+          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
         - path: tests/blackbox/host/uds_transport.py
-          sha256: c6ea54d568d0d8d47c73722f2241a2374d8c06181ab71408d7e008e53df08a67
+          sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: cli/tests/test_sockets.py
           sha256: 1fd1b1f63296f8a8ae031aba9b7a89bf15dc13933bb059c40581927168670221
         - path: cli/tests/test_linux_platform_oci.py
@@ -553,7 +553,7 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
+          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/requirements-stress.txt
@@ -607,7 +607,7 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 1cd54f8d23583d518e04ee1d268e2ddb97bb978fe82db9b8ef564b51c98112ed
+          sha256: fcf7eecfb45bc5f16b564274ccfc2f70f2185bd71b73bdf493788f6974f396dc
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
         - path: tools/acceptance/pyproject.toml

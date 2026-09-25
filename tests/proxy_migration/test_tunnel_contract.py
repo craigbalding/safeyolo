@@ -1,5 +1,6 @@
 """Opaque CONNECT contracts through both implementations and owned endpoints."""
 
+import errno
 import hashlib
 import json
 import os
@@ -113,6 +114,19 @@ def read_all(stream):
     while part := stream.recv(65536):
         received.extend(part)
     return bytes(received)
+
+
+def _assert_inspected_method_response(stream, remainder, leading, first, expected):
+    try:
+        stream.sendall(remainder)
+    except OSError as error:
+        if error.errno not in (errno.EPIPE, errno.ENOTCONN, errno.ECONNRESET):
+            raise
+        # The parser may reject a leading byte and close before the rest arrives.
+        # A terminal HTTP response is still required below.
+        assert leading and first
+    response = read_all(stream)
+    assert response.startswith(expected), f"expected {expected!r}, got {response!r}"
 
 
 def _parent_connect_control_fixture(phases=("positive", "failure")):
@@ -728,21 +742,19 @@ def test_http_method_spelling_remains_inspected(proxy_backend, tmp_path, method,
                     if first:
                         stream.sendall(message[:first])
                         time.sleep(0.025)
-                    try:
-                        stream.sendall(message[first:])
-                    except BrokenPipeError:
-                        # A parser can reject the leading byte before the rest
-                        # arrives. Its terminal HTTP response is still required.
-                        assert leading and first
-                    response = bytearray()
-                    while data := stream.recv(8192):
-                        response.extend(data)
                     expected = b"HTTP/1.1 403" if separator == " " and not leading else b"HTTP/1.1 400"
-                    assert response.startswith(expected), bytes(response)
+                    _assert_inspected_method_response(stream, message[first:], leading, first, expected)
             assert observed == [b""]
         finally:
             thread.join(timeout=6)
             assert not thread.is_alive()
+
+
+def test_http_method_spelling_still_requires_400_after_closed_write():
+    client, peer = socket.socketpair()
+    peer.close()
+    with client, pytest.raises(AssertionError, match="expected b'HTTP/1.1 400', got b''"):
+        _assert_inspected_method_response(client, b"T /forbidden HTTP/1.1\r\n\r\n", "\x1d", 3, b"HTTP/1.1 400")
 
 
 @pytest.mark.parametrize("first", ["client", "server"])
@@ -867,6 +879,18 @@ def test_connect_server_first_then_client_half_close_keeps_final_response(proxy_
                         "temporary_policy_socket": None,
                         "temporary_policy_adapter": False,
                     }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust CONNECT tunnel event did not settle; "
+                            f"proxy exit status={proxy.process.poll()}; "
+                            f"log={tmp_path / proxy_backend / 'process.log'}:\n"
+                            + ((tmp_path / proxy_backend / "process.log").read_text(
+                                errors="replace"
+                            )[-4000:] or "<empty>")
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
                     assert events[0]["host"] == "127.0.0.1"
@@ -1572,6 +1596,18 @@ def test_incomplete_connect_client_half_close_does_not_dial_origin(
                         "temporary_policy_socket": None,
                         "temporary_policy_adapter": False,
                     }
+                    deadline = time.monotonic() + 5
+                    while len(events) < 1:
+                        assert time.monotonic() < deadline, (
+                            "Rust CONNECT tunnel event did not settle; "
+                            f"proxy exit status={proxy.process.poll()}; "
+                            f"log={tmp_path / proxy_backend / 'process.log'}:\n"
+                            + ((tmp_path / proxy_backend / "process.log").read_text(
+                                errors="replace"
+                            )[-4000:] or "<empty>")
+                        )
+                        time.sleep(0.01)
+                        events = proxy.events("proxy.tunnel")
                     assert len(events) == 1
                     assert events[0]["agent"] == "alice"
                     assert events[0]["coverage"] == "opaque"

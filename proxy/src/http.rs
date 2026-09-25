@@ -302,10 +302,9 @@ fn record_pattern_decision(
     }))
 }
 
-/// Attach the ordinary local-response completion marker after a response body
-/// has already been consumed for post-upstream inspection.  The request-side
-/// helper cannot be used here because its parser observer belongs to the
-/// forwarded request, which has already been moved into `Completion`.
+/// Attach the ordinary local-response completion marker after the request
+/// owner has already consumed the parser observer. Callers must have reached
+/// the request traffic hooks; taking a second observer would fail.
 fn pattern_local_response(
     reply: &mut Response<Body>,
     traffic: &Arc<traffic::Traffic>,
@@ -1535,24 +1534,35 @@ where
     } else {
         agent_api::unavailable(api_request, Failure::HandlerUnavailable)
     };
-    // AgentAPI runs before the later request/response traffic hooks. Only a
-    // synchronous producer error changes its outcome; queue drops and async
-    // sink failures retain the already-established source response semantics.
+    // AgentAPI runs before the later request/response traffic hooks. An
+    // approval claim waits for its own canonical audit write; other events
+    // retain the source's asynchronous submission semantics.
     let mut evidence_failed = false;
     if !outcome.audit_owned
         && let Some(audit) = &outcome.audit
-        && let Err(error) = runtime.audit.emit(audit.to_event())
     {
-        evidence_failed = true;
-        let authentication_failed = audit.kind == agent_api::AuditKind::AuthenticationFailed;
-        if audit.kind != agent_api::AuditKind::HandlerUnavailable {
-            evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err();
-        }
-        outcome = outcome.audit_submission_failed(api_request, error.kind());
-        if authentication_failed && let Some(guard) = &outcome.audit {
-            // A single independent containment attempt. The guard catches a
-            // second failure and its local response must remain intact.
-            evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
+        let submission = if audit
+            .approval
+            .as_ref()
+            .is_some_and(|approval| approval.required)
+        {
+            runtime.audit.emit_confirmed(audit.to_event()).await
+        } else {
+            runtime.audit.emit(audit.to_event()).map(|_| ())
+        };
+        if let Err(error) = submission {
+            evidence_failed = true;
+            let authentication_failed = audit.kind == agent_api::AuditKind::AuthenticationFailed;
+            if audit.kind != agent_api::AuditKind::HandlerUnavailable {
+                evidence_failed |=
+                    record_agent_api(runtime, identity, request_id, &outcome).is_err();
+            }
+            outcome = outcome.audit_submission_failed(api_request, error.kind());
+            if authentication_failed && let Some(guard) = &outcome.audit {
+                // A single independent containment attempt. The guard catches a
+                // second failure and its local response must remain intact.
+                evidence_failed |= runtime.audit.emit(guard.to_event()).is_err();
+            }
         }
     }
     evidence_failed |= record_agent_api(runtime, identity, request_id, &outcome).is_err()
@@ -2095,6 +2105,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let pipeline_probe = probe::is_host(&destination.host);
+    let client_version = request.version();
     // CONNECT has no ordinary traffic request hook; retain its source
     // observation at the reached admission point after the snapshot exists.
     if request.method() == Method::CONNECT
@@ -2218,7 +2229,6 @@ where
     // copy before source hygiene removes hop-by-hop fields from the policy and
     // recording view; the forwarded body still needs these declarations.
     let request_trailer = request.headers().get(header::TRAILER).cloned();
-    let request_te = request.headers().get(header::TE).cloned();
     let mut ordered_headers = crate::request_headers::RequestHeaders::take(&mut request)?;
     let hygiene = ordered_headers.apply_hygiene(request.headers_mut());
     if let Some(live) = &live {
@@ -2699,6 +2709,59 @@ where
                                 crate::policy::Effect::BudgetExceeded => 429,
                                 _ => 428,
                             };
+                            let agent =
+                                identity.request_agent().expect("selected gateway identity");
+                            let method = request.method().as_str();
+                            let mut audit = crate::audit::Event::new(
+                                "gateway.risky_route",
+                                crate::audit::Kind::Gateway,
+                                crate::audit::Severity::High,
+                                format!(
+                                    "Risky route {} {}{}",
+                                    crate::network_guard::sanitize(method),
+                                    crate::network_guard::sanitize(&credential.service),
+                                    crate::network_guard::sanitize(risky_path),
+                                ),
+                            );
+                            audit.addon = Some("service-gateway".into());
+                            audit.decision = Some(match risk.effect {
+                                crate::policy::Effect::Deny => crate::audit::Decision::Deny,
+                                crate::policy::Effect::BudgetExceeded => {
+                                    crate::audit::Decision::BudgetExceeded
+                                }
+                                _ => crate::audit::Decision::RequireApproval,
+                            });
+                            audit.host = Some(destination.policy_host.clone());
+                            audit.agent = Some(agent.to_owned());
+                            audit.request_id = Some(request_id.to_owned());
+                            audit.attribution = Some(identity.audit_attribution());
+                            if risk.effect == crate::policy::Effect::Prompt {
+                                audit.approval = Some(crate::audit::Approval {
+                                    required: true,
+                                    approval_type: crate::audit::ApprovalType::GatewayRoute,
+                                    key: format!(
+                                        "gw:{agent}:{}:{method}:{risky_path}",
+                                        credential.service
+                                    ),
+                                    target: credential.service.clone(),
+                                    scope_hint: json!({"method":method,"path":risky_path}).into(),
+                                });
+                            }
+                            audit.details = json!({
+                                "service":credential.service,
+                                "capability":credential.capability,
+                                "method":method,
+                                "path":risky_path,
+                                "risky_route":risky.path,
+                                "tactics":risky.tactics,
+                                "enables":risky.enables,
+                                "irreversible":risky.irreversible,
+                                "description":risky.description,
+                                "group":risky.group,
+                                "effect":risk.effect,
+                            })
+                            .into();
+                            runtime.audit.emit(audit)?;
                             runtime.record(json!({
                                 "event":"proxy.gateway",
                                 "agent":identity.request_agent(),
@@ -3082,9 +3145,6 @@ where
     if let Some(trailer) = request_trailer {
         request.headers_mut().insert(header::TRAILER, trailer);
     }
-    if let Some(te) = request_te {
-        request.headers_mut().insert(header::TE, te);
-    }
     if websocket.is_some() {
         request
             .headers_mut()
@@ -3133,16 +3193,9 @@ where
                 .header(header::CONTENT_TYPE, "application/json")
                 .header("x-blocked-by", "pattern-scanner")
                 .body(full(body))?;
-            traffic::local_reply(
-                context.traffic().as_ref(),
-                &mut request,
-                &mut blocked,
-                Some(json!("pattern-scanner")),
-                result.failure.map(|failure| json!(failure)),
-                destination,
-                true,
-                trace.as_ref(),
-            )?;
+            if context.request_hooks_completed() {
+                pattern_local_response(&mut blocked, &response_traffic, result.failure);
+            }
             return Ok((prior_block(blocked), "deny".into()));
         }
     }
@@ -3352,9 +3405,32 @@ where
         .iter()
         .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
         .collect::<Vec<_>>();
+    // Hyper removes chunk framing while reading the upstream response, but it
+    // leaves any earlier transfer codings in the body. Regenerate the final
+    // chunk framing and retain the coding declaration for an HTTP/1.1 client.
+    let transfer_coding = upstream
+        .headers()
+        .get_all(header::TRANSFER_ENCODING)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_non_chunked_transfer_coding = transfer_coding.iter().any(|value| {
+        value
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .any(|coding| !coding.trim_ascii().eq_ignore_ascii_case(b"chunked"))
+    });
+    if has_non_chunked_transfer_coding && client_version != hyper::Version::HTTP_11 {
+        return Err("upstream transfer coding cannot be relayed to this client protocol".into());
+    }
     let (mut parts, body) = upstream.into_parts();
     parts.extensions.insert(live_view::Upstream);
     strip_hop_headers(&mut parts.headers);
+    if has_non_chunked_transfer_coding {
+        for value in transfer_coding {
+            parts.headers.append(header::TRANSFER_ENCODING, value);
+        }
+    }
     if response_buffering {
         let prepared = request_body::prepare(body, response_length, false).await?;
         if prepared.unvalidated_content.is_some() && completion.response_incomplete() {

@@ -728,7 +728,7 @@
   ],
   "source_sha256": {
     "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
-    "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac",
+    "cli/src/safeyolo/mitm_addons/admin_api.py": "2663a85acf80df80fd145b26a4fc31bd5dc0496f59044547db1e4c1d481bd85a",
     "cli/src/safeyolo/mitm_addons/network_guard.py": "449485737c3ae3ee1a048639daee715f7b55f3f2ed3f2097aef1c71a4eec8e24",
     "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
     "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",

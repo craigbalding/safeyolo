@@ -9,7 +9,7 @@
     "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
     "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
     "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
-    "proxy/src/lib.rs": "c98e9d2ae50edbb30775322b547f79c3b118b1bdcdf41defae634fc387881ffc",
+    "proxy/src/lib.rs": "f9d1edb8cb90f51dcbb5eb0826093eaa93bd9454151399b988f7863f5170c439",
     "proxy/src/config.rs": "ead36086077cc3bbd8dd454049ed14d3e010f2771ca7bf258d1006e60ceca438",
     "proxy/src/policy.rs": "147318ef6080bf848be921b49cdc1a3c02e2f00b92dd19b1c1769a246b989d22",
     "proxy/src/policy/baseline.rs": "d820e0b38d73c1c033abd85189ad5f9cf8289228ccf259826ffd193e95966a4f",

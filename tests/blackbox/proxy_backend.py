@@ -96,6 +96,47 @@ def _git_identity(source: Path) -> dict[str, object]:
     return {"revision": revision, "dirty": dirty}
 
 
+def _pytest_interpreter(launcher: str | None) -> tuple[str | None, str | None]:
+    """Identify a direct Python launcher; wrappers cannot prove their child runtime."""
+    if launcher is None:
+        return None, None
+    try:
+        with Path(launcher).open(encoding="utf-8") as script:
+            first_line = script.readline()
+    except (OSError, UnicodeError):
+        return None, None
+    if not first_line.startswith("#!"):
+        return None, None
+    parts = first_line[2:].split()
+    if not parts:
+        return None, None
+    if Path(parts[0]).name == "env":
+        candidate = shutil.which(parts[1]) if len(parts) > 1 else None
+    else:
+        candidate = parts[0]
+    if candidate is None or not Path(candidate).name.lower().startswith(("python", "pypy")):
+        return None, None
+    try:
+        result = subprocess.run(
+            [candidate, "-c", "import json, sys; print(json.dumps((sys.executable, sys.version)))"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return None, None
+        probe_identity = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+    if not isinstance(probe_identity, list) or len(probe_identity) != 2:
+        return None, None
+    interpreter, version = probe_identity
+    if not isinstance(interpreter, str) or not isinstance(version, str):
+        return None, None
+    return interpreter, version
+
+
 def _python_identity(source: Path | None) -> dict[str, object]:
     package = None
     if source is None:
@@ -108,34 +149,11 @@ def _python_identity(source: Path | None) -> dict[str, object]:
             )
     else:
         package = str(source / "cli" / "src" / "safeyolo")
-    interpreter = Path(sys.executable).resolve()
     launcher = shutil.which("pytest")
-    if launcher:
-        try:
-            first_line = Path(launcher).read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, IndexError):
-            first_line = ""
-        if first_line.startswith("#!"):
-            parts = first_line[2:].split()
-            if parts and parts[0].endswith("env") and len(parts) > 1:
-                candidate = shutil.which(parts[1])
-            else:
-                candidate = parts[0] if parts else None
-            if candidate:
-                interpreter = Path(candidate).resolve()
-    try:
-        version = subprocess.run(
-            [str(interpreter), "-c", "import sys; print(sys.version)"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        version = sys.version
+    interpreter, version = _pytest_interpreter(launcher)
     return {
-        "interpreter": str(interpreter),
-        "interpreter_version": version or sys.version,
+        "interpreter": interpreter,
+        "interpreter_version": version,
         "pytest_launcher": launcher,
         "package_location": package,
     }
@@ -159,7 +177,11 @@ def identity(
     """Validate and describe one selected backend without starting it."""
     if backend not in {"python", "rust"}:
         raise SelectionError(f"unsupported proxy backend: {backend}")
-    source = validate_python_source(python_source) if python_source else None
+    source = (
+        validate_python_source(python_source)
+        if backend == "python" and python_source
+        else None
+    )
     suite = (
         _path(test_suite_root, "test suite")
         if test_suite_root
