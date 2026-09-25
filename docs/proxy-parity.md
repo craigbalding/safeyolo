@@ -1606,6 +1606,24 @@ proxy without any of its six CA files changing; the same CA-trusting client
 completes HTTPS through each process. This does not extend the separate
 chain-shape or configured passthrough matrix.
 
+The shared [TLS passthrough control](../tests/proxy_migration/test_tunnel_contract.py)
+starts real Python and Rust proxy processes with one configured exact
+`localhost:port` exemption. The client verifies the exempt origin's own leaf,
+which is not in the proxy's configured upstream CA. The same hostname on
+another port and an unrelated `127.0.0.1` endpoint instead present proxy-issued
+client certificates and deliver inspected requests to their TLS origins. The
+origins record the request bytes and server name indication. A directly
+verified, live origin with an unlisted CA receives no additional HTTP request
+through either proxy: the intercepted client receives 502, with no opaque
+fallback or passthrough lifecycle event. Only the exempt connection has a
+passthrough start/end pair and no HTTP request/response audit rows. Both
+backends record the failed inspected request without a `traffic.response` row;
+the Python fixture emits no `proxy.request` row for that upstream TLS failure,
+while native records the inner 502. Native also records the exempt tunnel as
+`configured_passthrough`, separate from its CONNECT admission record. These
+observations do not imply that the proxy inspects or verifies the exempt TLS
+session. Other D29 matcher and #621 §5 handoffs remain open.
+
 `ignore_hosts` accepts canonical exact entries produced by the existing CLI
 normalizer. `SAFEYOLO_IGNORE_CIDRS` supplies the existing constrained IPv4 ranges;
 the builtin endpoint remains included. These exemptions select passthrough only

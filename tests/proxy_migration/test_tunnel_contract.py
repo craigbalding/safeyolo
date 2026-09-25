@@ -2,6 +2,7 @@
 
 import errno
 import hashlib
+import http.client
 import json
 import os
 import pwd
@@ -14,12 +15,14 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 from mitmproxy.certs import CertStore
 
-from tests.proxy_migration.harness import launch_proxy
+from tests.proxy_migration.harness import launch_proxy, read_events
+from tests.proxy_migration.scenarios import POLICY as ALICE_EGRESS_POLICY
 from tests.proxy_migration.test_http2_contract import POLICY, origin_certificate, origin_server
 
 INNER_DENY_POLICY = '''[[permissions]]
@@ -702,6 +705,161 @@ def test_fragmented_tls_keeps_the_inner_request_decision(proxy_backend, tmp_path
             with tunnel(proxy.paths["alice"], origin.authority) as stream:
                 assert fragmented_tls_request(stream, origin.authority, trusted, first) == 403
             assert origin.requests == []
+
+
+def test_configured_tls_passthrough_scope_and_interception_failure(proxy_backend, tmp_path):
+    """An exact endpoint stays end-to-end TLS; other endpoints keep inspection."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    certificates = {}
+    for name in ("opaque", "inspected", "untrusted"):
+        material = directory / name
+        material.mkdir()
+        certificates[name] = origin_certificate(material)
+    opaque_pem, opaque_ca = certificates["opaque"]
+    inspected_pem, inspected_ca = certificates["inspected"]
+    untrusted_pem, untrusted_ca = certificates["untrusted"]
+    proxy_ca = directory / "ca/mitmproxy-ca-cert.pem"
+
+    with ExitStack() as stack:
+        origins = {
+            "opaque": stack.enter_context(origin_server(opaque_pem, ("http/1.1",))),
+            "same_host": stack.enter_context(origin_server(inspected_pem, ("http/1.1",))),
+            "other_host": stack.enter_context(origin_server(inspected_pem, ("http/1.1",))),
+            "untrusted": stack.enter_context(origin_server(untrusted_pem, ("http/1.1",))),
+        }
+        for origin in origins.values():
+            origin.sni = []
+            origin.context.set_servername_callback(
+                lambda _socket, name, _context, observed=origin.sni: observed.append(name)
+            )
+        authorities = {
+            name: f"{'127.0.0.1' if name == 'other_host' else 'localhost'}:"
+                  f"{origin.server_address[1]}"
+            for name, origin in origins.items()
+        }
+
+        def https_get(path, authority, trust, target):
+            host, port = authority.rsplit(":", 1)
+            context = ssl.create_default_context(cafile=trust)
+            context.set_alpn_protocols(["http/1.1"])
+            raw = tunnel(path, authority) if path else socket.create_connection(
+                ("127.0.0.1", int(port)), timeout=5
+            )
+            with raw, context.wrap_socket(raw, server_hostname=host) as tls:
+                certificate = tls.getpeercert(binary_form=True)
+                client = http.client.HTTPConnection(host, int(port), timeout=5)
+                client.sock = tls
+                client.request("GET", target, headers={
+                    "Host": authority, "X-TLS-Canary": "passthrough-boundary",
+                })
+                response = client.getresponse()
+                status, body = response.status, response.read()
+                client.close()
+            return status, body, hashlib.sha256(certificate).digest()
+
+        # A direct verified request proves that the negative-control origin is
+        # live and its certificate is valid for the requested name.
+        direct = https_get(None, authorities["untrusted"], untrusted_ca, "/direct-control")
+        assert direct[:2] == (200, b"hello")
+        untrusted_accepts = origins["untrusted"].accepts
+
+        with launch_proxy(
+            proxy_backend, directory, ALICE_EGRESS_POLICY,
+            tls=True, upstream_ca=inspected_ca, eager_connect=True,
+            ignore_hosts=[authorities["opaque"]], native_policy=True,
+            audit_passthrough=True,
+        ) as proxy:
+            opaque = https_get(
+                proxy.paths["alice"], authorities["opaque"], opaque_ca, "/opaque?x=one%2Ftwo"
+            )
+            same_host = https_get(
+                proxy.paths["alice"], authorities["same_host"], proxy_ca, "/same-host"
+            )
+            other_host = https_get(
+                proxy.paths["alice"], authorities["other_host"], proxy_ca, "/other-host"
+            )
+            rejected = https_get(
+                proxy.paths["alice"], authorities["untrusted"], proxy_ca, "/untrusted"
+            )
+
+            assert [result[:2] for result in (opaque, same_host, other_host)] == [
+                (200, b"hello"), (200, b"hello"), (200, b"hello"),
+            ]
+            assert rejected[0] == 502
+            opaque_leaf = ssl.PEM_cert_to_DER_cert(opaque_ca.read_text())
+            assert opaque[2] == hashlib.sha256(opaque_leaf).digest()
+            inspected_leaf = hashlib.sha256(
+                ssl.PEM_cert_to_DER_cert(inspected_ca.read_text())
+            ).digest()
+            assert same_host[2] != inspected_leaf
+            assert other_host[2] != inspected_leaf
+            assert rejected[2] != direct[2]
+            assert origins["untrusted"].accepts > untrusted_accepts
+            assert {name: len(origin.requests) for name, origin in origins.items()} == {
+                "opaque": 1, "same_host": 1, "other_host": 1, "untrusted": 1,
+            }
+            for name, target in (
+                ("opaque", "/opaque?x=one%2Ftwo"),
+                ("same_host", "/same-host"),
+                ("other_host", "/other-host"),
+            ):
+                head = origins[name].requests[0]["head"].encode("latin1")
+                assert head.startswith(f"GET {target} HTTP/1.1\r\n".encode()), head
+                assert b"X-TLS-Canary: passthrough-boundary\r\n" in head
+            assert origins["untrusted"].requests[0]["head"].startswith(
+                "GET /direct-control HTTP/1.1\r\n"
+            )
+            assert origins["opaque"].sni == ["localhost"]
+            assert origins["same_host"].sni == ["localhost"]
+            assert origins["other_host"].sni == [None]
+            assert origins["untrusted"].sni == ["localhost", "localhost"]
+
+            lifecycle = wait_for_passthrough_audit(directory, 2)
+            assert [row["event"] for row in lifecycle] == [
+                "traffic.passthrough_start", "traffic.passthrough_end",
+            ]
+            assert all(row["details"]["port"] == origins["opaque"].server_address[1]
+                       for row in lifecycle)
+            requests = proxy.events("proxy.request")
+            successful = {
+                (origins["same_host"].server_address[1], 200),
+                (origins["other_host"].server_address[1], 200),
+            }
+            if proxy_backend == "rust":
+                admitted_connects = [row for row in requests if row["coverage"] ==
+                                     "native_network_guard_only"]
+                assert {row["port"] for row in admitted_connects} == {
+                    origin.server_address[1] for origin in origins.values()
+                }
+                requests = [row for row in requests if row["coverage"] !=
+                            "native_network_guard_only"]
+            failed_tls = (origins["untrusted"].server_address[1], 502)
+            inner = {(row["port"], row["status"]) for row in requests}
+            assert successful <= inner <= successful | {failed_tls}
+            if proxy_backend == "rust":
+                assert failed_tls in inner
+            audit = read_events(directory / "audit.jsonl")
+            http_audit = [row for row in audit if row["event"] in {
+                "traffic.request", "traffic.response",
+            }]
+            assert {row["details"].get("path") for row in http_audit} == {
+                "/same-host", "/other-host", "/untrusted",
+            }
+            for target in ("/same-host", "/other-host"):
+                assert any(row["event"] == "traffic.request" and
+                           row["details"].get("path") == target for row in http_audit)
+                assert any(row["event"] == "traffic.response" and
+                           row["details"].get("path") == target and
+                           row["details"].get("status") == 200 for row in http_audit)
+            assert any(row["event"] == "traffic.request" and
+                       row["details"].get("path") == "/untrusted" for row in http_audit)
+            if proxy_backend == "rust":
+                tunnels = proxy.events("proxy.tunnel")
+                assert len(tunnels) == 1
+                assert tunnels[0]["coverage"] == "configured_passthrough"
+                assert tunnels[0]["port"] == origins["opaque"].server_address[1]
 
 
 @pytest.mark.parametrize("method, separator, leading", [
