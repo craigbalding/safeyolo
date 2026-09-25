@@ -25,15 +25,16 @@ CONTEXT = "run=stream-inspection;agent=alice;test=request-body"
 class ObservedOrigin(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self):
+    def __init__(self, *, socket_timeout=10):
         self.accepts = 0
         self.requests = {}
         self.condition = threading.Condition()
+        self.socket_timeout = socket_timeout
         super().__init__(("127.0.0.1", 0), OriginHandler)
 
     def get_request(self):
         connection, address = super().get_request()
-        connection.settimeout(10)
+        connection.settimeout(self.socket_timeout)
         with self.condition:
             self.accepts += 1
             self.condition.notify_all()
@@ -54,7 +55,9 @@ class OriginHandler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        row = {"bytes": 0, "complete": False, "digest": None, "authorization": self.headers.get("Authorization")}
+        row = {"bytes": 0, "complete": False, "digest": None,
+               "partial_digest": hashlib.sha256(b"").hexdigest(),
+               "authorization": self.headers.get("Authorization")}
         digest = hashlib.sha256()
         with self.server.condition:
             self.server.requests[self.path] = row
@@ -64,6 +67,7 @@ class OriginHandler(BaseHTTPRequestHandler):
             digest.update(part)
             with self.server.condition:
                 row["bytes"] += len(part)
+                row["partial_digest"] = digest.hexdigest()
                 self.server.condition.notify_all()
 
         try:
@@ -101,8 +105,8 @@ class OriginHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def observed_origin():
-    server = ObservedOrigin()
+def observed_origin(*, socket_timeout=10):
+    server = ObservedOrigin(socket_timeout=socket_timeout)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02})
     thread.start()
     try:

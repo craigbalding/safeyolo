@@ -127,6 +127,7 @@ class Origin(ThreadingHTTPServer):
         self.via_headers = []
         self.canary_headers = []
         self.websocket_frames = []
+        self.websocket_ended = threading.Event()
         self.keep_alive = False
         self.connection_ids = {}
         self.stream_finished = threading.Event()
@@ -213,21 +214,24 @@ class OriginHandler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept)
         self.end_headers()
         self.close_connection = True
-        while prefix := self.rfile.read(2):
-            if prefix[0] == 0x88:
-                return
-            assert prefix == b"\x81\x85", prefix
-            mask = self.rfile.read(4)
-            payload = self.rfile.read(5)
-            plain = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
-            self.server.websocket_frames.append({
-                "index": len(self.server.websocket_frames),
-                "opcode": prefix[0] & 0x0F,
-                "payload_bytes": len(plain),
-                "payload_sha256": hashlib.sha256(plain).hexdigest(),
-            })
-            self.wfile.write(b"\x81\x05" + plain)
-            self.wfile.flush()
+        try:
+            while prefix := self.rfile.read(2):
+                if prefix[0] == 0x88:
+                    return
+                assert prefix == b"\x81\x85", prefix
+                mask = self.rfile.read(4)
+                payload = self.rfile.read(5)
+                plain = bytes(value ^ mask[index % 4] for index, value in enumerate(payload))
+                self.server.websocket_frames.append({
+                    "index": len(self.server.websocket_frames),
+                    "opcode": prefix[0] & 0x0F,
+                    "payload_bytes": len(plain),
+                    "payload_sha256": hashlib.sha256(plain).hexdigest(),
+                })
+                self.wfile.write(b"\x81\x05" + plain)
+                self.wfile.flush()
+        finally:
+            self.server.websocket_ended.set()
 
 
 @contextmanager

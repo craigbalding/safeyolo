@@ -63,6 +63,20 @@ The shared assertions cover:
   The other agent remains denied and creates no origin request. This finite
   handoff does not cover close-delimited Server-Sent Events (SSE) or repeated
   resource growth.
+- One process handles three bounded batches of short HTTP, a partial canceled
+  upload, a close-delimited SSE response, a WebSocket echo, and an opaque
+  CONNECT tunnel. The four long-lived legs overlap a permitted control request
+  and a denied other-agent request. The upload origin records the exact partial
+  body digest and an incomplete body; the WebSocket and tunnel origins record
+  their exact bytes and end of connection. The native SSE origin observes
+  cancellation. The Python comparator finishes sending its SSE response after
+  the client closes, so this fixture records that difference without treating
+  it as native success. Linux `/proc` samples check quiet file-descriptor and
+  resident-memory trends after each batch, allowing bounded allocator
+  retention. The same process configuration then stops and starts on the same
+  listener paths; a new readiness marker names the new process, and permitted
+  and denied requests still follow the configured policy. This finite fixture
+  does not establish sustained churn, a global memory cap, or host cleanup.
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.

@@ -1527,6 +1527,28 @@ exact responses on a reused client connection check the later policy and
 framing state. The separate close-delimited SSE workload still records its
 Python cancellation limitation; this finite framed case does not replace that
 resource observation.
+
+The shared [mixed lifecycle fixture](../tests/proxy_migration/test_lifecycle_batch.py)
+now repeats short HTTP, partial-upload cancellation, SSE, WebSocket and opaque
+CONNECT on one process for three bounded batches. A permitted control request
+completes while the upload, stream, WebSocket and tunnel are established; a
+forged-agent denial opens no origin connection. Independent origins record the
+upload's exact incomplete prefix, one WebSocket echo, tunnel bytes and each
+connection end. Native Rust closes the SSE upstream after client cancellation;
+the Python comparator continues to finish that response. On Linux, the fixture
+samples process file descriptors and resident memory after each quiet batch.
+It allows four descriptors above the cold sample, at most two more than the
+first quiet batch at the end, and 16 MiB of later Python or 8 MiB of later Rust
+resident-memory growth above the first quiet batch. These tolerances allow
+bounded allocator and protocol caches, not sustained growth.
+
+The fixture then stops the child and requires its marker and listeners to
+become unavailable. It starts the same config on the same paths with a new
+process identity. An allowed
+request and a denied other-agent request check the recovered listener and policy.
+The current measured result is owner-run on Linux. Independent acceptance,
+long-duration churn, host cleanup and other platform results remain open.
+
 Both reserved local destinations remain local. The Agent API implements the
 bounded reads above. The diagnostic probe now runs the installed native request
 checks; unimplemented producer stages remain visible as missing. Other Agent API
