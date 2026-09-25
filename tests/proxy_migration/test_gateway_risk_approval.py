@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from safeyolo.api import AdminAPI
+from safeyolo.commands.watch import scan_pending_approvals
 from safeyolo.core.vault import Vault, VaultCredential
 from safeyolo.operator_approvals import approve
 from tests.proxy_migration.harness import read_events, request
@@ -208,6 +209,88 @@ tactics = ["impact"]
 decision = "require_approval"
 approval_default = "once"
 """
+
+
+def test_running_gateway_prompt_requires_audit_append(proxy_backend, tmp_path):
+    """A failed approval append cannot claim an operator-visible pending route."""
+    directory = tmp_path / proxy_backend
+    services, builtin, operator_token_file = _gateway_files(directory)
+
+    with _origin() as origin:
+        port = origin.server_address[1]
+        with policy_proxy(
+            proxy_backend, directory, _gateway_policy(port), agent_api=True,
+            agent_api_token=AGENT_TOKEN.encode(), admin_port=0,
+            admin_api_token_file=operator_token_file,
+            gateway_services_dir=services,
+            gateway_builtin_services_dir=builtin,
+        ) as proxy:
+            marker = json.loads(proxy.readiness_file.read_text())
+            api = AdminAPI(base_url=f"http://127.0.0.1:{marker['admin_port']}",
+                           token=operator_token_file.read_text().strip())
+            assert api.authorize_service("alice", SERVICE, "operator", VAULT_NAME)["status"] in {
+                "authorized", "ok",
+            }
+            gateway_token = _gateway_token(proxy)
+            audit = directory / "audit.jsonl"
+
+            def request_id(headers):
+                return next(value for name, value in headers.items()
+                            if name.lower() == "x-safeyolo-request-id")
+
+            def pending_ids():
+                admin = {row["request_id"] for row in api.pending_approvals()
+                         if row["event"] == "gateway.risky_route"}
+                watch, _ = scan_pending_approvals(audit)
+                watched = {row["request_id"] for row in watch
+                           if row["event"] == "gateway.risky_route"}
+                return admin, watched
+
+            status, headers, _ = _agent_request(
+                proxy, "alice", (port, RISK_PATH), gateway_token, method="POST")
+            assert status == 428 and origin.accepts == 0
+            healthy_id = request_id(headers)
+            assert all(healthy_id in ids for ids in pending_ids())
+            assert any(row.get("event") == "gateway.risky_route"
+                       and row.get("request_id") == healthy_id
+                       and row.get("decision") == "require_approval"
+                       for row in read_events(audit))
+
+            audit.chmod(0o444)
+            before = audit.read_bytes()
+            try:
+                assert not audit.stat().st_mode & 0o222
+                status, headers, body = _agent_request(
+                    proxy, "alice", (port, RISK_PATH), gateway_token, method="POST")
+                failed_id = request_id(headers)
+                assert failed_id != healthy_id
+                assert status == (503 if proxy_backend == "python" else 502), body
+                assert b"wait_for_approval" not in body
+                assert origin.accepts == 0
+                assert audit.read_bytes() == before
+                assert not any(row.get("request_id") == failed_id for row in read_events(audit))
+                assert all(failed_id not in ids for ids in pending_ids())
+
+                # An ordinary permitted route still reaches the origin.
+                status, _, body = _agent_request(
+                    proxy, "alice", (port, "/v1/status"), gateway_token)
+                assert (status, body) == (200, b"status")
+                assert len(origin.deliveries) == 1
+                assert origin.deliveries[0]["authorization_is_vaulted"]
+                assert origin.deliveries[0]["gateway_token_absent"]
+            finally:
+                audit.chmod(0o644)
+
+            status, headers, _ = _agent_request(
+                proxy, "alice", (port, RISK_PATH), gateway_token, method="POST")
+            recovered_id = request_id(headers)
+            assert status == 428 and recovered_id not in (healthy_id, failed_id)
+            assert origin.accepts == 1
+            assert all(recovered_id in ids for ids in pending_ids())
+            assert any(row.get("event") == "gateway.risky_route"
+                       and row.get("request_id") == recovered_id
+                       and row.get("decision") == "require_approval"
+                       for row in read_events(audit))
 
 
 def test_running_gateway_risk_approval_and_once_grant(proxy_backend, tmp_path):

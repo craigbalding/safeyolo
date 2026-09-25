@@ -2761,7 +2761,11 @@ where
                                 "effect":risk.effect,
                             })
                             .into();
-                            runtime.audit.emit(audit)?;
+                            if risk.effect == crate::policy::Effect::Prompt {
+                                runtime.audit.emit_confirmed(audit).await?;
+                            } else {
+                                runtime.audit.emit(audit)?;
+                            }
                             runtime.record(json!({
                                 "event":"proxy.gateway",
                                 "agent":identity.request_agent(),
