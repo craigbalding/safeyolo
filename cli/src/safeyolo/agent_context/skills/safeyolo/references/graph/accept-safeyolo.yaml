@@ -472,7 +472,7 @@ nodes:
         - path: tests/blackbox/run-tests.sh
           sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
         - path: tests/blackbox/host/uds_transport.py
-          sha256: c6ea54d568d0d8d47c73722f2241a2374d8c06181ab71408d7e008e53df08a67
+          sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: cli/tests/test_sockets.py
           sha256: 1fd1b1f63296f8a8ae031aba9b7a89bf15dc13933bb059c40581927168670221
         - path: cli/tests/test_linux_platform_oci.py
