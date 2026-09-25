@@ -2709,6 +2709,59 @@ where
                                 crate::policy::Effect::BudgetExceeded => 429,
                                 _ => 428,
                             };
+                            let agent =
+                                identity.request_agent().expect("selected gateway identity");
+                            let method = request.method().as_str();
+                            let mut audit = crate::audit::Event::new(
+                                "gateway.risky_route",
+                                crate::audit::Kind::Gateway,
+                                crate::audit::Severity::High,
+                                format!(
+                                    "Risky route {} {}{}",
+                                    crate::network_guard::sanitize(method),
+                                    crate::network_guard::sanitize(&credential.service),
+                                    crate::network_guard::sanitize(risky_path),
+                                ),
+                            );
+                            audit.addon = Some("service-gateway".into());
+                            audit.decision = Some(match risk.effect {
+                                crate::policy::Effect::Deny => crate::audit::Decision::Deny,
+                                crate::policy::Effect::BudgetExceeded => {
+                                    crate::audit::Decision::BudgetExceeded
+                                }
+                                _ => crate::audit::Decision::RequireApproval,
+                            });
+                            audit.host = Some(destination.policy_host.clone());
+                            audit.agent = Some(agent.to_owned());
+                            audit.request_id = Some(request_id.to_owned());
+                            audit.attribution = Some(identity.audit_attribution());
+                            if risk.effect == crate::policy::Effect::Prompt {
+                                audit.approval = Some(crate::audit::Approval {
+                                    required: true,
+                                    approval_type: crate::audit::ApprovalType::GatewayRoute,
+                                    key: format!(
+                                        "gw:{agent}:{}:{method}:{risky_path}",
+                                        credential.service
+                                    ),
+                                    target: credential.service.clone(),
+                                    scope_hint: json!({"method":method,"path":risky_path}).into(),
+                                });
+                            }
+                            audit.details = json!({
+                                "service":credential.service,
+                                "capability":credential.capability,
+                                "method":method,
+                                "path":risky_path,
+                                "risky_route":risky.path,
+                                "tactics":risky.tactics,
+                                "enables":risky.enables,
+                                "irreversible":risky.irreversible,
+                                "description":risky.description,
+                                "group":risky.group,
+                                "effect":risk.effect,
+                            })
+                            .into();
+                            runtime.audit.emit(audit)?;
                             runtime.record(json!({
                                 "event":"proxy.gateway",
                                 "agent":identity.request_agent(),
