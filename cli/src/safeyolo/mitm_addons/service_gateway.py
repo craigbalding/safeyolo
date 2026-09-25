@@ -1508,6 +1508,7 @@ class ServiceGateway:
                     "group": risky.group,
                     "effect": decision.effect.value,
                 },
+                confirm_append=decision.effect == Effect.REQUIRE_APPROVAL,
             )
 
             return decision  # non-None signals the caller to stop
