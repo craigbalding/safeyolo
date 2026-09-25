@@ -2636,7 +2636,7 @@
     "mitmproxy": "12.2.3",
     "source_sha256": {
       "cli/src/safeyolo/mitm_addons/admin_shield.py": "3250bbeb6926a2f4b0d854743f933e9624d65886048c9bb8c3a398990859a6d4",
-      "cli/src/safeyolo/mitm_addons/admin_api.py": "1b617e66e53aefd38412e60b9ffcf24a7075c5f468b61e3e3fa93b71e038a0ac"
+      "cli/src/safeyolo/mitm_addons/admin_api.py": "2663a85acf80df80fd145b26a4fc31bd5dc0496f59044547db1e4c1d481bd85a"
     },
     "server_sha256": "8e7a49721801ffc20acfe9e8dd723a0c65dfb14933832bca70137c17e352bcbe",
     "external_network_attempts": 0,
