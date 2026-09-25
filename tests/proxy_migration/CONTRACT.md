@@ -110,6 +110,12 @@ The shared assertions cover:
   record CONNECT in the security audit; Rust also emits `proxy.request` rows.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
+  A mixed-outcome case sends allowed requests and a credential approval request
+  on one Alice connection while Bob sends denied requests on another. The owned
+  origin records HTTP/2 negotiation and distinct allowed response bodies. The
+  operator API retains only Alice's credential approval. The origin sees only
+  the two allowed application requests, with no credential header. A separate
+  HTTP/1 request records HTTP/1 negotiation on both legs.
 - An HTTP/2 upload one byte above the 10 MiB streaming threshold reaches the
   owned origin byte for byte. The origin observes END_STREAM before it replies.
   A separate header-detectable credential case announces 12 MiB, above that
@@ -176,8 +182,15 @@ during shutdown. Native HTTP/2 tests also verify cancellation releases a paused
 upstream response and shutdown drains its remaining bytes. The paired HTTP/2
 fixture uses an independent Python protocol peer. Two strict expected failures
 retain the old inner-authority bypass; Rust rejects both cases. Rust can
-negotiate HTTP/2 with the client while using HTTP/1 at the origin, where the old
-proxy negotiates HTTP/1 on both sides. Native opaque CONNECT now shares the
+negotiate HTTP/2 with the client while using HTTP/1 at the origin. With Python's
+eager connection strategy, the comparator negotiates HTTP/1 on both legs for
+that origin. With Python's lazy strategy, it negotiates HTTP/2 with the client
+and HTTP/1 at the origin. The controlled origin records its negotiated protocol
+in each case. The stream-cancellation case resets one
+partial response while a sibling waits. Rust forwards the reset to the owned
+origin and completes the sibling. The Python comparator does not forward that
+reset in this case, so the sibling times out; the test keeps a strict expected
+failure. Native opaque CONNECT now shares the
 authorized egress path with HTTP/TLS. Native passthrough tests preserve the
 origin's certificate and restore interception after removing an exact entry.
 WebSockets and the documented passthrough matching gaps remain unfinished.

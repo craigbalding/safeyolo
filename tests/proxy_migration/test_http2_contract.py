@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from mitmproxy.certs import CertStore
 
+from safeyolo.api import AdminAPI
 from tests.proxy_migration.harness import launch_proxy, read_events
 from tests.proxy_migration.run import proxy_identity, runtime_resources
 
@@ -61,6 +62,22 @@ enabled = true
 use_default_credential_rules = false
 '''
 
+MIXED_STREAM_POLICY = POLICY + '''
+[[permissions]]
+action = "credential:use"
+resource = "*"
+effect = "prompt"
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-approve"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+
 
 def origin_certificate(directory):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -88,6 +105,7 @@ class Origin(socketserver.ThreadingTCPServer):
         self.context.set_alpn_protocols(protocols)
         self.protocols = protocols
         self.requests = []
+        self.negotiated_alpn = []
         self.accepts = 0
         self.lock = threading.Lock()
         super().__init__(("127.0.0.1", 0), OriginHandler)
@@ -108,7 +126,10 @@ class OriginHandler(socketserver.BaseRequestHandler):
         try:
             with self.server.context.wrap_socket(self.request, server_side=True) as stream:
                 stream.settimeout(5)
-                if stream.selected_alpn_protocol() == "h2":
+                negotiated = stream.selected_alpn_protocol()
+                with self.server.lock:
+                    self.server.negotiated_alpn.append(negotiated)
+                if negotiated == "h2":
                     connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
                         client_side=False, header_encoding="utf-8"))
                     connection.initiate_connection()
@@ -124,8 +145,12 @@ class OriginHandler(socketserver.BaseRequestHandler):
                                     self.server.requests.append(record)
                             elif isinstance(event, h2.events.StreamEnded):
                                 requests[event.stream_id]["ended"] = True
-                                connection.send_headers(event.stream_id, [(":status", "200"), ("content-length", "5")])
-                                connection.send_data(event.stream_id, b"hello", end_stream=True)
+                                path = requests[event.stream_id][":path"]
+                                body = path.encode() if path.startswith("/h2-mixed/") else b"hello"
+                                connection.send_headers(event.stream_id, [
+                                    (":status", "200"), ("content-length", str(len(body))),
+                                ])
+                                connection.send_data(event.stream_id, body, end_stream=True)
                             elif isinstance(event, h2.events.DataReceived):
                                 with self.server.lock:
                                     requests[event.stream_id]["body"].extend(event.data)
@@ -687,6 +712,131 @@ def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend,
                 assert events[row["headers"]["x-safeyolo-request-id"]]["agent"] == agent
 
 
+def test_http2_mixed_stream_decisions_and_http1_control(proxy_backend, tmp_path):
+    """One H2 connection cannot lend its approval or credential to a sibling."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    pem, public = origin_certificate(directory)
+    token_file = directory / "operator-token"
+    token_file.write_text("h2-stream-approval-fixture\n")
+    with origin_server(pem, protocols=("h2", "http/1.1")) as origin:
+        with origin_server(pem, protocols=("http/1.1",)) as http1_origin:
+            with launch_proxy(
+                proxy_backend, directory, MIXED_STREAM_POLICY, tls=True, upstream_ca=public,
+                native_policy=proxy_backend == "rust",
+                credential_head_decision=proxy_backend == "python",
+                admin_port=0, admin_api_token_file=token_file,
+            ) as proxy:
+                barrier = threading.Barrier(2)
+
+                def send_streams(agent):
+                    with tls_tunnel(
+                        proxy.paths[agent], origin.authority,
+                        directory / "ca/mitmproxy-ca-cert.pem", offers=("h2",),
+                    ) as stream:
+                        negotiated = stream.selected_alpn_protocol()
+                        barrier.wait(timeout=5)
+                        if agent == "alice":
+                            requests = [
+                                headers(origin.authority, "/h2-mixed/one?part=1&part=2%2F3", [
+                                    ("x-safeyolo-agent", "bob"),
+                                    ("x-safeyolo-request-id", "req-" + "f" * 32),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/approval", [
+                                    ("authorization", "Bearer key-approve"),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/two"),
+                            ]
+                        else:
+                            requests = [
+                                headers(origin.authority, "/h2-mixed/bob-one", [
+                                    ("x-safeyolo-agent", "alice"),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/bob-two"),
+                            ]
+                        return negotiated, h2_requests(stream, requests)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    alice_future = pool.submit(send_streams, "alice")
+                    bob_future = pool.submit(send_streams, "bob")
+                    alice_alpn, alice = alice_future.result(timeout=15)
+                    bob_alpn, bob = bob_future.result(timeout=15)
+
+                assert (alice_alpn, bob_alpn) == ("h2", "h2")
+                assert [row["headers"][":status"] for row in alice] == ["200", "428", "200"]
+                assert [row["headers"][":status"] for row in bob] == ["403", "403"]
+                assert alice[0]["body"] == b"/h2-mixed/one?part=1&part=2%2F3"
+                assert alice[2]["body"] == b"/h2-mixed/two"
+                assert alice[1]["headers"]["x-blocked-by"] == "credential-guard"
+                for denied in (alice[1], *bob):
+                    assert b"key-approve" not in denied["body"]
+                    assert alice[0]["body"] not in denied["body"]
+                    assert alice[2]["body"] not in denied["body"]
+
+                with origin.lock:
+                    origin_requests = list(origin.requests)
+                    origin_alpn = list(origin.negotiated_alpn)
+                assert origin_alpn and set(origin_alpn) == {"h2"}
+                assert len(origin_requests) == 2
+                assert {row[":path"] for row in origin_requests} == {
+                    "/h2-mixed/one?part=1&part=2%2F3", "/h2-mixed/two",
+                }
+                assert all("authorization" not in row and row["ended"] for row in origin_requests)
+
+                response_ids = [row["headers"]["x-safeyolo-request-id"] for row in alice + bob]
+                assert len(set(response_ids)) == 5
+                assert "req-" + "f" * 32 not in response_ids
+                events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                for agent, responses in (("alice", alice), ("bob", bob)):
+                    connection_ids = {events[row["headers"]["x-safeyolo-request-id"]]["connection_id"]
+                                      for row in responses}
+                    assert len(connection_ids) == 1
+                    for row in responses:
+                        event = events[row["headers"]["x-safeyolo-request-id"]]
+                        assert event["agent"] == agent
+                        assert event["status"] == int(row["headers"][":status"])
+
+                marker = json.loads(proxy.readiness_file.read_text())
+                api = AdminAPI(
+                    base_url=f"http://127.0.0.1:{marker['admin_port']}",
+                    token=token_file.read_text().strip(),
+                )
+                pending_approvals = api.pending_approvals()
+                pending = [row for row in pending_approvals if row.get("request_id") == response_ids[1]]
+                assert len(pending) == 1
+                assert pending[0]["event"] == "security.credential_guard"
+                assert pending[0]["agent"] == "alice"
+                assert {row.get("request_id") for row in pending_approvals}.isdisjoint(
+                    response_ids[:1] + response_ids[2:]
+                )
+                audit = read_events(directory / "audit.jsonl")
+                prompt_rows = [row for row in audit if row.get("event") == "security.credential_guard"
+                               and row.get("request_id") == response_ids[1]]
+                assert len(prompt_rows) == 1
+                assert prompt_rows[0]["decision"] == "require_approval"
+                assert b"key-approve" not in (directory / "audit.jsonl").read_bytes()
+
+                with tls_tunnel(
+                    proxy.paths["alice"], http1_origin.authority,
+                    directory / "ca/mitmproxy-ca-cert.pem", offers=("http/1.1",),
+                ) as stream:
+                    assert stream.selected_alpn_protocol() == "http/1.1"
+                    stream.sendall((
+                        f"GET /http1-control HTTP/1.1\r\nHost: {http1_origin.authority}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode())
+                    response = http.client.HTTPResponse(stream)
+                    response.begin()
+                    assert response.status == 200
+                    assert response.read() == b"hello"
+                    response.close()
+                assert http1_origin.negotiated_alpn
+                assert set(http1_origin.negotiated_alpn) == {"http/1.1"}
+                assert len(http1_origin.requests) == 1
+                assert "GET /http1-control HTTP/1.1" in http1_origin.requests[0]["head"]
+
+
 def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp_path):
     """The origin fixture must write its queued sibling body after the reset gate."""
     pem, public = origin_certificate(tmp_path)
@@ -771,7 +921,15 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
             }
             before_reset = runtime_resources(proxy)
             while not results[3]["ended"]:
-                data = stream.recv(65536)
+                try:
+                    data = stream.recv(65536)
+                except TimeoutError:
+                    pytest.fail(
+                        "sibling stream timed out after cancellation: "
+                        f"reset_seen={origin.reset_seen.is_set()} "
+                        f"keep_completed={origin.keep_completed.is_set()} "
+                        f"origin_errors={origin.handler_errors!r}"
+                    )
                 assert data, results
                 for event in connection.receive_data(data):
                     if isinstance(event, h2.events.ResponseReceived):
@@ -865,14 +1023,26 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
 
 
 @pytest.mark.parametrize("protocols", [("h2",), ("http/1.1",)])
-def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_path, protocols):
+@pytest.mark.parametrize("eager_connect", [False, True], ids=["lazy", "eager"])
+def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_path, protocols, eager_connect):
+    if proxy_backend == "rust" and eager_connect:
+        pytest.skip("connection_strategy is a Python-only fixture setting")
     directory = tmp_path / proxy_backend
     directory.mkdir()
     CertStore.from_store(directory / "ca", "mitmproxy", 2048)
     pem, public = origin_certificate(directory)
-    with origin_server(pem, protocols) as origin, launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
+    with origin_server(pem, protocols) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+        eager_connect=eager_connect,
+    ) as proxy:
         with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
-            if stream.selected_alpn_protocol() == "h2":
+            client_alpn = stream.selected_alpn_protocol()
+            expected_client = (
+                "http/1.1" if protocols == ("http/1.1",) and proxy_backend == "python" and eager_connect
+                else "h2"
+            )
+            assert client_alpn == expected_client
+            if client_alpn == "h2":
                 response = h2_requests(stream, [headers(origin.authority, "/hello")])[0]
                 assert response["headers"][":status"] == "200"
                 assert response["body"] == b"hello"
@@ -884,6 +1054,8 @@ def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_
                 assert response.read() == b"hello"
                 response.close()
         assert len(origin.requests) == 1
+        assert origin.negotiated_alpn
+        assert set(origin.negotiated_alpn) == set(protocols)
 
 
 @pytest.mark.parametrize("mutation", ["authority_host", "authority_port", "host_header", "duplicate_host"])
