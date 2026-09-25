@@ -71,19 +71,19 @@ The shared assertions cover:
   selected route. An allowed request keeps its signed-style encoded target,
   repeated query parameters, body bytes and synthetic credential. A forbidden
   absolute target opens no parent connection. For an allowed target with a
-  forbidden Host, native forwarding retains the allowed destination; the Python
-  comparator sends the credential to the forbidden origin and remains a strict
-  expected failure. A direct parent request proves that the observer routes a
-  conflicting Host to the forbidden origin.
+  forbidden Host, both backends forward the admitted Host to the parent. The
+  forbidden origin has zero accepts and receives no credential. A direct parent
+  request proves that the observer routes a conflicting Host to the forbidden
+  origin.
 - Intercepted CONNECT authority, inner HTTP/1 Host, HTTP/2 `:authority` and
   Host, and client Server Name Indication (SNI) through the same controlled
   parent and two independent TLS origins. A forbidden CONNECT opens no parent
   connection.
   An allowed request and an ASCII case-equivalent inner Host complete with exact
-  target and body bytes. Native rejects changed inner authorities before
-  application delivery; the Python comparator's credential delivery under
-  changed HTTP/1 Host and HTTP/2 `:authority` remains a strict expected
-  failure. Both proxies reject a conflicting HTTP/2 Host field before
+  target, body and credential bytes. Both backends reject changed inner HTTP/1
+  Host and HTTP/2 `:authority` before application delivery. An announced
+  streaming HTTP/1 body receives a local denial from its request head before
+  upload. Both proxies reject a conflicting HTTP/2 Host field before
   application delivery. A client SNI conflict cannot contact the forbidden
   origin. If the parent deliberately routes the allowed CONNECT to a wrong-name
   TLS origin, both proxies reject its certificate before sending application
@@ -202,8 +202,8 @@ operator CA. Native transport tests separately exercise inner authority/SNI
 confusion, parent CONNECT, idle TLS shutdown and active HTTPS response drain
 during shutdown. Native HTTP/2 tests also verify cancellation releases a paused
 upstream response and shutdown drains its remaining bytes. The paired HTTP/2
-fixture uses an independent Python protocol peer. Two strict expected failures
-retain the old inner-authority bypass; Rust rejects both cases. Rust can
+fixture uses an independent Python protocol peer. Both backends reject changed
+inner `:authority` host and port before origin delivery. Rust can
 negotiate HTTP/2 with the client while using HTTP/1 at the origin. With Python's
 eager connection strategy, the comparator negotiates HTTP/1 on both legs for
 that origin. With Python's lazy strategy, it negotiates HTTP/2 with the client

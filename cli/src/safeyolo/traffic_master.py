@@ -26,7 +26,7 @@ from mitmproxy.tools.console.master import ConsoleMaster
 from mitmproxy.tools.web import app, static_viewer, webaddons
 from mitmproxy.utils import human
 
-from .early_credential_response import install_early_credential_response
+from .early_request_response import install_early_request_response
 from .events import EventKind, Severity, write_event
 from .mitm_addons import ProductionAddons
 from .proxy_modes.unix_listener import ensure_registered as _ensure_unix_listener_registered
@@ -869,7 +869,7 @@ class TrafficMaster(ConsoleMaster):
 
 def main_entry(arguments: list[str] | None = None) -> None:
     """Run the hybrid master using mitmproxy's native CLI processing."""
-    install_early_credential_response()
+    install_early_request_response()
     install_websocket_close_handshake()
     initialize_runtime_identity_from_environment()
     _record_process_imports("traffic-master: Python and module imports")

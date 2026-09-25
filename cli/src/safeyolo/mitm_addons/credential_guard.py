@@ -417,7 +417,7 @@ class CredentialGuard(SecurityAddon):
         self.request(flow)
         flow.metadata["credential_guard_head_checked"] = True
         if flow.response:
-            flow.metadata["credential_guard_head_denied"] = True
+            flow.metadata["request_head_denied"] = True
             if chunked:
                 # An unannounced body has not reached the streaming threshold.
                 # Enter the existing per-flow early-response path at the head.

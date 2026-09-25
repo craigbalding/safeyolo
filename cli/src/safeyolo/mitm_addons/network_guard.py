@@ -5,6 +5,7 @@ Combines access control (deny rules) and rate limiting (budget enforcement)
 into a single addon with one PolicyClient evaluation per request.
 
 Handles:
+- Request authority consistency before policy and streamed egress
 - Homoglyph detection (mixed-script domain spoofing) → 403
 - Access denial (effect: deny) → 403
 - Egress approval required (effect: prompt) → 428
@@ -39,6 +40,7 @@ import sys
 from pathlib import Path
 
 from mitmproxy import ctx, http
+from mitmproxy.net.http import url
 
 try:
     from confusable_homoglyphs import confusables
@@ -142,6 +144,65 @@ class NetworkGuard(SecurityAddon):
         client_ip = get_client_ip(flow)
         # TODO: Could use service_discovery for richer principal mapping
         return f"client:{client_ip}"
+
+    @staticmethod
+    def _same_authority(flow: http.HTTPFlow, authority: str) -> bool:
+        """Compare a wire authority with the destination mitmproxy will use."""
+        try:
+            host, port = url.parse_authority(authority, check=True)
+        except ValueError:
+            return False
+        if port is None:
+            port = url.default_port(flow.request.scheme)
+        destination = flow.request.host
+        # ASCII case does not change a DNS destination. Keep other source
+        # spellings distinct so they cannot borrow this destination's policy.
+        same_host = (host.lower() == destination.lower()
+                     if host.isascii() and destination.isascii()
+                     else host == destination)
+        return same_host and port == flow.request.port
+
+    def requestheaders(self, flow: http.HTTPFlow) -> None:
+        """Keep the policy destination and the forwarded authority together."""
+        # Credential checks and gateway injection can remain enabled when the
+        # network policy addon is disabled, so this routing invariant is not
+        # controlled by network_guard_enabled or network_guard_block.
+        if flow.response:
+            return
+
+        request = flow.request
+        hosts = request.headers.get_all("host")
+        authority = request.authority
+        # In an intercepted CONNECT, mitmproxy routes by the admitted outer
+        # destination even if the inner Host or :authority changes. Reject a
+        # different virtual host before a streamed body or credential can leave.
+        in_tunnel = bool(flow.client_conn.tls)
+        conflicting = len(hosts) > 1
+        if in_tunnel or request.is_http2 or request.is_http3:
+            conflicting |= bool(authority) and not self._same_authority(flow, authority)
+            conflicting |= any(not self._same_authority(flow, host) for host in hosts)
+        elif hosts and not self._same_authority(flow, hosts[0]):
+            # An absolute-form target supplies the policy and dial destination.
+            # A parent may route by Host, so forward that same destination.
+            request.host_header = url.hostport(request.scheme, request.host, request.port)
+
+        if not conflicting:
+            return
+        # mitmproxy 12.2.3 otherwise starts a streamed origin request despite
+        # the response set at requestheaders. Use the existing early response
+        # path, and do not emit 100 Continue for a request that is denied.
+        flow.metadata["request_head_denied"] = True
+        request.stream = True
+        request.headers.pop("expect", None)
+        self.block(flow, 400, {
+            "error": "Request authority conflicts with proxy destination",
+            "reason": "request_authority_conflict",
+        })
+        self.log_decision(
+            flow, Decision.DENY, severity=Severity.HIGH,
+            summary="Request authority differs from its admitted destination",
+            host=request.host, reason="request_authority_conflict",
+        )
 
     @trace_addon_hook("request")
     def request(self, flow: http.HTTPFlow):

@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
-import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -303,7 +302,7 @@ def _connect(path, authority, sni, ca, *, outer_host=None, verify_client_name=Tr
         raise
 
 
-def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend, tmp_path, request):
+def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend, tmp_path):
     """A Host-routing parent exposes any forwarded authority confusion."""
     directory = tmp_path / proxy_backend
     with _peers(directory / "peers") as (parent, peers, _):
@@ -321,7 +320,10 @@ def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend,
             assert allowed.requests[-1]["head"].split(b"\r\n", 1)[0] == b"POST " + TARGET.encode() + b" HTTP/1.1"
             assert allowed.requests[-1]["body"] == BODY
             assert SECRET in allowed.requests[-1]["head"]
-            assert _host(parent.requests[-1]["head"]).lower() in (ALLOWED, f"{ALLOWED}:80")
+            if proxy_backend == "python":
+                assert _host(parent.requests[-1]["head"]) == "ALLOWED.INVALID"
+            else:
+                assert _host(parent.requests[-1]["head"]) == "allowed.invalid:80"
 
             before = (parent.accepts, forbidden.accepts)
             denied = _raw_http(path, b"http://forbidden.invalid/denied", b"allowed.invalid", secret=True)
@@ -330,19 +332,11 @@ def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend,
 
             conflict = _raw_http(path, b"http://allowed.invalid/conflict", b"forbidden.invalid",
                                  secret=True)
-            conflict_leak = bool(forbidden.requests)
-            if conflict_leak:
-                # The comparator sends the allowed-target credential with the
-                # conflicting Host to a Host-routing parent.
-                assert conflict[0] == 200 and conflict[2] == b"forbidden-http"
-                assert parent.requests[-1]["route"] == "forbidden-http"
-                assert SECRET in forbidden.requests[-1]["head"]
-            elif conflict[0] == 200:
-                assert conflict[2] == b"allowed-http"
-                assert parent.requests[-1]["route"] == "allowed-http"
-                assert SECRET in allowed.requests[-1]["head"]
-            else:
-                assert conflict[0] in (400, 403), conflict
+            assert conflict[0] == 200 and conflict[2] == b"allowed-http", conflict
+            assert parent.requests[-1]["route"] == "allowed-http"
+            assert _host(parent.requests[-1]["head"]).lower() in (ALLOWED, f"{ALLOWED}:80")
+            assert SECRET in allowed.requests[-1]["head"]
+            assert forbidden.accepts == 0 and forbidden.requests == []
             audit = read_events(directory / "proxy/audit.jsonl")
             assert any(row["event"] == "security.network_guard" and row["host"] == FORBIDDEN
                        and row["decision"] == "deny" for row in audit)
@@ -363,13 +357,10 @@ def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend,
             assert response.status == 200 and response.read() == b"forbidden-http"
         assert parent.requests[-1]["route"] == "forbidden-http"
         assert b"/observer-control" in forbidden.requests[-1]["head"]
-        if proxy_backend == "python" and conflict_leak:
-            request.node.add_marker(pytest.mark.xfail(
-                strict=True, reason="Python absolute-form/Host conflict reaches the forbidden Host route"))
-        assert not conflict_leak, forbidden.requests
+        assert SECRET not in forbidden.requests[-1]["head"]
 
 
-def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend, tmp_path, request):
+def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend, tmp_path):
     """CONNECT, decrypted Host/:authority and SNI cannot redirect a credential."""
     directory = tmp_path / proxy_backend
     with _peers(directory / "peers") as (parent, peers, trust):
@@ -407,12 +398,17 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
             assert status == 200
             with stream:
-                stream.sendall(b"GET /canonical?part=one&part=two%2Fthree HTTP/1.1\r\n"
-                               b"Host: ALLOWED.INVALID:443\r\nConnection: close\r\n\r\n")
+                stream.sendall(b"POST " + TARGET.encode() + b" HTTP/1.1\r\n"
+                               b"Host: ALLOWED.INVALID:443\r\nAuthorization: Bearer " + SECRET
+                               + b"\r\nContent-Length: " + str(len(BODY)).encode()
+                               + b"\r\nConnection: close\r\n\r\n" + BODY)
                 response = http.client.HTTPResponse(stream)
                 response.begin()
                 assert response.status == 200 and response.read() == b"allowed-tls"
-            assert b"GET /canonical?part=one&part=two%2Fthree HTTP/1.1" in allowed.requests[-1]["head"]
+            assert b"POST " + TARGET.encode() + b" HTTP/1.1" in allowed.requests[-1]["head"]
+            assert _host(allowed.requests[-1]["head"]) == "ALLOWED.INVALID:443"
+            assert allowed.requests[-1]["body"] == BODY
+            assert SECRET in allowed.requests[-1]["head"]
             assert forbidden.requests == []
 
             # A different client SNI cannot replace the admitted CONNECT name
@@ -454,15 +450,25 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
                 response.begin()
                 h1_status = response.status
                 response.read()
-            h1_leak = len(allowed.requests) != before_h1
-            if h1_leak:
-                assert h1_status == 200
-                assert b"/inner-conflict" in allowed.requests[-1]["head"]
-                assert forbidden_authority in allowed.requests[-1]["head"]
-                assert SECRET in allowed.requests[-1]["head"]
-            else:
-                assert h1_status in (400, 403), h1_status
+            assert h1_status == 400
+            assert len(allowed.requests) == before_h1
             assert forbidden.requests == []
+
+            # A request head with an announced streaming body must receive a
+            # local response before the client uploads that body.
+            status, stream = _connect(path, allowed_authority, ALLOWED, ca)
+            assert status == 200
+            before_stream = len(allowed.requests)
+            with stream:
+                stream.sendall(b"POST /stream-conflict HTTP/1.1\r\nHost: " + forbidden_authority
+                               + b"\r\nAuthorization: Bearer " + SECRET
+                               + b"\r\nContent-Length: 12000000\r\nExpect: 100-continue\r\n\r\n")
+                response = http.client.HTTPResponse(stream)
+                response.begin()
+                assert response.status == 400
+                response.read()
+            assert len(allowed.requests) == before_stream
+            assert forbidden.accepts == 0
 
             status, stream = _connect(path, allowed_authority, ALLOWED, ca, offers=("h2",))
             assert status == 200
@@ -472,14 +478,9 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
                 result = h2_requests(stream, [headers(f"{FORBIDDEN}:443", "/h2-conflict", [
                     ("authorization", "Bearer " + SECRET.decode()),
                 ])], allow_rejection=True)[0]
-            h2_leak = len(allowed.requests) != before_h2
-            if h2_leak:
-                assert b"/h2-conflict" in allowed.requests[-1]["head"]
-                assert forbidden_authority in allowed.requests[-1]["head"].lower()
-                assert SECRET in allowed.requests[-1]["head"]
+            assert len(allowed.requests) == before_h2
             assert forbidden.requests == []
-            if proxy_backend == "rust":
-                assert result["headers"][":status"] == "400", result
+            assert result["headers"][":status"] == "400", result
 
             status, stream = _connect(path, allowed_authority, ALLOWED, ca, offers=("h2",))
             assert status == 200
@@ -541,7 +542,4 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
                 assert response.status == 200 and response.read() == b"forbidden-tls"
         assert b"/direct-cert-control" in forbidden.requests[-1]["head"]
         assert SECRET not in forbidden.requests[-1]["head"]
-        if proxy_backend == "python" and (h1_leak or h2_leak):
-            request.node.add_marker(pytest.mark.xfail(
-                strict=True, reason="Python tunnel sends a credential under conflicting inner authority"))
-        assert not h1_leak and not h2_leak, (h1_status, result, allowed.requests)
+        assert all(SECRET not in item["head"] for item in forbidden.requests)

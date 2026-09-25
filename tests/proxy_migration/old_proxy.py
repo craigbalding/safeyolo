@@ -81,10 +81,9 @@ class Observations:
 
 
 async def run(config):
-    if config.get("fixture_credential_head_decision", False):
-        from safeyolo.early_credential_response import install_early_credential_response
+    from safeyolo.early_request_response import install_early_request_response
 
-        install_early_credential_response()
+    install_early_request_response()
     ensure_registered()
     install_websocket_close_handshake()
     configure_policy_client(PolicyClientConfig(baseline_path=config["policy_file"]))
