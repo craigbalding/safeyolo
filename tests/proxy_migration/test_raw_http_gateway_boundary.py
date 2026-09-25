@@ -156,9 +156,10 @@ class _ParentRequest(socketserver.BaseRequestHandler):
             observed["route"] = origin.name
             with self.server.lock:
                 self.server.requests.append(observed)
-            path = urlsplit(observed["target"].decode("ascii"))
-            target = (path.path + ("?" + path.query if "?" in observed["target"].decode("ascii")
-                                   else "")).encode("ascii")
+            absolute_target = observed["target"].decode("utf-8")
+            path = urlsplit(absolute_target)
+            target = (path.path + ("?" + path.query if "?" in absolute_target
+                                   else "")).encode("utf-8")
             forwarded = first.split(b" ", 1)[0] + b" " + target + b" HTTP/1.1\r\n"
             forwarded += observed["head"].split(b"\r\n", 1)[1] + observed["wire_body"]
             with socket.create_connection(origin.server_address, timeout=5) as upstream:
@@ -234,6 +235,11 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
             assert auth_values == [b"Bearer " + VAULT_CREDENTIAL.encode()]
             assert token not in allowed.requests[-1]["head"]
 
+            read = _send(path, b"/v1/read", [(b"Host", ALLOWED.encode()), auth])
+            assert read[0] == 200 and read[2] == b"allowed", read
+            assert parent.requests[-1]["target"] == b"http://allowed.invalid/v1/read"
+            assert b"Bearer " + VAULT_CREDENTIAL.encode() in allowed.requests[-1]["head"]
+
             # The gateway restriction does not alter an ordinary signed URL.
             ordinary = _send(path, ORDINARY_SIGNED_TARGET,
                              [(b"Host", ALLOWED.encode()),
@@ -265,7 +271,8 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 assert status >= 400, status
                 assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
-            for target in (b"/v1/%72ead", b"/v1//read", b"/v1%2Fread", b"/v1/./read"):
+            for target in (b"/v1/%72ead", b"/v1//read", b"/v1%2Fread", b"/v1/./read",
+                           b"/v1/read/", b"/v1/read/?x=1"):
                 before = (parent.accepts, allowed.accepts, forbidden.accepts)
                 status, response_headers, body = _send(
                     path, target, [(b"Host", ALLOWED.encode()), auth])
@@ -275,6 +282,20 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                 payload = json.loads(body)
                 assert "TRANSPORT_PATH_TRICK" in payload.get(
                     "reason_codes", [payload.get("error")]), (target, payload)
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before, target
+
+            for target in ("/v1/reａd".encode(), "/v1/ｒead".encode()):
+                before = (parent.accepts, allowed.accepts, forbidden.accepts)
+                status, response_headers, body = _send(
+                    path, target, [(b"Host", ALLOWED.encode()), auth])
+                if proxy_backend == "rust":
+                    assert status == 403, (target, status, body)
+                    assert {name.lower(): value for name, value in response_headers.items()}[
+                        "x-blocked-by"] == "service-gateway"
+                    payload = json.loads(body)
+                    assert payload["error"] == "TRANSPORT_PATH_TRICK", payload
+                else:
+                    assert status == 400, (target, status, body)
                 assert (parent.accepts, allowed.accepts, forbidden.accepts) == before, target
 
             chunk = b"4\r\nDATA\r\n0\r\n\r\n"
@@ -297,7 +318,7 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
             path_denials = [row for row in audit if row["event"] == "gateway.deny"
                             and row.get("details", {}).get("code") == "TRANSPORT_PATH_TRICK"]
             if proxy_backend == "python":
-                assert len(path_denials) == 4, path_denials
+                assert len(path_denials) == 6, path_denials
                 assert framed[0] == 400, framed
             else:
                 assert framed[0] == 200, framed

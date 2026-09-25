@@ -1560,6 +1560,12 @@ class ServiceGateway:
     def _reject_gateway_path(self, flow, path: str) -> bool:
         trick = reject_path_tricks(path)
         if not trick:
+            try:
+                if normalize_path(path) != path:
+                    trick = "path spelling changes during service route matching"
+            except (ValueError, UnicodeError):
+                trick = "invalid path for service route matching"
+        if not trick:
             return False
         self._deny(
             flow,

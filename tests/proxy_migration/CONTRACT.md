@@ -76,12 +76,16 @@ The shared assertions cover:
   request proves that the observer routes a conflicting Host to the forbidden
   origin.
 - Raw service-gateway requests use an independent Host-routing parent and two
-  origins. Duplicate Authorization and Host fields, plus encoded, doubled-slash
-  and dot-segment route spellings, create no parent or origin connection.
-  A service route with repeated encoded query values delivers the exact body
-  and only the vaulted credential to the allowed origin. An ordinary signed
-  target with an encoded path segment keeps its exact target and body without
-  a gateway credential. When Content-Length conflicts with Transfer-Encoding,
+  origins. Duplicate Authorization and Host fields, plus encoded,
+  doubled-slash, dot-segment, and trailing-slash spellings of an exact route,
+  create no parent or origin connection. Python rejects raw fullwidth route
+  letters during HTTP parsing; Rust rejects them at the service gateway.
+  Both leave the parent and origin untouched. The exact canonical route
+  succeeds. A service route with repeated encoded query values delivers the
+  exact body and only the vaulted credential to the allowed origin. An ordinary
+  signed target with an encoded path segment keeps its exact target and body
+  without a gateway credential. When Content-Length conflicts with
+  Transfer-Encoding,
   Python rejects the request locally.
   Rust forwards one chunked body with no Content-Length; the parent and origin
   both record the exact decoded bytes. A direct request proves that the parent
