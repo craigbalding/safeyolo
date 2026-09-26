@@ -30,17 +30,18 @@ AGENT_API = "http://_safeyolo.proxy.internal"
 AGENT_TOKEN = "fixture-agent-api-token-one"
 
 
-def scoped_api(proxy, agent, path, *, expected=200):
-    status, _, body = request(
-        proxy.paths[agent], AGENT_API + path,
-        headers={"Authorization": f"Bearer {AGENT_TOKEN}"},
+def scoped_api(proxy, agent, path, *, expected=200, method="GET", body=None, headers=None):
+    status, _, raw = request(
+        proxy.paths[agent], AGENT_API + path, method=method, body=body,
+        headers={"Authorization": f"Bearer {AGENT_TOKEN}", **(headers or {})},
     )
-    assert status == expected, (path, status, body)
-    return json.loads(body)
+    assert status == expected, (path, status, raw)
+    return json.loads(raw)
 
 
 def request_evidence(proxy, agent, identifier, *, host, port, method, status, decision,
-                     run, path=None, flow_expected=False):
+                     run, path=None, flow_expected=False, blocker="network-guard",
+                     context_source=None, block_reason="missing_context"):
     """Join one response ID to owned trace, audit and eligible persisted flow."""
     assert REQUEST_ID.fullmatch(identifier) and identifier != FORGED_REQUEST_ID
     other = "bob" if agent == "alice" else "alice"
@@ -51,14 +52,19 @@ def request_evidence(proxy, agent, identifier, *, host, port, method, status, de
              and step["hook"] == ("http_connect" if method == "CONNECT" else "request")]
     assert len(guard) == 1, trace
     guard = guard[0]
+    guard_outcome = "blocked" if (blocker == "network-guard" and decision == "deny") else "allowed"
     assert {key: guard[key] for key in ("state", "outcome", "host", "port", "method")} == {
-        "state": "evaluated", "outcome": "allowed" if decision == "allow" else "blocked",
+        "state": "evaluated", "outcome": guard_outcome,
         "host": host, "port": port, "method": method,
     }
     connection_id = guard["connection_id"]
     assert connection_id and all(step.get("connection_id") == connection_id for step in trace["steps"])
-    if decision == "deny":
+    if decision == "deny" and blocker == "network-guard":
         assert guard["details"]["status"] == status
+    if blocker == "test-context":
+        context_steps = [step for step in trace["steps"] if step["addon"] == "test-context"
+                         and step["hook"] == "request"]
+        assert len(context_steps) == 1 and context_steps[0]["outcome"] == "blocked", trace
     assert scoped_api(proxy, other, f"/trace?request_id={identifier}", expected=404)["request_id"] == identifier
 
     explained = scoped_api(proxy, agent, f"/explain?request_id={identifier}")
@@ -66,7 +72,7 @@ def request_evidence(proxy, agent, identifier, *, host, port, method, status, de
     events = explained["events"]
     assert events and all(event["request_id"] == identifier and event["agent"] == agent
                           and event["host"] == host for event in events), events
-    if method == "CONNECT" or decision == "deny":
+    if method == "CONNECT" or (blocker == "network-guard" and decision == "deny"):
         policy = [event for event in events if event["event"] == "security.network_guard"]
         assert len(policy) == 1 and policy[0]["decision"] == decision, events
         details = policy[0]["details"]
@@ -74,10 +80,22 @@ def request_evidence(proxy, agent, identifier, *, host, port, method, status, de
         assert details["connection_id"] == connection_id
     else:
         context = [event for event in events if event["event"] == "security.test_context"]
-        assert [event["details"]["phase"] for event in context] == ["request", "response"], events
-        assert all(event["details"]["method"] == method and event["details"]["path"] == path
-                   for event in context)
-        assert context[1]["details"]["status_code"] == status
+        if decision == "deny":
+            assert len(context) == 1 and context[0]["decision"] == "deny", events
+            assert context[0]["details"]["reason"] == block_reason
+            assert context[0]["details"]["method"] == method
+            assert context[0]["details"]["path"] == path
+            assert context[0]["details"]["port"] == port
+            assert context[0]["details"]["connection_id"] == connection_id
+            assert context[0]["details"]["attribution"]["evidence_owner"] == agent
+        else:
+            assert [event["details"]["phase"] for event in context] == ["request", "response"], events
+            assert all(event["details"]["method"] == method and event["details"]["path"] == path
+                       for event in context)
+            assert context[1]["details"]["status_code"] == status
+            if context_source is not None:
+                assert all(event["details"]["test_context_source"] == context_source
+                           for event in context)
     foreign = scoped_api(proxy, other, f"/explain?request_id={identifier}")
     assert foreign == {"request_id": identifier, "status": "complete", "events": []}, foreign
 
