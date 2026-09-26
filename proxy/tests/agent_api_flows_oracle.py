@@ -134,6 +134,8 @@ def cases():
         c("search_ignored_owner_query", path="search?evidence_owner=%FF", method="GET"),
         c("endpoints_default", path="endpoints"),
         c("endpoints_nonobject", path="endpoints", payload=b"[]"),
+        c("endpoints_empty_string", path="endpoints", payload=b'""'),
+        c("endpoints_string", path="endpoints", payload=b'"x"'),
         c(
             "endpoints_unresolved_nonobject",
             path="endpoints",
@@ -160,6 +162,12 @@ def cases():
             payload=b'{"engagement_id":"owned-run","query":"needle"}',
         ),
         c("fts_nonobject", path="body-search", payload=b"1", identity=None),
+        c("fts_empty_string", path="body-search", payload=b'""'),
+        c("fts_array", path="body-search", payload=b"[]"),
+        c("fts_string", path="body-search", payload=b'"x"'),
+        c("request_search_empty_string", path="request-body-search", payload=b'""'),
+        c("request_search_array", path="request-body-search", payload=b"[]"),
+        c("request_search_string", path="request-body-search", payload=b'"x"'),
         c("fts_no_engagement", path="body-search", identity=None),
         c(
             "fts_no_query",

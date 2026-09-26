@@ -2911,7 +2911,7 @@
     "cli/src/safeyolo/core/service_loader.py": "a5def870f8e3e6896db8aaed4a1cdd2aecb0a6cb5537d942923ca5f610e445e8",
     "cli/src/safeyolo/core/service_paths.py": "3034156cad21b7a535bb26e8025d8841562c76aa96edaeb38b36009f2fa2fa6a",
     "cli/src/safeyolo/mitm_addons/service_gateway.py": "d60faf23fdf84aae2791c90d69eb5b6fdbf879377b2d4d2c63fae303deecf22f",
-    "cli/src/safeyolo/mitm_addons/agent_api.py": "7ef754e4361bd52b70e601eac63acbb2335b354a2be990866f151c9072b651d5",
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "85dd4a0cbb7ac41a3ac47e6d5e449f8795dd70ef117401e53b74e051c7ebf190",
     "cli/src/safeyolo/core/identity.py": "a5b9352db04c505f12a21c9cfac269d1ba27eb38cbf5989de723ad4ca3e42888",
     "cli/src/safeyolo/core/flow_cache.py": "eb7f8c829e9e39b3234b7218ba4b0929251798fa58b0490d33e70aff284fe5cd",
     "cli/src/safeyolo/core/utils.py": "762e946b9746c7ec36e1b6bf9e85628e1c089649bfe6c2473e78f7ac1f9dbf9e",

@@ -470,8 +470,50 @@
       "identity": "alice",
       "available": true,
       "auth": true,
-      "status": 500,
-      "text": "{\"error\": \"Internal error: AttributeError\"}",
+      "status": 400,
+      "text": "{\"error\": \"Invalid JSON body\"}",
+      "exception": null,
+      "audit_events": 0,
+      "tags": "[{\"tag\": \"empty-value\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"inf\", \"value\": \"Inf\", \"created_at\": 1234}, {\"tag\": \"nan\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"nullable\", \"value\": \"\", \"created_at\": 1234}]"
+    },
+    {
+      "name": "tag_empty_string",
+      "path": "/api/flows/1/tag",
+      "method": "POST",
+      "body": "\"\"",
+      "identity": "alice",
+      "available": true,
+      "auth": true,
+      "status": 400,
+      "text": "{\"error\": \"Invalid JSON body\"}",
+      "exception": null,
+      "audit_events": 0,
+      "tags": "[{\"tag\": \"empty-value\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"inf\", \"value\": \"Inf\", \"created_at\": 1234}, {\"tag\": \"nan\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"nullable\", \"value\": \"\", \"created_at\": 1234}]"
+    },
+    {
+      "name": "tag_empty_array",
+      "path": "/api/flows/1/tag",
+      "method": "POST",
+      "body": "[]",
+      "identity": "alice",
+      "available": true,
+      "auth": true,
+      "status": 400,
+      "text": "{\"error\": \"Invalid JSON body\"}",
+      "exception": null,
+      "audit_events": 0,
+      "tags": "[{\"tag\": \"empty-value\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"inf\", \"value\": \"Inf\", \"created_at\": 1234}, {\"tag\": \"nan\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"nullable\", \"value\": \"\", \"created_at\": 1234}]"
+    },
+    {
+      "name": "tag_string",
+      "path": "/api/flows/1/tag",
+      "method": "POST",
+      "body": "\"x\"",
+      "identity": "alice",
+      "available": true,
+      "auth": true,
+      "status": 400,
+      "text": "{\"error\": \"Invalid JSON body\"}",
       "exception": null,
       "audit_events": 0,
       "tags": "[{\"tag\": \"empty-value\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"inf\", \"value\": \"Inf\", \"created_at\": 1234}, {\"tag\": \"nan\", \"value\": \"\", \"created_at\": 1234}, {\"tag\": \"nullable\", \"value\": \"\", \"created_at\": 1234}]"
@@ -856,7 +898,7 @@
     }
   ],
   "source_sha256": {
-    "cli/src/safeyolo/mitm_addons/agent_api.py": "7ef754e4361bd52b70e601eac63acbb2335b354a2be990866f151c9072b651d5",
+    "cli/src/safeyolo/mitm_addons/agent_api.py": "85dd4a0cbb7ac41a3ac47e6d5e449f8795dd70ef117401e53b74e051c7ebf190",
     "cli/src/safeyolo/storage/flow_store.py": "2dfa78c11eba2a4a29aed7b911bb3ed56515990e0528e97614534111ddb51ab0"
   },
   "cleanup": {
