@@ -238,6 +238,86 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
             ]
 
 
+def test_flow_post_rejects_non_object_json_without_effect(proxy_backend, tmp_path):
+    """All four flow POST routes validate the shape at the real agent listener."""
+    with origin_server() as parent:
+        with policy_proxy(
+            proxy_backend, tmp_path / proxy_backend, ALLOW,
+            agent_api=True, flow_store_enabled=True,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        ) as proxy:
+            status, headers, raw = send_request(
+                proxy.paths["alice"], "http://ordinary.invalid/body-shape",
+                body=b"needle", headers={
+                    "Content-Type": "text/plain",
+                    "X-SafeYolo-Test-Context": "run=body-shape;agent=alice;test=flow-api",
+                },
+            )
+            assert status == 200 and raw == b"hello"
+            request_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
+            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+
+            def call(agent, path, body=None, *, method="POST"):
+                status, response_headers, raw = send_request(
+                    proxy.paths[agent], f"http://{HOST}{path}", method=method, body=body,
+                    headers={
+                        "Authorization": f"Bearer {TOKEN}",
+                        "Content-Type": "application/json",
+                        "X-Agent-Id": "bob" if agent == "alice" else "alice",
+                    },
+                )
+                assert {key.lower(): value for key, value in response_headers.items()}[
+                    "x-safeyolo-agent-api"
+                ] == "true"
+                assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+                return status, json.loads(raw)
+
+            deadline = time.monotonic() + 2
+            while True:
+                status, result = call("alice", "/api/flows/search", b"{}")
+                assert status == 200
+                owned = [flow for flow in result["flows"] if flow["request_id"] == request_id]
+                if owned or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.025)
+            assert len(owned) == 1, result
+            flow_id = owned[0]["id"]
+
+            paths = (
+                "/api/flows/endpoints", "/api/flows/body-search",
+                "/api/flows/request-body-search", f"/api/flows/{flow_id}/tag",
+            )
+            for path in paths:
+                for body in (b'""', b"[]", b'"x"'):
+                    assert call("alice", path, body) == (400, {"error": "Invalid JSON body"})
+            assert call("alice", f"/api/flows/{flow_id}", method="GET")[1]["tags"] == []
+
+            status, endpoints = call("alice", "/api/flows/endpoints", b"{}")
+            assert status == 200 and endpoints["count"] >= 1
+            assert any(row["host"] == "ordinary.invalid" for row in endpoints["endpoints"])
+            status, result = call(
+                "alice", "/api/flows/body-search",
+                b'{"engagement_id":"alice","query":"hello","evidence_owner":"bob"}',
+            )
+            assert status == 200 and result == {"flows": [], "count": 0}
+            status, result = call(
+                "alice", "/api/flows/request-body-search",
+                b'{"engagement_id":"alice","query":"needle","evidence_owner":"bob"}',
+            )
+            assert status == 200 and any(row["id"] == flow_id for row in result["flows"])
+
+            tag_path = f"/api/flows/{flow_id}/tag"
+            tag = b'{"tag":"shape-proof","value":"owned"}'
+            assert call("bob", tag_path, tag) == (404, {"error": "Flow not found"})
+            assert call("alice", tag_path, tag)[1]["value"] == "owned"
+            assert call("alice", f"/api/flows/{flow_id}", method="GET")[1]["tags"][0][
+                "value"
+            ] == "owned"
+            assert parent.requests == [
+                {"method": "GET", "target": "http://ordinary.invalid/body-shape"}
+            ]
+
+
 def test_invalid_policy_startup_refuses_and_reload_keeps_denial(proxy_backend, tmp_path):
     bad_directory = tmp_path / "invalid-startup"
     with pytest.raises(ReadinessError) as failure:

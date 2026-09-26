@@ -377,11 +377,13 @@ fn execute(
             if matches!(route, Route::Search) && object.is_none() {
                 return Ok(Reply::error(400, "Search filters must be a JSON object"));
             }
-            if matches!(route, Route::Facets) && object.is_none() {
+            if matches!(route, Route::Endpoints | Route::Facets) && object.is_none() {
                 return Ok(Reply::error(400, "Invalid JSON body"));
             }
             if matches!(route, Route::RequestSearch | Route::ResponseSearch) {
-                let object = object.ok_or(FlowFailure::Attribute)?;
+                let Some(object) = object else {
+                    return Ok(Reply::error(400, "Invalid JSON body"));
+                };
                 if !object
                     .get("engagement_id")
                     .is_some_and(CircuitValue::truthy)
@@ -506,7 +508,9 @@ fn tag(
 ) -> Result<Reply, FlowFailure> {
     match route {
         Route::TagAdd(_) => {
-            let fields = input.as_object().ok_or(FlowFailure::Attribute)?;
+            let Some(fields) = input.as_object() else {
+                return Ok(Reply::error(400, "Invalid JSON body"));
+            };
             let Some(tag) = fields.get("tag").filter(|value| value.truthy()) else {
                 return Ok(Reply::error(400, "tag required"));
             };

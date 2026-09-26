@@ -2084,7 +2084,7 @@ class AgentAPI:
             self._respond(flow, 503, {"error": "Flow store not available"})
             return
         body = self._read_json_body(flow)
-        if body is None:
+        if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
         if not self._scope_flow_filters(flow, body):
@@ -2118,7 +2118,7 @@ class AgentAPI:
             self._respond(flow, 503, {"error": "Flow store not available"})
             return
         body = self._read_json_body(flow)
-        if body is None:
+        if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
         if not body.get("engagement_id"):
@@ -2167,7 +2167,7 @@ class AgentAPI:
             self._respond(flow, 503, {"error": "Flow store not available"})
             return
         body = self._read_json_body(flow)
-        if body is None:
+        if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
         if not body.get("engagement_id"):
@@ -2188,7 +2188,7 @@ class AgentAPI:
             self._respond(flow, 503, {"error": "Flow store not available"})
             return
         body = self._read_json_body(flow)
-        if body is None:
+        if body is None or not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
         tag = body.get("tag")
