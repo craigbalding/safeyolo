@@ -19,6 +19,8 @@ PRECEDENCE_POLICY = '''budget = 12000
 "exact.invalid" = { egress = "deny" }
 "*.scope.invalid" = { egress = "allow" }
 "special.scope.invalid" = { egress = "deny" }
+"global-exact.scope.invalid" = { egress = "deny" }
+"global-allow.scope.invalid" = { egress = "allow" }
 "endpoint.invalid" = { egress = "allow" }
 "endpoint.invalid:8124" = { egress = "deny" }
 "default.invalid" = { egress = "deny" }
@@ -26,6 +28,7 @@ PRECEDENCE_POLICY = '''budget = 12000
 [agents.alice.hosts]
 "exact.invalid" = { egress = "allow" }
 "*.scope.invalid" = { egress = "deny" }
+"agent-exact.scope.invalid" = { egress = "allow" }
 "endpoint.invalid" = { egress = "deny" }
 "endpoint.invalid:8123" = { egress = "allow" }
 "default.invalid:80" = { egress = "deny" }
@@ -36,30 +39,23 @@ PRECEDENCE_POLICY = '''budget = 12000
 '''
 
 
-# Every row has a conflicting less-specific rule or a different agent result.
-# Explicit port 80 and an omitted HTTP port must select the same endpoint rule.
-CASES = {
-    "alice": (
-        ("exact.invalid:8123", 200),
-        ("ordinary.scope.invalid:8123", 403),
-        ("special.scope.invalid:8123", 403),
-        ("endpoint.invalid:8123", 200),
-        ("endpoint.invalid:8124", 403),
-        ("default.invalid", 403),
-        ("default.invalid:80", 403),
-        ("unlisted.invalid:8123", 428),
-    ),
-    "bob": (
-        ("exact.invalid:8123", 428),
-        ("ordinary.scope.invalid:8123", 200),
-        ("special.scope.invalid:8123", 200),
-        ("endpoint.invalid:8123", 200),
-        ("endpoint.invalid:8124", 200),
-        ("default.invalid", 200),
-        ("default.invalid:80", 200),
-        ("unlisted.invalid:8123", 428),
-    ),
-}
+# Expected results from the authored policy, independent of either proxy's
+# policy evaluator. Each row names the conflict that makes precedence visible.
+# An omitted HTTP port and an explicit :80 select the same endpoint rule.
+# (authority, Alice status, Bob status, decisive conflict)
+CASES = (
+    ("exact.invalid:8123", 200, 428, "agent exact allow/prompt over global exact deny"),
+    ("ordinary.scope.invalid:8123", 403, 200, "agent wildcard deny over global wildcard allow"),
+    ("agent-exact.scope.invalid:8123", 200, 200, "agent exact allow over agent wildcard deny"),
+    ("global-exact.scope.invalid:8123", 403, 403, "global exact deny over global wildcard allow"),
+    ("global-allow.scope.invalid:8123", 403, 200, "agent wildcard deny over global exact allow"),
+    ("special.scope.invalid:8123", 403, 200, "agent exact allow over global exact deny"),
+    ("endpoint.invalid:8123", 200, 200, "agent endpoint allow over agent bare-host deny"),
+    ("endpoint.invalid:8124", 403, 200, "Bob endpoint allow over global endpoint deny"),
+    ("default.invalid", 403, 200, "agent endpoint deny over global endpoint allow"),
+    ("default.invalid:80", 403, 200, "global endpoint allow over global bare-host deny"),
+    ("unlisted.invalid:8123", 428, 428, "global prompt for unlisted host"),
+)
 
 
 def _send(client, url, claimed_agent, *, body=None):
@@ -92,13 +88,21 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
                 first_socket = client.sock
                 results = []
                 try:
-                    for index, (authority, expected) in enumerate(CASES[agent]):
+                    for index, (authority, alice_status, bob_status, conflict) in enumerate(CASES):
+                        if index == 5:
+                            # Bound held parent connections while each UDS
+                            # socket still carries several policy decisions.
+                            assert client.sock is first_socket
+                            client.close()
+                            client = connection(proxy.paths[agent])
+                            first_socket = client.sock
+                        expected = alice_status if agent == "alice" else bob_status
                         url = f"http://{authority}/{agent}-{index}"
                         gate.wait(timeout=10)
                         status, headers, body = _send(
                             client, url, "bob" if agent == "alice" else "alice",
                         )
-                        assert status == expected, (agent, authority, status, body)
+                        assert status == expected, (agent, authority, conflict, status, body)
                         if status == 200:
                             assert body == b"hello"
                         else:
@@ -112,14 +116,14 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
                 return results
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
-                alice = workers.submit(run_agent, "alice")
-                bob = workers.submit(run_agent, "bob")
-                results = {"alice": alice.result(), "bob": bob.result()}
+                pending = {workers.submit(run_agent, agent): agent for agent in ("alice", "bob")}
+                results = {pending[future]: future.result() for future in concurrent.futures.as_completed(pending)}
 
             expected_deliveries = {
                 f"http://{authority}/{agent}-{index}"
-                for agent, cases in CASES.items()
-                for index, (authority, status) in enumerate(cases) if status == 200
+                for agent in ("alice", "bob")
+                for index, (authority, alice_status, bob_status, _) in enumerate(CASES)
+                if (alice_status if agent == "alice" else bob_status) == 200
             }
             delivered = {row["target"] for row in parent.requests}
             assert len(parent.requests) == len(expected_deliveries)
@@ -132,21 +136,69 @@ def test_agent_and_destination_precedence_on_concurrent_reused_connections(proxy
             all_ids = [identifier for cases in results.values() for _, _, identifier in cases]
             assert len(set(all_ids)) == len(all_ids)
             for agent, cases in results.items():
-                connection_ids = set()
                 for url, status, identifier in cases:
                     row = runtime[identifier]
                     assert (row["agent"], row["status"], row["host"], row["port"]) == (
                         agent, status, urlsplit(url).hostname, urlsplit(url).port or 80,
                     )
-                    connection_ids.add(row["connection_id"])
                     if status != 200:
                         guard = guards[identifier]
                         assert guard["agent"] == agent
                         assert guard["decision"] == ("deny" if status == 403 else "require_approval")
-                assert len(connection_ids) == 1
+                first_ids = {runtime[identifier]["connection_id"] for _, _, identifier in cases[:5]}
+                second_ids = {runtime[identifier]["connection_id"] for _, _, identifier in cases[5:]}
+                assert len(first_ids) == len(second_ids) == 1
+                assert first_ids != second_ids
             assert runtime[results["alice"][0][2]]["connection_id"] != (
                 runtime[results["bob"][0][2]]["connection_id"]
             )
+
+            # Check origin accepts as well as completed requests on fresh and
+            # reused sockets. These probes distinguish a local denial from a
+            # leaked parent connection with no completed request.
+            observed = []
+
+            def send_and_check_parent(client, agent, authority, expected):
+                url = f"http://{authority}/scope-probe-{agent}-{len(observed)}"
+                accepts, requests = parent.accepts, len(parent.requests)
+                status, headers, body = _send(client, url, "bob" if agent == "alice" else "alice")
+                assert status == expected, (agent, authority, status, body)
+                if expected == 200:
+                    assert body == b"hello"
+                    assert len(parent.requests) == requests + 1
+                    assert parent.requests[-1]["target"] == url
+                else:
+                    assert headers["x-blocked-by"] == "network-guard"
+                    assert (parent.accepts, len(parent.requests)) == (accepts, requests)
+                observed.append((agent, authority, expected, headers["x-safeyolo-request-id"]))
+
+            alice = connection(proxy.paths["alice"])
+            bob = connection(proxy.paths["bob"])
+            try:
+                alice_socket, bob_socket = alice.sock, bob.sock
+                send_and_check_parent(alice, "alice", "endpoint.invalid:8123", 200)
+                send_and_check_parent(alice, "alice", "endpoint.invalid:8124", 403)
+                send_and_check_parent(bob, "bob", "exact.invalid:8123", 428)
+                send_and_check_parent(bob, "bob", "endpoint.invalid:8124", 200)
+                send_and_check_parent(bob, "bob", "global-exact.scope.invalid:8123", 403)
+                assert alice.sock is alice_socket and bob.sock is bob_socket
+            finally:
+                alice.close()
+                bob.close()
+
+            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            guards = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
+                      if row["event"] == "security.network_guard"}
+            for agent, authority, status, identifier in observed:
+                destination = urlsplit(f"http://{authority}")
+                assert (runtime[identifier]["agent"], runtime[identifier]["status"],
+                        runtime[identifier]["host"], runtime[identifier]["port"]) == (
+                    agent, status, destination.hostname, destination.port or 80,
+                )
+                if status != 200:
+                    assert (guards[identifier]["agent"], guards[identifier]["decision"]) == (
+                        agent, "deny" if status == 403 else "require_approval",
+                    )
 
 
 def test_permitted_local_endpoint_overrides_host_prompt(proxy_backend, tmp_path):
@@ -161,7 +213,7 @@ def test_permitted_local_endpoint_overrides_host_prompt(proxy_backend, tmp_path)
             assert response.status == 200 and response.read() == b"reply"
         finally:
             direct.close()
-        assert other_origin.accepts == 1
+        assert other_origin.accepts == len(other_origin.requests) == 1
         policy = f'''budget = 12000
 [hosts]
 "*" = {{ egress = "deny" }}
@@ -169,16 +221,21 @@ def test_permitted_local_endpoint_overrides_host_prompt(proxy_backend, tmp_path)
 "127.0.0.1:{port}" = {{ egress = "allow" }}
 '''
         with policy_proxy(proxy_backend, tmp_path / proxy_backend, policy) as proxy:
+            observed = []
             for agent in ("alice", "bob"):
                 client = connection(proxy.paths[agent])
                 try:
                     claim = json.dumps({"agent": "forged", "agent_id": "forged"}).encode()
-                    status, _, body = _send(client, f"http://127.0.0.1:{port}/{agent}", "forged", body=claim)
+                    status, headers, body = _send(
+                        client, f"http://127.0.0.1:{port}/{agent}", "forged", body=claim,
+                    )
                     assert (status, body) == (200, b"reply")
+                    observed.append((agent, port, 200, headers["x-safeyolo-request-id"]))
                 finally:
                     client.close()
                 client = connection(proxy.paths[agent])
                 try:
+                    before = other_origin.accepts, len(other_origin.requests)
                     status, headers, _ = _send(
                         client,
                         f"http://127.0.0.1:{other_port}/blocked", "forged",
@@ -186,11 +243,26 @@ def test_permitted_local_endpoint_overrides_host_prompt(proxy_backend, tmp_path)
                     )
                     assert status == 428
                     assert headers["x-blocked-by"] == "network-guard"
+                    assert (other_origin.accepts, len(other_origin.requests)) == before
+                    observed.append((agent, other_port, 428, headers["x-safeyolo-request-id"]))
                 finally:
                     client.close()
             assert [row["target"] for row in origin.requests] == ["/alice", "/bob"]
-            assert other_origin.accepts == 1
-            assert [row["target"] for row in other_origin.requests] == ["/direct-control"]
+            assert other_origin.accepts == len(other_origin.requests) == 1
+            assert other_origin.requests[0]["target"] == "/direct-control"
+
+            runtime = {row["request_id"]: row for row in proxy.events("proxy.request")}
+            guards = {row["request_id"]: row for row in read_events(tmp_path / proxy_backend / "audit.jsonl")
+                      if row["event"] == "security.network_guard"}
+            for agent, destination_port, status, identifier in observed:
+                row = runtime[identifier]
+                assert (row["agent"], row["host"], row["port"], row["status"]) == (
+                    agent, "127.0.0.1", destination_port, status,
+                )
+                if status == 428:
+                    assert (guards[identifier]["agent"], guards[identifier]["decision"]) == (
+                        agent, "require_approval",
+                    )
 
 
 def test_agent_default_deny_overrides_global_exact_allow(proxy_backend, tmp_path):
