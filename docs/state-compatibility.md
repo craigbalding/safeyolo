@@ -64,8 +64,10 @@ unresolved dependencies explicitly.
 
 The currently executable owned transitions are the circuit, encrypted-vault,
 interception-CA/key, grants/bindings and host-policy approval rows. With
-`SAFEYOLO_PYTHON_SOURCE` set to the clean comparator checkout and
-`SAFEYOLO_RUST_PROXY` set to the candidate binary, the migration test writes an
+`SAFEYOLO_PYTHON_SOURCE` set to the current Python source under test,
+`SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` set to the clean comparator checkout at
+`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`,
+and `SAFEYOLO_RUST_PROXY` set to the candidate binary, the migration test writes an
 open circuit and proves a Python open-state block, reads and recovers it in
 Rust, reopens and mutates it in Python, then returns to Rust for another
 open-state block and recovery. Its manifest contains exact runtime and launch

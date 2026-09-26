@@ -23,9 +23,11 @@ always use Python and currently skip platforms other than Linux. Set
 `SAFEYOLO_RUST_PROXY` to select a built binary at another path. A missing
 requested binary is an error. The fixture
 does not select a different backend after a failure.
-To include the historical circuit-state rollback case, set
-`SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` to a clean checkout at
-`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a` with its locked `.venv`.
+To include the historical circuit-state rollback case, use a clean checkout at
+`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`. From that checkout, create
+its locked Python 3.12.14 `.venv` with
+`uv sync --frozen --python 3.12.14 --group dev`. Set
+`SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` to that checkout.
 That test uses the comparator's own Python fixture; other Python cases continue
 to run the selected current source. Without this separate fixture, the rollback
 case skips.
