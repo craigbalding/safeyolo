@@ -92,8 +92,19 @@ The shared assertions cover:
   second response. The fixture checks the client's exact coded body, coding
   declaration, canary, and second response. It also checks that a client
   `TE: gzip` nominated by `Connection: TE` does not reach the origin. The
-  gzip case runs with and without client `TE`; this fixture does not test
-  HTTP/2 transfer-coding conversion.
+  gzip case runs with and without client `TE`.
+- A separate TLS origin offers HTTP/1.1 and sends a `gzip, chunked` response to
+  an HTTP/2 client. The fixture confirms Application-Layer Protocol Negotiation
+  (ALPN) on both legs and checks a later stream on the same client connection.
+  The Python comparator returns 200 with the exact gzip bytes but without a
+  transfer or content coding declaration. Native returns 502 before it releases
+  those bytes, as its documented handoff requires. Both backends deliver the
+  plain chunked control. When the first plain-chunked size line is invalid,
+  Python returns 502. Native resets the HTTP/2 stream with `INTERNAL_ERROR`.
+  Native sends no response headers or data on that stream. Both backends complete
+  the later stream. The allowed origin receives only the two intended requests.
+  A denied neighboring destination has no upstream connection. This case does
+  not establish general HTTP/2 transfer-coding conversion.
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
   per-agent connection identities across reuse.
