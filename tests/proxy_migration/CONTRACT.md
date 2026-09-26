@@ -205,6 +205,10 @@ The shared assertions cover:
   checks a second destination, and sends a direct HTTP request to show its
   independent `network:request` counter. An unauthenticated reset cannot clear
   the exhausted limit; an authenticated reset permits another connection.
+  A separate case shows that an exhausted limit denies another fresh tunnel
+  without an origin connection, then admits one after the GCRA emission
+  interval without an operator reset. It checks both scopes and the separate
+  HTTP request counter.
   CONNECT creates no origin application request in this fixture. Both backends
   record CONNECT in the security audit; Rust also emits `proxy.request` rows.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
