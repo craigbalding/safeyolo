@@ -152,7 +152,11 @@ class Origin(ThreadingHTTPServer):
         self.connection_ids = {}
         self.stream_finished = threading.Event()
         self.stream_initial_sent = threading.Event()
+        self.stream_data_sent = threading.Event()
         self.stream_release = threading.Event()
+        self.stream_first_flush_at = None
+        self.stream_release_seen_at = None
+        self.stream_finished_at = None
         self.stream_peer_closed = threading.Event()
         self.stream_cancelled = threading.Event()
         self.stream_write_error = None
@@ -184,16 +188,17 @@ class OriginHandler(BaseHTTPRequestHandler):
         self.server.requests.append(observation)
         self.server.via_headers.append(self.headers.get_all("Via", []))
         self.server.canary_headers.append(self.headers.get("X-Fixture-Canary"))
-        if self.path in {"/stream", "/stream-control", "/stream-cancel"}:
+        if self.path in {"/stream", "/stream-control", "/stream-cancel", "/stream-slow"}:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "keep-alive" if self.server.keep_alive else "close")
             self.end_headers()
             chunk = b"data: " + b"x" * (16384 - 8) + b"\n\n"
-            if self.path in {"/stream-control", "/stream-cancel"}:
+            if self.path in {"/stream-control", "/stream-cancel", "/stream-slow"}:
                 first = b"data: first-event\n\n"
                 self.wfile.write(first)
                 self.wfile.flush()
+                self.server.stream_first_flush_at = time.monotonic()
                 self.server.stream_initial_sent.set()
                 if self.path == "/stream-cancel":
                     # Observe peer EOF without consuming any request bytes.
@@ -212,8 +217,9 @@ class OriginHandler(BaseHTTPRequestHandler):
                                 self.server.stream_release.wait(timeout=max(0, deadline - time.monotonic()))
                                 break
                             time.sleep(0.02)
-                else:
+                elif self.path == "/stream-control":
                     self.server.stream_release.wait(timeout=30)
+                    self.server.stream_release_seen_at = time.monotonic()
                 remaining = self.server.stream_chunks
                 if self.path == "/stream-control":
                     remaining = max(0, remaining - 1)
@@ -224,11 +230,22 @@ class OriginHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
                     self.wfile.flush()
                     self.server.stream_bytes_sent += len(chunk)
+                    if self.path == "/stream-slow":
+                        self.server.stream_data_sent.set()
                 except (BrokenPipeError, ConnectionResetError, OSError) as error:
                     self.server.stream_write_error = type(error).__name__
                     self.server.stream_cancelled.set()
                     break
                 time.sleep(0.02)
+            if self.path == "/stream-slow" and self.server.stream_release.wait(timeout=30):
+                self.server.stream_release_seen_at = time.monotonic()
+                try:
+                    self.wfile.write(b"data: last-event\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError) as error:
+                    self.server.stream_write_error = type(error).__name__
+                    self.server.stream_cancelled.set()
+            self.server.stream_finished_at = time.monotonic()
             self.server.stream_finished.set()
             return
         if self.headers.get("Upgrade", "").lower() == "websocket":

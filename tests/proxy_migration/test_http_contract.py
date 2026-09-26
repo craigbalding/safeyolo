@@ -464,14 +464,22 @@ def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_
     result = streamed_control_workload(proxy_backend, tmp_path / proxy_backend)
     assert result["first_event_before_release"] is True
     assert result["control_completed_before_stream_release"] is True
+    assert result["control_elapsed_seconds"] < 5
     assert result["stream_released_after_control"] is True
-    assert result["origin_observation"]["stream_finished_after_read"] is True
+    timing = result["origin_observation"]
+    assert timing["first_flush_at"] <= timing["first_received_at"] < timing["released_at"]
+    assert timing["control_completed_at"] < timing["released_at"]
+    assert timing["released_at"] <= timing["release_seen_at"] <= timing["finished_at"]
+    assert timing["accepted_connections"] == 2
+    assert timing["stream_finished_after_read"] is True
 
 
 def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_backend, tmp_path):
     result = streamed_slow_admin_workload(proxy_backend, tmp_path / proxy_backend)
-    assert result["first_event_before_origin_completion"] is True
-    assert result["control_completed_while_stream_active"] is True
+    assert result["first_event_before_release"] is True
+    assert result["origin_bytes_sent_before_controls"] > 0
+    assert result["control_completed_before_release"] is True
+    assert result["control_elapsed_seconds"] < 5
     assert result["request_counts"] == {
         "origin_requests": 2,
         "origin_error_responses": 0,
@@ -483,7 +491,14 @@ def test_slow_consumer_keeps_allowed_request_and_authenticated_admin_live(proxy_
     }
     assert result["admin"]["authenticated"] is True
     assert result["admin"]["status"] == 200
-    assert result["admin"]["completed_while_stream_active"] is True
+    assert result["admin"]["completed_before_release"] is True
+    assert result["admin"]["elapsed_seconds"] < 5
+    timing = result["origin_observation"]
+    assert timing["first_flush_at"] <= timing["first_received_at"]
+    assert timing["control_completed_at"] < timing["released_at"]
+    assert timing["admin_completed_at"] < timing["released_at"]
+    assert timing["released_at"] <= timing["release_seen_at"] <= timing["finished_at"]
+    assert timing["accepted_connections"] == 2
     assert result["origin_observation"]["stream_finished_after_read"] is True
 
 
