@@ -308,7 +308,7 @@ def origin_server(port=0, *, stream_seconds=2.0, keep_alive=False, response_dela
 
 def network_scenario(backend, directory, *, parent=False, origin_port=0):
     """Allow alice and deny bob despite forged headers, with no denied egress."""
-    with origin_server(origin_port) as origin:
+    with origin_server(origin_port, capture_heads=True) as origin:
         origin_port = origin.server_address[1]
         # A configured parent answers itself. A made-up target ensures the child
         # must hand authority to that parent, without resolving the target.
@@ -321,14 +321,19 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
         with launch_proxy(backend, directory, POLICY, parent_proxy=parent_url,
                           native_policy=True, agent_api=True, flow_store_enabled=True) as proxy:
             identifiers = []
-            for agent, expected in (("bob", 403), ("alice", 200), ("bob", 403), ("alice", 200)):
-                before = origin.accepts
+            for index, (agent, expected) in enumerate(
+                (("bob", 403), ("alice", 200), ("bob", 403), ("alice", 200))
+            ):
+                before = (origin.accepts, len(origin.requests))
                 egress_before = len(proxy.events("proxy.egress"))
                 status, headers, body = request(proxy.paths[agent], url, headers={
                     "X-SafeYolo-Agent": "alice" if agent == "bob" else "bob",
+                    "X-Agent-Id": "alice" if agent == "bob" else "bob",
+                    "X-Forwarded-For": "10.0.0.2" if agent == "bob" else "10.0.0.3",
                     "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
                     "X-SafeYolo-Trace": "1",
                     "X-SafeYolo-Test-Context": f"run={run};agent={agent};test=request-ids",
+                    "X-Fixture-Canary": f"request-id-{index}",
                 })
                 response_headers = {key.lower(): value for key, value in headers.items()}
                 assert status == expected, (status, body)
@@ -336,12 +341,16 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
                 assert identifier and identifier != FORGED_REQUEST_ID
                 assert identifier not in identifiers
                 identifiers.append(identifier)
-                assert origin.accepts - before == int(expected == 200)
+                assert (origin.accepts - before[0], len(origin.requests) - before[1]) == (
+                    int(expected == 200), int(expected == 200)
+                )
                 if expected == 403:
                     assert response_headers["x-blocked-by"] == "network-guard"
                     assert len(proxy.events("proxy.egress")) == egress_before
                 else:
                     assert body == b"hello"
+                    assert origin.canary_headers[-1] == f"request-id-{index}"
+                    assert FORGED_REQUEST_ID.encode() not in origin.request_heads[-1]
                 scoped = request_evidence(
                     proxy, agent, identifier, host=host, port=port, method="GET", status=status,
                     decision="allow" if status == 200 else "deny", run=run,
@@ -350,13 +359,13 @@ def network_scenario(backend, directory, *, parent=False, origin_port=0):
                 )
                 evidence.append({"agent": agent, "status": status, "request_id": identifier,
                                  "response_headers": headers, "response_body_hex": body.hex(),
-                                 "origin_accepts_before": before, "origin_accepts_after": origin.accepts,
+                                 "origin_accepts_before": before[0], "origin_accepts_after": origin.accepts,
                                  "origin_requests": list(origin.requests), **scoped})
                 observations.append({"agent": agent, "status": status,
                                      "delivered_body": body.decode() if expected == 200 else None,
                                      "denial_body": json.loads(body) if expected == 403 else None,
                                      "blocked_by": response_headers.get("x-blocked-by"),
-                                     "origin_connections": origin.accepts - before})
+                                     "origin_connections": origin.accepts - before[0]})
         (Path(directory) / "request-id-observations.json").write_text(
             json.dumps(evidence, indent=2) + "\n"
         )
