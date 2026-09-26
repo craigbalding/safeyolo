@@ -15,6 +15,7 @@ from socketserver import BaseRequestHandler, ThreadingTCPServer
 
 import h2.config
 import h2.connection
+import h2.errors
 import h2.events
 import pytest
 from mitmproxy.certs import CertStore
@@ -146,7 +147,7 @@ class _OriginHandler(BaseRequestHandler):
                     transfer = {
                         "gzip": b"gzip, chunked",
                         "plain": b"chunked",
-                        "malformed": b"gzip, chunked",
+                        "malformed": b"chunked",
                     }[self.server.coding]
                     response = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: " + transfer
                                 + b"\r\nConnection: keep-alive\r\n\r\n"
@@ -296,8 +297,8 @@ def _h2_response(stream, connection, stream_id, authority, path):
         (":authority", authority), (":path", path),
     ], end_stream=True)
     stream.sendall(connection.data_to_send())
-    response = {"headers": [], "body": bytearray(), "ended": False}
-    while not response["ended"]:
+    response = {"headers": [], "body": bytearray(), "ended": False, "reset": None}
+    while not response["ended"] and response["reset"] is None:
         data = stream.recv(65536)
         assert data, f"HTTP/2 stream {stream_id} closed before completion: {response}"
         for event in connection.receive_data(data):
@@ -309,8 +310,11 @@ def _h2_response(stream, connection, stream_id, authority, path):
                 connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
             elif isinstance(event, h2.events.StreamEnded) and event.stream_id == stream_id:
                 response["ended"] = True
-            elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
-                raise AssertionError(f"HTTP/2 stream {stream_id} failed: {event}")
+            elif isinstance(event, h2.events.StreamReset):
+                assert event.stream_id == stream_id, event
+                response["reset"] = int(event.error_code)
+            elif isinstance(event, h2.events.ConnectionTerminated):
+                raise AssertionError(f"HTTP/2 connection failed: {event}")
         if output := connection.data_to_send():
             stream.sendall(output)
     response["body"] = bytes(response["body"])
@@ -357,12 +361,14 @@ def test_http2_client_http1_origin_transfer_coding(proxy_backend, tmp_path, codi
             assert [row["line"] for row in requests] == [
                 b"GET /first HTTP/1.1", b"GET /second HTTP/1.1",
             ]
-            assert all(name != b"te" for row in requests for name, _ in row["headers"])
+            assert all((b"host", authority.encode()) in row["headers"] for row in requests)
             assert not errors, errors
             assert denied_effect == (0, [])
             assert len(origin_responses) == 2
-            assert b"Transfer-Encoding: " + (b"chunked" if coding == "plain" else
+            assert b"Transfer-Encoding: " + (b"chunked" if coding != "gzip" else
                                                  b"gzip, chunked") in origin_responses[0]
+            if coding == "malformed":
+                assert origin_responses[0].endswith(b"\r\n\r\ng\r\n")
             assert origin_responses[1].endswith(b"\r\n\r\nsecond")
 
             first_headers = dict(first["headers"])
@@ -371,22 +377,34 @@ def test_http2_client_http1_origin_transfer_coding(proxy_backend, tmp_path, codi
             assert forbidden.isdisjoint(first_headers)
             assert forbidden.isdisjoint(second_headers)
             assert "content-encoding" not in first_headers
-            assert first["ended"] and second["ended"]
+            assert second["ended"] and second["reset"] is None
             if coding == "plain":
+                assert first["ended"] and first["reset"] is None
                 assert first_headers[":status"] == "200"
                 assert first["body"] == CANARY
             elif coding == "gzip" and proxy_backend == "python":
                 # The historical comparator passes transfer-coded bytes on h2
                 # without an h2 coding declaration; this is a measured limit.
+                assert first["ended"] and first["reset"] is None
                 assert first_headers[":status"] == "200"
                 assert first["body"] == GZIP_CANARY
                 assert gzip.decompress(first["body"]) == CANARY
-            else:
-                # Malformed chunks fail on both backends. Rust also fails closed
-                # for valid gzip transfer coding that h2 cannot represent.
+            elif coding == "gzip":
+                assert first["ended"] and first["reset"] is None
                 assert first_headers[":status"] == "502"
                 assert CANARY not in first["body"]
                 assert GZIP_CANARY not in first["body"]
+            elif proxy_backend == "python":
+                assert first["ended"] and first["reset"] is None
+                assert first_headers[":status"] == "502"
+                assert CANARY not in first["body"]
+            else:
+                # The native HTTP/1 parser sees the invalid plain chunk size.
+                # Its h2 downstream resets this stream without releasing data.
+                assert not first["ended"]
+                assert first["reset"] == int(h2.errors.ErrorCodes.INTERNAL_ERROR)
+                assert not first_headers
+                assert first["body"] == b""
             assert second_headers[":status"] == "200"
             assert second_headers["content-length"] == "6"
             assert second["body"] == b"second"

@@ -99,9 +99,11 @@ The shared assertions cover:
   The Python comparator returns 200 with the exact gzip bytes but without a
   transfer or content coding declaration. Native returns 502 before it releases
   those bytes, as its documented handoff requires. Both backends deliver the
-  plain chunked control, return 502 for an invalid chunk header, and complete
-  the later stream. The owned origins receive only the two intended requests;
-  a denied neighboring destination has no upstream connection. This case does
+  plain chunked control. When the first plain-chunked size line is invalid,
+  Python returns 502. Native resets the HTTP/2 stream with `INTERNAL_ERROR`.
+  Native sends no response headers or data on that stream. Both backends complete
+  the later stream. The allowed origin receives only the two intended requests.
+  A denied neighboring destination has no upstream connection. This case does
   not establish general HTTP/2 transfer-coding conversion.
 - Persistent HTTP/1.1 requests on two trusted UDS connections, with repeated
   allowed/denied decisions, independent origin request targets, and stable
