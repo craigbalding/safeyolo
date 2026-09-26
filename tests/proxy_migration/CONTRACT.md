@@ -84,23 +84,28 @@ The shared assertions cover:
   records rows for the stream and control. These are fixture events, not a
   production audit parity claim.
 - One process handles three bounded batches of short HTTP, a partial canceled
-  upload, a close-delimited SSE response, a WebSocket echo, and an opaque
-  CONNECT tunnel. The four long-lived legs overlap a permitted control request
-  and a denied other-agent request. The upload origin records the exact partial
-  body digest and an incomplete body; the WebSocket and tunnel origins record
-  their exact bytes and end of connection. Both SSE origins observe cancellation
+  upload, a close-delimited SSE response, WS and WSS echoes, and an opaque
+  CONNECT tunnel. The five long-lived legs overlap a permitted control request,
+  an authenticated operator `/stats` read, and a denied other-agent request.
+  The same operator endpoint rejects an unauthenticated read before and after
+  restart. The upload origin records the exact partial body digest and an
+  incomplete body; the WebSocket and tunnel origins record their exact bytes
+  and end of connection. Both SSE origins observe cancellation
   after the fixture closes the response as well as the HTTP client. Closing only
   `HTTPConnection` left a close-delimited `HTTPResponse` holding the socket, so
   the earlier apparent Python cancellation difference was a client-fixture
   artifact. A separate raw-socket SSE case checks early disconnect, origin EOF,
   prompt shutdown and same-config restart. Its live-response control checks
   native graceful drain and records the Python comparator's SIGTERM EOF before
-  the final event. Linux `/proc` samples check quiet file-descriptor and
-  resident-memory trends after each batch, allowing bounded allocator
+  the final event. Linux `/proc` samples check the live-to-quiet file-descriptor
+  drop and resident-memory trends after each batch, allowing bounded allocator
   retention. The same process configuration then stops and starts on the same
-  listener paths; a new readiness marker names the new process, and permitted
-  and denied requests still follow the configured policy. This finite fixture
-  does not establish sustained churn, a global memory cap, or host cleanup.
+  listener paths and operator port; a new readiness marker names the new
+  process, and permitted and denied requests still follow the configured
+  policy. On an isolated host, set `SAFEYOLO_LIFECYCLE_BATCHES` above three
+  and run the same selected test under an external deadline for a longer check.
+  The default finite fixture does not establish sustained churn, a global
+  memory cap, or host cleanup.
 - No pre-DNS outbound attempt or synthetic upstream connection after denial.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.

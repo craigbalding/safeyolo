@@ -1537,25 +1537,38 @@ control; Rust records both the canceled stream and control. This is a fixture
 event difference, not a production audit parity claim.
 
 The shared [mixed lifecycle fixture](../tests/proxy_migration/test_lifecycle_batch.py)
-now repeats short HTTP, partial-upload cancellation, SSE, WebSocket and opaque
+repeats short HTTP, partial-upload cancellation, SSE, WS, WSS and opaque
 CONNECT on one process for three bounded batches. A permitted control request
-completes while the upload, stream, WebSocket and tunnel are established; a
-forged-agent denial opens no origin connection. Independent origins record the
-upload's exact incomplete prefix, one WebSocket echo, tunnel bytes and each
+and an authenticated operator `/stats` read complete while the upload, stream,
+both WebSockets and tunnel are established; a forged-agent denial opens no
+origin connection. The operator endpoint rejects an unauthenticated read before
+and after restart. Independent origins record the upload's exact incomplete
+prefix, both WebSocket echoes, the WSS close handshake, tunnel bytes and each
 connection end. Both backends close the SSE upstream after the fixture closes
 the partially read response and client socket. The earlier Python result came
 from closing `HTTPConnection` while its close-delimited `HTTPResponse` still
-owned the socket. On Linux, the fixture
-samples process file descriptors and resident memory after each quiet batch.
+owned the socket. On Linux, the fixture samples process file descriptors and
+resident memory with all five legs live and again after each quiet batch. The
+live descriptor count must exceed the quiet count.
 It allows four descriptors above the cold sample, at most two more than the
 first quiet batch at the end, and 16 MiB of later Python or 8 MiB of later Rust
 resident-memory growth above the first quiet batch. These tolerances allow
-bounded allocator and protocol caches, not sustained growth.
+bounded allocator and protocol caches within this finite run. They do not
+resolve the longer native RSS rise in the #639 repeated-HTTP workload.
 
-The fixture then stops the child and requires its marker and listeners to
-become unavailable. It starts the same config on the same paths with a new
-process identity. An allowed
-request and a denied other-agent request check the recovered listener and policy.
+The fixture then stops the child and requires its marker, agent listeners and
+operator port to become unavailable. It starts the same config on the same
+paths and port with a new process identity. An allowed request, a denied
+other-agent request and an authenticated operator read check the recovered
+listeners and policy. On an isolated host with this checkout, its dependencies
+and the selected native executable available, select a longer run with a
+deadline:
+
+```sh
+timeout 10m env SAFEYOLO_RUST_NATIVE_ONLY=1 SAFEYOLO_LIFECYCLE_BATCHES=30 \
+  .venv/bin/pytest -q tests/proxy_migration/test_lifecycle_batch.py \
+  --proxy-backend python --proxy-backend rust
+```
 The focused [SSE shutdown case](../tests/proxy_migration/test_sse_shutdown.py)
 uses a raw client socket to make early disconnect unambiguous. Before SIGTERM,
 the origin observes EOF; Rust then removes readiness, exits promptly and starts
