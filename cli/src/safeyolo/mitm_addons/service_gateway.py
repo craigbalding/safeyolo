@@ -56,6 +56,27 @@ log = logging.getLogger("safeyolo.service-gateway")
 # Token prefix for gateway tokens
 SGW_TOKEN_PREFIX = "sgw_"
 SGW_TOKEN_LEN = 64  # hex chars after prefix
+_GATEWAY_TOKEN_SEPARATOR_BYTES = frozenset(b", \t\n\v\f\r\x1c\x1d\x1e\x1f\x85\xa0")
+
+
+def _has_raw_gateway_token(raw_value: bytes) -> bool:
+    """Recognize a reserved token after a raw whitespace or comma separator."""
+    prefix = SGW_TOKEN_PREFIX.encode("ascii")
+    offset = 0
+    while (start := raw_value.find(prefix, offset)) != -1:
+        if start == 0 or raw_value[start - 1] in _GATEWAY_TOKEN_SEPARATOR_BYTES:
+            return True
+        for width in (2, 3, 4):
+            if start < width:
+                continue
+            try:
+                separator = raw_value[start - width:start].decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            if len(separator) == 1 and separator.isspace():
+                return True
+        offset = start + len(prefix)
+    return False
 
 
 @dataclass
@@ -505,6 +526,16 @@ class ServiceGateway:
             return  # Not a gateway request - pass through
 
         self.stats.requests += 1
+
+        if sum(_has_raw_gateway_token(value) for _, value in flow.request.headers.fields) > 1:
+            self._deny(
+                flow,
+                403,
+                "Gateway token appears in more than one header",
+                "INVALID_TOKEN",
+            )
+            self.stats.denied_token += 1
+            return
 
         # Lookup token binding
         with self._lock:
@@ -1337,12 +1368,11 @@ class ServiceGateway:
         when host or schema metadata is absent, while ordinary credentials keep
         their existing pass-through behavior.
         """
-        for value in flow.request.headers.values():
-            candidate = value.strip()
-            if " " in candidate:
-                candidate = candidate.split(" ", 1)[1].strip()
-            if candidate.startswith(SGW_TOKEN_PREFIX):
-                return candidate
+        # Headers.values() folds repeated fields. Inspect each original value
+        # so an earlier ordinary Authorization cannot hide a later token.
+        for _, raw_value in flow.request.headers.fields:
+            if _has_raw_gateway_token(raw_value):
+                return SGW_TOKEN_PREFIX
         return None
 
     def _evaluate_capability_routes(self, method, path, capability) -> bool:  # DOC: SECURITY.md

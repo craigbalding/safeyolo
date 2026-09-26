@@ -166,7 +166,11 @@ The shared assertions cover:
   request proves that the observer routes a conflicting Host to the forbidden
   origin.
 - Raw service-gateway requests use an independent Host-routing parent and two
-  origins. Duplicate Authorization and Host fields, plus encoded,
+  origins. Authorization fields with a gateway token repeated in either order,
+  a comma-separated Authorization value with a token, a tab-separated token,
+  raw NEL and NBSP separators, UTF-8 line and paragraph separators,
+  a valid gateway Authorization accompanied by a second token in `X-Api-Key`,
+  duplicate Host fields in either order, plus encoded,
   doubled-slash, dot-segment, and trailing-slash spellings of an exact route,
   create no parent or origin connection. Python rejects raw fullwidth route
   letters during HTTP parsing; Rust rejects them at the service gateway.
@@ -178,8 +182,14 @@ The shared assertions cover:
   Transfer-Encoding,
   Python rejects the request locally.
   Rust forwards one chunked body with no Content-Length; the parent and origin
-  both record the exact decoded bytes. A direct request proves that the parent
-  routes a conflicting Host to the forbidden origin.
+  both record the exact decoded bytes. When the raw client pipelines a forbidden
+  request after that conflicting frame, Python returns 400 and closes with no
+  parent contact. Rust returns the allowed response and closes after the first
+  body, so the forbidden origin receives no request or credential. A fresh
+  signed request still reaches the allowed origin with its exact target and
+  body. Ordinary duplicate Authorization values and a harmless `X-Api-Key`
+  alongside a valid gateway Authorization remain usable. A direct request
+  proves that the parent routes a conflicting Host to the forbidden origin.
 - The running gateway uses a scoped agent token, a vaulted synthetic credential,
   and an enforced capability contract. The owned origin receives the credential
   after token consumption. Wrong agent, token, capability, method, path, and

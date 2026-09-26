@@ -90,8 +90,8 @@ pub(crate) fn source_text(bytes: &[u8]) -> String {
 
 /// Recover the source bytes represented by security text.
 ///
-/// This is intended only for keyed fingerprint input. The returned buffer is
-/// zeroized on drop and must never be placed in evidence, a response, or a
+/// This supports keyed fingerprints and raw gateway token checks. The returned
+/// buffer is zeroized on drop and must never be placed in evidence, a response, or a
 /// diagnostic. Valid private scalars are escaped by [`source_text`] before
 /// this function sees them, so they remain distinct from malformed bytes.
 pub(crate) fn source_bytes(text: &str) -> Zeroizing<Vec<u8>> {

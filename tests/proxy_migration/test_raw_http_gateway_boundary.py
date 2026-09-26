@@ -13,9 +13,11 @@ from tests.proxy_migration.scenarios import origin_server
 from tests.proxy_migration.test_gateway_redirect import (
     VAULT_CREDENTIAL,
     VAULT_NAME,
+    _authorization,
     _fixture_state,
     _gateway_token,
 )
+from tests.proxy_migration.test_te_gzip_handoff import _Wire
 
 ALLOWED = "allowed.invalid"
 FORBIDDEN = "forbidden.invalid"
@@ -262,15 +264,63 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
             assert denied[0] == 403, denied
             assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
-            for fields in (
-                [(b"Host", ALLOWED.encode()), auth,
-                 (b"authorization", b"Bearer harmless-second-value")],
-                [(b"Host", ALLOWED.encode()), (b"hOst", FORBIDDEN.encode()), auth],
-            ):
+            separator_cases = (
+                ("raw-nel", b"\x85"),
+                ("raw-nbsp", b"\xa0"),
+                ("utf8-line-separator", b"\xe2\x80\xa8"),
+                ("utf8-paragraph-separator", b"\xe2\x80\xa9"),
+            )
+            ambiguous_header_cases = (
+                ("gateway-token-first", [(b"Host", ALLOWED.encode()), auth,
+                                         (b"authorization", b"Bearer harmless-second-value")]),
+                ("gateway-token-second", [(b"Host", ALLOWED.encode()),
+                                          (b"authorization", b"Bearer harmless-first-value"), auth]),
+                ("gateway-token-in-another-header", [(b"Host", ALLOWED.encode()), auth,
+                                                     (b"X-Api-Key", token)]),
+                ("combined-authorization-value", [(b"Host", ALLOWED.encode()),
+                                                  (b"Authorization", b"Bearer harmless-first-value, Bearer "
+                                                   + token)]),
+                ("tab-separated-gateway-token", [(b"Host", ALLOWED.encode()),
+                                                 (b"Authorization", b"Bearer\t" + token)]),
+                ("forbidden-host-second", [(b"Host", ALLOWED.encode()),
+                                           (b"hOst", FORBIDDEN.encode()), auth]),
+                ("forbidden-host-first", [(b"hOst", FORBIDDEN.encode()),
+                                          (b"Host", ALLOWED.encode()), auth]),
+            ) + tuple((name, [(b"Host", ALLOWED.encode()),
+                              (b"Authorization", b"Bearer" + separator + token)])
+                      for name, separator in separator_cases)
+            for name, fields in ambiguous_header_cases:
                 before = (parent.accepts, allowed.accepts, forbidden.accepts)
                 status, _, _ = _send(path, b"/v1/read", fields)
-                assert status >= 400, status
+                assert status >= 400, (name, status)
                 assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+            # Ordinary Authorization values do not acquire a new gateway rule.
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            ordinary_auth = _send(path, b"/ordinary", [
+                (b"Host", ALLOWED.encode()),
+                (b"Authorization", b"Bearer harmless-first-value"),
+                (b"authorization", b"Bearer harmless-second-value"),
+            ])
+            assert ordinary_auth[0] == 200 and ordinary_auth[2] == b"allowed", ordinary_auth
+            assert (parent.accepts, allowed.accepts, forbidden.accepts) == (
+                before[0] + 1, before[1] + 1, before[2])
+            assert b"harmless-first-value" in allowed.requests[-1]["head"]
+            assert b"harmless-second-value" in allowed.requests[-1]["head"]
+            assert token not in allowed.requests[-1]["head"]
+            assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
+
+            before = (parent.accepts, allowed.accepts)
+            ordinary_extra = _send(path, b"/v1/read", [
+                (b"Host", ALLOWED.encode()), auth,
+                (b"X-Api-Key", b"harmless-extra-value"),
+            ])
+            assert ordinary_extra[0] == 200 and ordinary_extra[2] == b"allowed", ordinary_extra
+            assert (parent.accepts, allowed.accepts) == (before[0] + 1, before[1] + 1)
+            assert b"harmless-extra-value" in allowed.requests[-1]["head"]
+            assert _authorization(allowed.requests[-1]["head"]) == [
+                b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert token not in allowed.requests[-1]["head"]
 
             for target in (b"/v1/%72ead", b"/v1//read", b"/v1%2Fread", b"/v1/./read",
                            b"/v1/read/", b"/v1/read/?x=1"):
@@ -340,6 +390,61 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
         assert parent.requests[-1]["route"] == "forbidden"
         assert forbidden.accepts == 1 and len(forbidden.requests) == 1
         assert VAULT_CREDENTIAL.encode() not in forbidden.requests[0]["head"]
+
+
+def test_conflicting_request_framing_cannot_reinterpret_the_next_request(proxy_backend, tmp_path):
+    """One raw write carries a framed request and its forbidden successor."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _fixture_state(directory)
+    (directory / "services/redirect.yaml").write_text(SERVICE)
+    with _servers() as (parent, allowed, forbidden):
+        with launch_proxy(proxy_backend, directory, POLICY, native_policy=True, agent_api=True,
+                          gateway_services_dir=directory / "services",
+                          gateway_builtin_services_dir=directory / "builtin",
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            token = _gateway_token(proxy).encode()
+            first = (b"POST http://allowed.invalid/v1/signed HTTP/1.1\r\n"
+                     b"Host: allowed.invalid\r\nAuthorization: Bearer " + token + b"\r\n"
+                     b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n"
+                     b"Connection: keep-alive\r\n\r\n4\r\nDATA\r\n0\r\n\r\n")
+            second = (b"GET http://forbidden.invalid/v1/read HTTP/1.1\r\n"
+                      b"Host: forbidden.invalid\r\nAuthorization: Bearer " + token + b"\r\n"
+                      b"Connection: close\r\n\r\n")
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(5)
+                stream.connect(proxy.paths["alice"])
+                stream.sendall(first + second)
+                reader = _Wire(stream)
+                response = reader.response()
+                if proxy_backend == "python":
+                    assert response["status"] == 400, response
+                    assert parent.accepts == allowed.accepts == forbidden.accepts == 0
+                else:
+                    assert response["status"] == 200 and response["body"] == b"allowed", response
+                    assert dict(response["headers"])[b"connection"].lower() == b"close"
+                    assert len(parent.requests) == len(allowed.requests) == 1
+                    assert parent.requests[0]["body"] == allowed.requests[0]["body"] == b"DATA"
+                    assert parent.requests[0]["lengths"] == []
+                    assert parent.requests[0]["transfers"] == [b"chunked"]
+                    assert forbidden.accepts == 0 and forbidden.requests == []
+                    assert _authorization(allowed.requests[0]["head"]) == [
+                        b"Bearer " + VAULT_CREDENTIAL.encode()]
+                    assert token not in allowed.requests[0]["head"]
+                assert reader.buffer == b"", reader.buffer
+                assert stream.recv(1) == b"", "ambiguous framing left the client connection open"
+            assert forbidden.accepts == 0 and forbidden.requests == []
+            signed = _send(proxy.paths["alice"], SIGNED_TARGET,
+                           [(b"Host", ALLOWED.encode()), (b"Authorization", b"Bearer " + token),
+                            (b"Content-Length", str(len(SIGNED_BODY)).encode())],
+                           SIGNED_BODY, b"POST")
+            assert signed[0] == 200 and signed[2] == b"allowed", signed
+            assert len(parent.requests) == len(allowed.requests) == (1 if proxy_backend == "python" else 2)
+            assert parent.requests[-1]["target"] == b"http://" + ALLOWED.encode() + SIGNED_TARGET
+            assert parent.requests[-1]["body"] == allowed.requests[-1]["body"] == SIGNED_BODY
+            assert _authorization(allowed.requests[-1]["head"]) == [
+                b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert forbidden.accepts == 0 and forbidden.requests == []
 
 
 def _reused_request(stream, authority, target, *, credential=False, forged_agent="bob"):
