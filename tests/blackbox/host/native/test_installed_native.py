@@ -9,13 +9,19 @@ from pathlib import Path
 from installed_host_smoke import _agent_map, _probe_agent_health
 
 
-def _request(socket_path: str, target: str, host: str) -> tuple[int, bytes, str | None]:
+def _request(
+    socket_path: str, target: str, host: str, *, test_context: str
+) -> tuple[int, bytes, str | None]:
     connection = http.client.HTTPConnection("fixture", timeout=5)
     connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.sock.settimeout(5)
     try:
         connection.sock.connect(socket_path)
-        connection.request("GET", target, headers={"Host": host, "Connection": "close"})
+        connection.request("GET", target, headers={
+            "Host": host,
+            "Connection": "close",
+            "X-SafeYolo-Test-Context": test_context,
+        })
         response = connection.getresponse()
         return response.status, response.read(), response.getheader("X-Blocked-By")
     finally:
@@ -38,13 +44,16 @@ class TestInstalledNative:
         """
         config_dir = Path(os.environ["SAFEYOLO_CONFIG_DIR"])
         agent = os.environ.get("SAFEYOLO_TEST_AGENT", "bbtest")
+        test_context = f"run=installed-native;agent={agent}"
         listeners = {item["agent_id"]: item for item in _agent_map(config_dir)}
         listener = listeners[agent]
         assert _probe_agent_health(listener, config_dir)["status"] == 200
 
         marker = "/installed-native-origin-marker"
         target = f"http://httpbin.org{marker}"
-        status, body, blocked_by = _request(listener["path"], target, "httpbin.org")
+        status, body, blocked_by = _request(
+            listener["path"], target, "httpbin.org", test_context=test_context
+        )
         assert (status, blocked_by) == (200, None)
         assert body == json.dumps({
             "received": True,
@@ -62,6 +71,7 @@ class TestInstalledNative:
         denied, _, blocked_by = _request(
             listener["path"], f"http://127.0.0.1:{admin_port}/admin/instance",
             f"127.0.0.1:{admin_port}",
+            test_context=test_context,
         )
         assert (denied, blocked_by) == (403, "admin-shield")
         assert len(sinkhole.get_requests(host="httpbin.org")) == 1
