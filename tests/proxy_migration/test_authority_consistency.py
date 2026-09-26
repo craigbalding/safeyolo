@@ -363,6 +363,152 @@ def test_absolute_authority_and_host_keep_credential_on_one_route(proxy_backend,
         assert SECRET not in forbidden.requests[-1]["head"]
 
 
+def test_absolute_root_dot_host_and_userinfo_do_not_change_route(proxy_backend, tmp_path):
+    """A dotted Host cannot redirect an admitted target; userinfo is rejected."""
+    directory = tmp_path / proxy_backend
+    with _peers(directory / "peers") as (parent, peers, _):
+        allowed, forbidden, _, _ = peers
+        parent.http[f"{FORBIDDEN}."] = forbidden
+        with launch_proxy(proxy_backend, directory / "proxy", POLICY,
+                          native_policy=True, credential_head_decision=True,
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            path = proxy.paths["alice"]
+            response = _raw_http(path, b"http://allowed.invalid/root-dot-host",
+                                 b"forbidden.invalid.", secret=True)
+            assert response[0] == 200 and response[2] == b"allowed-http", response
+            assert parent.requests[-1]["route"] == "allowed-http"
+            assert _host(parent.requests[-1]["head"]).lower() in (ALLOWED, f"{ALLOWED}:80")
+            assert SECRET in allowed.requests[-1]["head"]
+            assert forbidden.accepts == 0 and forbidden.requests == []
+
+            # These invalid targets must be rejected before either their
+            # userinfo or Host can select a route.
+            for target in (b"http://allowed.invalid@forbidden.invalid/userinfo",
+                           b"http://forbidden.invalid@allowed.invalid/userinfo"):
+                before = (parent.accepts, allowed.accepts, forbidden.accepts)
+                rejected = _raw_http(path, target, ALLOWED.encode(), secret=True)
+                assert rejected[0] == 400, rejected
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            denied = _raw_http(path, b"http://forbidden.invalid./denied",
+                               ALLOWED.encode(), secret=True)
+            assert denied[0] == 403, denied
+            assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+        # Prove that this parent would route the dotted Host to the forbidden
+        # physical origin if either proxy forwarded the client-supplied field.
+        with socket.create_connection(parent.server_address, timeout=5) as direct:
+            direct.sendall(b"GET http://allowed.invalid/control HTTP/1.1\r\n"
+                           b"Host: forbidden.invalid.\r\nConnection: close\r\n\r\n")
+            response = http.client.HTTPResponse(direct)
+            response.begin()
+            assert response.status == 200 and response.read() == b"forbidden-http"
+        assert parent.requests[-1]["route"] == "forbidden-http"
+        assert SECRET not in forbidden.requests[-1]["head"]
+
+
+def test_explicitly_allowed_root_dot_target_preserves_signed_request(proxy_backend, tmp_path):
+    """An admitted dotted target remains usable despite a conflicting Host."""
+    directory = tmp_path / proxy_backend
+    with _peers(directory / "peers") as (parent, peers, _):
+        allowed, forbidden, _, _ = peers
+        parent.http[f"{ALLOWED}."] = allowed
+        parent.http[f"{FORBIDDEN}."] = forbidden
+        policy = POLICY.replace(ALLOWED, f"{ALLOWED}.")
+        target = b"http://allowed.invalid.:80" + TARGET.encode()
+        with launch_proxy(proxy_backend, directory / "proxy", policy,
+                          native_policy=True, credential_head_decision=True,
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            path = proxy.paths["alice"]
+            for host in (b"ALLOWED.INVALID.", b"forbidden.invalid."):
+                response = _raw_http(path, target, host, method=b"POST", body=BODY,
+                                     secret=True)
+                assert response[0] == 200 and response[2] == b"allowed-http", response
+                assert parent.requests[-1]["route"] == "allowed-http"
+                assert parent.requests[-1]["target"] == target
+                assert parent.requests[-1]["body"] == BODY
+                assert _host(parent.requests[-1]["head"]).lower() in (
+                    f"{ALLOWED}.", f"{ALLOWED}.:80")
+                assert allowed.requests[-1]["head"].split(b"\r\n", 1)[0] == (
+                    b"POST " + TARGET.encode() + b" HTTP/1.1")
+                assert allowed.requests[-1]["body"] == BODY
+                assert SECRET in allowed.requests[-1]["head"]
+                assert forbidden.accepts == 0 and forbidden.requests == []
+
+
+def test_inner_port_and_root_dot_authorities_do_not_inherit_connect(proxy_backend, tmp_path):
+    """The admitted CONNECT endpoint cannot lend its credential to another authority."""
+    directory = tmp_path / proxy_backend
+    with _peers(directory / "peers") as (parent, peers, trust):
+        _, _, allowed, forbidden = peers
+        CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+        with launch_proxy(proxy_backend, directory / "proxy", POLICY, native_policy=True,
+                          credential_head_decision=True, tls=True, upstream_ca=trust,
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            ca = directory / "proxy/ca/mitmproxy-ca-cert.pem"
+            path = proxy.paths["alice"]
+            outer = f"{ALLOWED}:443".encode()
+            # The dotted spelling may resolve to the same socket, but it is
+            # a distinct HTTP authority unless the outer route admits it.
+            inner = (f"{ALLOWED}:444", f"{ALLOWED}.:443", f"{FORBIDDEN}.:443")
+            for authority in inner:
+                for protocol in ("http/1.1", "h2"):
+                    before = len(allowed.requests)
+                    status, stream = _connect(path, outer, ALLOWED, ca, offers=(protocol,))
+                    assert status == 200
+                    with stream:
+                        assert stream.selected_alpn_protocol() == protocol
+                        if protocol == "h2":
+                            result = h2_requests(stream, [headers(authority, "/inner-spelling", [
+                                ("authorization", "Bearer " + SECRET.decode()),
+                            ])], allow_rejection=True)[0]
+                            assert result["headers"][":status"] == "400", result
+                        else:
+                            stream.sendall(b"GET /inner-spelling HTTP/1.1\r\nHost: "
+                                           + authority.encode() + b"\r\nAuthorization: Bearer "
+                                           + SECRET + b"\r\nConnection: close\r\n\r\n")
+                            response = http.client.HTTPResponse(stream)
+                            response.begin()
+                            assert response.status == 400, response.status
+                            response.read()
+                    assert len(allowed.requests) == before
+                    assert forbidden.accepts == 0 and forbidden.requests == []
+                    # Python's lazy strategy may reject before opening its
+                    # parent leg; any leg that opens must keep the outer route.
+                    assert all(row["target"] == outer and row["route"] == "allowed-tls"
+                               for row in parent.requests)
+
+            # Omitting the default port is a valid spelling of this endpoint.
+            for protocol in ("http/1.1", "h2"):
+                status, stream = _connect(path, outer, ALLOWED, ca, offers=(protocol,))
+                assert status == 200
+                with stream:
+                    if protocol == "h2":
+                        result = h2_requests(stream, [headers(ALLOWED, TARGET, [
+                            ("authorization", "Bearer " + SECRET.decode()),
+                        ])])[0]
+                        assert result["headers"][":status"] == "200", result
+                        assert result["body"] == b"allowed-tls"
+                    else:
+                        stream.sendall(b"POST " + TARGET.encode() + b" HTTP/1.1\r\nHost: "
+                                       + ALLOWED.encode() + b"\r\nAuthorization: Bearer "
+                                       + SECRET + b"\r\nContent-Length: "
+                                       + str(len(BODY)).encode()
+                                       + b"\r\nConnection: close\r\n\r\n" + BODY)
+                        response = http.client.HTTPResponse(stream)
+                        response.begin()
+                        assert response.status == 200 and response.read() == b"allowed-tls"
+                assert allowed.requests[-1]["head"].split(b"\r\n", 1)[0] == (
+                    (b"GET " if protocol == "h2" else b"POST ")
+                    + TARGET.encode() + b" HTTP/1.1")
+                assert allowed.requests[-1]["body"] == (b"" if protocol == "h2" else BODY)
+                assert SECRET in allowed.requests[-1]["head"]
+                assert forbidden.accepts == 0 and forbidden.requests == []
+                assert parent.requests[-1]["target"] == outer
+                assert parent.requests[-1]["route"] == "allowed-tls"
+
+
 def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend, tmp_path):
     """CONNECT, decrypted Host/:authority and SNI cannot redirect a credential."""
     directory = tmp_path / proxy_backend
