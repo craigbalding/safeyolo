@@ -7,6 +7,8 @@ import hashlib
 import json
 import math
 import re
+import select
+import socket
 import threading
 import time
 import uuid
@@ -133,6 +135,7 @@ class Origin(ThreadingHTTPServer):
         self.stream_finished = threading.Event()
         self.stream_initial_sent = threading.Event()
         self.stream_release = threading.Event()
+        self.stream_peer_closed = threading.Event()
         self.stream_cancelled = threading.Event()
         self.stream_write_error = None
         self.response_delay = response_delay
@@ -174,7 +177,25 @@ class OriginHandler(BaseHTTPRequestHandler):
                 self.wfile.write(first)
                 self.wfile.flush()
                 self.server.stream_initial_sent.set()
-                self.server.stream_release.wait(timeout=30)
+                if self.path == "/stream-cancel":
+                    # Observe peer EOF without consuming any request bytes.
+                    # Stay held until release so the later write still tests
+                    # whether the proxy canceled its upstream connection.
+                    deadline = time.monotonic() + 30
+                    while not self.server.stream_release.is_set() and time.monotonic() < deadline:
+                        readable, _, _ = select.select([self.connection], [], [], 0.02)
+                        if readable:
+                            try:
+                                closed = not self.connection.recv(1, socket.MSG_PEEK)
+                            except ConnectionResetError:
+                                closed = True
+                            if closed:
+                                self.server.stream_peer_closed.set()
+                                self.server.stream_release.wait(timeout=max(0, deadline - time.monotonic()))
+                                break
+                            time.sleep(0.02)
+                else:
+                    self.server.stream_release.wait(timeout=30)
                 remaining = self.server.stream_chunks
                 if self.path == "/stream-control":
                     remaining = max(0, remaining - 1)

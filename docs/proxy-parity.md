@@ -1527,6 +1527,12 @@ exact responses on a reused client connection check the later policy and
 framing state. The separate close-delimited SSE cases observe both genuine
 client-socket cancellation and a response intentionally kept live through
 shutdown; this finite framed case does not replace that resource observation.
+The [held-SSE cancellation workload](../tests/proxy_migration/test_http_contract.py)
+now closes both `HTTPResponse` and `HTTPConnection`. Its origin sees socket EOF
+before release and later writes fail on both backends while a separate control
+request succeeds. The Python fixture records one `proxy.request` event for the
+control; Rust records both the canceled stream and control. This is a fixture
+event difference, not a production audit parity claim.
 
 The shared [mixed lifecycle fixture](../tests/proxy_migration/test_lifecycle_batch.py)
 now repeats short HTTP, partial-upload cancellation, SSE, WebSocket and opaque

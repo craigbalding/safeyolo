@@ -63,6 +63,13 @@ The shared assertions cover:
   The other agent remains denied and creates no origin request. This finite
   handoff does not cover close-delimited Server-Sent Events (SSE) or repeated
   resource growth.
+- A held close-delimited SSE response sends one event before the client closes
+  both `HTTPResponse` and `HTTPConnection`. The origin observes socket EOF
+  before the fixture releases the rest of the stream. A separate control
+  request completes, then origin writes fail on both backends. The Python
+  fixture records one `proxy.request` row for the completed control; Rust
+  records rows for the stream and control. These are fixture events, not a
+  production audit parity claim.
 - One process handles three bounded batches of short HTTP, a partial canceled
   upload, a close-delimited SSE response, a WebSocket echo, and an opaque
   CONNECT tunnel. The four long-lived legs overlap a permitted control request
