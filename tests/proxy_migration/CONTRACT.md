@@ -237,6 +237,14 @@ The shared assertions cover:
   circuit. The shared case checks wire IDs, parent counts, circuit state and
   scoped events on both backends; reset, persistence and other thresholds have
   separate tests.
+- An owned relay records the request head that the first proxy sends to its
+  configured parent. The relay sends one request back to the same proxy's agent
+  socket. That second pass returns 508 without another relay or origin connection.
+  The relay sends a separate request to a second proxy with a distinct Via
+  pseudonym. The origin receives the exact target and canary with both Via
+  pseudonyms. An unrelated destination also reaches the origin. Separate
+  controls show that matching ignores token case and does not treat a longer
+  token with the same prefix as a loop.
 - Local containment of unavailable Agent API handlers and the reserved probe,
   including mixed-case Agent API hostnames and synthetic bearer credentials.
 - Readiness and graceful process shutdown.
