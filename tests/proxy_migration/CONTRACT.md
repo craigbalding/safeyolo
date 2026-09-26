@@ -268,6 +268,14 @@ The shared assertions cover:
   HTTP request counter.
   CONNECT creates no origin application request in this fixture. Both backends
   record CONNECT in the security audit; Rust also emits `proxy.request` rows.
+- With the same small configured limits, fresh CONNECT attempts exhaust the
+  `network:connect` counter without spending `network:request`. Repeated HTTP
+  requests on one agent socket then reach the owned origin before a local 429
+  exhausts the separate request counter. Each denied action leaves the origin
+  unchanged. A neighboring host remains usable under the per-host limit and
+  receives 429 under the global limit. Both actions recover after the GCRA
+  emission interval without an operator reset. The case joins denial audits
+  and HTTP request events to response IDs on both backends.
 - Concurrent HTTP/2 streams from two agents, independent request identities,
   exact encoded queries, protocol negotiation and rejected inner authorities.
   A mixed-outcome case sends allowed requests and a credential approval request
