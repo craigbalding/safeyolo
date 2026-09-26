@@ -64,15 +64,16 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
         with launch_proxy(
             proxy_backend, directory, policy, policy_format="json", native_policy=True,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
-            agent_api=True, flow_store_enabled=True,
+            agent_api=True, flow_store_enabled=True, test_context_block=True,
         ) as proxy:
             denials = []
             for agent in ("alice", "bob"):
-                status, headers, _ = request(proxy.paths[agent], target + "/missing",
-                                             headers=forged)
+                status, headers, body = request(proxy.paths[agent], target + "/missing",
+                                                headers=forged)
                 identifier = {key.lower(): value for key, value in headers.items()}[
                     "x-safeyolo-request-id"]
                 assert status == 428 and parent.accepts == 0 and parent.requests == []
+                assert json.loads(body)["type"] == "missing_context"
                 assert {key.lower(): value for key, value in headers.items()}[
                     "x-blocked-by"] == "test-context"
                 scoped = request_evidence(
@@ -113,6 +114,59 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
                 proxy, "bob", identifier, host="context.invalid", port=8123,
                 method="GET", status=428, decision="deny", blocker="test-context",
                 run=run, path="/bob",
+            )
+            denials.append(("bob", identifier, scoped))
+
+            # Agent and source claims on Bob's listener cannot replace Alice's
+            # declaration. Bob may create and use only his own context.
+            bob_run = "context-bob-owned"
+            bob_context = f"run={bob_run};agent=alice;test=request-ids"
+            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            bob_declared = scoped_api(
+                proxy, "bob", "/api/test-context/current?agent=alice&source_id=10.0.0.2",
+                method="POST", body=json.dumps({"context": bob_context, "ttl": 60}).encode(),
+                headers=forged,
+            )
+            assert bob_declared["agent"] == "bob" and bob_declared["context"] == {
+                "run": bob_run, "agent": "alice", "test": "request-ids",
+            }
+            assert scoped_api(proxy, "bob", "/api/test-context/current?agent=alice")["context"] == bob_declared["context"]
+            assert scoped_api(proxy, "alice", "/api/test-context/current")["context"] == declared["context"]
+            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+
+            status, headers, body = request(proxy.paths["bob"], target + "/bob-declared", headers=forged)
+            assert status == 200 and body == b"hello"
+            assert len(parent.requests) == before[1] + 1
+            assert parent.requests[-1]["target"] == target + "/bob-declared"
+            assert b"x-safeyolo-test-context:" not in parent.request_heads[-1].lower()
+            bob_owned_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
+            bob_owned = request_evidence(
+                proxy, "bob", bob_owned_id, host="context.invalid", port=8123,
+                method="GET", status=200, decision="allow", run=bob_run,
+                path="/bob-declared", flow_expected=True, context_source="declared",
+            )
+            assert json.loads(bob_owned["flow"]["context_json"]) == bob_declared["context"]
+            assert bob_owned["flow"]["source_id"] == "10.0.0.3"
+            assert bob_owned["flow"]["test_agent"] == "alice"
+            assert bob_owned["flow"]["evidence_owner"] == "bob"
+
+            before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+            assert scoped_api(proxy, "bob", "/api/test-context/current?agent=alice", method="DELETE") == {
+                "status": "cleared",
+            }
+            assert scoped_api(proxy, "bob", "/api/test-context/current?agent=alice") == {
+                "agent": "bob", "context": None,
+            }
+            assert scoped_api(proxy, "alice", "/api/test-context/current")["context"] == declared["context"]
+            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+            status, headers, body = request(proxy.paths["bob"], target + "/bob-cleared", headers=forged)
+            assert status == 428 and json.loads(body)["type"] == "missing_context"
+            assert (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress"))) == before
+            identifier = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
+            scoped = request_evidence(
+                proxy, "bob", identifier, host="context.invalid", port=8123,
+                method="GET", status=428, decision="deny", blocker="test-context",
+                run=bob_run, path="/bob-cleared",
             )
             denials.append(("bob", identifier, scoped))
 
@@ -171,10 +225,10 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
             assert scoped_api(proxy, "bob", search)["flows"] == []
 
             observed_ids = ({identifier for _, identifier, _ in denials} |
-                            {identifier for identifier, _ in owned})
+                            {identifier for identifier, _ in owned} | {bob_owned_id})
             runtime = {event["request_id"]: event for event in proxy.events("proxy.request")
                        if event["request_id"] in observed_ids}
-            assert len(runtime) == len(denials) + len(owned)
+            assert len(runtime) == len(denials) + len(owned) + 1
             assert all(event["host"] == "context.invalid" and event["port"] == 8123
                        for event in runtime.values())
             for agent, identifier, evidence in denials:
@@ -187,20 +241,37 @@ def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
                 assert runtime[identifier]["status"] == 200
                 assert runtime[identifier]["decision"] == "allow"
                 assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+            assert runtime[bob_owned_id]["agent"] == "bob"
+            assert runtime[bob_owned_id]["status"] == 200
+            assert runtime[bob_owned_id]["decision"] == "allow"
+            assert runtime[bob_owned_id]["connection_id"] == bob_owned["connection_id"]
 
             deadline = time.monotonic() + 2
             while True:
-                declarations = [event for event in read_events(directory / "audit.jsonl")
-                                if event["event"] == "security.test_context_declared"]
-                if declarations or time.monotonic() >= deadline:
+                context_mutations = [event for event in read_events(directory / "audit.jsonl")
+                                     if event["event"] in {
+                                         "security.test_context_declared", "security.test_context_cleared",
+                                     }]
+                if len(context_mutations) >= 3 or time.monotonic() >= deadline:
                     break
                 time.sleep(0.025)
-            assert len(declarations) == 1
-            assert declarations[0]["agent"] == "alice"
-            assert declarations[0]["details"]["source_id"] == "10.0.0.2"
-            assert declarations[0]["details"]["trusted_agent"] == "alice"
-            assert declarations[0]["details"]["declared_agent"] == "bob"
-            assert len(parent.requests) == 3
+            assert [(event["event"], event["agent"], event["details"]["source_id"])
+                    for event in context_mutations] == [
+                ("security.test_context_declared", "alice", "10.0.0.2"),
+                ("security.test_context_declared", "bob", "10.0.0.3"),
+                ("security.test_context_cleared", "bob", "10.0.0.3"),
+            ]
+            assert context_mutations[0]["details"]["trusted_agent"] == "alice"
+            assert context_mutations[0]["details"]["declared_agent"] == "bob"
+            assert context_mutations[1]["details"]["trusted_agent"] == "bob"
+            assert context_mutations[1]["details"]["declared_agent"] == "alice"
+            local_runtime = {event["request_id"]: event for event in proxy.events("proxy.request")
+                             if event["host"].lower().rstrip(".") == "_safeyolo.proxy.internal"}
+            for event in context_mutations:
+                runtime_event = local_runtime[event["request_id"]]
+                assert runtime_event["agent"] == event["agent"]
+                assert runtime_event["status"] == 200 and runtime_event["decision"] == "local"
+            assert len(parent.requests) == 4
 
 
 def test_connect_and_inner_request_ids_keep_scoped_connection_evidence(proxy_backend, tmp_path):

@@ -139,6 +139,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
                  agent_map=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
+                 test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
                  agents=("alice", "bob"), services_dir=None, python_config_dir=None,
                  connect_trace_path=None):
@@ -190,7 +191,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["inspection"] = {"policy_file": str(policy), **inspection}
         for name, value in (("network_guard_enabled", network_guard_enabled),
                             ("network_guard_block", network_guard_block),
-                            ("network_guard_homoglyph", network_guard_homoglyph)):
+                            ("network_guard_homoglyph", network_guard_homoglyph),
+                            ("test_context_block", test_context_block)):
             if value is not None:
                 config[name] = value
         if upstream_ca:
