@@ -303,7 +303,7 @@ effect = "deny"
         )
 
 
-def test_reserved_hosts_never_resolve_or_contact_parent(proxy_backend, tmp_path):
+def test_reserved_hosts_stay_local_and_do_not_contact_parent(proxy_backend, tmp_path):
     reserved_scenario(proxy_backend, tmp_path / proxy_backend)
 
 

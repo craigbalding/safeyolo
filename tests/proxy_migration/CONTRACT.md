@@ -106,7 +106,15 @@ The shared assertions cover:
   and run the same selected test under an external deadline for a longer check.
   The default finite fixture does not establish sustained churn, a global
   memory cap, or host cleanup.
-- No pre-DNS outbound attempt or synthetic upstream connection after denial.
+- On Linux with `strace`, the shared outbound-effects case follows both real
+  backends through their `connect` system calls. Two permitted parent requests
+  establish that the observer sees IP `connect` attempts. Reserved API and
+  probe requests, reserved CONNECT, malformed local requests, and denied
+  ordinary HTTP and CONNECT create no additional IP `connect` attempt, parent
+  accept, or parent application request. The Python case selects eager
+  connections. The fixture has no independent live resolver control, so DNS
+  lookup absence remains unverified. A zero `proxy.egress` count or parent
+  accept count alone does not prove it.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
 - Raw absolute-form authority and Host controls through a Host-routing parent.
