@@ -13,7 +13,6 @@ import os
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -121,16 +120,8 @@ def file_sha256(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def process_command(backend, directory, *, python_executable=None):
-    config = directory / "proxy.json"
-    if backend == "python":
-        executable = str(python_executable or sys.executable)
-        return [executable, str(Path(__file__).with_name("old_proxy.py")), "--config", str(config)]
-    return [str(Path(os.environ["SAFEYOLO_RUST_PROXY"]).resolve()), "--config", str(config)]
-
-
 def preserve_circuit_state(
-    state_file, snapshot_file, *, backend, directory, proxy, operation, effective, python_executable=None
+    state_file, snapshot_file, *, backend, proxy, operation, effective
 ):
     shutil.copyfile(state_file, snapshot_file)
     raw = json.loads(snapshot_file.read_text())
@@ -142,7 +133,7 @@ def preserve_circuit_state(
         "file": snapshot_file.name,
         "sha256": file_sha256(snapshot_file),
         "raw": raw,
-        "command": process_command(backend, directory, python_executable=python_executable),
+        "command": list(proxy.process.args),
         "exit_code": proxy.process.returncode,
         "effective": effective,
     }
@@ -370,12 +361,12 @@ def test_graceful_restart_retains_saved_failure_state_and_resets_counters(proxy_
         assert origin.accepts == len(origin.requests) == 2
 
 
-def test_selected_python_native_python_circuit_state_transition(tmp_path):
+def test_selected_python_native_python_circuit_state_transition(tmp_path, monkeypatch):
     """A real old/new process sequence keeps circuit state usable both ways."""
-    comparator = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+    comparator = os.environ.get("SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE")
     binary = os.environ.get("SAFEYOLO_RUST_PROXY")
     if not comparator or not binary:
-        pytest.skip("cross-backend rollback fixture requires selected Python source and Rust binary")
+        pytest.skip("cross-backend rollback fixture requires pinned Python comparator and Rust binary")
 
     comparator = Path(comparator).expanduser().resolve()
     binary = Path(binary).expanduser().resolve()
@@ -414,6 +405,11 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
     assert identity["safeyolo"] == "0.1.0"
     assert identity["mitmproxy"] == "12.2.3"
 
+    # Only this rollback sequence runs the historical Python source. The suite's
+    # selected Python backend remains the current candidate in other tests.
+    monkeypatch.setenv("SAFEYOLO_PYTHON_SOURCE", str(comparator))
+    comparator_fixture = comparator / "tests/proxy_migration/old_proxy.py"
+    assert comparator_fixture.is_file()
     state_file = tmp_path / "shared-circuit.json"
     source = policy(threshold=1, timeout=1)
     manifest = {
@@ -437,6 +433,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
             python_executable=comparator_python,
+            python_fixture=comparator_fixture,
         ) as proxy:
             hit(proxy, origin, "alice", "/failure", 500)
             assert wait_failure_count(proxy, 1)["domains"][HOST]["state"] == "open"
@@ -449,11 +446,9 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             state_file,
             first_file,
             backend="python",
-            directory=python_before,
             proxy=proxy,
             operation="write-open-and-block-before-rollback",
             effective={"open_block_status": 503, "origin_contacts": origin.accepts},
-            python_executable=comparator_python,
         )
         assert first["raw"]["states"][HOST]["state"] == "open"
         manifest["stages"].append(first)
@@ -484,7 +479,6 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             state_file,
             second_file,
             backend="rust",
-            directory=native_before,
             proxy=proxy,
             operation="read-open-and-write-closed",
             effective={"loaded": "open", "wrote": "closed", "origin_contacts": origin.accepts},
@@ -501,6 +495,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
             python_executable=comparator_python,
+            python_fixture=comparator_fixture,
         ) as proxy:
             assert circuits(proxy)["domains"][HOST]["state"] == "closed"
             hit(proxy, origin, "bob", "/failure", 500)
@@ -511,11 +506,9 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             state_file,
             third_file,
             backend="python",
-            directory=python_after,
             proxy=proxy,
             operation="read-closed-and-write-open",
             effective={"loaded": "closed", "wrote": "open", "origin_contacts": origin.accepts},
-            python_executable=comparator_python,
         )
         assert third["raw"]["states"][HOST]["state"] == "open"
         manifest["stages"].append(third)
@@ -545,7 +538,6 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             state_file,
             fourth_file,
             backend="rust",
-            directory=native_after,
             proxy=proxy,
             operation="read-open-block-and-write-closed",
             effective={
@@ -559,6 +551,8 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
         manifest["stages"].append(fourth)
     assert origin.accepts == len(origin.requests) == 4
     assert all(stage["exit_code"] == 0 for stage in manifest["stages"])
+    assert first["command"][:2] == third["command"][:2] == [str(comparator_python), str(comparator_fixture)]
+    assert Path(second["command"][0]).resolve() == Path(fourth["command"][0]).resolve() == binary
     assert manifest["stages"][0]["sha256"] != manifest["stages"][1]["sha256"]
     for stage in manifest["stages"]:
         stage.pop("raw")

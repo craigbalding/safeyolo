@@ -23,6 +23,14 @@ always use Python and currently skip platforms other than Linux. Set
 `SAFEYOLO_RUST_PROXY` to select a built binary at another path. A missing
 requested binary is an error. The fixture
 does not select a different backend after a failure.
+To include the historical circuit-state rollback case, use a clean checkout at
+`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`. From that checkout, create
+its locked Python 3.12.14 `.venv` with
+`uv sync --frozen --python 3.12.14 --group dev`. Set
+`SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` to that checkout.
+That test uses the comparator's own Python fixture; other Python cases continue
+to run the selected current source. Without this separate fixture, the rollback
+case skips.
 
 The shared assertions cover:
 
@@ -568,11 +576,12 @@ establish sustained backpressure, repeated resource bounds or throughput.
 The WS fixture sends five-byte echoes for the requested duration. These
 sessions do not inspect fragmentation, compression or large messages.
 
-On Linux, reports read resident set size (RSS), process high-water memory,
+On Linux, reports read resident set size (RSS), available process high-water memory,
 virtual memory, thread count and open-FD count from `/proc` for the proxy (and
 any explicitly selected child process). The native capture requires no policy
 adapter. The summed RSS counts shared pages more than once; it is not a unique
-physical-memory measurement. Other platforms report unavailable memory values.
+physical-memory measurement. A missing `/proc` high-water field is reported as
+null while RSS and descriptor checks continue. Other platforms report unavailable memory values.
 Latency/throughput values are observations, without a performance target.
 
 Neither the original two-second smoke stream nor the later single-stream
