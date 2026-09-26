@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import http.client
 import json
 import socketserver
@@ -334,3 +335,61 @@ def test_client_followed_gateway_redirect_keeps_vault_credential_at_owned_origin
                 "untrusted_accepts": untrusted.accepts,
                 "untrusted_requests": untrusted.requests,
             }, indent=2) + "\n")
+
+
+def test_client_that_reapplies_gateway_token_on_redirect_cannot_reach_new_authority(
+    proxy_backend, tmp_path,
+):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _fixture_state(directory)
+    with _origin("127.0.0.1") as owned, _origin("127.0.0.2") as untrusted:
+        owned_port = owned.server_address[1]
+        untrusted_port = untrusted.server_address[1]
+        owned.redirect_to = f"http://127.0.0.2:{untrusted_port}"
+        with launch_proxy(
+            proxy_backend, directory, _policy(owned_port, untrusted_port),
+            native_policy=True, agent_api=True,
+            gateway_services_dir=directory / "services",
+            gateway_builtin_services_dir=directory / "builtin",
+            network_guard_enabled=True, network_guard_block=True,
+        ) as proxy:
+            token = _gateway_token(proxy)
+
+            def keep_token_on_every_request(outgoing):
+                outgoing.headers["Authorization"] = f"Bearer {token}"
+
+            with httpx.Client(
+                transport=UDSProxyTransport(proxy.paths["alice"]),
+                follow_redirects=True, timeout=5,
+                event_hooks={"request": [keep_token_on_every_request]},
+            ) as client:
+                followed = client.get(f"http://127.0.0.1:{owned_port}/v1/redirect")
+
+            assert [response.status_code for response in followed.history] == [302]
+            if not hmac.compare_digest(
+                followed.request.headers.get("Authorization", ""), f"Bearer {token}",
+            ):
+                raise AssertionError("Client did not retain its gateway token on redirect")
+            payload = followed.json()
+            assert followed.status_code == 503 and (
+                payload.get("error") == "GATEWAY_CONFIGURATION_ERROR"
+                or payload.get("reason_codes") == ["GATEWAY_CONFIGURATION_ERROR"]
+            )
+            assert owned.accepts == len(owned.requests) == 1
+            owned_wire = _wire(owned.requests[0])
+            assert _authorization(owned_wire) == [f"Bearer {VAULT_CREDENTIAL}".encode()]
+            if token.encode() in owned_wire:
+                raise AssertionError("Gateway token reached the owned origin")
+            assert untrusted.accepts == 0 and untrusted.requests == []
+            assert [(row["host"], row["port"]) for row in proxy.events("proxy.egress")] == [
+                ("127.0.0.1", owned_port),
+            ]
+            for response in (*followed.history, followed):
+                if token.encode() in response.content or VAULT_CREDENTIAL.encode() in response.content:
+                    raise AssertionError("Gateway secret appeared in a client response")
+
+        for name in ("audit.jsonl", "events.jsonl"):
+            routine = (directory / name).read_bytes()
+            if token.encode() in routine or VAULT_CREDENTIAL.encode() in routine:
+                raise AssertionError(f"Gateway secret appeared in {name}")
