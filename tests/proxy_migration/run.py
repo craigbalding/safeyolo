@@ -233,8 +233,10 @@ def short_https_connections(backend, directory, count):
 
     from tests.proxy_migration.test_http2_contract import (
         origin_certificate,
-        origin_server as tls_origin_server,
         tls_tunnel,
+    )
+    from tests.proxy_migration.test_http2_contract import (
+        origin_server as tls_origin_server,
     )
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -852,16 +854,18 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
     """Cancel a held SSE response and verify independent work still completes.
 
     The origin flushes one event and then waits for the test to release it.  The
-    client closes its downstream socket before release; after an unrelated
-    request succeeds, the origin is released and must observe the proxy's
-    cancellation before producing the complete paced body.  Resource samples
-    come from ``/proc`` and the origin, not proxy counters.
+    client closes its response and downstream socket before release; the origin
+    observes that close while held. After an unrelated request succeeds, the
+    origin is released and must observe cancellation before producing the
+    complete paced body. Resource samples come from ``/proc`` and the origin,
+    not proxy counters.
     """
     first_event = b"data: first-event\n\n"
     with origin_server(stream_seconds=seconds) as origin, launch_proxy(
         backend, directory, POLICY, native_policy=backend == "rust"
     ) as proxy:
         client = connection(proxy.paths["alice"])
+        response = None
         started = time.perf_counter()
         try:
             client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-cancel")
@@ -874,17 +878,22 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
             first_before_release = not origin.stream_release.is_set()
             before_close = runtime_resources(proxy)
 
-            # Closing the downstream connection is the cancellation action.
-            # Keep the origin held so a successful follow-up proves the proxy
-            # remains responsive while cancellation is being propagated.
+            # HTTPConnection may detach a close-delimited HTTPResponse. Close
+            # both owners, and observe origin EOF before releasing the stream.
+            response.close()
             client.close()
+            downstream_closed_before_release = origin.stream_peer_closed.wait(timeout=2)
+            assert downstream_closed_before_release, "held SSE origin did not see client close"
             close_elapsed = time.perf_counter() - started
             after_close = runtime_resources(proxy)
-            status, _, body = request(
+            status, control_headers, body = request(
                 proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
             )
             control_elapsed = time.perf_counter() - started - close_elapsed
             assert status == 200 and body == b"hello"
+            control_request_id = {name.lower(): value for name, value in control_headers.items()}[
+                "x-safeyolo-request-id"
+            ]
             assert not origin.stream_release.is_set()
             during_control = runtime_resources(proxy)
 
@@ -898,7 +907,7 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
             while time.monotonic() < event_deadline:
                 request_events = [event for event in read_events(proxy.event_log)
                                   if event.get("event") == "proxy.request"]
-                if len(request_events) >= 2:
+                if len(request_events) >= (2 if backend == "rust" else 1):
                     break
                 time.sleep(0.02)
             assert origin.requests == [
@@ -910,8 +919,9 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
                 "requested_stream_seconds": seconds,
                 "first_event_bytes": len(received),
                 "first_event_before_release": first_before_release,
-                "downstream_closed_before_release": True,
+                "downstream_closed_before_release": downstream_closed_before_release,
                 "control_status": status,
+                "control_request_id": control_request_id,
                 "control_completed_while_stream_held": True,
                 "control_elapsed_seconds": control_elapsed,
                 "cancellation_elapsed_seconds": time.perf_counter() - started,
@@ -936,6 +946,8 @@ def cancelled_sse_workload(backend, directory, seconds=4.0):
             }
         finally:
             origin.stream_release.set()
+            if response is not None:
+                response.close()
             client.close()
 
 

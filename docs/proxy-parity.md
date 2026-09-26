@@ -1524,9 +1524,15 @@ holds a chunked event response after its first client-visible bytes. The client
 then closes, and the origin observes its own connection closing. A completed
 response before cancellation, one denied request from the other agent, and two
 exact responses on a reused client connection check the later policy and
-framing state. The separate close-delimited SSE workload still records its
-Python cancellation limitation; this finite framed case does not replace that
-resource observation.
+framing state. The separate close-delimited SSE cases observe both genuine
+client-socket cancellation and a response intentionally kept live through
+shutdown; this finite framed case does not replace that resource observation.
+The [held-SSE cancellation workload](../tests/proxy_migration/test_http_contract.py)
+now closes both `HTTPResponse` and `HTTPConnection`. Its origin sees socket EOF
+before release and later writes fail on both backends while a separate control
+request succeeds. The Python fixture records one `proxy.request` event for the
+control; Rust records both the canceled stream and control. This is a fixture
+event difference, not a production audit parity claim.
 
 The shared [mixed lifecycle fixture](../tests/proxy_migration/test_lifecycle_batch.py)
 now repeats short HTTP, partial-upload cancellation, SSE, WebSocket and opaque
@@ -1534,8 +1540,10 @@ CONNECT on one process for three bounded batches. A permitted control request
 completes while the upload, stream, WebSocket and tunnel are established; a
 forged-agent denial opens no origin connection. Independent origins record the
 upload's exact incomplete prefix, one WebSocket echo, tunnel bytes and each
-connection end. Native Rust closes the SSE upstream after client cancellation;
-the Python comparator continues to finish that response. On Linux, the fixture
+connection end. Both backends close the SSE upstream after the fixture closes
+the partially read response and client socket. The earlier Python result came
+from closing `HTTPConnection` while its close-delimited `HTTPResponse` still
+owned the socket. On Linux, the fixture
 samples process file descriptors and resident memory after each quiet batch.
 It allows four descriptors above the cold sample, at most two more than the
 first quiet batch at the end, and 16 MiB of later Python or 8 MiB of later Rust
@@ -1546,8 +1554,18 @@ The fixture then stops the child and requires its marker and listeners to
 become unavailable. It starts the same config on the same paths with a new
 process identity. An allowed
 request and a denied other-agent request check the recovered listener and policy.
-The current measured result is owner-run on Linux. Independent acceptance,
-long-duration churn, host cleanup and other platform results remain open.
+The focused [SSE shutdown case](../tests/proxy_migration/test_sse_shutdown.py)
+uses a raw client socket to make early disconnect unambiguous. Before SIGTERM,
+the origin observes EOF; Rust then removes readiness, exits promptly and starts
+again with the same configuration. Its live-response control keeps the detached
+`HTTPResponse` open after `HTTPConnection.close()`, releases a final event after
+SIGTERM and requires Rust to deliver it before exit. In the Python comparator,
+SIGTERM closes that response before the final event. For Rust, the accepted
+HTTP driver and upstream body remain owned until the response completes. If it
+never completes, the ten-second supervisor grace applies. The focused SSE
+shutdown result is owner-run on Linux. Its independent
+acceptance, long-duration churn, host cleanup and other platform results remain
+open.
 
 Both reserved local destinations remain local. The Agent API implements the
 bounded reads above. The diagnostic probe now runs the installed native request

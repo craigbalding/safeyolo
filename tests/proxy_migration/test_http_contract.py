@@ -405,15 +405,7 @@ def test_short_requests_report_warmup_quiet_and_repeated_resource_phases(proxy_b
         assert provenance["temporary_policy_adapter"] is False
 
 
-def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_backend, tmp_path, request):
-    if proxy_backend == "python":
-        # The comparator currently drains this response after the downstream
-        # close.  Keep that concrete known defect visible as a strict xfail;
-        # native Rust must still execute and pass the same assertions.
-        request.node.add_marker(pytest.mark.xfail(
-            strict=True,
-            reason="Python comparator does not cancel the held upstream SSE after downstream close",
-        ))
+def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_backend, tmp_path):
     result = cancelled_sse_workload(proxy_backend, tmp_path / proxy_backend)
     assert result["first_event_before_release"] is True
     assert result["downstream_closed_before_release"] is True
@@ -431,8 +423,9 @@ def test_cancelled_sse_releases_upstream_and_keeps_other_request_live(proxy_back
     assert result["origin_observation"]["stream_finished_after_cancel"] is True
     events = [event for event in read_events(tmp_path / proxy_backend / "events.jsonl")
               if event.get("event") == "proxy.request"]
-    assert len(events) == 2
+    assert len(events) == (2 if proxy_backend == "rust" else 1)
     assert all(int(event.get("status", 500)) == 200 for event in events)
+    assert sum(event.get("request_id") == result["control_request_id"] for event in events) == 1
 
 
 def test_concurrent_policy_decisions_keep_agent_scope(proxy_backend, tmp_path):
