@@ -40,6 +40,9 @@ action = "network:request"
 resource = "*"
 effect = "allow"
 """
+REFILL_RATE = 20
+REFILL_PER_HOST = POLICY.replace("budget = 1", f"budget = {REFILL_RATE}")
+REFILL_GLOBAL = GLOBAL_REQUEST_LIMIT.replace('"network:request" = 1', f'"network:request" = {REFILL_RATE}')
 
 
 def report(keys=(), *, global_limit=False):
@@ -276,6 +279,49 @@ def test_network_request_limit_scope_and_recovery(proxy_backend, tmp_path, monke
             (event["agent"], event["host"], event["request_id"]) for event in requests if event["status"] == 429
         ]
         assert_no_refill(started)
+
+
+@pytest.mark.parametrize("scope", ["per-host", "global"])
+def test_network_request_limit_recovers_after_refill(proxy_backend, tmp_path, scope):
+    """An exhausted GCRA budget admits a later request without operator reset."""
+    policy = REFILL_PER_HOST if scope == "per-host" else REFILL_GLOBAL
+    with origin_server() as parent:
+        with policy_proxy(
+            proxy_backend,
+            tmp_path / proxy_backend,
+            policy,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+        ) as proxy:
+            target = "http://alpha.invalid/refill"
+            forwarded = []
+
+            def attempt():
+                before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+                status, headers, body = send_request(proxy.paths["alice"], target)
+                after = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+                if status == 200:
+                    assert body == b"hello"
+                    assert after == tuple(count + 1 for count in before)
+                    forwarded.append({"method": "GET", "target": target})
+                else:
+                    assert_rejection(status, headers, body, 429, "alpha.invalid")
+                    assert after == before
+                assert parent.requests == forwarded
+                return status
+
+            # A rate of 20 has a three-second GCRA emission interval and a
+            # small burst. Exhaust it quickly without assuming a fixed burst count.
+            for _ in range(6):
+                if attempt() == 429:
+                    break
+            else:
+                pytest.fail("The configured request budget did not exhaust")
+            assert forwarded
+
+            # Wait past the emission interval rather than probing its boundary.
+            time.sleep(3.5)
+            assert attempt() == 200
+            assert parent.accepts == len(forwarded)
 
 
 def test_operator_exact_budget_reset_shares_state_and_retains_order(proxy_backend, tmp_path, monkeypatch):
