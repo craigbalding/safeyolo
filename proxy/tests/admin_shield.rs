@@ -83,7 +83,7 @@ fn compare_rows(source: &Value) {
 #[test]
 fn source_request_connect_url_forms_and_transport_rejection_match() {
     let source = fixture();
-    assert_eq!(source["hooks"].as_array().unwrap().len(), 120);
+    assert_eq!(source["hooks"].as_array().unwrap().len(), 136);
     assert_eq!(source["forms"].as_array().unwrap().len(), 10);
     assert_eq!(source["server_hooks"].as_array().unwrap().len(), 5);
     compare_rows(&source);

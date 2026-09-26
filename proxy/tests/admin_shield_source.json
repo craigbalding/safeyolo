@@ -637,6 +637,59 @@
       "response": null
     },
     {
+      "host": "127.1.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "127.1.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "127.1.",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
       "host": "127.0.0.2",
       "port": 80,
       "hook": "request",
@@ -723,6 +776,59 @@
       "response": null
     },
     {
+      "host": "2130706433.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "2130706433.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "2130706433.",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
       "host": "0x7f000001",
       "port": 80,
       "hook": "request",
@@ -776,6 +882,59 @@
       "response": null
     },
     {
+      "host": "0x7f000001.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0x7f000001.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0x7f000001.",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
       "host": "0177.0.0.1",
       "port": 80,
       "hook": "request",
@@ -819,6 +978,59 @@
     },
     {
       "host": "0177.0.0.1",
+      "port": 9091,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1.",
+      "port": 80,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": false,
+      "metadata": {},
+      "response": null
+    },
+    {
+      "host": "0177.0.0.1.",
+      "port": 9090,
+      "hook": "request",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0177.0.0.1.",
       "port": 9091,
       "hook": "request",
       "extras": "",
@@ -2240,6 +2452,37 @@
       }
     },
     {
+      "host": "127.1.",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
       "host": "127.0.0.2",
       "port": 9090,
       "hook": "http_connect",
@@ -2252,6 +2495,37 @@
     },
     {
       "host": "2130706433",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "2130706433.",
       "port": 9090,
       "hook": "http_connect",
       "extras": "",
@@ -2313,7 +2587,69 @@
       }
     },
     {
+      "host": "0x7f000001.",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
       "host": "0177.0.0.1",
+      "port": 9090,
+      "hook": "http_connect",
+      "extras": "",
+      "admin_port": 9090,
+      "prior": false,
+      "blocked": true,
+      "metadata": {
+        "blocked_by": "admin-shield",
+        "block_reason": "admin_port_access"
+      },
+      "response": {
+        "status": 403,
+        "headers": [
+          [
+            "Content-Type",
+            "application/json"
+          ],
+          [
+            "X-Blocked-By",
+            "admin-shield"
+          ],
+          [
+            "content-length",
+            "75"
+          ]
+        ],
+        "body_hex": "7b226572726f72223a2022466f7262696464656e222c20226d657373616765223a202241646d696e20415049206e6f742061636365737369626c65207468726f7567682070726f7879227d"
+      }
+    },
+    {
+      "host": "0177.0.0.1.",
       "port": 9090,
       "hook": "http_connect",
       "extras": "",

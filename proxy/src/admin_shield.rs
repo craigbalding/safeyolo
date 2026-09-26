@@ -160,6 +160,7 @@ fn numeric_address(host: &str) -> Option<IpAddr> {
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(host);
+    let host = host.strip_suffix('.').unwrap_or(host);
     host.parse()
         .ok()
         .or_else(|| legacy_ipv4_address(host).map(IpAddr::V4))
@@ -294,15 +295,19 @@ mod tests {
         let shield = AdminShield::new(43123, "").unwrap();
         for host in [
             "127.1",
+            "127.1.",
             "2130706433",
+            "2130706433.",
             "0x7f000001",
+            "0x7f000001.",
             "0177.0.0.1",
+            "0177.0.0.1.",
             "[::ffff:127.0.0.1]",
         ] {
             assert!(!shield.blocks_host(host, 43123));
             assert!(shield.blocks_request_destination(host, 43123));
         }
-        for host in ["127.0.0.2", "0x7f000002", "0177.0.0.2"] {
+        for host in ["127.0.0.2", "127.0.0.2.", "0x7f000002", "0177.0.0.2"] {
             assert!(!shield.blocks_request_destination(host, 43123));
         }
         assert!(!shield.blocks_request_destination("127.1", 43124));

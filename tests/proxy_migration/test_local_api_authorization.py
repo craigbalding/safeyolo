@@ -49,7 +49,7 @@ def test_reserved_handler_disabled_stays_local_with_permissive_egress(proxy_back
 def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_path):
     token_file = tmp_path / "operator-token"
     token_file.write_text("synthetic-operator-token-621\n")
-    with origin_server() as parent:
+    with origin_server(capture_heads=True) as parent:
         with policy_proxy(
             proxy_backend, tmp_path / proxy_backend, ALLOW,
             admin_port=0, admin_api_token_file=token_file,
@@ -62,7 +62,11 @@ def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_p
                 ("bob", "POST", f"http://LOCALHOST.:{port}/admin/budgets/reset", "wrong"),
                 ("bob", "GET", f"http://localhost.:{port}/stats", None),
                 ("alice", "GET", f"http://127.1:{port}/stats", "wrong"),
+                ("alice", "GET", f"http://127.1.:{port}/stats?secret=query-canary-621", "wrong"),
                 ("alice", "GET", f"http://2130706433:{port}/stats", "wrong"),
+                ("alice", "GET", f"http://2130706433.:{port}/stats?secret=query-canary-621", "wrong"),
+                ("alice", "GET", f"http://0x7f000001.:{port}/stats?secret=query-canary-621", "wrong"),
+                ("alice", "GET", f"http://0177.0.0.1.:{port}/stats?secret=query-canary-621", "wrong"),
                 ("bob", "GET", f"http://[::ffff:127.0.0.1]:{port}/stats", "wrong"),
                 ("bob", "CONNECT", f"127.0.0.1:{port}", "synthetic-operator-token-621"),
             ):
@@ -75,7 +79,8 @@ def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_p
                 )
                 assert status == 403, body
                 assert {key.lower(): value for key, value in headers.items()}["x-blocked-by"] == "admin-shield"
-                assert parent.accepts == 0 and proxy.events("proxy.egress") == []
+                assert parent.accepts == 0 and parent.request_heads == []
+                assert proxy.events("proxy.egress") == []
 
             # The operator's direct listener retains public health and token-gated reads.
             client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -99,7 +104,9 @@ def test_agent_cannot_reach_operator_listener_through_proxy(proxy_backend, tmp_p
             # The same port at another address is not an operator listener.
             status, _, body = send_request(proxy.paths["alice"], f"http://127.0.0.2:{port}/ordinary")
             assert status == 200 and body == b"hello"
-            assert parent.accepts == 1 and len(proxy.events("proxy.egress")) == 1
+            status, _, body = send_request(proxy.paths["alice"], f"http://127.0.0.2.:{port}/ordinary")
+            assert status == 200 and body == b"hello"
+            assert parent.accepts == 2 and len(proxy.events("proxy.egress")) == 2
 
 
 def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path):
