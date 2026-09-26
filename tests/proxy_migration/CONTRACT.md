@@ -168,6 +168,8 @@ The shared assertions cover:
 - Raw service-gateway requests use an independent Host-routing parent and two
   origins. Authorization fields with a gateway token repeated in either order,
   a comma-separated Authorization value with a token, a tab-separated token,
+  raw NEL and NBSP separators, UTF-8 line and paragraph separators,
+  a valid gateway Authorization accompanied by a second token in `X-Api-Key`,
   duplicate Host fields in either order, plus encoded,
   doubled-slash, dot-segment, and trailing-slash spellings of an exact route,
   create no parent or origin connection. Python rejects raw fullwidth route
@@ -185,9 +187,9 @@ The shared assertions cover:
   parent contact. Rust returns the allowed response and closes after the first
   body, so the forbidden origin receives no request or credential. A fresh
   signed request still reaches the allowed origin with its exact target and
-  body. Ordinary duplicate Authorization values without a gateway token remain
-  usable. A direct request proves that the parent routes a conflicting Host to
-  the forbidden origin.
+  body. Ordinary duplicate Authorization values and a harmless `X-Api-Key`
+  alongside a valid gateway Authorization remain usable. A direct request
+  proves that the parent routes a conflicting Host to the forbidden origin.
 - The running gateway uses a scoped agent token, a vaulted synthetic credential,
   and an enforced capability contract. The owned origin receives the credential
   after token consumption. Wrong agent, token, capability, method, path, and

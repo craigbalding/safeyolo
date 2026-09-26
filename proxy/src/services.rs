@@ -1416,32 +1416,40 @@ fn folded_header(headers: &[(String, String)], name: &str) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
-fn token_candidate(value: &str) -> Option<&str> {
-    value.split(',').find_map(|part| {
-        let candidate = part.trim_matches(crate::policy::python_whitespace);
-        let candidate = candidate
-            .split_once(char::is_whitespace)
-            .map_or(candidate, |(_, value)| {
-                value.trim_matches(crate::policy::python_whitespace)
-            });
-        candidate.starts_with("sgw_").then_some(candidate)
+// Raw NEL/NBSP bytes and valid UTF-8 whitespace must give the same decision.
+const GATEWAY_TOKEN_SEPARATORS: &[u8] = b", \t\n\x0b\x0c\r\x1c\x1d\x1e\x1f\x85\xa0";
+
+pub(crate) fn has_gateway_token(raw_value: &[u8]) -> bool {
+    raw_value.windows(4).enumerate().any(|(start, candidate)| {
+        candidate == b"sgw_"
+            && (start == 0
+                || GATEWAY_TOKEN_SEPARATORS.contains(&raw_value[start - 1])
+                || (2..=4).any(|width| {
+                    start >= width
+                        && std::str::from_utf8(&raw_value[start - width..start])
+                            .ok()
+                            .is_some_and(|text| {
+                                text.chars().next().is_some_and(|character| {
+                                    character.len_utf8() == width && character.is_whitespace()
+                                })
+                            })
+                }))
     })
 }
 
 fn unresolved_token(headers: &[(String, String)]) -> GatewayDecision {
-    for (_, value) in headers {
-        if let Some(token) = token_candidate(value) {
-            return GatewayDecision::Deny {
-                status: 503,
-                code: "GATEWAY_CONFIGURATION_ERROR".into(),
-                field: None,
-                strip_headers: headers
-                    .iter()
-                    .filter(|(_, value)| value.contains(token))
-                    .map(|(name, _)| name.clone())
-                    .collect(),
-            };
-        }
+    let strip_headers: Vec<_> = headers
+        .iter()
+        .filter(|(_, value)| has_gateway_token(&crate::credential_text::source_bytes(value)))
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !strip_headers.is_empty() {
+        return GatewayDecision::Deny {
+            status: 503,
+            code: "GATEWAY_CONFIGURATION_ERROR".into(),
+            field: None,
+            strip_headers,
+        };
     }
     GatewayDecision::PassThrough
 }

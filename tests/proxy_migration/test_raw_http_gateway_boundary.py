@@ -264,11 +264,19 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
             assert denied[0] == 403, denied
             assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
 
+            separator_cases = (
+                ("raw-nel", b"\x85"),
+                ("raw-nbsp", b"\xa0"),
+                ("utf8-line-separator", b"\xe2\x80\xa8"),
+                ("utf8-paragraph-separator", b"\xe2\x80\xa9"),
+            )
             ambiguous_header_cases = (
                 ("gateway-token-first", [(b"Host", ALLOWED.encode()), auth,
                                          (b"authorization", b"Bearer harmless-second-value")]),
                 ("gateway-token-second", [(b"Host", ALLOWED.encode()),
                                           (b"authorization", b"Bearer harmless-first-value"), auth]),
+                ("gateway-token-in-another-header", [(b"Host", ALLOWED.encode()), auth,
+                                                     (b"X-Api-Key", token)]),
                 ("combined-authorization-value", [(b"Host", ALLOWED.encode()),
                                                   (b"Authorization", b"Bearer harmless-first-value, Bearer "
                                                    + token)]),
@@ -278,7 +286,9 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
                                            (b"hOst", FORBIDDEN.encode()), auth]),
                 ("forbidden-host-first", [(b"hOst", FORBIDDEN.encode()),
                                           (b"Host", ALLOWED.encode()), auth]),
-            )
+            ) + tuple((name, [(b"Host", ALLOWED.encode()),
+                              (b"Authorization", b"Bearer" + separator + token)])
+                      for name, separator in separator_cases)
             for name, fields in ambiguous_header_cases:
                 before = (parent.accepts, allowed.accepts, forbidden.accepts)
                 status, _, _ = _send(path, b"/v1/read", fields)
@@ -299,6 +309,18 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
             assert b"harmless-second-value" in allowed.requests[-1]["head"]
             assert token not in allowed.requests[-1]["head"]
             assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
+
+            before = (parent.accepts, allowed.accepts)
+            ordinary_extra = _send(path, b"/v1/read", [
+                (b"Host", ALLOWED.encode()), auth,
+                (b"X-Api-Key", b"harmless-extra-value"),
+            ])
+            assert ordinary_extra[0] == 200 and ordinary_extra[2] == b"allowed", ordinary_extra
+            assert (parent.accepts, allowed.accepts) == (before[0] + 1, before[1] + 1)
+            assert b"harmless-extra-value" in allowed.requests[-1]["head"]
+            assert _authorization(allowed.requests[-1]["head"]) == [
+                b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert token not in allowed.requests[-1]["head"]
 
             for target in (b"/v1/%72ead", b"/v1//read", b"/v1%2Fread", b"/v1/./read",
                            b"/v1/read/", b"/v1/read/?x=1"):

@@ -2652,6 +2652,16 @@ where
                 )
             })
             .collect();
+        if ordered_headers
+            .recording_pairs()
+            .filter(|(_, value)| crate::services::has_gateway_token(value))
+            .take(2)
+            .count()
+            > 1
+        {
+            let reply = gateway_response(403, "INVALID_TOKEN", request_id)?;
+            return Ok((prior_block(reply), "deny".into()));
+        }
         let gateway_decision = snapshot.map(|snapshot| {
             snapshot.select(crate::services::GatewayRequest {
                 identity: match identity.request_identity() {
@@ -2684,13 +2694,10 @@ where
             None => {
                 // A gateway token without an accepted catalog snapshot must
                 // never become an ordinary upstream header.
-                if gateway_headers.iter().any(|(_, value)| {
-                    value
-                        .split_once(' ')
-                        .map_or(value.as_str(), |(_, token)| token)
-                        .trim_matches(crate::policy::python_whitespace)
-                        .starts_with("sgw_")
-                }) {
+                if ordered_headers
+                    .recording_pairs()
+                    .any(|(_, value)| crate::services::has_gateway_token(value))
+                {
                     let reply = gateway_response(503, "GATEWAY_CONFIGURATION_ERROR", request_id)?;
                     return Ok((prior_block(reply), "deny".into()));
                 }
