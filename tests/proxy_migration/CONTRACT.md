@@ -47,13 +47,22 @@ The shared assertions cover:
   trusted-agent runtime event, complete `/explain` audit result, and untruncated
   `/trace` decision. CONNECT admission IDs resolve to scoped audit and trace
   records; the Python fixture has no CONNECT runtime event. An allowed HTTP
-  request with explicit test context must
-  also resolve to a persisted, agent-owned flow. The other agent cannot read
-  its trace, audit events, or flow detail. An early network denial and CONNECT
-  admission have no applied test context and therefore no FlowStore row; the
-  fixture checks that absence instead of claiming one. The CONNECT admission
-  and inner request have different IDs and one shared connection ID. The owned
-  origin records each socket accept and application request separately.
+  request with explicit test context must also resolve to a persisted,
+  agent-owned flow. The other agent cannot read its trace, audit events, or
+  flow detail. An early network denial and CONNECT admission have no applied
+  test context and therefore no FlowStore row; the fixture checks that absence.
+  The direct and parent cases tag each allowed request at the owned origin and
+  check that denied requests cause no origin request. The origin does not
+  receive the forged request ID. A bounded generated case varies agent order,
+  path, and forged identity-header spelling on reused UDS connections. It
+  joins each response ID to the origin target and canary, policy decision,
+  agent-owned evidence, and connection ID. After CONNECT admission, Bob's
+  inner GET and Alice's inner POST are denied locally. Alice's following GET
+  reaches the owned TLS origin on the same admitted tunnel. CONNECT and inner
+  IDs differ and share their listener's connection ID; the two listeners have
+  different connection IDs. These small buffered requests require complete
+  traces and persisted allowed flows. They do not establish evidence
+  completeness after body truncation or a persistence failure.
 - With `addons.test_context.target_hosts`, declared injection, and blocking
   enabled for one synthetic host, an unannotated request returns 428 before
   parent contact.
