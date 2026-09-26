@@ -1232,7 +1232,12 @@ class AgentAPI:
         capability = body.get("capability")
         reason = body.get("reason", "")
 
-        if not service_name or not capability:
+        if (
+            not isinstance(service_name, str)
+            or not service_name
+            or not isinstance(capability, str)
+            or not capability
+        ):
             self._respond(flow, 400, {"error": "service and capability are required"})
             return
 
@@ -1376,7 +1381,12 @@ class AgentAPI:
         purpose_code = body.get("purpose_code", "")
         note = body.get("note", "")
 
-        if not service_name or not capability:
+        if (
+            not isinstance(service_name, str)
+            or not service_name
+            or not isinstance(capability, str)
+            or not capability
+        ):
             self._respond(flow, 400, {"error": "service and capability are required"})
             return
         if not isinstance(bindings, dict) or not bindings:

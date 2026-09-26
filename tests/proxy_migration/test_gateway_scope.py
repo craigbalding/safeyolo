@@ -5,6 +5,8 @@ import json
 import time
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from safeyolo.api import AdminAPI
 from tests.proxy_migration.harness import launch_proxy, read_events, request
@@ -83,7 +85,7 @@ grantable_operations = ["list_items"]
 '''
 
 
-def test_gateway_control_routes_reject_non_object_json_before_effects(proxy_backend, tmp_path):
+def test_gateway_control_routes_reject_invalid_bodies_before_effects(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
     _fixture_state(directory)
@@ -102,24 +104,38 @@ def test_gateway_control_routes_reject_non_object_json_before_effects(proxy_back
             network_guard_enabled=True, network_guard_block=True,
         ) as proxy:
             token = _gateway_token(proxy)
-            status, _, body = request(
-                proxy.paths["alice"], f"http://127.0.0.1:{port}/v1/items?account=alpha",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            assert status == 200, body
-            assert origin.accepts == len(origin.requests) == 1
-            assert _authorization(_wire(origin.requests[0])) == [
-                f"Bearer {VAULT_CREDENTIAL}".encode()
-            ]
-
             marker = json.loads(proxy.readiness_file.read_text())
             admin = AdminAPI(
                 base_url=f"http://127.0.0.1:{marker['admin_port']}",
                 token=operator_token.read_text().strip(),
             )
             control_events = {"gateway.request_access", "gateway.submit_binding"}
-            assert not [row for row in admin.pending_approvals() if row["event"] in control_events]
+            pending_before = admin.pending_approvals()
+            grants_before = admin.list_gateway_grants()
+            assert not [row for row in pending_before if row["event"] in control_events]
             egress_before = len(proxy.events("proxy.egress"))
+            missing = object()
+
+            def reject_field(route, field, value):
+                body = {"service": "redirect", "capability": "reader",
+                        "bindings": {"account": "alpha"}}
+                if value is missing:
+                    del body[field]
+                else:
+                    body[field] = value
+                status, _, raw = request(
+                    proxy.paths["alice"], AGENT_API + "/gateway/" + route,
+                    method="POST",
+                    headers={"Authorization": f"Bearer {AGENT_TOKEN}",
+                             "Content-Type": "application/json"},
+                    body=json.dumps(body).encode(),
+                )
+                assert status == 400, (route, field, value, status, raw)
+                assert json.loads(raw) == {"error": "service and capability are required"}
+                assert VAULT_CREDENTIAL.encode() not in raw and token.encode() not in raw
+                assert origin.accepts == len(origin.requests) == 0
+                assert len(proxy.events("proxy.egress")) == egress_before
+
             shapes = [None, False, 0, "redirect", [], ["redirect"], [[{"service": "redirect"}]]]
             for route in ("request-access", "submit-binding"):
                 for shape in shapes:
@@ -135,9 +151,15 @@ def test_gateway_control_routes_reject_non_object_json_before_effects(proxy_back
                     assert {key.lower(): value for key, value in headers.items()}[
                         "x-safeyolo-agent-api"
                     ] == "true"
-                    assert VAULT_CREDENTIAL.encode() not in raw
-                    assert origin.accepts == len(origin.requests) == 1
+                    assert VAULT_CREDENTIAL.encode() not in raw and token.encode() not in raw
+                    assert origin.accepts == len(origin.requests) == 0
                     assert len(proxy.events("proxy.egress")) == egress_before
+
+                invalid_values = [None, False, True, 0, 7, 1.25, "", [], ["redirect"], {},
+                                  {"nested": ["redirect"]}, missing]
+                for field in ("service", "capability"):
+                    for value in invalid_values:
+                        reject_field(route, field, value)
 
                 status, _, raw = request(
                     proxy.paths["alice"], AGENT_API + "/gateway/" + route,
@@ -146,11 +168,39 @@ def test_gateway_control_routes_reject_non_object_json_before_effects(proxy_back
                 )
                 assert status == 401 and json.loads(raw) == {"error": "Invalid agent token"}
 
+            json_value = st.recursive(
+                st.one_of(st.none(), st.booleans(), st.integers(-1000, 1000)),
+                lambda child: st.one_of(st.lists(child, max_size=3),
+                                        st.dictionaries(st.text(alphabet="abc01", max_size=3), child, max_size=3)),
+                max_leaves=8,
+            )
+
+            @given(route=st.sampled_from(("request-access", "submit-binding")),
+                   field=st.sampled_from(("service", "capability")), value=json_value)
+            @settings(max_examples=32, deadline=None, derandomize=True)
+            def probe_structured_fields(route, field, value):
+                reject_field(route, field, value)
+
+            probe_structured_fields()
+
             assert _gateway_token(proxy) == token
-            assert not [row for row in admin.pending_approvals() if row["event"] in control_events]
+            assert admin.pending_approvals() == pending_before
+            assert admin.list_gateway_grants() == grants_before
             assert not [row for row in read_events(directory / "audit.jsonl")
                         if row["event"] in control_events]
+            assert origin.accepts == len(origin.requests) == 0
+            assert len(proxy.events("proxy.egress")) == egress_before
+
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{port}/v1/items?account=alpha",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert status == 200, body
             assert origin.accepts == len(origin.requests) == 1
+            assert _authorization(_wire(origin.requests[0])) == [
+                f"Bearer {VAULT_CREDENTIAL}".encode()
+            ]
+            egress_before = len(proxy.events("proxy.egress"))
 
             def valid_request(route, body):
                 status, _, raw = request(
