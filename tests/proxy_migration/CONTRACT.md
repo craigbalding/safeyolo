@@ -54,12 +54,16 @@ The shared assertions cover:
   fixture checks that absence instead of claiming one. The CONNECT admission
   and inner request have different IDs and one shared connection ID. The owned
   origin records each socket accept and application request separately.
-- With `addons.test_context.target_hosts` and declared injection enabled for
-  one synthetic host, an unannotated request returns 428 before parent contact.
+- With `addons.test_context.target_hosts`, declared injection, and blocking
+  enabled for one synthetic host, an unannotated request returns 428 before
+  parent contact.
   Another host still reaches the parent. Alice's declaration is queryable and
   owned by her trusted UDS source even when its `agent` field says Bob; Bob
-  cannot inherit it through forged identity fields. A malformed explicit
-  header cannot borrow the declaration. Headerless inherited and valid explicit
+  cannot inherit it through forged identity fields. Bob's forged request fields
+  and owner query cannot overwrite, read, or clear Alice's declaration. Bob can
+  declare and use his own context. Clearing Bob's context blocks his next
+  headerless request while Alice's context remains active. A malformed explicit
+  header cannot borrow Alice's declaration. Headerless inherited and valid explicit
   requests reach the parent without forwarding the reserved header, and their
   separate response IDs share one client connection ID. The case resolves those
   IDs to scoped trace, audit, runtime and persisted flow records. It requires

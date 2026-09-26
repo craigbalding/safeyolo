@@ -136,6 +136,8 @@ async def run(config):
         master.addons.add(TestContext(), FlowRecorder())
         master.options.update(flow_store_enabled=True,
                               flow_store_db_path=config["flow_store_db_path"])
+        if "test_context_block" in config:
+            master.options.update(test_context_block=config["test_context_block"])
     master.addons.add(ProbeSink(), TransportGuard())
     if config.get("fixture_audit_passthrough", False):
         from safeyolo.mitm_addons.ignored_host_logger import IgnoredHostLogger
