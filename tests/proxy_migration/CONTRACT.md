@@ -167,6 +167,29 @@ The shared assertions cover:
   Rust forwards one chunked body with no Content-Length; the parent and origin
   both record the exact decoded bytes. A direct request proves that the parent
   routes a conflicting Host to the forbidden origin.
+- The running gateway uses a scoped agent token, a vaulted synthetic credential,
+  and an enforced capability contract. The owned origin receives the credential
+  after token consumption. Wrong agent, token, capability, method, path, and
+  bound query values create no origin request. Bob's service view and an
+  unauthenticated view disclose no Alice token. When `auth.allow_http` is
+  omitted or false, plain HTTP redirects before origin contact. When it is true,
+  the gateway delivers the credential and records `gateway.http_injection_allowed`.
+  A nonsecret request reaches the second origin. The credential guard denies
+  the known vault value and a high entropy unknown value at that origin with
+  zero new accepts. A client that reapplies the gateway token while following
+  a redirect to another authority receives a local gateway error. The second
+  origin receives no request. Routine audit and event logs omit the token and vault
+  value. When Alice declares test context and capture is enabled, her scoped
+  flow retains request metadata and response bytes with the injected header
+  redacted; Bob cannot read that flow.
+- A risky gateway route requests operator approval before contacting the
+  origin. An approved once-grant admits one of two overlapping retries. A
+  session grant admits repeated requests until operator revocation, after
+  which the risky route requires approval again. The ordinary route remains
+  available. These checks use the real operator API and both proxy processes.
+  The credential guard's documented body and query scan options remain inert
+  in Python and absent in Rust; these gateway cases make no scan claim for
+  those locations.
 - A raw HTTP/1.1 client keeps one Alice listener connection open across allowed,
   denied, and approval-required requests to three independently observed ports.
   Each response has a distinct request ID, and the connection ID stays the same.
