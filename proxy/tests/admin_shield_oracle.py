@@ -1,4 +1,4 @@
-"""Pinned source shield hooks and an owned local transport-hole witness."""
+"""Pinned source shield hooks and an owned loopback/DNS witness."""
 
 # ruff: noqa: E402 -- Isolated source import root is established before imports.
 
@@ -40,10 +40,14 @@ HOSTS = [
     "0:0:0:0:0:0:0:1",
     "::ffff:127.0.0.1",
     "127.1",
+    "127.1.",
     "127.0.0.2",
     "2130706433",
+    "2130706433.",
     "0x7f000001",
+    "0x7f000001.",
     "0177.0.0.1",
+    "0177.0.0.1.",
     "host.docker.internal",
     "safeyolo",
     "remote.invalid",
@@ -71,16 +75,22 @@ EXTRAS = [
 ]
 
 
-def context(port=9090, extras=""):
-    return SimpleNamespace(options=SimpleNamespace(admin_port=port, shield_extra_ports=extras))
+def context(port=9090, extras="", bound_port=None):
+    result = SimpleNamespace(options=SimpleNamespace(admin_port=port, shield_extra_ports=extras))
+    if bound_port is not None:
+        result.master = SimpleNamespace(addons={
+            "admin-api": SimpleNamespace(server=SimpleNamespace(server_address=("127.0.0.1", bound_port)))
+        })
+    return result
 
 
-def observe(shield, host, port, hook="request", extras="", admin_port=9090, prior=False):
+def observe(shield, host, port, hook="request", extras="", admin_port=9090, prior=False,
+            bound_port=None):
     flow = tflow.tflow()
     flow.request.host, flow.request.port = host, port
     flow.response = http.Response.make(418, b"earlier") if prior else None
     flow.metadata.clear()
-    with patch.object(admin_shield, "ctx", context(admin_port, extras)):
+    with patch.object(admin_shield, "ctx", context(admin_port, extras, bound_port)):
         try:
             getattr(shield, hook)(flow)
             result = {
@@ -277,15 +287,18 @@ async def transport_witness(numeric_errors=False, extra_port=False):
                     "owned_accepts": len(accepted) - before,
                 }
             )
-        with patch.object(admin_shield, "ctx", context(port + 1 if port < 65535 else port - 1)):
-            changed = observe(shield, "127.0.0.1", port, admin_port=port + 1 if port < 65535 else port - 1)
-        ephemeral = observe(shield, "127.0.0.1", port, admin_port=0)
-        assert not changed["blocked"] and not ephemeral["blocked"]
-        if numeric_errors or extra_port:
+        changed = observe(shield, "127.0.0.1", port,
+                          admin_port=port + 1 if port < 65535 else port - 1, bound_port=port)
+        ephemeral = observe(shield, "127.0.0.1", port, admin_port=0, bound_port=port)
+        assert changed["blocked"] and ephemeral["blocked"]
+        if numeric_errors:
+            assert all(row["ingress_blocked"] and row["owned_accepts"] == 0 for row in witnesses)
+        elif extra_port:
             assert all(not row["ingress_blocked"] and row["owned_accepts"] == 1 for row in witnesses)
         else:
             assert all(row["owned_accepts"] == 0 for row in witnesses[:2])
-            assert all(row["owned_accepts"] == 1 for row in witnesses[2:10])
+            assert all(row["ingress_blocked"] and row["owned_accepts"] == 0 for row in witnesses[2:8])
+            assert all(row["owned_accepts"] == 1 for row in witnesses[8:10])
             assert witnesses[10]["owned_accepts"] == 0
         return {
             "listener": ["127.0.0.1", port],
@@ -311,7 +324,7 @@ def main():
     if "--failures" in sys.argv:
         result = asyncio.run(transport_witness(numeric_errors=True))
         Path(__file__).with_name("admin_shield_failure_source.json").write_text(json.dumps(result, indent=2) + "\n")
-        print(json.dumps({"numeric_failopen_cases": len(result["cases"])}))
+        print(json.dumps({"numeric_error_cases": len(result["cases"])}))
         return
     rows = source_rows()
     if "--rows" in sys.argv:
@@ -319,7 +332,7 @@ def main():
         return
     rows["transport"] = asyncio.run(transport_witness())
     rows["provenance"] = {
-        "source_commit": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+        "source_commit": "2bdb95e2c96322c0b8e6d58426398eead0442f2a",
         "python": platform.python_version(),
         "unicode": unicodedata.unidata_version,
         "mitmproxy": importlib.metadata.version("mitmproxy"),

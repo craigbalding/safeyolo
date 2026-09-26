@@ -230,6 +230,24 @@ class TestLocalHosts:
 
         assert flow.response.status_code == 403
 
+    @pytest.mark.parametrize("host", [
+        "LOCALHOST.", "admin.localhost.", "127.1", "2130706433",
+        "::ffff:127.0.0.1",
+    ])
+    def test_loopback_alias_of_admin_listener_is_blocked(self, host):
+        flow = _make_flow(host=host, port=9090)
+
+        _call_request(AdminShield(), flow)
+
+        assert flow.response.status_code == 403
+
+    def test_other_loopback_address_on_same_port_remains_allowed(self):
+        flow = _make_flow(host="127.0.0.2", port=9090)
+
+        _call_request(AdminShield(), flow)
+
+        assert flow.response is None
+
 
 # ---------------------------------------------------------------------------
 # C8: .localhost suffix matching
@@ -313,6 +331,26 @@ class TestGetBlockedPorts:
         shield = AdminShield()
 
         assert _blocked_ports(shield) == {9090}
+
+    def test_bound_port_is_blocked_when_configured_port_is_zero(self):
+        shield = AdminShield()
+        context = _ctx(admin_port=0)
+        context.master = SimpleNamespace(addons={
+            "admin-api": SimpleNamespace(server=SimpleNamespace(server_address=("127.0.0.1", 19321)))
+        })
+        with patch("admin_shield.ctx", context):
+            assert shield._get_blocked_ports() == {0, 19321}
+            flow = _make_flow(port=19321)
+            shield.request(flow)
+            assert flow.response.status_code == 403
+
+    def test_unrepresentable_extra_port_does_not_disable_admin_protection(self):
+        shield = AdminShield()
+        flow = _make_flow(port=9090)
+
+        _call_request(shield, flow, extra_ports="9" * 5000)
+
+        assert flow.response.status_code == 403
 
     def test_extra_ports_parsed(self):
         shield = AdminShield()
