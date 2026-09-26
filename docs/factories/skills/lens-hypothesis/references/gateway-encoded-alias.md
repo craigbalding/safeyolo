@@ -43,7 +43,9 @@ def duplicate_decoded_name_never_reaches_vault(
     )
     assert status == 403
     assert origin.accepts == before
-    assert "TRANSPORT_AMBIGUOUS_ENCODING" in json.loads(body)["reason_codes"]
+    payload = json.loads(body)
+    reasons = payload.get("reason_codes", [payload.get("error")])
+    assert "TRANSPORT_AMBIGUOUS_ENCODING" in reasons
 ```
 
-Replay the generated cases against both backends and compare the promised rejection and upstream effect. Keep a separate valid encoded-value control when rejection must remain narrow: a single canonical `%XX` spelling of the **value** was accepted and reached the origin; a noncanonical lowercase spelling was rejected. That probe is in `gateway_positive.py`. Do not turn unrelated encodings, random query markers, or arbitrary request IDs into generator dimensions without a decision they could change.
+Replay the generated cases against both backends and compare the promised rejection and upstream effect; the documented denial reason occupies different response fields in Python and Rust. Keep a separate valid encoded-value control when rejection must remain narrow: a single canonical `%XX` spelling of the **value** was accepted and reached the origin; a noncanonical lowercase spelling was rejected. That probe is in `gateway_positive.py`. Do not turn unrelated encodings, random query markers, or arbitrary request IDs into generator dimensions without a decision they could change.
