@@ -112,14 +112,18 @@ The shared assertions cover:
   probe requests, reserved CONNECT, malformed local requests, and denied
   ordinary HTTP and CONNECT create no additional IP `connect` attempt, parent
   accept, or parent application request. The Python case selects eager
-  connections. A separate direct-route case binds a temporary authoritative
-  DNS server to loopback port 53 without changing resolver configuration. It
-  first requires a live `getaddrinfo` query from the test process, then live
-  DNS queries and origin accepts from each proxy. Distinct denied and reserved
-  names add no DNS query, IP network syscall destination, or origin accept;
+  connections. A separate direct-route case runs BIND `named` with temporary
+  authoritative zones on loopback port 53. The fixture disables recursion,
+  configures no forwarder, records each query, and stops at teardown. It does
+  not change resolver configuration. The case first requires a live
+  `getaddrinfo` query from the test process. It then requires DNS queries and
+  origin accepts from each proxy.
+  Distinct denied and reserved names add no DNS query, IP network syscall
+  destination, or origin accept;
   permitted names before and after those requests keep the observers live.
-  The DNS case skips with a stated reason if the host cannot bind loopback
-  port 53 or its resolver does not use that server. A skip is not DNS evidence.
+  The DNS case skips with a stated reason if BIND is unavailable, the host
+  cannot bind loopback port 53, or its resolver does not use that server. A skip
+  is not DNS evidence.
   These Linux cases do not establish the remaining plain-HTTP decisions or
   platform coverage.
 - Direct origin-form forwarding and absolute-form forwarding through an

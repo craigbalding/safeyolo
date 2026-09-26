@@ -177,6 +177,8 @@ def test_reserved_and_denied_requests_make_no_dns_query(
     """Live direct DNS controls expose lookups before checking local denials."""
     if sys.platform != "linux" or shutil.which("strace") is None:
         pytest.skip("Independent DNS syscall observation requires Linux strace")
+    if shutil.which("named") is None or shutil.which("named-checkconf") is None:
+        pytest.skip("Authoritative DNS fixture requires BIND named and named-checkconf")
 
     nonce = uuid.uuid4().hex
     control_before = f"allow-before-{nonce}.dns-fixture.test"

@@ -1,118 +1,154 @@
-"""Loopback DNS answers for live proxy resolver tests."""
+"""Temporary BIND DNS zones for live proxy resolver tests."""
 
 from __future__ import annotations
 
-import socketserver
-import struct
-import threading
+import re
+import socket
+import subprocess
+import tempfile
+import time
 from contextlib import contextmanager
+from pathlib import Path
+
+_QUERY = re.compile(r"\bquery: ([^\s]+) IN ([A-Z0-9]+)\b")
+_FIXTURE_ZONE = "dns-fixture.test"
+_RESERVED = {"_safeyolo.proxy.internal", "_safeyolo.probe.internal"}
 
 
-class _DNSAnswers:
-    def __init__(self, names):
-        self.names = {name.lower().removesuffix(".") for name in names}
-        self._queries = []
-        self._lock = threading.Lock()
+def _zone_header(zone):
+    return (f"$TTL 30\n"
+            f"@ IN SOA ns.{zone}. hostmaster.{zone}. (1 60 60 60 30)\n"
+            f"@ IN NS ns.{zone}.\n"
+            "ns IN A 127.0.0.1\n")
+
+
+def _write_zones(root, names):
+    fixture = []
+    reserved = []
+    for name in names:
+        host = name.lower().removesuffix(".")
+        if host in _RESERVED:
+            reserved.append(host)
+        elif host.endswith(f".{_FIXTURE_ZONE}"):
+            label = host.removesuffix(f".{_FIXTURE_ZONE}")
+            if not re.fullmatch(r"[a-z0-9-]{1,63}", label):
+                raise ValueError(f"Invalid fixture DNS label: {name}")
+            fixture.append(label)
+        else:
+            raise ValueError(f"DNS fixture cannot answer a non-fixture host: {name}")
+
+    fixture_zone = root / "fixture.zone"
+    fixture_zone.write_text(
+        _zone_header(_FIXTURE_ZONE)
+        + "".join(f"{label} IN A 127.0.0.1\n" for label in sorted(set(fixture)))
+    )
+    zones = [(_FIXTURE_ZONE, fixture_zone)]
+    for index, host in enumerate(sorted(set(reserved))):
+        zone_file = root / f"reserved-{index}.zone"
+        zone_file.write_text(_zone_header(host) + "@ IN A 127.0.0.1\n")
+        zones.append((host, zone_file))
+    return zones
+
+
+def _write_config(root, zones):
+    config = root / "named.conf"
+    config.write_text(f"""
+options {{
+    directory "{root}";
+    listen-on port 53 {{ 127.0.0.1; }};
+    listen-on-v6 {{ none; }};
+    recursion no;
+    dnssec-validation no;
+    allow-query {{ 127.0.0.1; }};
+    allow-transfer {{ none; }};
+    notify no;
+    check-names master ignore;
+    pid-file "{root / 'named.pid'}";
+    session-keyfile "{root / 'session.key'}";
+}};
+controls {{ }};
+logging {{
+    channel fixture_queries {{
+        file "{root / 'queries.log'}";
+        severity info;
+        print-time yes;
+    }};
+    category queries {{ fixture_queries; }};
+}};
+""" + "".join(f'zone "{host}" {{ type primary; file "{zone_file}"; }};\n'
+              for host, zone_file in zones))
+    checked = subprocess.run(
+        ["named-checkconf", "-z", str(config)], capture_output=True, text=True,
+        check=False,
+    )
+    if checked.returncode:
+        raise AssertionError(f"DNS fixture configuration failed:\n{checked.stdout}{checked.stderr}")
+    return config
+
+
+def _check_port():
+    """Expose a missing port-53 capability before launching the server."""
+    for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+        with socket.socket(socket.AF_INET, kind) as listener:
+            listener.bind(("127.0.0.1", 53))
+
+
+class DNSQueries:
+    def __init__(self, process, query_log, process_log):
+        self.process = process
+        self.query_log = query_log
+        self.process_log = process_log
+        self._cleared = 0
+
+    def _read(self):
+        if self.process.poll() is not None:
+            raise AssertionError(f"DNS fixture exited:\n{self.process_log.read_text()}")
+        text = self.query_log.read_text() if self.query_log.exists() else ""
+        return [
+            (name.removesuffix(".").lower(), {"A": 1, "AAAA": 28}.get(qtype, qtype), "named")
+            for name, qtype in _QUERY.findall(text)
+        ]
 
     def queries(self):
-        with self._lock:
-            return list(self._queries)
+        return self._read()[self._cleared:]
 
     def clear_queries(self):
-        with self._lock:
-            self._queries.clear()
-
-    def reply(self, packet, transport):
-        """Answer one standard question; never consult another resolver."""
-        if len(packet) < 12:
-            return b""
-        identifier, _, questions, _, _, _ = struct.unpack_from("!HHHHHH", packet)
-        try:
-            if questions != 1:
-                raise ValueError("expected one question")
-            offset = 12
-            labels = []
-            while True:
-                length = packet[offset]
-                offset += 1
-                if length == 0:
-                    break
-                if length > 63 or offset + length > len(packet):
-                    raise ValueError("invalid DNS label")
-                labels.append(packet[offset:offset + length].decode("ascii"))
-                offset += length
-            if offset + 4 > len(packet):
-                raise ValueError("missing question type or class")
-            name = ".".join(labels)
-            qtype, qclass = struct.unpack_from("!HH", packet, offset)
-            question = packet[12:offset + 4]
-        except (IndexError, UnicodeDecodeError, ValueError):
-            return struct.pack("!HHHHHH", identifier, 0x8401, 0, 0, 0, 0)
-
-        with self._lock:
-            self._queries.append((name, qtype, transport))
-        known = name.lower() in self.names
-        # A known AAAA request receives an authoritative empty answer.
-        answer = (b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 30, 4)
-                  + b"\x7f\x00\x00\x01") if known and qtype == 1 and qclass == 1 else b""
-        rcode = 0 if known else 3
-        header = struct.pack("!HHHHHH", identifier, 0x8400 | rcode, 1, bool(answer), 0, 0)
-        return header + question + answer
-
-
-class _UDPServer(socketserver.UDPServer):
-    allow_reuse_address = True
-    max_packet_size = 4096
-
-
-class _TCPServer(socketserver.TCPServer):
-    allow_reuse_address = True
-    request_queue_size = 2
-
-
-class _UDPHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        packet, sock = self.request
-        reply = self.server.answers.reply(packet, "udp")
-        if reply:
-            sock.sendto(reply, self.client_address)
-
-
-class _TCPHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        self.request.settimeout(1)
-        length = self.request.recv(2)
-        if len(length) != 2:
-            return
-        remaining = struct.unpack("!H", length)[0]
-        if remaining > 4096:
-            return
-        packet = bytearray()
-        while len(packet) < remaining:
-            part = self.request.recv(remaining - len(packet))
-            if not part:
-                return
-            packet.extend(part)
-        reply = self.server.answers.reply(packet, "tcp")
-        if reply:
-            self.request.sendall(struct.pack("!H", len(reply)) + reply)
+        self._cleared = len(self._read())
 
 
 @contextmanager
 def dns_server(names):
-    """Serve only named fixture hosts on loopback port 53 until teardown."""
-    answers = _DNSAnswers(names)
-    with _UDPServer(("127.0.0.1", 53), _UDPHandler) as udp:
-        with _TCPServer(("127.0.0.1", 53), _TCPHandler) as tcp:
-            udp.answers = tcp.answers = answers
-            threads = [threading.Thread(target=server.serve_forever, daemon=True)
-                       for server in (udp, tcp)]
-            for thread in threads:
-                thread.start()
+    """Run isolated authoritative zones on loopback until fixture teardown."""
+    _check_port()
+    with tempfile.TemporaryDirectory(prefix="sy-proxy-dns-") as scratch:
+        root = Path(scratch)
+        zones = _write_zones(root, names)
+        config = _write_config(root, zones)
+        process_log = root / "process.log"
+        with process_log.open("w") as output:
+            process = subprocess.Popen(
+                ["named", "-f", "-n", "1", "-c", str(config)],
+                stdout=output, stderr=subprocess.STDOUT,
+            )
+        try:
+            deadline = time.monotonic() + 5
+            while True:
+                if process.poll() is not None:
+                    raise AssertionError(f"DNS fixture failed to start:\n{process_log.read_text()}")
+                try:
+                    with socket.create_connection(("127.0.0.1", 53), timeout=0.1):
+                        break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError(f"DNS fixture did not bind:\n{process_log.read_text()}")
+                    time.sleep(0.02)
+            yield DNSQueries(process, root / "queries.log", process_log)
+        finally:
+            if process.poll() is None:
+                process.terminate()
             try:
-                yield answers
-            finally:
-                for server in (udp, tcp):
-                    server.shutdown()
-                for thread in threads:
-                    thread.join(timeout=2)
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+                raise AssertionError("DNS fixture did not stop after SIGTERM")
