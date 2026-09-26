@@ -39,6 +39,19 @@ The shared assertions cover:
   fixture checks that absence instead of claiming one. The CONNECT admission
   and inner request have different IDs and one shared connection ID. The owned
   origin records each socket accept and application request separately.
+- With `addons.test_context.target_hosts` and declared injection enabled for
+  one synthetic host, an unannotated request returns 428 before parent contact.
+  Another host still reaches the parent. Alice's declaration is queryable and
+  owned by her trusted UDS source even when its `agent` field says Bob; Bob
+  cannot inherit it through forged identity fields. A malformed explicit
+  header cannot borrow the declaration. Headerless inherited and valid explicit
+  requests reach the parent without forwarding the reserved header, and their
+  separate response IDs share one client connection ID. The case resolves those
+  IDs to scoped trace, audit, runtime and persisted flow records. It requires
+  complete traces and two persisted allowed flows with no capture truncation
+  before interpreting empty denied-flow searches. Failure to persist either
+  allowed flow fails the case. This small-body case makes no claim about
+  truncated payload capture.
 - Allowed HTTP/1.1 chunked uploads reach an owned origin with complete framing
   and exact body bytes. The fixture checks a buffered request and a request
   one byte above the configured 10 MiB streaming threshold. The origin waits

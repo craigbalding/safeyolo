@@ -6,6 +6,7 @@ import json
 import socket
 import ssl
 import threading
+import time
 
 import pytest
 from mitmproxy.certs import CertStore
@@ -26,6 +27,7 @@ from tests.proxy_migration.scenarios import (
     origin_server,
     request_evidence,
     reserved_scenario,
+    scoped_api,
     wait_for_reserved_audit,
 )
 from tests.proxy_migration.test_http2_contract import origin_certificate
@@ -36,6 +38,166 @@ from tests.proxy_migration.test_websocket_contract import read_head
 @pytest.mark.parametrize("parent", [False, True], ids=["direct", "parent"])
 def test_two_agent_http_policy_and_attribution(proxy_backend, tmp_path, parent):
     network_scenario(proxy_backend, tmp_path / proxy_backend, parent=parent)
+
+
+def test_enforced_context_and_scoped_request_evidence(proxy_backend, tmp_path):
+    """A source-owned declaration admits its target without widening another listener."""
+    directory = tmp_path / proxy_backend
+    policy = json.dumps({
+        "hosts": {"*": {"egress": "allow"}},
+        "addons": {"test_context": {
+            "target_hosts": ["context.invalid"], "inject_declared": True,
+        }},
+    })
+    run = "context-request-ids"
+    context = f"run={run};agent=bob;test=request-ids"
+    target = "http://context.invalid:8123"
+    forged = {
+        "X-Agent-Id": "alice", "X-SafeYolo-Agent": "alice",
+        "X-Forwarded-For": "10.0.0.2", "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
+        "X-SafeYolo-Trace": "1",
+    }
+    with origin_server(keep_alive=True, capture_heads=True) as parent:
+        with launch_proxy(
+            proxy_backend, directory, policy, policy_format="json", native_policy=True,
+            parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
+            agent_api=True, flow_store_enabled=True,
+        ) as proxy:
+            denials = []
+            for agent in ("alice", "bob"):
+                status, headers, _ = request(proxy.paths[agent], target + "/missing",
+                                             headers=forged)
+                identifier = {key.lower(): value for key, value in headers.items()}[
+                    "x-safeyolo-request-id"]
+                assert status == 428 and parent.accepts == 0 and parent.requests == []
+                assert {key.lower(): value for key, value in headers.items()}[
+                    "x-blocked-by"] == "test-context"
+                scoped = request_evidence(
+                    proxy, agent, identifier, host="context.invalid", port=8123,
+                    method="GET", status=428, decision="deny", blocker="test-context",
+                    run=run, path="/missing",
+                )
+                denials.append((agent, identifier, scoped))
+
+            status, _, body = request(proxy.paths["alice"], "http://ordinary.invalid:8123/unrelated")
+            assert status == 200 and body == b"hello"
+            assert len(parent.requests) == 1
+            assert parent.requests[0]["target"] == "http://ordinary.invalid:8123/unrelated"
+
+            declared = scoped_api(
+                proxy, "alice", "/api/test-context/current", method="POST",
+                body=json.dumps({"context": context, "ttl": 60}).encode(),
+                headers=forged,
+            )
+            assert declared["agent"] == "alice" and declared["context"] == {
+                "run": run, "agent": "bob", "test": "request-ids",
+            }
+            assert 0 < declared["expires_in"] <= 60
+            current = scoped_api(proxy, "alice", "/api/test-context/current")
+            assert current["agent"] == "alice" and current["context"] == declared["context"]
+            assert 0 < current["expires_in"] <= declared["expires_in"]
+            assert scoped_api(proxy, "bob", "/api/test-context/current") == {
+                "agent": "bob", "context": None,
+            }
+
+            before = (parent.accepts, len(parent.requests))
+            status, headers, _ = request(proxy.paths["bob"], target + "/bob",
+                                         headers=forged)
+            identifier = {key.lower(): value for key, value in headers.items()}[
+                "x-safeyolo-request-id"]
+            assert status == 428 and (parent.accepts, len(parent.requests)) == before
+            scoped = request_evidence(
+                proxy, "bob", identifier, host="context.invalid", port=8123,
+                method="GET", status=428, decision="deny", blocker="test-context",
+                run=run, path="/bob",
+            )
+            denials.append(("bob", identifier, scoped))
+
+            before = (parent.accepts, len(parent.requests))
+            status, headers, _ = request(
+                proxy.paths["alice"], target + "/malformed",
+                headers={**forged, "X-SafeYolo-Test-Context": "malformed"},
+            )
+            identifier = {key.lower(): value for key, value in headers.items()}[
+                "x-safeyolo-request-id"]
+            assert status == 428 and (parent.accepts, len(parent.requests)) == before
+            scoped = request_evidence(
+                proxy, "alice", identifier, host="context.invalid", port=8123,
+                method="GET", status=428, decision="deny", blocker="test-context",
+                block_reason="malformed_context", run=run, path="/malformed",
+            )
+            denials.append(("alice", identifier, scoped))
+
+            client = connection(proxy.paths["alice"])
+            owned = []
+            try:
+                for path, source, extra in (
+                    ("/declared?part=one&part=two%2Fthree", "declared", {}),
+                    ("/explicit?part=one&part=two%2Fthree", "header",
+                     {"X-SafeYolo-Test-Context": context}),
+                ):
+                    before = len(parent.requests)
+                    client.request("GET", target + path, headers={**forged, **extra})
+                    response = client.getresponse()
+                    headers = {key.lower(): value for key, value in response.getheaders()}
+                    assert response.status == 200 and response.read() == b"hello"
+                    identifier = headers["x-safeyolo-request-id"]
+                    assert len(parent.requests) == before + 1
+                    assert parent.requests[-1]["target"] == target + path
+                    assert b"x-safeyolo-test-context:" not in parent.request_heads[-1].lower()
+                    assert FORGED_REQUEST_ID.encode() not in parent.request_heads[-1]
+                    owned.append((identifier, request_evidence(
+                        proxy, "alice", identifier, host="context.invalid", port=8123,
+                        method="GET", status=200, decision="allow", run=run,
+                        path=path, flow_expected=True, context_source=source,
+                    )))
+            finally:
+                client.close()
+            assert owned[0][0] != owned[1][0]
+            assert owned[0][1]["connection_id"] == owned[1][1]["connection_id"]
+            for _, evidence in owned:
+                flow = evidence["flow"]
+                assert json.loads(flow["context_json"]) == declared["context"]
+                assert flow["source_id"] == "10.0.0.2" and flow["test_agent"] == "bob"
+                assert flow["evidence_owner"] == "alice"
+
+            search = f"/api/flows/search?run={run}&test=request-ids"
+            assert {flow["request_id"] for flow in scoped_api(proxy, "alice", search)["flows"]} == {
+                identifier for identifier, _ in owned
+            }
+            assert scoped_api(proxy, "bob", search)["flows"] == []
+
+            observed_ids = ({identifier for _, identifier, _ in denials} |
+                            {identifier for identifier, _ in owned})
+            runtime = {event["request_id"]: event for event in proxy.events("proxy.request")
+                       if event["request_id"] in observed_ids}
+            assert len(runtime) == len(denials) + len(owned)
+            assert all(event["host"] == "context.invalid" and event["port"] == 8123
+                       for event in runtime.values())
+            for agent, identifier, evidence in denials:
+                assert runtime[identifier]["agent"] == agent
+                assert runtime[identifier]["status"] == 428
+                assert runtime[identifier]["decision"] == "deny"
+                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+            for identifier, evidence in owned:
+                assert runtime[identifier]["agent"] == "alice"
+                assert runtime[identifier]["status"] == 200
+                assert runtime[identifier]["decision"] == "allow"
+                assert runtime[identifier]["connection_id"] == evidence["connection_id"]
+
+            deadline = time.monotonic() + 2
+            while True:
+                declarations = [event for event in read_events(directory / "audit.jsonl")
+                                if event["event"] == "security.test_context_declared"]
+                if declarations or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.025)
+            assert len(declarations) == 1
+            assert declarations[0]["agent"] == "alice"
+            assert declarations[0]["details"]["source_id"] == "10.0.0.2"
+            assert declarations[0]["details"]["trusted_agent"] == "alice"
+            assert declarations[0]["details"]["declared_agent"] == "bob"
+            assert len(parent.requests) == 3
 
 
 def test_connect_and_inner_request_ids_keep_scoped_connection_evidence(proxy_backend, tmp_path):
