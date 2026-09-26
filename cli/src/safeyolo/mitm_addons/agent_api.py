@@ -1224,7 +1224,7 @@ class AgentAPI:
         - No contract → existing 202 pending behavior
         """
         body = self._read_json_body(flow)
-        if body is None:
+        if not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
 
@@ -1366,7 +1366,7 @@ class AgentAPI:
                "purpose_code": "summarise", "note": "optional audit note"}
         """
         body = self._read_json_body(flow)
-        if body is None:
+        if not isinstance(body, dict):
             self._respond(flow, 400, {"error": "Invalid JSON body"})
             return
 
