@@ -61,7 +61,7 @@ use_default_credential_rules = false
 '''
 
 
-def _read_request(stream):
+def _read_request(stream, received=None):
     head = bytearray()
     while not head.endswith(b"\r\n\r\n"):
         part = stream.recv(1)
@@ -70,6 +70,8 @@ def _read_request(stream):
                 return None
             raise AssertionError("request ended before its headers completed")
         head.extend(part)
+        if received is not None:
+            received.extend(part)
         assert len(head) < 65536, "request head exceeded fixture limit"
     head = bytes(head)
     length = next((int(line.split(b":", 1)[1].strip()) for line in head.split(b"\r\n")[1:]
@@ -79,6 +81,8 @@ def _read_request(stream):
         part = stream.recv(length - len(body))
         assert part, "request ended before its declared body"
         body.extend(part)
+        if received is not None:
+            received.extend(part)
     return head, bytes(body)
 
 
@@ -98,9 +102,13 @@ class Origin(socketserver.ThreadingTCPServer):
         self.tls_context = tls_context
         self.accepts = 0
         self.requests = []
+        self.application_bytes = []
         self.sni = []
+        self.tls_handshakes = []
         self.errors = []
         self.lock = threading.Lock()
+        self.handshake_ready = threading.Condition(self.lock)
+        self.application_ready = threading.Condition(self.lock)
         if tls_context:
             tls_context.set_servername_callback(self._record_sni)
         super().__init__(("127.0.0.1", 0), OriginRequest)
@@ -121,7 +129,17 @@ class OriginRequest(socketserver.BaseRequestHandler):
         try:
             self.request.settimeout(5)
             if self.server.tls_context:
-                with self.server.tls_context.wrap_socket(self.request, server_side=True) as stream:
+                try:
+                    stream = self.server.tls_context.wrap_socket(self.request, server_side=True)
+                except (ConnectionError, TimeoutError, ssl.SSLError) as error:
+                    with self.server.handshake_ready:
+                        self.server.tls_handshakes.append(type(error).__name__)
+                        self.server.handshake_ready.notify_all()
+                    return
+                with self.server.handshake_ready:
+                    self.server.tls_handshakes.append("complete")
+                    self.server.handshake_ready.notify_all()
+                with stream:
                     self._reply(stream)
             else:
                 self._reply(self.request)
@@ -132,7 +150,13 @@ class OriginRequest(socketserver.BaseRequestHandler):
             self.server.errors.append(error)
 
     def _reply(self, stream):
-        request = _read_request(stream)
+        received = bytearray()
+        try:
+            request = _read_request(stream, received)
+        finally:
+            with self.server.application_ready:
+                self.server.application_bytes.append(bytes(received))
+                self.server.application_ready.notify_all()
         if request is None:
             return
         head, body = request
