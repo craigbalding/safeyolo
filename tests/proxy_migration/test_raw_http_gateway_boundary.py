@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from urllib.parse import urlsplit
 
 from tests.proxy_migration.harness import launch_proxy, read_events
+from tests.proxy_migration.scenarios import origin_server
 from tests.proxy_migration.test_gateway_redirect import (
     VAULT_CREDENTIAL,
     VAULT_NAME,
@@ -339,3 +340,130 @@ def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_
         assert parent.requests[-1]["route"] == "forbidden"
         assert forbidden.accepts == 1 and len(forbidden.requests) == 1
         assert VAULT_CREDENTIAL.encode() not in forbidden.requests[0]["head"]
+
+
+def _reused_request(stream, authority, target, *, credential=False, forged_agent="bob"):
+    head = (b"GET http://" + authority.encode() + target + b" HTTP/1.1\r\n"
+            + b"Host: " + authority.encode() + b"\r\n"
+            + b"X-SafeYolo-Agent: " + forged_agent.encode() + b"\r\n"
+            + b"Connection: keep-alive\r\n")
+    if credential:
+        head += b"Authorization: Bearer key-reused-connection\r\n"
+    stream.sendall(head + b"\r\n")
+    response = http.client.HTTPResponse(stream)
+    response.begin()
+    result = response.status, dict(response.getheaders()), response.read()
+    response.close()
+    return result
+
+
+def test_reused_http1_connection_rechecks_destination_credential_and_agent(proxy_backend, tmp_path):
+    """A local denial or prompt does not change the next request's decision or headers."""
+    with origin_server(keep_alive=True, capture_heads=True) as allowed, \
+         origin_server(keep_alive=True) as denied, \
+         origin_server(keep_alive=True) as approval:
+        hosts = {
+            name: f"127.0.0.1:{server.server_address[1]}"
+            for name, server in (("allowed", allowed), ("denied", denied), ("approval", approval))
+        }
+        policy = f'''budget = 12000
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = {{ agent = "bob" }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "allow"
+condition = {{ port = {allowed.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = {{ port = {denied.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "prompt"
+condition = {{ port = {approval.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+[[permissions]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "allow"
+[[credential_rules]]
+name = "reused-connection"
+patterns = ["key-reused-connection"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+        with launch_proxy(proxy_backend, tmp_path / proxy_backend, policy,
+                          native_policy=True) as proxy:
+            with socket.socket(socket.AF_UNIX) as alice:
+                alice.settimeout(5)
+                alice.connect(proxy.paths["alice"])
+                signed = b"/signed/%2F?part=one&part=two%2Fthree&empty="
+                cases = [
+                    ("allowed", signed, True, 200, b"hello"),
+                    ("denied", b"/forbidden", True, 403, None),
+                    ("allowed", b"/after-denial", False, 200, b"hello"),
+                    ("approval", b"/needs-approval", False, 428, None),
+                    ("allowed", b"/after-approval", True, 200, b"hello"),
+                    ("denied", b"/denied-again", False, 403, None),
+                    ("allowed", b"/last", False, 200, b"hello"),
+                ]
+                identifiers = []
+                for name, target, credential, status, body in cases:
+                    result = _reused_request(alice, hosts[name], target,
+                                             credential=credential)
+                    assert result[0] == status, (name, target, result)
+                    if body is not None:
+                        assert result[2] == body, (name, target, result)
+                    response_headers = {key.lower(): value for key, value in result[1].items()}
+                    if name != "allowed":
+                        assert result[2] != b"hello"
+                        assert response_headers["x-blocked-by"] == "network-guard"
+                    identifier = response_headers["x-safeyolo-request-id"]
+                    assert identifier not in identifiers
+                    identifiers.append(identifier)
+                    assert len(allowed.requests) == sum(
+                        case[0] == "allowed" for case in cases[:len(identifiers)]
+                    )
+                    assert denied.accepts == approval.accepts == 0
+
+                with socket.socket(socket.AF_UNIX) as bob:
+                    bob.settimeout(5)
+                    bob.connect(proxy.paths["bob"])
+                    result = _reused_request(bob, hosts["allowed"], b"/bob",
+                                             credential=True, forged_agent="alice")
+                    assert result[0] == 403, result
+                    assert len(allowed.requests) == 4
+
+            assert [request["target"] for request in allowed.requests] == [
+                signed.decode(), "/after-denial", "/after-approval", "/last",
+            ]
+            heads = allowed.request_heads
+            assert b"key-reused-connection" in heads[0]
+            assert b"key-reused-connection" not in heads[1]
+            assert b"key-reused-connection" in heads[2]
+            assert b"key-reused-connection" not in heads[3]
+            egress = proxy.events("proxy.egress")
+            assert egress and all(
+                row["agent"] == "alice" and row["host"] == "127.0.0.1"
+                and row["port"] == allowed.server_address[1] for row in egress
+            ), egress
+
+        requests = proxy.events("proxy.request")
+        assert [row["status"] for row in requests] == [200, 403, 200, 428, 200, 403, 200, 403]
+        assert [row["agent"] for row in requests] == ["alice"] * 7 + ["bob"]
+        assert [row["request_id"] for row in requests[:7]] == identifiers
+        assert len({row["connection_id"] for row in requests[:7]}) == 1
+        assert requests[7]["connection_id"] != requests[0]["connection_id"]

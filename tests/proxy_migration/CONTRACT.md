@@ -128,6 +128,15 @@ The shared assertions cover:
   Rust forwards one chunked body with no Content-Length; the parent and origin
   both record the exact decoded bytes. A direct request proves that the parent
   routes a conflicting Host to the forbidden origin.
+- A raw HTTP/1.1 client keeps one Alice listener connection open across allowed,
+  denied, and approval-required requests to three independently observed ports.
+  Each response has a distinct request ID, and the connection ID stays the same.
+  Only allowed requests reach an origin. The allowed origin receives a synthetic
+  credential on the two requests that supplied it and receives no credential on
+  the intervening and later requests. Its first request retains an encoded path
+  and repeated query parameters. A separate Bob listener denies a request with
+  a forged Alice header and opens no origin connection. Both backends pass the
+  same sequence; their raw framing and route-rejection differences remain above.
 - Intercepted CONNECT authority, inner HTTP/1 Host, HTTP/2 `:authority` and
   Host, and client Server Name Indication (SNI) through the same controlled
   parent and two independent TLS origins. A forbidden CONNECT opens no parent
