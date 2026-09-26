@@ -370,12 +370,12 @@ def test_graceful_restart_retains_saved_failure_state_and_resets_counters(proxy_
         assert origin.accepts == len(origin.requests) == 2
 
 
-def test_selected_python_native_python_circuit_state_transition(tmp_path):
+def test_selected_python_native_python_circuit_state_transition(tmp_path, monkeypatch):
     """A real old/new process sequence keeps circuit state usable both ways."""
-    comparator = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+    comparator = os.environ.get("SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE")
     binary = os.environ.get("SAFEYOLO_RUST_PROXY")
     if not comparator or not binary:
-        pytest.skip("cross-backend rollback fixture requires selected Python source and Rust binary")
+        pytest.skip("cross-backend rollback fixture requires pinned Python comparator and Rust binary")
 
     comparator = Path(comparator).expanduser().resolve()
     binary = Path(binary).expanduser().resolve()
@@ -414,6 +414,11 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
     assert identity["safeyolo"] == "0.1.0"
     assert identity["mitmproxy"] == "12.2.3"
 
+    # Only this rollback sequence runs the historical Python source. The suite's
+    # selected Python backend remains the current candidate in other tests.
+    monkeypatch.setenv("SAFEYOLO_PYTHON_SOURCE", str(comparator))
+    comparator_fixture = comparator / "tests/proxy_migration/old_proxy.py"
+    assert comparator_fixture.is_file()
     state_file = tmp_path / "shared-circuit.json"
     source = policy(threshold=1, timeout=1)
     manifest = {
@@ -437,6 +442,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
             python_executable=comparator_python,
+            python_fixture=comparator_fixture,
         ) as proxy:
             hit(proxy, origin, "alice", "/failure", 500)
             assert wait_failure_count(proxy, 1)["domains"][HOST]["state"] == "open"
@@ -501,6 +507,7 @@ def test_selected_python_native_python_circuit_state_transition(tmp_path):
             circuit_breaker_enabled=True,
             circuit_state_file=state_file,
             python_executable=comparator_python,
+            python_fixture=comparator_fixture,
         ) as proxy:
             assert circuits(proxy)["domains"][HOST]["state"] == "closed"
             hit(proxy, origin, "bob", "/failure", 500)

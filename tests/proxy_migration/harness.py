@@ -142,7 +142,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
                  agents=("alice", "bob"), services_dir=None, python_config_dir=None,
-                 connect_trace_path=None):
+                 connect_trace_path=None, python_fixture=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -251,7 +251,10 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             if gateway_services_dir is not None:
                 config["fixture_gateway"] = True
             selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
-            command = [str(selected_python or sys.executable), str(REPO / "tests/proxy_migration/old_proxy.py")]
+            fixture = Path(python_fixture) if python_fixture else REPO / "tests/proxy_migration/old_proxy.py"
+            if not fixture.is_file():
+                raise FileNotFoundError(f"Selected Python proxy fixture is missing: {fixture}")
+            command = [str(selected_python or sys.executable), str(fixture)]
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api

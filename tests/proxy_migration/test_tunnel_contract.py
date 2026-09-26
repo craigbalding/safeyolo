@@ -2166,6 +2166,7 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                     assert events[0]["downloaded_bytes"] == len(greeting)
 
                 samples = [before, during, after]
+                hwm_samples = [sample["hwm_kib"] for sample in samples if sample["hwm_kib"] is not None]
                 (directory / "concurrent-incomplete-connect-resources.json").write_text(
                     json.dumps(
                         {
@@ -2189,7 +2190,7 @@ def test_concurrent_incomplete_connect_cancellation_records_resource_peak(
                                 ),
                                 "new_socket_inodes": sorted(new_socket_inodes),
                                 "peak_rss_kib": max(sample["rss_kib"] for sample in samples),
-                                "peak_hwm_kib": max(sample["hwm_kib"] for sample in samples),
+                                "peak_hwm_kib": max(hwm_samples, default=None),
                                 "peak_threads": max(sample["threads"] for sample in samples),
                                 "peak_fd_count": max(sample["fd_count"] for sample in samples),
                                 "descriptor_settle_seconds": round(settle_seconds, 6),

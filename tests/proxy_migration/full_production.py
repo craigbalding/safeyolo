@@ -420,6 +420,8 @@ def main(arguments=None):
             )
             time.sleep(0.25)
             result["memory_after_kib"] = memory(process.pid)
+            assert result["memory_after_kib"] is not None
+            assert "VmRSS" in result["memory_after_kib"]
             sampling_stop.set()
             sampler.join(timeout=2)
             json_write(root / "memory-samples.json", samples)
@@ -429,7 +431,7 @@ def main(arguments=None):
                 "interval_seconds": 0.05,
                 "peak_observed_rss_kib": max(rss) if rss else None,
                 "steady_second_half_median_rss_kib": statistics.median(rss[len(rss) // 2 :]) if rss else None,
-                "lifetime_high_water_kib": result["memory_after_kib"]["VmHWM"],
+                "lifetime_high_water_kib": result["memory_after_kib"].get("VmHWM"),
                 "scope": "single complete production traffic process including console/web/admin; RSS is Linux /proc measurement",
                 "limitation": "short workload with intentionally growing approval/view state; not proof of a long-duration plateau",
             }
