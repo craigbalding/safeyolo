@@ -116,6 +116,34 @@ fn defaults_rules_extract_basic_bearer_and_preserve_fingerprints_without_secrets
     assert_eq!(a[0].credential_type.as_deref(), Some("demo"));
 }
 #[test]
+fn default_huggingface_rule_requires_a_complete_credential() {
+    let guard = configured(json!({}));
+    let embedded = Secret::new(format!(
+        "Bearer eyJhbGciOiJIUzI1NiJ9.payloadhf_{}.signature",
+        "A".repeat(28)
+    ));
+    let findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &embedded,
+        }])
+        .unwrap();
+    assert!(
+        findings
+            .iter()
+            .all(|finding| finding.credential_type.as_deref() != Some("huggingface"))
+    );
+
+    let token = Secret::new(format!("Bearer hf_{}", "A".repeat(28)));
+    let findings = guard
+        .classify_headers(&[Header {
+            name: "Authorization",
+            value: &token,
+        }])
+        .unwrap();
+    assert_eq!(findings[0].credential_type.as_deref(), Some("huggingface"));
+}
+#[test]
 fn source_order_charges_credential_then_baseline_network_for_each_detection() {
     let guard = configured(sensor());
     let doc = json!({"permissions":[{"action":"credential:use","resource":"*","effect":"allow"},{"action":"network:request","resource":"*","effect":"budget","budget":1}]});

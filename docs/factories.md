@@ -194,6 +194,8 @@ the idempotent `safeyolo factory run backlog` command itself. Factory run does
 not claim success until every role supervisor passes the doctor checks for the
 approved snapshot, agent identity/storage/workspace, rooms and grants, proxy,
 NATS, staged supervisor/Coord-adapter/contract files, checkpoint, and process tree.
+Pending approvals are reported for operator attention but do not block this
+operational preflight; `factory run` prints the warning without approving anything.
 
 ## Check, approve, and run
 
@@ -319,8 +321,10 @@ The command reads existing host and sandbox state. It does not start, stop,
 repair, approve, or change the factory. Each output line has one status:
 
 - `PASS` means that the component has the expected state.
-- `WARN` means that a role is stopped. A stopped role is valid persistent
-  state, but the factory is not fully running.
+- `WARN` reports a condition needing attention, such as a stopped role, a
+  pending operator decision, or unreadable approval audit state. It is not
+  permission to approve. A stopped role is valid persistent state, but the
+  factory is not fully running.
 - `FAIL` means that a required component is missing, corrupt, mismatched, or
   not running. Each failure names a narrow recovery command or file category.
 
@@ -336,10 +340,14 @@ then reported as healthy without requiring a harness process. A PID that disappe
 read-only process probe runs is likewise reported as a non-disruptive turn
 transition. Doctor validates checkpoints through the same bundled supervisor
 decoder that runs them, so checkpoint migrations have one implementation.
+Doctor also reports unresolved decisions for this factory's workers from the
+recent audit log. Check the request in `safeyolo watch` before deciding; the
+warning does not decide for the operator. This diagnostic warning alone does
+not prevent `factory run` from starting healthy supervisors.
 
 The summary is `PASS`, `WARN`, or `FAIL`. `FAIL` returns a nonzero exit status.
-`WARN` returns zero so that an operator can distinguish a deliberately stopped
-factory from corrupt state. The command reports checkpoint counts and process
+`WARN` returns zero so that an operator can distinguish attention from corrupt
+state. The command reports checkpoint counts and process
 identity, but it does not print message bodies, role-contract contents,
 credentials, or inspected payloads.
 

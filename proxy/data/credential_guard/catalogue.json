@@ -2,7 +2,7 @@
   {
     "name": "openai-admin",
     "patterns": [
-      "sk-admin-[A-Za-z0-9_-]{8,}"
+      "\\A(?:sk-admin-[A-Za-z0-9_-]{8,})\\Z"
     ],
     "allowed_hosts": [
       "api.openai.com"
@@ -15,7 +15,7 @@
   {
     "name": "openrouter",
     "patterns": [
-      "sk-or-v1-[0-9a-f]{64}"
+      "\\A(?:sk-or-v1-[0-9a-f]{64})\\Z"
     ],
     "allowed_hosts": [
       "openrouter.ai"
@@ -28,8 +28,8 @@
   {
     "name": "openai",
     "patterns": [
-      "sk-proj-[A-Za-z0-9_-]{20,}",
-      "sk-svcacct-[A-Za-z0-9_-]{20,}"
+      "\\A(?:sk-proj-[A-Za-z0-9_-]{20,})\\Z",
+      "\\A(?:sk-svcacct-[A-Za-z0-9_-]{20,})\\Z"
     ],
     "allowed_hosts": [
       "api.openai.com"
@@ -42,8 +42,8 @@
   {
     "name": "anthropic",
     "patterns": [
-      "sk-ant-api\\d{2}-[A-Za-z0-9_-]{93}AA",
-      "sk-ant-oat\\d{2}-[A-Za-z0-9_-]{93}AA"
+      "\\A(?:sk-ant-api\\d{2}-[A-Za-z0-9_-]{93}AA)\\Z",
+      "\\A(?:sk-ant-oat\\d{2}-[A-Za-z0-9_-]{93}AA)\\Z"
     ],
     "allowed_hosts": [
       "api.anthropic.com",
@@ -58,7 +58,7 @@
   {
     "name": "anthropic-admin",
     "patterns": [
-      "sk-ant-admin\\d{2}-[A-Za-z0-9_-]{93}AA"
+      "\\A(?:sk-ant-admin\\d{2}-[A-Za-z0-9_-]{93}AA)\\Z"
     ],
     "allowed_hosts": [
       "api.anthropic.com"
@@ -71,7 +71,7 @@
   {
     "name": "anthropic-refresh",
     "patterns": [
-      "sk-ant-ort\\d{2}-[A-Za-z0-9_-]{93}AA"
+      "\\A(?:sk-ant-ort\\d{2}-[A-Za-z0-9_-]{93}AA)\\Z"
     ],
     "allowed_hosts": [
       "console.anthropic.com"
@@ -84,7 +84,7 @@
   {
     "name": "github",
     "patterns": [
-      "ghp_[A-Za-z0-9._-]{36,}"
+      "\\A(?:ghp_[A-Za-z0-9._-]{36,})\\Z"
     ],
     "allowed_hosts": [
       "api.github.com",
@@ -98,7 +98,7 @@
   {
     "name": "github",
     "patterns": [
-      "gho_[A-Za-z0-9._-]{36,}"
+      "\\A(?:gho_[A-Za-z0-9._-]{36,})\\Z"
     ],
     "allowed_hosts": [
       "api.github.com",
@@ -112,7 +112,7 @@
   {
     "name": "github",
     "patterns": [
-      "ghu_[A-Za-z0-9._-]{36,}"
+      "\\A(?:ghu_[A-Za-z0-9._-]{36,})\\Z"
     ],
     "allowed_hosts": [
       "api.github.com",
@@ -126,7 +126,7 @@
   {
     "name": "github",
     "patterns": [
-      "ghs_[A-Za-z0-9._-]{36,}"
+      "\\A(?:ghs_[A-Za-z0-9._-]{36,})\\Z"
     ],
     "allowed_hosts": [
       "api.github.com",
@@ -140,7 +140,7 @@
   {
     "name": "github-refresh",
     "patterns": [
-      "ghr_[A-Za-z0-9._-]{36,}"
+      "\\A(?:ghr_[A-Za-z0-9._-]{36,})\\Z"
     ],
     "allowed_hosts": [
       "github.com"
@@ -153,7 +153,7 @@
   {
     "name": "github",
     "patterns": [
-      "github_pat_[A-Za-z0-9._-]{60,}"
+      "\\A(?:github_pat_[A-Za-z0-9._-]{60,})\\Z"
     ],
     "allowed_hosts": [
       "api.github.com",
@@ -167,8 +167,8 @@
   {
     "name": "google",
     "patterns": [
-      "AIza[0-9A-Za-z_-]{35}",
-      "AQ\\.[A-Za-z0-9_-]{40,}"
+      "\\A(?:AIza[0-9A-Za-z_-]{35})\\Z",
+      "\\A(?:AQ\\.[A-Za-z0-9_-]{40,})\\Z"
     ],
     "allowed_hosts": [
       "*.googleapis.com"
@@ -181,7 +181,7 @@
   {
     "name": "xai",
     "patterns": [
-      "xai-[A-Za-z0-9_-]{20,}"
+      "\\A(?:xai-[A-Za-z0-9_-]{20,})\\Z"
     ],
     "allowed_hosts": [
       "api.x.ai"
@@ -194,7 +194,7 @@
   {
     "name": "groq",
     "patterns": [
-      "gsk_[A-Za-z0-9_-]{20,}"
+      "\\A(?:gsk_[A-Za-z0-9_-]{20,})\\Z"
     ],
     "allowed_hosts": [
       "api.groq.com"
@@ -207,8 +207,8 @@
   {
     "name": "huggingface",
     "patterns": [
-      "hf_[A-Za-z0-9]{20,}",
-      "hf_(?:jwt|oauth)_[A-Za-z0-9_-]{20,}"
+      "\\A(?:hf_[A-Za-z0-9]{20,})\\Z",
+      "\\A(?:hf_(?:jwt|oauth)_[A-Za-z0-9_-]{20,})\\Z"
     ],
     "allowed_hosts": [
       "huggingface.co",
@@ -222,7 +222,7 @@
   {
     "name": "ambiguous-sk",
     "patterns": [
-      "sk-(?!admin-)(?!ant-)(?!or-v1-)(?!proj-)(?!svcacct-)[A-Za-z0-9_-]{20,}"
+      "\\A(?:sk-(?!admin-)(?!ant-)(?!or-v1-)(?!proj-)(?!svcacct-)[A-Za-z0-9_-]{20,})\\Z"
     ],
     "allowed_hosts": [],
     "header_names": [
