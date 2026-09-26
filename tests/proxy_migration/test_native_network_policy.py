@@ -505,21 +505,182 @@ def test_native_policy_budget_is_shared_and_survives_reload(proxy_backend, tmp_p
             assert len(proxy.events("proxy.egress")) == parent.accepts
 
 
-def test_native_policy_valid_reload_changes_rules_and_bad_reload_retains_them(proxy_backend, tmp_path):
+def test_native_policy_failed_reload_retains_scoped_decisions(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
-    with origin_server() as origin:
-        with policy_proxy(proxy_backend, directory, POLICY) as proxy:
-            url = f"http://127.0.0.1:{origin.server_address[1]}/reload"
-            assert send_request(proxy.paths["alice"], url)[0] == 200
-            assert send_request(proxy.paths["bob"], url)[0] == 403
-            updated = POLICY.replace("agents.alice", "agents.bob")
-            replace_policy(proxy, proxy_backend, directory, updated)
-            assert send_request(proxy.paths["alice"], url)[0] == 403
-            assert send_request(proxy.paths["bob"], url)[0] == 200
-            replace_policy(proxy, proxy_backend, directory, "hosts = 7", valid=False)
-            assert send_request(proxy.paths["alice"], url)[0] == 403
-            assert send_request(proxy.paths["bob"], url)[0] == 200
-            assert origin.accepts == 3
+    with origin_server(capture_heads=True) as permitted, origin_server(capture_heads=True) as forbidden:
+        permitted_port = permitted.server_address[1]
+        forbidden_port = forbidden.server_address[1]
+        baseline = (f'budget = 12000\n[hosts]\n"*" = {{ egress = "deny" }}\n'
+                    f'"127.0.0.1:{permitted_port}" = {{ egress = "allow" }}\n')
+        alice_update = (baseline + f'\n[agents.alice.hosts]\n'
+                        f'"127.0.0.1:{forbidden_port}" = {{ egress = "allow" }}\n')
+        observations = []
+        with policy_proxy(proxy_backend, directory, baseline) as proxy:
+            def probe(stage, agent, origin, expected):
+                port = origin.server_address[1]
+                url = f"http://127.0.0.1:{port}/{stage}/{agent}"
+                before = (origin.accepts, list(origin.request_heads), list(origin.requests))
+                marker = f"{stage}-{agent}"
+                status, headers, body = send_request(proxy.paths[agent], url, headers={
+                    "X-Fixture-Canary": marker,
+                    "X-SafeYolo-Agent": "bob" if agent == "alice" else "alice",
+                    "X-SafeYolo-Request-Id": FORGED_REQUEST_ID,
+                })
+                assert status == expected, (stage, agent, body)
+                identifier = {name.lower(): value for name, value in headers.items()}[
+                    "x-safeyolo-request-id"
+                ]
+                assert identifier != FORGED_REQUEST_ID
+                observations.append((identifier, agent, port, expected))
+                if expected == 403:
+                    assert_rejection(status, headers, body, 403, "127.0.0.1")
+                    assert (origin.accepts, origin.request_heads, origin.requests) == before
+                else:
+                    assert body == b"hello"
+                    assert origin.accepts == before[0] + 1
+                    assert len(origin.request_heads) == len(before[1]) + 1
+                    assert len(origin.requests) == len(before[2]) + 1
+                    assert origin.requests[-1] == {"method": "GET", "target": f"/{stage}/{agent}"}
+                    assert f"X-Fixture-Canary: {marker}".encode() in origin.request_heads[-1]
+                    assert origin.canary_headers[-1] == marker
+
+            def check_decisions(stage, *, alice_forbidden=403):
+                for agent, expected in (("alice", alice_forbidden), ("bob", 403)):
+                    probe(stage, agent, forbidden, expected)
+                for agent in ("alice", "bob"):
+                    probe(stage, agent, permitted, 200)
+
+            check_decisions("baseline")
+            assert forbidden.accepts == 0 and forbidden.request_heads == []
+            for name, bad_source in (("malformed", "[hosts\n"), ("schema", "hosts = 7\n")):
+                prior_errors = len([row for row in read_events(directory / "audit.jsonl")
+                                    if row["event"] == "ops.policy_error"])
+                prior_reloads = len([row for row in read_events(directory / "audit.jsonl")
+                                     if row["event"] == "ops.policy_reload"])
+                previous_log = (directory / "process.log").read_text()
+                replace_policy(proxy, proxy_backend, directory, bad_source, valid=False)
+                errors = [row for row in read_events(directory / "audit.jsonl")
+                          if row["event"] == "ops.policy_error"]
+                assert len(errors) == prior_errors + 1
+                assert errors[-1]["summary"] == "Baseline policy file not found or invalid"
+                assert errors[-1]["details"] == {
+                    "policy_type": "baseline", "error": "File not found or invalid"
+                }
+                assert errors[-1]["severity"] == "high"
+                assert len([row for row in read_events(directory / "audit.jsonl")
+                            if row["event"] == "ops.policy_reload"]) == prior_reloads
+                if proxy_backend == "rust":
+                    failure = (directory / "process.log").read_text()[len(previous_log):]
+                    expected_error = "TOML parse error" if name == "malformed" else "hosts must be a table"
+                    assert "configuration reload failed:" in failure and expected_error in failure
+                check_decisions(name)
+                assert forbidden.accepts == 0 and forbidden.request_heads == []
+
+            replace_policy(proxy, proxy_backend, directory, alice_update)
+            check_decisions("updated", alice_forbidden=200)
+            assert forbidden.accepts == 1
+            replace_policy(proxy, proxy_backend, directory, baseline)
+            check_decisions("restored")
+            assert forbidden.accepts == 1
+
+            deadline = time.monotonic() + 3
+            while True:
+                requests = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                audit = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
+                         if row["event"] == "security.network_guard"}
+                denied = [item for item in observations if item[3] == 403]
+                if len(requests) >= len(observations) and len(audit) >= len(denied):
+                    break
+                assert time.monotonic() < deadline, "Request or denial evidence was not written"
+                time.sleep(0.025)
+            for identifier, agent, port, status in observations:
+                row = requests[identifier]
+                assert (row["agent"], row["host"], row["port"], row["status"], row["decision"]) == (
+                    agent, "127.0.0.1", port, status, "allow" if status == 200 else "deny"
+                )
+                if status == 403:
+                    denial = audit[identifier]
+                    assert denial["agent"] == agent and denial["decision"] == "deny"
+                    assert denial["details"]["port"] == port
+                    assert denial["details"]["attribution"]["trusted_transport_identity"] == agent
+            assert len(proxy.events("proxy.egress")) == sum(status == 200 for *_, status in observations)
+
+
+def test_native_invalid_configuration_reload_keeps_policy(proxy_backend, tmp_path):
+    if proxy_backend != "rust":
+        pytest.skip("Python source configuration reload requires a process restart")
+    directory = tmp_path / proxy_backend
+    with origin_server(capture_heads=True) as denied, origin_server(capture_heads=True) as allowed:
+        policy = (f'[hosts]\n"*" = {{ egress = "deny" }}\n'
+                  f'"127.0.0.1:{allowed.server_address[1]}" = {{ egress = "allow" }}\n')
+        with policy_proxy(proxy_backend, directory, policy) as proxy:
+            denied_url = f"http://127.0.0.1:{denied.server_address[1]}/config-denied"
+            allowed_url = f"http://127.0.0.1:{allowed.server_address[1]}/config-allowed"
+            assert send_request(proxy.paths["alice"], denied_url)[0] == 403
+            assert send_request(proxy.paths["bob"], denied_url)[0] == 403
+            assert denied.accepts == 0 and denied.request_heads == []
+            assert send_request(proxy.paths["alice"], allowed_url)[0] == 200
+            reloads_before = len([row for row in read_events(directory / "audit.jsonl")
+                                  if row["event"] == "ops.policy_reload"])
+            config = directory / "proxy.json"
+            original_config = config.read_text()
+            errors_before = (directory / "process.log").read_text().count("configuration reload failed:")
+            try:
+                config.write_text('{"listeners":')
+                proxy.process.send_signal(signal.SIGHUP)
+                deadline = time.monotonic() + 3
+                while (directory / "process.log").read_text().count("configuration reload failed:") == errors_before:
+                    assert proxy.process.poll() is None
+                    assert time.monotonic() < deadline, "Invalid configuration reload was not reported"
+                    time.sleep(0.025)
+                assert "configuration reload failed: EOF while parsing a value" in (
+                    directory / "process.log"
+                ).read_text()
+                assert proxy.readiness_file.exists()
+                assert len([row for row in read_events(directory / "audit.jsonl")
+                            if row["event"] == "ops.policy_reload"]) == reloads_before
+            finally:
+                config.write_text(original_config)
+            denied_ids = []
+            for agent in ("alice", "bob"):
+                status, headers, body = send_request(proxy.paths[agent], denied_url)
+                assert_rejection(status, headers, body, 403, "127.0.0.1")
+                denied_ids.append((agent, {name.lower(): value for name, value in headers.items()}[
+                    "x-safeyolo-request-id"
+                ]))
+            assert denied.accepts == 0 and denied.request_heads == []
+            assert send_request(proxy.paths["bob"], allowed_url)[0] == 200
+            assert allowed.accepts == 2 and len(allowed.request_heads) == 2
+            deadline = time.monotonic() + 3
+            while True:
+                requests = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                audit = {row["request_id"]: row for row in read_events(directory / "audit.jsonl")
+                         if row["event"] == "security.network_guard"}
+                if all(identifier in requests and identifier in audit for _, identifier in denied_ids):
+                    break
+                assert time.monotonic() < deadline, "Retained config denial evidence was not written"
+                time.sleep(0.025)
+            for agent, identifier in denied_ids:
+                assert requests[identifier]["agent"] == agent
+                assert requests[identifier]["status"] == 403
+                assert requests[identifier]["decision"] == "deny"
+                assert audit[identifier]["agent"] == agent and audit[identifier]["decision"] == "deny"
+            before_ready = proxy.readiness_file.stat()
+            proxy.process.send_signal(signal.SIGHUP)
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    current = proxy.readiness_file.stat()
+                except FileNotFoundError:
+                    pass  # The native process removes readiness while publishing a valid reload.
+                else:
+                    if (current.st_ino, current.st_mtime_ns) != (before_ready.st_ino, before_ready.st_mtime_ns):
+                        break
+                assert proxy.process.poll() is None
+                assert time.monotonic() < deadline, "Restored configuration did not reload"
+                time.sleep(0.025)
+            assert send_request(proxy.paths["alice"], denied_url)[0] == 403
+            assert denied.accepts == 0 and denied.request_heads == []
 
 
 def test_native_policy_connect_and_inner_https_have_separate_decisions(proxy_backend, tmp_path):
