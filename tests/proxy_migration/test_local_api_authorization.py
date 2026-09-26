@@ -1,5 +1,6 @@
 """Local control-plane failures through both real proxy listeners."""
 
+import base64
 import http.client
 import json
 import time
@@ -13,11 +14,16 @@ from tests.proxy_migration.test_agent_api_contract import HOST, TOKEN, api_reque
 from tests.proxy_migration.test_native_network_policy import ALLOW, policy_proxy, replace_policy
 
 
-def test_reserved_handler_disabled_stays_local_with_permissive_egress(proxy_backend, tmp_path):
-    """The missing handler cannot hand a bearer or query to the configured parent."""
+@pytest.mark.parametrize("handler_state", ["disabled", "unusable-token-file"])
+def test_reserved_routes_stay_local_when_agent_api_unavailable(
+    proxy_backend, tmp_path, handler_state,
+):
+    """A missing or unusable handler cannot hand local requests to the parent."""
     with origin_server(capture_heads=True) as parent:
         with policy_proxy(
-            proxy_backend, tmp_path / proxy_backend, ALLOW, agent_api=False,
+            proxy_backend, tmp_path / proxy_backend, ALLOW,
+            agent_api=handler_state == "unusable-token-file",
+            agent_api_token=b"\xff" if handler_state == "unusable-token-file" else None,
             parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}",
         ) as proxy:
             for authority in (HOST, HOST.upper(), HOST + ".", HOST.upper() + ".", HOST + ":8123"):
@@ -33,6 +39,15 @@ def test_reserved_handler_disabled_stays_local_with_permissive_egress(proxy_back
                 assert status == 503, body
                 assert json.loads(body)["reason_code"] == "agent_api_unavailable"
                 assert {key.lower(): value for key, value in headers.items()}["x-safeyolo-agent-api"] == "true"
+                assert parent.accepts == 0 and parent.request_heads == []
+                assert proxy.events("proxy.egress") == []
+
+            for authority in ("_safeyolo.probe.internal", "_SAFEYOLO.PROBE.INTERNAL."):
+                status, _, body = send_request(
+                    proxy.paths["bob"], f"http://{authority}/__pipeline_probe?secret=query-canary-621",
+                    headers={"Authorization": "Bearer bearer-canary-621", "X-Agent-Id": "alice"},
+                )
+                assert status == 200 and json.loads(body)["probe_ok"] is True
                 assert parent.accepts == 0 and parent.request_heads == []
                 assert proxy.events("proxy.egress") == []
 
@@ -140,6 +155,9 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
             assert call("bob", "/api/test-context/current?agent=alice") == {"agent": "bob", "context": None}
             assert call("bob", "/api/test-context/current?agent=alice", method="DELETE") == {"status": "cleared"}
             assert call("alice", "/api/test-context/current")["context"]["run"] == "control-plane-621"
+            assert call("bob", "/api/test-context/current?agent=alice", method="POST",
+                        body=b"{", status=400)["error"] == "Invalid JSON body"
+            assert call("alice", "/api/test-context/current")["context"]["run"] == "control-plane-621"
 
             status, headers, body = send_request(
                 proxy.paths["alice"], "http://ordinary.invalid/owned",
@@ -168,20 +186,55 @@ def test_shared_bearer_does_not_grant_other_agents_state(proxy_backend, tmp_path
             assert call("bob", f"/api/flows/{flow_id}/tag/scope-proof?agent=alice", method="DELETE",
                         status=404) == {"error": "Flow not found"}
             assert call("alice", f"/api/flows/{flow_id}")["tags"][0]["value"] == "owned"
-            assert parent.accepts == 1 and len(parent.requests) == 1
+            assert base64.b64decode(call("alice", f"/api/flows/{flow_id}/response-body")["body_base64"]) == b"hello"
+            assert call("bob", f"/api/flows/{flow_id}/response-body?agent=alice", status=404) == {
+                "error": "Flow not found",
+            }
+            bob_context = "run=control-plane-621;agent=bob;test=scope"
+            assert call("bob", "/api/test-context/current?agent=alice", method="POST",
+                        body=json.dumps({"context": bob_context}).encode())["agent"] == "bob"
+            status, headers, body = send_request(
+                proxy.paths["bob"], "http://ordinary.invalid/bob-owned",
+                headers={"X-SafeYolo-Test-Context": bob_context, "X-SafeYolo-Trace": "1"},
+            )
+            assert status == 200 and body == b"hello"
+            origin_accepts = 2
+            bob_id = {key.lower(): value for key, value in headers.items()}["x-safeyolo-request-id"]
+            assert call("bob", f"/trace?request_id={bob_id}")["agent_id"] == "bob"
+            assert call("alice", f"/trace?request_id={bob_id}&agent=bob", status=404)["request_id"] == bob_id
+            deadline = time.monotonic() + 2
+            while True:
+                bob_flows = call("bob", "/api/flows/search?run=control-plane-621&test=scope")["flows"]
+                bob_owned = [flow for flow in bob_flows if flow["request_id"] == bob_id]
+                if bob_owned or time.monotonic() >= deadline:
+                    break
+                time.sleep(0.025)
+            assert len(bob_owned) == 1, bob_flows
+            assert not any(flow["request_id"] == bob_id for flow in
+                           call("alice", "/api/flows/search?run=control-plane-621&test=scope")["flows"])
+            bob_flow_id = bob_owned[0]["id"]
+            assert call("alice", f"/api/flows/{bob_flow_id}/tag?agent=bob", method="POST", body=tag,
+                        status=404) == {"error": "Flow not found"}
+            assert call("bob", f"/api/flows/{bob_flow_id}")["tags"] == []
+            assert base64.b64decode(call("bob", f"/api/flows/{bob_flow_id}/response-body")["body_base64"]) == b"hello"
+            assert call("alice", f"/api/flows/{bob_flow_id}/response-body?agent=bob", status=404) == {
+                "error": "Flow not found",
+            }
+            assert parent.accepts == 2 and len(parent.requests) == 2
             local = [row for row in proxy.events("proxy.request") if row["host"].lower().rstrip(".") == HOST]
             assert local and all(row["decision"] == "local" for row in local)
             deadline = time.monotonic() + 2
             while True:
                 mutations = [row for row in read_events(directory / "audit.jsonl")
                              if row["event"] in {"security.test_context_declared", "security.test_context_cleared"}]
-                if len(mutations) >= 2 or time.monotonic() >= deadline:
+                if len(mutations) >= 3 or time.monotonic() >= deadline:
                     break
                 time.sleep(0.025)
             assert [(row["event"], row["agent"], row["details"]["source_id"])
                     for row in mutations] == [
                 ("security.test_context_declared", "alice", "10.0.0.2"),
                 ("security.test_context_cleared", "bob", "10.0.0.3"),
+                ("security.test_context_declared", "bob", "10.0.0.3"),
             ]
 
 
