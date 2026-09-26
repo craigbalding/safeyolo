@@ -1417,11 +1417,15 @@ fn folded_header(headers: &[(String, String)], name: &str) -> String {
         .join(", ")
 }
 fn token_candidate(value: &str) -> Option<&str> {
-    let candidate = value.trim_matches(crate::policy::python_whitespace);
-    let candidate = candidate.split_once(' ').map_or(candidate, |(_, value)| {
-        value.trim_matches(crate::policy::python_whitespace)
-    });
-    candidate.starts_with("sgw_").then_some(candidate)
+    value.split(',').find_map(|part| {
+        let candidate = part.trim_matches(crate::policy::python_whitespace);
+        let candidate = candidate
+            .split_once(char::is_whitespace)
+            .map_or(candidate, |(_, value)| {
+                value.trim_matches(crate::policy::python_whitespace)
+            });
+        candidate.starts_with("sgw_").then_some(candidate)
+    })
 }
 
 fn unresolved_token(headers: &[(String, String)]) -> GatewayDecision {

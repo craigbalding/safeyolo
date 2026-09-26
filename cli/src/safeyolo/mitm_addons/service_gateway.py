@@ -1337,12 +1337,16 @@ class ServiceGateway:
         when host or schema metadata is absent, while ordinary credentials keep
         their existing pass-through behavior.
         """
-        for value in flow.request.headers.values():
-            candidate = value.strip()
-            if " " in candidate:
-                candidate = candidate.split(" ", 1)[1].strip()
-            if candidate.startswith(SGW_TOKEN_PREFIX):
-                return candidate
+        for _, raw_value in flow.request.headers.fields:
+            # Headers.values() folds repeated fields. A later gateway token
+            # or comma-separated value can disappear behind an earlier value.
+            for value in raw_value.decode("latin-1").split(","):
+                candidate = value.strip()
+                parts = candidate.split(None, 1)
+                if len(parts) == 2:
+                    candidate = parts[1].strip()
+                if candidate.startswith(SGW_TOKEN_PREFIX):
+                    return candidate
         return None
 
     def _evaluate_capability_routes(self, method, path, capability) -> bool:  # DOC: SECURITY.md

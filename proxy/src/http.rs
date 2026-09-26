@@ -2642,8 +2642,9 @@ where
     let mut gateway_evidence = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
+        // Gateway token fallback and contract checks need each original field.
         let gateway_headers: Vec<_> = ordered_headers
-            .iter()
+            .recording_pairs()
             .map(|(name, value)| {
                 (
                     crate::credential_text::source_text(name),
