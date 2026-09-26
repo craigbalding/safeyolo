@@ -300,7 +300,9 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 raise RuntimeError("IP connect observation requires Linux strace")
             # -D leaves the proxy as the Popen child, preserving the readiness
             # PID and shutdown contract while a detached tracer follows threads.
-            command = [tracer, "-D", "-f", "-e", "trace=connect", "-o",
+            # Include datagram sends so a lookup through another resolver is
+            # visible even if its client does not call connect().
+            command = [tracer, "-D", "-f", "-e", "trace=network", "-o",
                        str(connect_trace_path), *command]
         process = stack.enter_context(child_process(command + ["--config", str(config_path)], directory, env))
         readiness = Path(config["readiness_file"])
