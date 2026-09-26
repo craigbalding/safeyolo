@@ -478,6 +478,24 @@ class TestPatternScanner:
             scanner.request(real_token)
         assert real_token.metadata.get("pattern_matched") == "huggingface-token"
 
+    def test_huggingface_builtin_scans_body_without_short_token_false_positive(
+        self, scanner, make_flow
+    ):
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+
+        for prefix in ("hf_jwt_", "hf_oauth_"):
+            short = make_flow(content='{"token":"' + prefix + "A" * 19 + '"}')
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+                scanner.request(short)
+            assert short.metadata.get("pattern_matched") is None
+
+            valid = make_flow(content='{"token":"' + prefix + "A" * 20 + '"}')
+            with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+                scanner.request(valid)
+            assert valid.metadata.get("pattern_matched") == "huggingface-token"
+
     def test_load_policy_config_combines_builtin_and_user(self, scanner):
         """Test load_policy_config combines builtin and user patterns."""
         config = {

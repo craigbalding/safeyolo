@@ -265,7 +265,13 @@ CREDENTIAL_FAMILIES: tuple[CredentialFamilySpec, ...] = (
         header_names=("authorization",),
         suggested_url="https://huggingface.co/settings/tokens",
         dlp_name="huggingface-token",
-        dlp_patterns=(r"(?:^|[^A-Za-z0-9_.-])hf_(?:(?:jwt|oauth)_)?[A-Za-z0-9_-]{20,}",),
+        # Keep complete token shapes: the generic branch must not accept a
+        # short jwt_/oauth_ prefix as a Hugging Face credential.
+        dlp_patterns=(
+            r"(?:^|[^A-Za-z0-9_.-])hf_"
+            r"(?:[A-Za-z0-9]{20,}|(?:jwt|oauth)_[A-Za-z0-9_-]{20,})"
+            r"(?![A-Za-z0-9_-])",
+        ),
         dlp_message="Hugging Face access token detected",
         source_urls=(
             "https://huggingface.co/docs/hub/en/security-tokens",

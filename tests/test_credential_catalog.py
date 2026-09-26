@@ -84,6 +84,32 @@ def test_huggingface_dlp_distinguishes_embedded_jwt_text_from_a_real_token():
     )
 
 
+@pytest.mark.parametrize("prefix", ["hf_", "hf_jwt_", "hf_oauth_"])
+def test_huggingface_dlp_respects_token_shape_and_length(prefix):
+    family = next(f for f in CREDENTIAL_FAMILIES if f.family_id == "huggingface-token")
+
+    for length, expected in [(19, False), (20, True)]:
+        token = prefix + "A" * length
+        found = any(
+            re.search(pattern, f'{{"token":"{token}"}}')
+            for pattern in family.effective_dlp_patterns
+        )
+        assert found is expected
+
+    if prefix == "hf_":
+        # A prefix of a longer invalid token is not a complete credential.
+        assert not any(
+            re.search(pattern, '"hf_' + "A" * 20 + '_suffix"')
+            for pattern in family.effective_dlp_patterns
+        )
+    else:
+        # Specialized tokens may contain underscores and hyphens in their body.
+        assert any(
+            re.search(pattern, f'{{"token":"{prefix + "A_b-" * 5}"}}')
+            for pattern in family.effective_dlp_patterns
+        )
+
+
 def test_default_rules_are_exact_catalogue_projection():
     """Tier 1 must not gain a second hand-maintained provider list."""
     assert [
