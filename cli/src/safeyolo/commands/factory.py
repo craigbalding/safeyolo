@@ -297,10 +297,13 @@ def run_factory(
         identifier, snapshot_path, payload = load_approved_snapshot(name)
         _print_snapshot(identifier, snapshot_path, payload)
         _run_snapshot(snapshot_path, payload)
-        _wait_for_operational_preflight(name)
+        report = _wait_for_operational_preflight(name)
     except FactoryContractError as exc:
         console.print(f"[red]Cannot run factory:[/red] {exc}")
         raise typer.Exit(1) from exc
+    for item in report.checks:
+        if item.component == "operator-approvals" and item.status == "WARN":
+            console.print(f"WARN component={item.component} {item.detail}", soft_wrap=True)
     console.print(f"[green]Operational preflight PASS factory={name}[/green]")
     console.print(f"[green]Started factory {name} snapshot={identifier}[/green]")
 
@@ -491,11 +494,16 @@ def _wait_for_operational_preflight(name: str) -> FactoryDoctorReport:
             raise FactoryContractError(
                 f"operational preflight could not inspect factory {name!r}: {exc}\n{_factory_run_recovery(name)}"
             ) from exc
-        if latest.status == "PASS":
+        outstanding = [
+            item for item in latest.checks
+            if item.status != "PASS"
+            and not (item.component == "operator-approvals" and item.status == "WARN")
+        ]
+        if not outstanding:
             return latest
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            failed = [f"{item.component}: {item.detail}" for item in latest.checks if item.status != "PASS"]
+            failed = [f"{item.component}: {item.detail}" for item in outstanding]
             detail = "; ".join(failed) if failed else f"status={latest.status}"
             raise FactoryContractError(
                 f"operational preflight did not pass within "
