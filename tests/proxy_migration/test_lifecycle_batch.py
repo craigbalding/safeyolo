@@ -93,13 +93,13 @@ def resource_sample(pid):
     return sample
 
 
-def run_batch(proxy, backend, index):
+def run_batch(proxy, index):
     """Keep upload, event stream, WebSocket and tunnel live during a control request."""
     egress_before = len(proxy.events("proxy.egress"))
     prefix = (f"batch-{index}-".encode() * 8192)[:65536]
     payload = (f"opaque-{index}-".encode() * 1024)[:8192]
     upload_path = f"/cancel-{index}"
-    upload = event_client = websocket = opaque = None
+    upload = event_client = event_response = websocket = opaque = None
     with observed_origin(socket_timeout=5) as upload_origin, origin_server(
         stream_seconds=2.0
     ) as http_origin, raw_origin() as (authority, tunnel_result, tunnel_finished):
@@ -151,6 +151,8 @@ def run_batch(proxy, backend, index):
             assert (http_origin.accepts, len(proxy.events("proxy.egress"))) == before_denial
             websocket.sock.sendall(b"\x88\x80\x00\x00\x00\x00")
         finally:
+            if event_response is not None:
+                event_response.close()
             for client in (upload, event_client, websocket, opaque):
                 if client is not None:
                     client.close()
@@ -176,8 +178,7 @@ def run_batch(proxy, backend, index):
             "index": 0, "opcode": 1, "payload_bytes": 5,
             "payload_sha256": hashlib.sha256(b"hello").hexdigest(),
         }]
-        if backend == "rust":
-            assert http_origin.stream_cancelled.is_set(), "native SSE kept draining after client close"
+        assert http_origin.stream_cancelled.is_set(), "SSE kept draining after client close"
         egress = proxy.events("proxy.egress")[egress_before:]
         assert len(egress) == 6 and all(row["agent"] == "alice" for row in egress), egress
         assert {row["port"] for row in egress} == {
@@ -209,7 +210,7 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
         batches = []
         samples = []
         for index in range(BATCHES):
-            batches.append(run_batch(proxy, proxy_backend, index))
+            batches.append(run_batch(proxy, index))
             deadline = time.monotonic() + 5
             while True:
                 sample = resource_sample(proxy.process.pid)

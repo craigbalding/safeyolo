@@ -68,10 +68,14 @@ The shared assertions cover:
   CONNECT tunnel. The four long-lived legs overlap a permitted control request
   and a denied other-agent request. The upload origin records the exact partial
   body digest and an incomplete body; the WebSocket and tunnel origins record
-  their exact bytes and end of connection. The native SSE origin observes
-  cancellation. The Python comparator finishes sending its SSE response after
-  the client closes, so this fixture records that difference without treating
-  it as native success. Linux `/proc` samples check quiet file-descriptor and
+  their exact bytes and end of connection. Both SSE origins observe cancellation
+  after the fixture closes the response as well as the HTTP client. Closing only
+  `HTTPConnection` left a close-delimited `HTTPResponse` holding the socket, so
+  the earlier apparent Python cancellation difference was a client-fixture
+  artifact. A separate raw-socket SSE case checks early disconnect, origin EOF,
+  prompt shutdown and same-config restart. Its live-response control checks
+  native graceful drain and records the Python comparator's SIGTERM EOF before
+  the final event. Linux `/proc` samples check quiet file-descriptor and
   resident-memory trends after each batch, allowing bounded allocator
   retention. The same process configuration then stops and starts on the same
   listener paths; a new readiness marker names the new process, and permitted
