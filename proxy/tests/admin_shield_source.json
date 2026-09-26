@@ -2892,13 +2892,13 @@
   "transport": {
     "listener": [
       "127.0.0.1",
-      45321
+      52146
     ],
-    "configured_admin_port": 45321,
+    "configured_admin_port": 52146,
     "cases": [
       {
         "host": "localhost",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2912,7 +2912,7 @@
       },
       {
         "host": "127.0.0.1",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2926,7 +2926,7 @@
       },
       {
         "host": "localhost.",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2940,7 +2940,7 @@
       },
       {
         "host": "127.1",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2954,7 +2954,7 @@
       },
       {
         "host": "2130706433",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2968,7 +2968,7 @@
       },
       {
         "host": "0x7f000001",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2982,7 +2982,7 @@
       },
       {
         "host": "0177.0.0.1",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -2996,7 +2996,7 @@
       },
       {
         "host": "::ffff:127.0.0.1",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": true,
         "events": [
@@ -3010,7 +3010,7 @@
       },
       {
         "host": "owned-alias.invalid",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": false,
         "events": [
@@ -3023,13 +3023,13 @@
         "server_error": null,
         "peer": [
           "127.0.0.1",
-          45321
+          52146
         ],
         "owned_accepts": 1
       },
       {
         "host": "alias-unspecified.invalid",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": false,
         "events": [
@@ -3042,13 +3042,13 @@
         "server_error": null,
         "peer": [
           "127.0.0.1",
-          45321
+          52146
         ],
         "owned_accepts": 1
       },
       {
         "host": "other-local.invalid",
-        "port": 45321,
+        "port": 52146,
         "extras": "",
         "ingress_blocked": false,
         "events": [
@@ -3057,17 +3057,17 @@
           "ServerConnectErrorHook",
           "OpenConnectionCompleted"
         ],
-        "server_error": "[Errno 111] Connect call failed ('127.0.0.2', 45321)",
+        "server_error": "[Errno 111] Connect call failed ('127.0.0.2', 52146)",
         "peer": null,
         "owned_accepts": 0
       }
     ],
     "changed_option_old_bound_port": {
       "host": "127.0.0.1",
-      "port": 45321,
+      "port": 52146,
       "hook": "request",
       "extras": "",
-      "admin_port": 45322,
+      "admin_port": 52147,
       "prior": false,
       "blocked": true,
       "metadata": {
@@ -3095,7 +3095,7 @@
     },
     "configured_zero_actual_ephemeral_port": {
       "host": "127.0.0.1",
-      "port": 45321,
+      "port": 52146,
       "hook": "request",
       "extras": "",
       "admin_port": 0,
@@ -3127,7 +3127,7 @@
     "scope": "actual ConnectionHandler.open_connection and shield hook; controlled DNS; owned inert listener only"
   },
   "provenance": {
-    "source_commit": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+    "source_commit": "2bdb95e2c96322c0b8e6d58426398eead0442f2a",
     "python": "3.12.14",
     "unicode": "15.0.0",
     "mitmproxy": "12.2.3",

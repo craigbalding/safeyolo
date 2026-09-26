@@ -328,7 +328,7 @@ def main():
         return
     rows["transport"] = asyncio.run(transport_witness())
     rows["provenance"] = {
-        "source_commit": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+        "source_commit": "2bdb95e2c96322c0b8e6d58426398eead0442f2a",
         "python": platform.python_version(),
         "unicode": unicodedata.unidata_version,
         "mitmproxy": importlib.metadata.version("mitmproxy"),
