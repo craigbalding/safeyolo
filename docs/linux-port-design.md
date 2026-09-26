@@ -184,7 +184,7 @@ runsc itself runs inside an unprivileged user namespace created via
 
 ```
 _start_userns(name):
-    1. unshare -Un sleep 86400                 # the userns "holder"
+    1. unshare -Un sleep infinity              # the userns "holder"
     2. newuidmap holder_pid  0 100000 1000  1000 <operator_uid> 1  1001 101001 64534
     3. newgidmap holder_pid  (same shape)
     4. Persist holder pid so nsenter can re-enter the userns for

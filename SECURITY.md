@@ -31,6 +31,7 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ```
 
 - **Host** is the trust root. You run the CLI, own config, and control the sandbox runtime (Apple Virtualization.framework on macOS, gVisor on Linux).
+- **Linux namespace holder** keeps an agent's user and network namespaces available for management while the agent runs. SafeYolo ends the holder when it stops the agent.
 - **SafeYolo** enforces your policy — a host mitmproxy process, no privileged runtime, no host filesystem access beyond your explicit mounts, runs as your uid.
 - **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
 - **External services** are reachable only if policy explicitly permits the destination.

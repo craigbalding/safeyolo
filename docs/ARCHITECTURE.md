@@ -92,6 +92,7 @@ configuration share, so it can change without rebuilding the rootfs.
 ### Linux runtime and storage
 
 - **Rootless host operation**: runsc runs in an unprivileged user namespace (`unshare -Un` + `newuidmap`/`newgidmap`) and launching agents requires no host sudo. Agents start as uid 1000; in-guest `sudo` may enter sandbox uid 0 for ephemeral package installs. That identity maps to subordinate host uid 100000, while container uid 1000 maps to the operator.
+- **Namespace lifetime**: a holder process keeps each Linux agent's user and network namespaces available while the agent runs. SafeYolo stops the holder when it stops the agent, so status and exec can still enter the namespaces after a long run.
 - **Rootfs**: a single shared directory tree at
   `~/.safeyolo/share/rootfs-tree/` is the gVisor OCI `root.path`; Linux does
   not package it as an image. By default, writes

@@ -626,9 +626,9 @@ def _start_userns(name: str, *, persist_pid: bool = True) -> int:
     if needs_apparmor() and has_aa_exec():
         aa_prefix = ["aa-exec", "-p", AA_PROFILE, "--"]
 
-    # Start the userns holder
+    # Keep the namespace available until agent stop, even for long-running agents.
     proc = subprocess.Popen(
-        aa_prefix + ["unshare", "-Un", "sleep", "86400"],  # DOC: docs/security-verification.md, docs/ARCHITECTURE.md, SECURITY.md
+        aa_prefix + ["unshare", "-Un", "sleep", "infinity"],  # DOC: docs/security-verification.md, docs/ARCHITECTURE.md, SECURITY.md
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
