@@ -461,6 +461,23 @@ class TestPatternScanner:
         assert len(scanner.rules) > 0
         assert "openai-api-key" in rule_names
 
+    def test_huggingface_builtin_ignores_shape_inside_bearer_jwt(self, scanner, make_flow):
+        scanner.load_policy_config({
+            "addons": {"pattern_scanner": {"builtin_sets": ["secrets"]}}
+        })
+        jwt = "eyJhbGciOiJIUzI1NiJ9.hf_" + "A" * 28 + ".signature"
+        flow = make_flow(headers={"Authorization": f"Bearer {jwt}"})
+
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=True)):
+            scanner.request(flow)
+
+        assert flow.metadata.get("pattern_matched") is None
+
+        real_token = make_flow(headers={"Authorization": "Bearer hf_" + "A" * 28})
+        with patch("pattern_scanner.ctx", _ctx(pattern_block_request=False)):
+            scanner.request(real_token)
+        assert real_token.metadata.get("pattern_matched") == "huggingface-token"
+
     def test_load_policy_config_combines_builtin_and_user(self, scanner):
         """Test load_policy_config combines builtin and user patterns."""
         config = {
