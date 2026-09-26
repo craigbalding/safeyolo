@@ -184,6 +184,13 @@ docs = ["docs/proxy-parity.md"]
 must_contain = "{seconds} seconds"
 
 [[assertion]]
+name = "proxy-migration-dns-fixture-port"
+source = "tests/proxy_migration/dns_server.py"
+pattern = 'listen-on port (?P<port>\d+) \{\{ 127\.0\.0\.1; \}\}'
+docs = ["docs/proxy-parity.md"]
+must_contain = "port {port}"
+
+[[assertion]]
 name = "approval-audit-http-confirmed"
 source = "proxy/src/http.rs"
 pattern = 'runtime\.audit\.emit_confirmed\(audit\.to_event\(\)\)\.await'

@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -139,7 +140,8 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  agent_map=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
-                 agents=("alice", "bob"), services_dir=None, python_config_dir=None):
+                 agents=("alice", "bob"), services_dir=None, python_config_dir=None,
+                 connect_trace_path=None):
     """Start one explicitly selected implementation in isolated fixture state."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
@@ -292,6 +294,16 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             raise ValueError(f"Unknown proxy backend: {backend}")
         config_path = directory / "proxy.json"
         config_path.write_text(json.dumps(config))
+        if connect_trace_path is not None:
+            tracer = shutil.which("strace")
+            if sys.platform != "linux" or tracer is None:
+                raise RuntimeError("IP connect observation requires Linux strace")
+            # -D leaves the proxy as the Popen child, preserving the readiness
+            # PID and shutdown contract while a detached tracer follows threads.
+            # Include datagram sends so a lookup through another resolver is
+            # visible even if its client does not call connect().
+            command = [tracer, "-D", "-f", "-e", "trace=network", "-o",
+                       str(connect_trace_path), *command]
         process = stack.enter_context(child_process(command + ["--config", str(config_path)], directory, env))
         readiness = Path(config["readiness_file"])
         wait_ready(

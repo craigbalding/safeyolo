@@ -106,7 +106,26 @@ The shared assertions cover:
   and run the same selected test under an external deadline for a longer check.
   The default finite fixture does not establish sustained churn, a global
   memory cap, or host cleanup.
-- No pre-DNS outbound attempt or synthetic upstream connection after denial.
+- On Linux with `strace`, the shared outbound-effects case follows both real
+  backends through their `connect` system calls. Two permitted parent requests
+  establish that the observer sees IP `connect` attempts. Reserved API and
+  probe requests, reserved CONNECT, malformed local requests, and denied
+  ordinary HTTP and CONNECT create no additional IP `connect` attempt, parent
+  accept, or parent application request. The Python case selects eager
+  connections. A separate direct-route case runs BIND `named` with temporary
+  authoritative zones on loopback port 53. The fixture disables recursion,
+  configures no forwarder, records each query, and stops at teardown. It does
+  not change resolver configuration. The case first requires a live
+  `getaddrinfo` query from the test process. It then requires DNS queries and
+  origin accepts from each proxy.
+  Distinct denied and reserved names add no DNS query, IP network syscall
+  destination, or origin accept;
+  permitted names before and after those requests keep the observers live.
+  The DNS case skips with a stated reason if BIND is unavailable, the host
+  cannot bind loopback port 53, or its resolver does not use that server. A skip
+  is not DNS evidence.
+  These Linux cases do not establish the remaining plain-HTTP decisions or
+  platform coverage.
 - Direct origin-form forwarding and absolute-form forwarding through an
   explicitly configured parent, preserving repeated/encoded query parameters.
 - Raw absolute-form authority and Host controls through a Host-routing parent.
