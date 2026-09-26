@@ -2,10 +2,9 @@
 //!
 //! Source contract: operator-api-task-wire-source/results.json, SHA256
 //! 6d86bb348eaf0657690a3221f59c149f47c3fba0c9bf1bc934d8f7279919be35.
-//! Registry writes do not activate tasks. Numeric alias containment and rejecting
-//! malformed shield reloads intentionally repair the separately witnessed source
-//! gaps. These tests use no operational token or external resolver; listeners
-//! and request data are test-owned.
+//! Registry writes do not activate tasks. Request admission and rejected shield
+//! reloads protect the operator listener. These tests use no operational token
+//! or external resolver; listeners and request data are test-owned.
 
 use std::{
     io::ErrorKind,

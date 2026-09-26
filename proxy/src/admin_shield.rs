@@ -1,4 +1,4 @@
-//! Source admin-port containment, plus protection of the actual bound listener.
+//! Admin-port containment, including the actual bound listener.
 //!
 //! The textual rule preserves AdminShield._is_local and its extra-port grammar.
 //! The separate endpoint check closes proven alias access to this process's
@@ -62,10 +62,9 @@ pub struct AdminShield {
 
 impl AdminShield {
     /// Parse the source option once for an accepted configuration snapshot.
-    /// Source hooks parse on each call; malformed digit-only entries raise
-    /// there, and the source addon dispatcher swallows those errors and opens
-    /// the connection. Rejecting that candidate here deliberately repairs the
-    /// witnessed failure; it is a different failure boundary from the source.
+    /// Source hooks parse on each call and keep the configured port protected
+    /// if an extra entry is invalid. Native rejects that candidate before it
+    /// can replace the current snapshot.
     pub fn new(admin_port: u16, extra_ports: &str) -> Result<Self, ConfigError> {
         let mut ports = BTreeSet::from([admin_port]);
         for token in extra_ports.split(',') {
@@ -105,7 +104,7 @@ impl AdminShield {
     /// earlier check covers only the historical IPv4 numeric grammar that the
     /// system resolver accepts, so credential admission cannot win before the
     /// bound-port shield for an equivalent local authority.
-    pub(crate) fn blocks_request_destination(&self, host: &str, port: u16) -> bool {
+    pub fn blocks_request_destination(&self, host: &str, port: u16) -> bool {
         self.blocks_host(host, port)
             || self.protects_port(port)
                 && numeric_address(host).is_some_and(is_protected_local_address)
@@ -137,6 +136,9 @@ impl AdminShield {
 fn is_local(host: &str) -> bool {
     // Python lower() cannot turn other Unicode scalars into any of the ASCII
     // letters in "localhost". Prefix scalars do not affect its ASCII suffix.
+    // One DNS root dot is the same local name, including under a parent route
+    // where this process does not resolve the origin itself.
+    let host = host.strip_suffix('.').unwrap_or(host);
     ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
         .iter()
         .any(|local| host.eq_ignore_ascii_case(local))
@@ -304,6 +306,16 @@ mod tests {
             assert!(!shield.blocks_request_destination(host, 43123));
         }
         assert!(!shield.blocks_request_destination("127.1", 43124));
+    }
+
+    #[test]
+    fn root_dot_local_names_are_claimed_before_parent_egress() {
+        let shield = AdminShield::new(43123, "").unwrap();
+        for host in ["localhost.", "LOCALHOST.", "admin.localhost.", "127.0.0.1."] {
+            assert!(shield.blocks_request_destination(host, 43123));
+        }
+        assert!(!shield.blocks_request_destination("127.0.0.2.", 43123));
+        assert!(!shield.blocks_request_destination("localhost..", 43123));
     }
 
     #[test]

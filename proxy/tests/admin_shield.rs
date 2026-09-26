@@ -21,9 +21,15 @@ fn compare_row(row: &Value) {
         );
         return;
     }
-    let blocked = shield
-        .unwrap()
-        .blocks_host(row["host"].as_str().unwrap(), port(&row["port"]));
+    let Ok(shield) = shield else {
+        // Source hooks now retain the configured admin-port check if an extra
+        // entry cannot be parsed. Native rejects that configuration earlier.
+        assert_eq!(row["host"], "localhost");
+        assert_eq!(row["blocked"], row["port"] == row["admin_port"]);
+        return;
+    };
+    let blocked =
+        shield.blocks_request_destination(row["host"].as_str().unwrap(), port(&row["port"]));
     assert_eq!(blocked, row["blocked"].as_bool().unwrap());
     if blocked {
         assert_eq!(row["response"]["status"], REJECTION.status);
@@ -63,7 +69,7 @@ fn compare_rows(source: &Value) {
     let shield = AdminShield::new(9090, "").unwrap();
     for row in source["server_hooks"].as_array().unwrap() {
         let blocked = row["address"].as_array().is_some_and(|address| {
-            shield.blocks_host(address[0].as_str().unwrap(), port(&address[1]))
+            shield.blocks_request_destination(address[0].as_str().unwrap(), port(&address[1]))
         });
         assert_eq!(
             row["error"],
@@ -134,7 +140,7 @@ fn bound_endpoint_check_covers_only_the_actual_listener() {
 }
 
 #[test]
-fn resolved_check_repairs_source_alias_and_port_bookkeeping_witnesses() {
+fn resolved_check_retains_dns_alias_protection_and_bound_port_witnesses() {
     let source = fixture();
     let transport = &source["transport"];
     let bound = SocketAddr::new(
@@ -146,7 +152,7 @@ fn resolved_check_repairs_source_alias_and_port_bookkeeping_witnesses() {
     for row in transport["cases"].as_array().unwrap() {
         let host = row["host"].as_str().unwrap();
         assert_eq!(
-            shield.blocks_host(host, port(&row["port"])),
+            shield.blocks_request_destination(host, port(&row["port"])),
             row["ingress_blocked"].as_bool().unwrap()
         );
         if row["owned_accepts"] == 1 {
@@ -174,28 +180,32 @@ fn resolved_check_repairs_source_alias_and_port_bookkeeping_witnesses() {
             assert!(events.iter().any(|event| event == "ServerConnectedHook"));
         }
     }
-    assert_eq!(source_alias_reaches, 8);
+    assert_eq!(source_alias_reaches, 2);
     for label in [
         "changed_option_old_bound_port",
         "configured_zero_actual_ephemeral_port",
     ] {
         let row = &transport[label];
-        compare_row(row);
-        assert_eq!(row["blocked"], false);
+        assert_eq!(row["blocked"], true);
+        assert!(
+            AdminShield::new(bound.port(), "")
+                .unwrap()
+                .blocks_request_destination(row["host"].as_str().unwrap(), bound.port())
+        );
         assert!(targets_listener(bound, bound));
     }
 }
 
 #[test]
-fn malformed_extra_candidate_rejection_repairs_actual_dispatcher_fail_open() {
+fn malformed_extra_candidate_has_distinct_source_and_native_failure_boundaries() {
     let source: Value =
         serde_json::from_str(include_str!("admin_shield_failure_source.json")).unwrap();
     let cases = source["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 2);
     for row in cases {
-        assert_eq!(row["ingress_blocked"], false);
-        assert_eq!(row["owned_accepts"], 1);
-        assert!(row["server_error"].is_null());
+        assert_eq!(row["ingress_blocked"], true);
+        assert_eq!(row["owned_accepts"], 0);
+        assert_eq!(row["server_error"], REJECTION.transport_error);
         assert!(AdminShield::new(port(&row["port"]), row["extras"].as_str().unwrap()).is_err());
     }
 }

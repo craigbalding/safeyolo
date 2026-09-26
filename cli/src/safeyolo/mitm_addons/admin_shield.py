@@ -11,7 +11,9 @@ Usage:
     mitmdump -s addons/admin_shield.py --set admin_port=9090
 """
 
+import ipaddress
 import logging
+import socket
 
 from mitmproxy import ctx, http
 from mitmproxy.proxy.server_hooks import ServerConnectionHookData
@@ -41,12 +43,27 @@ class AdminShield:  # DOC: SECURITY.md
         """Get set of ports to block."""
         ports = {ctx.options.admin_port}
 
+        # Port 0 asks the OS to choose a port. A later option change can also
+        # leave the existing listener on its original port. Protect the actual
+        # bound listener in both cases, including after a server restart.
+        try:
+            admin_api = ctx.master.addons.get("admin-api")
+        except (AttributeError, KeyError):
+            admin_api = None
+        if admin_api is not None and admin_api.server is not None:
+            ports.add(admin_api.server.server_address[1])
+
         extra = ctx.options.shield_extra_ports.strip()
         if extra:
             for port_str in extra.split(","):
                 port_str = port_str.strip()
                 if port_str.isdigit():
-                    ports.add(int(port_str))
+                    try:
+                        ports.add(int(port_str))
+                    except ValueError:
+                        # An unrepresentable extra entry must not disable the
+                        # configured and currently bound admin-port checks.
+                        pass
 
         return ports
 
@@ -57,8 +74,23 @@ class AdminShield:  # DOC: SECURITY.md
     })
 
     def _is_local(self, host: str) -> bool:
-        """Check if host resolves to a local/container-internal address."""
-        return host.lower() in self._LOCAL_HOSTS or host.lower().endswith(".localhost")
+        """Recognize the protected listener's loopback address spellings."""
+        name = host.lower().removesuffix(".")
+        if name in self._LOCAL_HOSTS or name.endswith(".localhost"):
+            return True
+        try:
+            address = ipaddress.ip_address(name)
+        except ValueError:
+            try:
+                # inet_aton accepts historical IPv4 forms such as 127.1 and
+                # 2130706433 that can also connect to 127.0.0.1.
+                address = ipaddress.IPv4Address(socket.inet_aton(name))
+            except OSError:
+                return False
+        if isinstance(address, ipaddress.IPv6Address):
+            address = address.ipv4_mapped or address
+        return address in (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("0.0.0.0"),
+                           ipaddress.ip_address("::1"))
 
     def http_connect(self, flow: http.HTTPFlow):
         """Apply the reserved-port boundary before admitting a tunnel."""
