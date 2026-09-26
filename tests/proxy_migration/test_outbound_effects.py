@@ -14,14 +14,14 @@ from tests.proxy_migration.scenarios import POLICY, origin_server
 
 def _completed_connect_trace(path, proxy_pid):
     """Read after the traced proxy exits, including the tracer's final line."""
-    exit_line = re.compile(rf"^{proxy_pid} \+\+\+ (?:exited with|killed by)", re.MULTILINE)
+    exit_line = re.compile(rf"^{proxy_pid}[ \t]+\+\+\+ (?:exited with|killed by)", re.MULTILINE)
     deadline = time.monotonic() + 3
     while True:
         trace = path.read_text() if path.exists() else ""
         if exit_line.search(trace):
             return trace
         if time.monotonic() >= deadline:
-            raise AssertionError(f"Network trace did not complete for proxy pid {proxy_pid}")
+            raise AssertionError(f"Connect trace did not report exit for proxy pid {proxy_pid}")
         time.sleep(0.01)
 
 
@@ -34,6 +34,17 @@ def _ip_connect_addresses(trace):
         r"\bconnect\(-?\d+, \{sa_family=AF_INET6?\b([^}]*)\}", trace,
     )
     return addresses
+
+
+@pytest.mark.parametrize(("proxy_pid", "padding", "exit_status"), [
+    (6056, "  ", "exited with 0"),
+    (14057, " ", "killed by SIGTERM"),
+])
+def test_completed_connect_trace_accepts_padded_pid(tmp_path, proxy_pid, padding, exit_status):
+    trace_path = tmp_path / "connect.trace"
+    trace = f"{proxy_pid}{padding}+++ {exit_status} +++\n"
+    trace_path.write_text(trace)
+    assert _completed_connect_trace(trace_path, proxy_pid) == trace
 
 
 @pytest.mark.parametrize("api_enabled", [False, True], ids=["api-unavailable", "api-enabled"])
