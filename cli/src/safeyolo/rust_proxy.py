@@ -28,6 +28,7 @@ from .config import (
     get_native_config_path,
     get_policy_toml_path,
 )
+from .core.service_paths import resolve_service_directories
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
 from .traffic_session import (
@@ -157,6 +158,7 @@ def _default_native_config(config: dict) -> dict:
         raise ValueError("proxy configuration must be a mapping")
     data_dir = get_data_dir()
     logs_dir = get_logs_dir(create=True)
+    service_directories = resolve_service_directories(get_config_dir() / "services")
     cert_dir = get_config_dir() / "certs"
     proxy_module._ensure_certs(cert_dir)
     signing_ca = cert_dir / "mitmproxy-ca.pem"
@@ -177,17 +179,19 @@ def _default_native_config(config: dict) -> dict:
         "data_dir": str(data_dir),
         "policy_file": str(get_policy_toml_path()),
         "tls_ca_file": str(signing_ca),
+        "gateway_builtin_services_dir": str(service_directories.builtin),
+        "gateway_services_dir": str(service_directories.user),
         "network_guard_enabled": True,
         "network_guard_block": True,
         "network_guard_homoglyph": True,
         "credential_guard_block": True,
         "circuit_breaker_enabled": True,
-        "circuit_state_file": str(data_dir / "circuit.json"),
+        "circuit_state_file": str(data_dir / "circuit_breaker_state.json"),
         "agent_api_enabled": True,
         "test_context_block": True,
         "sse_streaming_enabled": True,
         "flow_store_enabled": True,
-        "flow_store_db_path": str(data_dir / "flows.sqlite3"),
+        "flow_store_db_path": str(logs_dir / "flows.sqlite3"),
         "admin_port": admin_port,
         "admin_api_token_file": str(data_dir / "admin_token"),
         "readiness_file": str(data_dir / "proxy-readiness.json"),

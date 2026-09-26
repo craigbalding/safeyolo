@@ -232,6 +232,13 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
     assert native["data_dir"] == str(config_dir / "data")
     assert native["admin_api_token_file"] == str(config_dir / "data" / "admin_token")
     assert native["tls_ca_file"] == str(config_dir / "certs" / "mitmproxy-ca.pem")
+    assert native["gateway_builtin_services_dir"] == str(
+        rust_proxy.resolve_service_directories(config_dir / "services").builtin
+    )
+    assert native["gateway_services_dir"] == str(config_dir / "services")
+    # The installed Python backend uses these paths for the same instance.
+    assert native["circuit_state_file"] == str(config_dir / "data" / "circuit_breaker_state.json")
+    assert native["flow_store_db_path"] == str(logs_dir / "flows.sqlite3")
     assert native["event_log"] == str(logs_dir / "native-events.jsonl")
     assert native_path.stat().st_mode & 0o777 == 0o600
 
