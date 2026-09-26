@@ -1647,20 +1647,24 @@ This does not claim mTLS/client-certificate, OCSP/CRL, TLS 1.3, cipher-matrix
 or renegotiation coverage; the separate TLS 1.2/cipher control records that
 single supported negotiation path.
 
-The shared upstream-trust control also routes `allowed.invalid:443` through a
-loopback parent to a separate physical TLS origin. Both backends send the logical
-name in upstream SNI and accept a leaf whose only DNS name is that logical name
-when its private CA is configured. The same live origin is rejected when the
-extra CA is absent. Trusted wrong-name, untrusted same-name, and not-yet-valid
-same-name origins are contacted but receive no HTTP request. Direct controls
-confirm that the wrong-name and untrusted origins work with their appropriate
-names and trust roots; a pinned-certificate direct call confirms the future
-origin is live. In every proxy case the client verifies the interception CA,
-so a client trust failure cannot be confused with an upstream 502. A disposable
+The shared upstream-trust control routes `allowed.invalid:443` through a
+loopback parent to a separate physical TLS origin. The origin serves a leaf
+signed by an intermediate CA, which is signed by a private root CA. The
+configured additional-CA file contains only that root. Both backends send the
+logical name in upstream SNI and accept the chain when the leaf names only that
+logical host. The same live origin is rejected when the extra CA is absent.
+Trusted wrong-name, untrusted-chain, and not-yet-valid leaves are contacted but
+receive no HTTP request or synthetic credential. The origin records connection,
+SNI, TLS handshake outcome, and HTTP request observations separately. Direct
+controls confirm that the wrong-name and untrusted origins work with their
+appropriate names and trust roots. A pinned-certificate direct call confirms
+the future origin is live. A direct call to the physical address fails name
+verification. In every proxy case the client verifies the interception CA, so
+a client trust failure cannot be confused with an upstream 502. A disposable
 Python-generated CA serves a Python proxy, a Rust proxy, and a restarted Rust
 proxy without any of its six CA files changing; the same CA-trusting client
-completes HTTPS through each process. This does not extend the separate
-chain-shape or configured passthrough matrix.
+completes HTTPS through each process. Other chain shapes and the configured
+passthrough matrix remain separate.
 
 The shared [TLS passthrough control](../tests/proxy_migration/test_tunnel_contract.py)
 starts real Python and Rust proxy processes with one configured exact
