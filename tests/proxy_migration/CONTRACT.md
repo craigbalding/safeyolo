@@ -142,6 +142,10 @@ The shared assertions cover:
   restores the limited host. The bounded sequence stays clear of the generic
   cell rate algorithm (GCRA) refill boundary. `network:connect` counters remain
   a separate case.
+- A separate shared case exhausts 20 requests per minute at both global and
+  per-host scope. Without an operator reset, the next request succeeds after
+  the GCRA emission interval. The parent records no request for the denial and
+  records the recovered request.
 - A configured circuit opens after two complete 500 responses from an owned
   parent. While it is open, later requests for that host return local 503
   without another parent connection. A different permitted host remains usable.
