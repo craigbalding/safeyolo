@@ -33,6 +33,7 @@ class CircuitParent(ThreadingHTTPServer):
     def __init__(self):
         self.accepts = 0
         self.requests = []
+        self.request_heads = []
         self.failing = True
         super().__init__(("127.0.0.1", 0), CircuitParentHandler)
 
@@ -53,6 +54,7 @@ class CircuitParentHandler(BaseHTTPRequestHandler):
         assert host in {FAILING_HOST, HEALTHY_HOST}, self.path
         status = 500 if host == FAILING_HOST and self.server.failing else 200
         body = b"failed" if status == 500 else b"ready"
+        self.server.request_heads.append(self.raw_requestline + self.headers.as_bytes())
         self.server.requests.append({"target": self.path, "host": host, "status": status})
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
@@ -97,13 +99,20 @@ def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_b
         ) as proxy:
             def hit(agent, host, path, expected, *, forwarded):
                 target = f"http://{host}/{path}"
-                before = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
-                status, headers, body = send_request(proxy.paths[agent], target)
-                after = (parent.accepts, len(parent.requests), len(proxy.events("proxy.egress")))
+                before = (parent.accepts, len(parent.requests), len(parent.request_heads),
+                          len(proxy.events("proxy.egress")))
+                status, headers, body = send_request(
+                    proxy.paths[agent], target,
+                    headers={"X-Fixture-Canary": "circuit-failure-recovery"},
+                )
+                after = (parent.accepts, len(parent.requests), len(parent.request_heads),
+                         len(proxy.events("proxy.egress")))
                 assert status == expected, (target, status, body)
                 assert after == tuple(value + int(forwarded) for value in before)
                 if forwarded:
                     assert parent.requests[-1] == {"target": target, "host": host, "status": expected}
+                    assert parent.request_heads[-1].startswith(f"GET {target} HTTP/1.1\r\n".encode())
+                    assert b"X-Fixture-Canary: circuit-failure-recovery\n" in parent.request_heads[-1]
                     assert body == (b"failed" if expected == 500 else b"ready")
                 else:
                     normalized = {key.lower(): value for key, value in headers.items()}
@@ -147,7 +156,8 @@ def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_b
             assert recovered["domains"][FAILING_HOST]["state"] == "closed"
             assert recovered["domains"][FAILING_HOST]["failure_count"] == 0
             assert recovered["half_opens_total"] == recovered["recoveries_total"] == 1
-            assert parent.accepts == len(parent.requests) == len(proxy.events("proxy.egress")) == 6
+            assert (parent.accepts == len(parent.requests) == len(parent.request_heads)
+                    == len(proxy.events("proxy.egress")) == 6)
             egress = proxy.events("proxy.egress")
             if proxy_backend == "rust":
                 assert all(row["route"] == "parent" and row["host"] in {FAILING_HOST, HEALTHY_HOST}
@@ -177,10 +187,3 @@ def test_parent_failure_opens_only_its_host_and_half_open_probe_recovers(proxy_b
                 observations[3]["request_id"], observations[5]["request_id"],
             ]
             assert audits[-1][1]["request_id"] == observations[6]["request_id"]
-            (directory / "circuit-failure-recovery.json").write_text(json.dumps({
-                "parent_url": parent_url, "policy": POLICY, "observations": observations,
-                "parent_accepts": parent.accepts, "parent_requests": parent.requests,
-                "opened": opened, "half_open": half_open, "recovered": recovered,
-                "requests": requests, "egress": egress,
-                "audits": audits,
-            }, indent=2) + "\n")

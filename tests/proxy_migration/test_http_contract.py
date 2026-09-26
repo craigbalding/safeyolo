@@ -4,9 +4,12 @@ import concurrent.futures
 import http.client
 import json
 import socket
+import socketserver
 import ssl
 import threading
 import time
+from contextlib import contextmanager
+from urllib.parse import urlsplit
 
 import pytest
 from mitmproxy.certs import CertStore
@@ -378,86 +381,179 @@ def test_reserved_audit_wait_rejects_absent_or_wrong_rows(
         )
 
 
+class ViaRelay(socketserver.ThreadingTCPServer):
+    """Record an HTTP parent request, then deliver it to an owned proxy socket."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self):
+        self.accepts = 0
+        self.request_heads = []
+        self.response_statuses = []
+        self.paths = {}
+        self.errors = []
+        super().__init__(("127.0.0.1", 0), ViaRelayHandler)
+
+    def get_request(self):
+        accepted = super().get_request()
+        self.accepts += 1
+        return accepted
+
+
+class ViaRelayHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.settimeout(5)
+            head = bytearray()
+            while not head.endswith(b"\r\n\r\n"):
+                chunk = self.request.recv(1)
+                assert chunk and len(head) < 65536, "incomplete parent request head"
+                head.extend(chunk)
+            head = bytes(head)
+            self.server.request_heads.append(head)
+            target = head.split(b"\r\n", 1)[0].split(b" ", 2)[1].decode("ascii")
+            route = "loop" if urlsplit(target).path == "/loop" else "peer"
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as downstream:
+                downstream.settimeout(5)
+                downstream.connect(self.server.paths[route])
+                downstream.sendall(head)
+                response = http.client.HTTPResponse(downstream)
+                response.begin()
+                body = response.read()
+                self.server.response_statuses.append(response.status)
+                headers = [(name, value) for name, value in response.getheaders()
+                           if name.lower() not in {"connection", "content-length", "transfer-encoding"}]
+                status_line = f"HTTP/1.1 {response.status} {response.reason}\r\n"
+                header_lines = "".join(f"{name}: {value}\r\n" for name, value in headers)
+                self.request.sendall((status_line + header_lines +
+                                      f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n").encode()
+                                     + body)
+        except Exception as error:
+            self.server.errors.append(error)
+
+
+@contextmanager
+def via_relay():
+    relay = ViaRelay()
+    thread = threading.Thread(target=relay.serve_forever)
+    thread.start()
+    try:
+        yield relay
+    finally:
+        relay.shutdown()
+        relay.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "owned Via relay did not stop"
+        if relay.errors:
+            raise relay.errors[0]
+
+
 def test_via_self_loop_stays_local_and_distinct_instance_reaches_parent(proxy_backend, tmp_path):
-    """A received Via pseudonym names this instance only when it matches exactly."""
-    directory = tmp_path / proxy_backend
+    """A forwarded request loops into one real instance and crosses another."""
     own_token = "fixture-via-instance"
     other_token = own_token + "-peer"
     policy = 'budget = 12000\n[hosts]\n"*" = { egress = "allow" }\n'
     loop_target = "http://target.invalid:8123/loop?canary=fixture-via-canary"
     distinct_target = "http://target.invalid:8123/distinct?canary=fixture-via-canary"
     control_target = "http://control.invalid:8123/control"
-    with origin_server() as parent:
-        parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
-        with launch_proxy(proxy_backend, directory, policy, parent_proxy=parent_url,
-                          native_policy=True, via_token=own_token) as proxy:
-            results = []
-            for target, via, expected_status, expected_accepts in (
-                (loop_target, f"1.0 earlier-instance, 1.1 {own_token.upper()}", 508, 0),
-                (distinct_target, f"1.1 {other_token}", 200, 1),
-                (control_target, None, 200, 2),
-            ):
-                headers = {"X-Fixture-Canary": "fixture-via-canary"}
-                if via is not None:
-                    headers["Via"] = via
-                status, response_headers, body = request(
-                    proxy.paths["alice"], target, headers=headers,
-                )
-                response_headers = {key.lower(): value for key, value in response_headers.items()}
-                identifier = response_headers.get("x-safeyolo-request-id")
-                assert identifier and identifier.startswith("req-")
-                assert status == expected_status, (status, body, parent.accepts, parent.requests)
-                assert parent.accepts == expected_accepts
-                assert len(parent.requests) == expected_accepts
-                assert len(proxy.events("proxy.egress")) == expected_accepts
-                if expected_status == 508:
-                    assert response_headers["x-blocked-by"] == "loop-guard"
-                    assert b"proxy loop" in body.lower()
-                else:
-                    assert body == b"hello"
-                results.append({"target": target, "via": via, "status": status,
-                                "request_id": identifier})
+    with origin_server(capture_heads=True) as origin, via_relay() as relay:
+        origin_url = f"http://127.0.0.1:{origin.server_address[1]}"
+        relay_url = f"http://127.0.0.1:{relay.server_address[1]}"
+        with launch_proxy(proxy_backend, tmp_path / "peer", policy, parent_proxy=origin_url,
+                          native_policy=True, via_token=other_token) as peer:
+            with launch_proxy(proxy_backend, tmp_path / "first", policy, parent_proxy=relay_url,
+                              native_policy=True, via_token=own_token) as first:
+                relay.paths = {"loop": first.paths["alice"], "peer": peer.paths["alice"]}
+                client_ids = []
+                for target, status, relay_accepts, origin_accepts in (
+                    (loop_target, 508, 1, 0),
+                    (distinct_target, 200, 2, 1),
+                    (control_target, 200, 3, 2),
+                ):
+                    actual, headers, body = request(first.paths["alice"], target,
+                                                    headers={"X-Fixture-Canary": "fixture-via-canary"})
+                    assert actual == status, (target, actual, body)
+                    assert relay.accepts == len(relay.request_heads) == relay_accepts
+                    assert origin.accepts == len(origin.requests) == origin_accepts
+                    assert len(first.events("proxy.egress")) == relay_accepts
+                    assert len(peer.events("proxy.egress")) == origin_accepts
+                    identifier = {key.lower(): value for key, value in headers.items()}[
+                        "x-safeyolo-request-id"]
+                    assert identifier.startswith("req-")
+                    client_ids.append(identifier)
+                    if status == 508:
+                        assert b"proxy loop" in body.lower()
+                        assert relay.response_statuses == [508]
+                    else:
+                        assert body == b"hello"
 
-            events = proxy.events("proxy.request")
-            assert len(events) == 3
-            for result, event in zip(results, events, strict=True):
-                assert event["request_id"] == result["request_id"]
-                assert event["agent"] == "alice"
-                assert (event["host"], event["port"], event["status"]) == (
-                    "control.invalid" if result["target"] == control_target else "target.invalid",
-                    8123, result["status"],
+                assert relay.response_statuses == [508, 200, 200]
+                assert [head.split(b"\r\n", 1)[0] for head in relay.request_heads] == [
+                    f"GET {target} HTTP/1.1".encode()
+                    for target in (loop_target, distinct_target, control_target)
+                ]
+                assert all(b"X-Fixture-Canary: fixture-via-canary\r\n" in head
+                           for head in relay.request_heads)
+                assert all(f"1.1 {own_token}".encode() in head for head in relay.request_heads)
+                assert all(f"1.1 {other_token}".encode() not in head for head in relay.request_heads)
+                assert [item["target"] for item in origin.requests] == [
+                    distinct_target, control_target,
+                ]
+                assert origin.canary_headers == ["fixture-via-canary"] * 2
+                assert all(f"1.1 {own_token}" in ", ".join(headers)
+                           and f"1.1 {other_token}" in ", ".join(headers)
+                           for headers in origin.via_headers)
+                assert all(b"fixture-via-canary" in head for head in origin.request_heads)
+                assert len(set(client_ids)) == 3
+                first_requests = first.events("proxy.request")
+                assert len(first_requests) == 4
+                by_id = {row["request_id"]: row for row in first_requests}
+                assert len(by_id) == 4
+                assert [(by_id[identifier]["status"], by_id[identifier]["decision"])
+                        for identifier in client_ids] == [(508, "allow"), (200, "allow"), (200, "allow")]
+                blocked = next(row for row in first_requests if row["request_id"] not in client_ids)
+                assert (blocked["status"], blocked["decision"], blocked["agent"],
+                        blocked["host"], blocked["port"]) == (
+                    508, "deny", "alice", "target.invalid", 8123,
                 )
-            assert [event["decision"] for event in events] == ["deny", "allow", "allow"]
-            assert len({result["request_id"] for result in results}) == 3
-            assert [item["target"] for item in parent.requests] == [
-                distinct_target, control_target,
-            ]
-            assert parent.canary_headers == ["fixture-via-canary"] * 2
-            assert len(parent.via_headers) == 2
-            forwarded_via = ", ".join(parent.via_headers[0]).lower()
-            assert f"1.1 {other_token}" in forwarded_via
-            assert f"1.1 {own_token}" in forwarded_via
-            assert f"1.1 {own_token}" in ", ".join(parent.via_headers[1]).lower()
-            audit = read_events(directory / "audit.jsonl")
-            loop_audit = [row for row in audit if row.get("request_id") == results[0]["request_id"]]
-            if proxy_backend == "python":
-                assert any(row["event"] == "security.loop_guard" and row["agent"] == "alice"
-                           and row["decision"] == "deny" for row in loop_audit)
-            else:
-                assert any(row["event"] == "traffic.response" and row["agent"] == "alice"
-                           and row["details"]["blocked_by"] == "loop-guard"
-                           and row["details"]["block_reason"] == "proxy_loop"
-                           for row in loop_audit)
-            (directory / "via-loop-observation.json").write_text(json.dumps({
-                "requests": results,
-                "parent_accepts": parent.accepts,
-                "parent_requests": parent.requests,
-                "parent_via_headers": parent.via_headers,
-                "parent_canary_headers": parent.canary_headers,
-                "proxy_requests": events,
-                "proxy_egress": proxy.events("proxy.egress"),
-                "loop_audit": loop_audit,
-            }, indent=2) + "\n")
+                peer_requests = peer.events("proxy.request")
+                assert [(row["host"], row["status"], row["decision"], row["agent"])
+                        for row in peer_requests] == [
+                    ("target.invalid", 200, "allow", "alice"),
+                    ("control.invalid", 200, "allow", "alice"),
+                ]
+                audit = read_events((tmp_path / "first") / "audit.jsonl")
+                if proxy_backend == "python":
+                    assert any(row["event"] == "security.loop_guard" and row["agent"] == "alice"
+                               and row["decision"] == "deny"
+                               and row["request_id"] == blocked["request_id"] for row in audit)
+                else:
+                    assert any(row["event"] == "traffic.response" and row["agent"] == "alice"
+                               and row["details"].get("blocked_by") == "loop-guard"
+                               and row["details"].get("block_reason") == "proxy_loop"
+                               and row["request_id"] == blocked["request_id"]
+                               for row in audit)
+
+                # Preserve the received-by spelling controls alongside the routed loop.
+                case_status, case_headers, _ = request(
+                    first.paths["alice"], "http://control.invalid:8123/case",
+                    headers={"Via": f"1.0 earlier-instance, 1.1 {own_token.upper()}"},
+                )
+                assert case_status == 508
+                assert {key.lower(): value for key, value in case_headers.items()}[
+                    "x-blocked-by"] == "loop-guard"
+                assert relay.accepts == 3 and origin.accepts == 2
+                near_token = own_token + "-near"
+                near_status, _, near_body = request(
+                    first.paths["alice"], "http://control.invalid:8123/near",
+                    headers={"Via": f"1.1 {near_token}"},
+                )
+                assert near_status == 200 and near_body == b"hello"
+                assert relay.accepts == 4 and origin.accepts == 3
+                assert origin.requests[-1]["target"] == "http://control.invalid:8123/near"
+                assert all(f"1.1 {token}" in ", ".join(origin.via_headers[-1])
+                           for token in (near_token, own_token, other_token))
 
 
 def test_streamed_response_delivers_before_release_and_keeps_control_live(proxy_backend, tmp_path):
