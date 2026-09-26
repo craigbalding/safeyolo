@@ -329,6 +329,7 @@ class TestNetworkEscape:
             ["curl", "-s", "--proxy", proxy,
              "-H", "Host: evil.com",
              "-H", f"X-Probe-Marker: {marker}",
+             "-H", "X-SafeYolo-Test-Context: run=isolation;agent=bbtest",
              "-o", "/dev/null", "-w", "%{http_code}",
              "--max-time", "5",
              f"http://httpbin.org/get?marker={marker}"],

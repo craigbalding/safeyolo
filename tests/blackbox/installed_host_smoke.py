@@ -174,6 +174,7 @@ def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
         package = _run(
             [
                 str(interpreter),
+                "-I",
                 "-c",
                 "import safeyolo; print(safeyolo.__file__ or '')",
             ],
@@ -193,6 +194,16 @@ def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
     else:
         raise SmokeError("selected CLI launcher has no usable Python shebang interpreter")
     return result
+
+
+def _installed_rust_binary(cli_path: str | os.PathLike[str]) -> tuple[Path, dict[str, Any]]:
+    """Select the native binary beside the package loaded by the installed CLI."""
+    cli = _cli_identity(cli_path)
+    package_file = Path(cli["package_location"])
+    if package_file.name != "__init__.py" or package_file.parent.name != "safeyolo":
+        raise SmokeError("installed CLI did not load the safeyolo package")
+    binary, _ = _rust_identity(package_file.parent / "bin" / "safeyolo-proxy")
+    return binary, cli
 
 
 def _rust_identity(value: str | os.PathLike[str] | None) -> tuple[Path, dict[str, Any]]:
@@ -679,6 +690,7 @@ def _runtime_observation(
     config_path: Path,
     working_directory: Path,
     require_running: bool,
+    require_authenticated_identity: bool = False,
 ) -> dict[str, Any]:
     """Inspect receipt, actual process, marker, and configured listeners."""
     receipt = _read_receipt(config_dir)
@@ -743,6 +755,11 @@ def _runtime_observation(
         )
     if listeners and not all(item["accepting"] for item in listeners):
         raise SmokeError("one or more configured Rust listeners are not accepting")
+    identity = (
+        _authenticated_runtime_identity(native, marker, pid, recorded_token)
+        if require_authenticated_identity
+        else {"status": "not_checked"}
+    )
     return {
         "status": "ready",
         "pid": pid,
@@ -750,11 +767,54 @@ def _runtime_observation(
         "receipt": receipt,
         "readiness": marker,
         "listeners": listeners,
-        "authenticated_runtime_identity": {
-            "status": "unavailable",
-            "reason": "native admin runtime-identity endpoint is not implemented",
-        },
+        "authenticated_runtime_identity": identity,
     }
+
+
+def _authenticated_runtime_identity(
+    native: dict[str, Any], marker: dict[str, Any], pid: int, recorded_token: str
+) -> dict[str, Any]:
+    """Bind the authenticated operator identity to the observed native process."""
+    port = marker.get("admin_port")
+    token_file = native["raw"].get("admin_api_token_file")
+    if type(port) is not int or not 1 <= port <= 65535 or not isinstance(token_file, str):
+        raise SmokeError("native runtime identity needs an admin listener and token file")
+    try:
+        token = Path(token_file).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise SmokeError("native admin token file is unavailable") from exc
+    if not token or "\r" in token or "\n" in token:
+        raise SmokeError("native admin token file is invalid")
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        try:
+            connection.request(
+                "GET", "/admin/runtime-identity",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response = connection.getresponse()
+            status = response.status
+            body = response.read(JSON_LIMIT + 1)
+        finally:
+            connection.close()
+    except (OSError, http.client.HTTPException) as exc:
+        raise SmokeError("authenticated native runtime identity request failed") from exc
+    if status != 200 or len(body) > JSON_LIMIT:
+        raise SmokeError(f"authenticated native runtime identity returned HTTP {status} or an oversized body")
+    try:
+        value = json.loads(body)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise SmokeError("authenticated native runtime identity returned invalid JSON") from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("schema_version") != 1
+        or value.get("state") != "active"
+        or value.get("instance_id") != marker["instance_id"]
+    ):
+        raise SmokeError("authenticated native runtime identity disagrees with process readiness")
+    if _process_start_token(pid) != recorded_token:
+        raise SmokeError("native process identity changed during authenticated inspection")
+    return {"status": "authenticated", "instance_id": value["instance_id"], "schema_version": 1}
 
 
 def _agent_map(config_dir: Path) -> list[dict[str, Any]]:
@@ -906,7 +966,6 @@ def _base_report(cli: dict[str, Any], candidate: dict[str, Any], substrate: dict
         "limitations": [
             "No guest was booted by this probe.",
             "Host-driven UDS health is not guest-isolation acceptance.",
-            "Native authenticated runtime-identity endpoint is unavailable in the current development slice.",
             "Allowed/denied origin requests and cross-guest socket access remain stage-B work.",
         ],
     }
@@ -965,6 +1024,7 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
             config_path=native_path,
             working_directory=cwd,
             require_running=require_running,
+            require_authenticated_identity=args.mode == "attached",
         )
         report["guest_ingress"] = {
             "agents": _agent_map(config_dir),
@@ -982,7 +1042,7 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
         report["status"] = "infrastructure_failure"
         report["error"] = str(exc)
         return report, 2
-    report["status"] = "discovered" if not require_running else "smoke_ready_with_gaps"
+    report["status"] = "discovered" if not require_running else "attached_ready"
     return report, 0
 
 
@@ -1329,7 +1389,7 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 def main(argv: list[str] | None = None) -> int:
     """Run the selected discovery or disposable lifecycle smoke."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("discover", "smoke"), default="discover")
+    parser.add_argument("--mode", choices=("discover", "attached", "smoke"), default="discover")
     parser.add_argument("--cli", help="installed safeyolo executable (defaults to SAFEYOLO_CLI/PATH)")
     parser.add_argument("--rust-bin", help="supplied safeyolo-proxy executable")
     parser.add_argument("--rust-config", required=True, help="native proxy JSON selected by proxy.rust_config")
@@ -1347,7 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.mode == "smoke":
             report, code = _smoke(args)
         else:
-            report, code = _discover(args, require_running=False)
+            report, code = _discover(args, require_running=args.mode == "attached")
     except SmokeError as exc:
         report = {
             "schema": SCHEMA,

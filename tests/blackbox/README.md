@@ -27,10 +27,10 @@ suite.
 
 ## Runtime lanes
 
-The same suite runs against all three production isolation mechanisms. Blackbox
-tests are intentionally not triggered for every pull request. The
-GitHub-hosted `systrap` lane is the only scheduled lane: its nightly run
-coalesces changes on `master`, also supports trusted manual dispatch, and
+The guest isolation and lifecycle suite runs against all three production
+isolation mechanisms. Blackbox tests are intentionally not triggered for every
+pull request. The GitHub-hosted `systrap` lane is the only scheduled lane: its
+nightly run coalesces changes on `master`, also supports trusted manual dispatch, and
 publishes a GitHub Actions artifact. KVM and VZ are manual/on-demand acceptance
 lanes for high-risk changes and releases.
 
@@ -178,7 +178,10 @@ acceptance coverage.
 
 ## Running a lane
 
-Run these from the repository root on the appropriate host:
+Run these from the repository root as the operator on a disposable supported
+host. The wrapper installs or reinstalls this checkout in the caller's `uv`
+tool environment, prepares guest artifacts, and creates an isolated test
+instance. Select the command for the host's actual guest mechanism:
 
 ```bash
 # GitHub/other Linux VM without KVM
@@ -197,6 +200,31 @@ Run these from the repository root on the appropriate host:
 `run-lane.sh` is idempotent on persistent hosts. It calls `install.sh`, uses the
 product bootstrap plan for prerequisites, and then delegates to
 `run-tests.sh`.
+
+For the installed native proxy on the same disposable host, add
+`--proxy-impl rust` to the platform command. For example, the Ubuntu systrap
+host runs:
+
+```bash
+./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
+```
+
+The native lane uses the Rust executable inside the installed CLI package.
+Its host selection is a focused ingress check; the retained Python lane runs
+the broader `host/proxy` tests.
+It verifies the live process, authenticated operator identity, and guest
+listener before host and guest tests run. A missing package binary or a
+different running process stops the lane. The native host check sends an
+allowed request through the agent listener to the owned sinkhole, checks its
+captured marker, then checks a denied management request on that listener.
+The runner selects a local sinkhole parent for synthetic hosts and chains all
+other destinations through the test instance's configured parent, if present.
+It adds the owned test CA to the disposable instance's upstream trust, retains
+any configured CA, and restores the original route and trust after the run.
+The retained Python host proxy suite still uses its sinkhole
+router. The lane records its installed runtime in
+`tests/blackbox/artifacts/installed-rust-runtime.json`. An installed lane
+does not replace the separate finite consumer pilot for issue #637.
 
 ## Running an already-prepared checkout
 
@@ -270,10 +298,11 @@ unreadable launcher, those fields are null because the selector cannot identify
 the interpreter used by pytest.
 Missing binaries, failed readiness, or a failed selected backend are errors.
 `both` still starts the second backend after a first-run failure and returns a
-nonzero result if either run fails.  `--proxy-impl rust|both` is currently
-proxy-only; combining it with VM isolation is rejected so an isolation pass
-cannot be attributed to the wrong process.  The full `systrap`, `kvm`, and `vz`
-lanes remain available when the Python installation path is explicitly selected.
+nonzero result if either run fails. The `both` and source/binary overrides
+remain proxy-only comparison options. The full `systrap`, `kvm`, and `vz`
+lanes select one installed backend with `--proxy-impl python|rust`; Python is
+the prepared-host default. Rust VM runs reject a supplied `--rust-bin` and use
+the executable packaged with the selected installed CLI.
 
 The inexpensive runner self-tests cover invalid selectors, missing or wrong
 executables, readiness markers and stale listeners, independent second-backend
@@ -363,10 +392,10 @@ program, publishes a stale or mismatched readiness marker, serves a different
 process, or cannot stop cleanly. It never retries with Python. Host checks may
 complete with status partial_unexecuted and a nonzero exit: the UDS request is
 host-driven ingress evidence, not guest-isolation evidence, and therefore
-cannot signal Acceptance-A. The report records the current native
-runtime-identity endpoint as unavailable, and it leaves allowed/denied origin
-requests, cross-guest socket access, and unsupported hardware explicitly for
-the retained stage-B pilot.
+cannot signal Acceptance-A. The read-only `attached` mode also checks the
+authenticated operator runtime identity against the process-bound readiness
+marker. The report leaves guest origin requests, cross-guest socket access,
+and unsupported hardware explicitly for the retained pilot.
 
 ## Adding Tests
 

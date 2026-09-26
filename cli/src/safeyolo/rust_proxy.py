@@ -22,6 +22,7 @@ from .config import (
     DEFAULT_NATIVE_CONFIG,
     get_agent_map_path,
     get_bridge_sockets_dir,
+    get_config_dir,
     get_data_dir,
     get_logs_dir,
     get_native_config_path,
@@ -147,15 +148,24 @@ def _path(value: object, field: str) -> Path:
 
 def _default_native_config(config: dict) -> dict:
     """Build the release native config from the existing CLI instance paths."""
-    proxy = config.get("proxy", {})
-    if not isinstance(proxy, dict):
+    # The Python and native backends must use the same persistent signing CA.
+    # Import here because proxy.py imports this module for backend dispatch.
+    from . import proxy as proxy_module
+
+    proxy_options = config.get("proxy", {})
+    if not isinstance(proxy_options, dict):
         raise ValueError("proxy configuration must be a mapping")
     data_dir = get_data_dir()
     logs_dir = get_logs_dir(create=True)
-    admin_port = proxy.get("admin_port", 9090)
+    cert_dir = get_config_dir() / "certs"
+    proxy_module._ensure_certs(cert_dir)
+    signing_ca = cert_dir / "mitmproxy-ca.pem"
+    if not signing_ca.is_file():
+        raise RuntimeError(f"Native signing CA is unavailable: {signing_ca}")
+    admin_port = proxy_options.get("admin_port", 9090)
     if type(admin_port) is not int or not 0 <= admin_port <= 65535:
         raise ValueError("proxy.admin_port must be an integer from 0 to 65535")
-    ignore_hosts = proxy.get("ignore_hosts", [])
+    ignore_hosts = proxy_options.get("ignore_hosts", [])
     if not isinstance(ignore_hosts, list) or not all(isinstance(value, str) for value in ignore_hosts):
         raise ValueError("proxy.ignore_hosts must be a list of strings")
     plumb = config.get("plumb", {})
@@ -166,6 +176,7 @@ def _default_native_config(config: dict) -> dict:
         "agent_map_file": str(get_agent_map_path()),
         "data_dir": str(data_dir),
         "policy_file": str(get_policy_toml_path()),
+        "tls_ca_file": str(signing_ca),
         "network_guard_enabled": True,
         "network_guard_block": True,
         "network_guard_homoglyph": True,
@@ -182,17 +193,16 @@ def _default_native_config(config: dict) -> dict:
         "readiness_file": str(data_dir / "proxy-readiness.json"),
         "audit_log_path": str(logs_dir / "safeyolo.jsonl"),
         "event_log": str(logs_dir / "native-events.jsonl"),
-        "parent_proxy": proxy.get("upstream_proxy") or None,
-        "upstream_ca_file": proxy.get("upstream_ca_cert") or None,
+        "parent_proxy": proxy_options.get("upstream_proxy") or None,
+        "upstream_ca_file": proxy_options.get("upstream_ca_cert") or None,
         "ignore_hosts": ignore_hosts,
-        "via_token": proxy.get("via_token") or None,
+        "via_token": proxy_options.get("via_token") or None,
         "plumb": plumb,
     }
 
 
 def _ensure_default_native_config(config: dict, path: Path) -> None:
     """Create the generated config without overwriting operator native settings."""
-    desired = _default_native_config(config)
     try:
         existing_source = path.read_text(encoding="utf-8")
         existing = json.loads(existing_source)
@@ -204,6 +214,7 @@ def _ensure_default_native_config(config: dict, path: Path) -> None:
         raise RuntimeError(f"Generated native configuration must be an object: {path}")
     if isinstance(existing, dict):
         return
+    desired = _default_native_config(config)
     _write_text(path, json.dumps(desired, indent=2, sort_keys=True) + "\n", mode=0o600)
 
 

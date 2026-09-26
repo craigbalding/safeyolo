@@ -215,6 +215,11 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
     binary.write_text("native")
     binary.chmod(0o700)
     monkeypatch.setattr(rust_proxy, "_binary", lambda: binary)
+    def ensure_certs(cert_dir):
+        cert_dir.mkdir(parents=True)
+        (cert_dir / "mitmproxy-ca.pem").write_text("existing signing CA")
+
+    monkeypatch.setattr(proxy, "_ensure_certs", ensure_certs)
 
     launch = rust_proxy.prepare(
         {"proxy": {"backend": "rust", "rust_config": safeyolo_config.DEFAULT_NATIVE_CONFIG}}
@@ -226,8 +231,22 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
     assert native["policy_file"] == str(config_dir / "policy.toml")
     assert native["data_dir"] == str(config_dir / "data")
     assert native["admin_api_token_file"] == str(config_dir / "data" / "admin_token")
+    assert native["tls_ca_file"] == str(config_dir / "certs" / "mitmproxy-ca.pem")
     assert native["event_log"] == str(logs_dir / "native-events.jsonl")
     assert native_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_existing_native_config_does_not_generate_or_replace_a_ca(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    native_path = safeyolo_config.get_native_config_path()
+    native_path.parent.mkdir(parents=True)
+    original = '{"listeners":[],"tls_ca_file":null}\n'
+    native_path.write_text(original)
+    monkeypatch.setattr(proxy, "_ensure_certs", lambda _path: pytest.fail("existing native config was changed"))
+
+    rust_proxy._ensure_default_native_config({"proxy": {}}, native_path)
+
+    assert native_path.read_text() == original
 
 
 @pytest.mark.parametrize(

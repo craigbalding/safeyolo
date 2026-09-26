@@ -18,6 +18,7 @@
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl python|rust|both
+#   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
 #   ./run-tests.sh --proxy -- --collect-only
@@ -172,13 +173,9 @@ for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]}"; do
     PYTEST_FORWARD_SHELL+=" $quoted_arg"
 done
 
-# The focused migration harness owns explicit backend runs.  It launches each
-# selected process in disposable state and already has the shared assertions,
-# independent origins, readiness ownership and cleanup checks.  Keep the
-# prepared-host Python route below as the compatibility default.  Isolation
-# acceptance cannot be attributed to Rust until the native backend is wired
-# into the real VM lifecycle, so refuse that combination rather than running
-# the Python backend under a Rust label.
+# The focused migration harness owns explicit proxy-only backend runs. It
+# launches a new process for each fixture. A VM lane below instead uses one
+# installed CLI process for both host and guest tests.
 if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
    { [ "$PROXY_IMPL_SELECTED" = true ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; }; then
     if ! command -v pytest &>/dev/null; then
@@ -280,9 +277,35 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
     exit 0
 fi
 
-if [ "$PROXY_IMPL" != "python" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; then
-    echo "ERROR: explicit Rust/backend selection requires --proxy; VM isolation is not yet a Rust acceptance lane" >&2
+if [ "$PROXY_IMPL" = "both" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; then
+    echo "ERROR: VM lanes select one installed backend; source and binary overrides require --proxy" >&2
     exit 2
+fi
+
+export SAFEYOLO_BLACKBOX_PROXY_BACKEND="$PROXY_IMPL"
+INSTALLED_CLI=""
+INSTALLED_RUST_BIN=""
+if [ "$PROXY_IMPL" = "rust" ]; then
+    INSTALLED_CLI="$(command -v safeyolo || true)"
+    if [ -z "$INSTALLED_CLI" ]; then
+        echo "ERROR: the installed safeyolo CLI is required for the native VM lane" >&2
+        exit 2
+    fi
+    if ! INSTALLED_RUST_BIN="$(python3 - "$SCRIPT_DIR" "$INSTALLED_CLI" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _installed_rust_binary
+
+binary, _ = _installed_rust_binary(sys.argv[2])
+print(binary)
+PY
+)"; then
+        echo "ERROR: the installed CLI has no usable packaged Rust proxy" >&2
+        exit 2
+    fi
+    # Exercise the installed CLI's package lookup on every start. The attached
+    # runtime observation below rejects any process other than this binary.
+    unset SAFEYOLO_RUST_PROXY || true
 fi
 
 echo "=== SafeYolo Blackbox Tests ==="
@@ -323,16 +346,18 @@ if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo ""
 fi
 
+# Restore a parent selected by an interrupted native run before reading or
+# changing this disposable instance's configuration.
+python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR"
+
 # Configure test-specific ports in config.yaml
 python3 -c "
 import yaml
 from pathlib import Path
 config_path = Path('$SAFEYOLO_CONFIG_DIR/config.yaml')
 config = yaml.safe_load(config_path.read_text())
-# The prepared-host and VM isolation lanes remain the retained Python
-# comparator path. Select it explicitly now that normal CLI initialization
-# defaults to the native Rust backend.
-config['proxy']['backend'] = 'python'
+# Keep the selected backend in the isolated instance across CLI restarts.
+config['proxy']['backend'] = '$PROXY_IMPL'
 config['proxy']['port'] = $TEST_PROXY_PORT
 config['proxy']['admin_port'] = $TEST_ADMIN_PORT
 config['proxy']['web_port'] = $TEST_WEB_PORT
@@ -351,9 +376,9 @@ from pathlib import Path
 addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
 addons = yaml.safe_load(addons_path.read_text())
 # target_hosts enables test_context to tag matching traffic with
-# test_context metadata → flow recorder captures it. Blocking is
-# disabled in test mode via proxy.py (test_context_block=false) so
-# host-side proxy tests without X-SafeYolo-Test-Context aren't 428'd.
+# test_context metadata so the flow recorder captures it. Python test mode
+# disables blocking for its host suite; native checks supply a valid context
+# header while retaining native test-context enforcement.
 addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
@@ -406,11 +431,16 @@ fi
 # --- Track what we started (only clean up our own) ---
 
 STARTED_SINKHOLE=false
+STARTED_PARENT=false
 STARTED_PROXY=false
 STARTED_VM=false
 SINKHOLE_PID=""
 SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"
 SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"
+PARENT_PID=""
+PARENT_PID_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.pid"
+PARENT_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.argv"
+PARENT_PORT_FILE="$SAFEYOLO_CONFIG_DIR/native-parent.port"
 HOST_LISTENER_PID=""
 
 canonical_path() {
@@ -554,6 +584,18 @@ cleanup() {
         safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
     fi
 
+    if [ "$STARTED_PROXY" = true ]; then
+        echo "Stopping test proxy..."
+        safeyolo stop 2>/dev/null || true
+    fi
+
+    if [ -n "$PARENT_PID" ] && [ "$STARTED_PARENT" = true ]; then
+        echo "Stopping native fixture parent (PID $PARENT_PID)..."
+        kill "$PARENT_PID" 2>/dev/null || true
+        wait "$PARENT_PID" 2>/dev/null || true
+        rm -f "$PARENT_PID_FILE" "$PARENT_ARGV_FILE" "$PARENT_PORT_FILE"
+    fi
+
     if [ -n "$SINKHOLE_PID" ] && [ "$STARTED_SINKHOLE" = true ]; then
         echo "Stopping sinkhole (PID $SINKHOLE_PID)..."
         kill "$SINKHOLE_PID" 2>/dev/null || true
@@ -568,9 +610,8 @@ cleanup() {
         wait "$HOST_LISTENER_PID" 2>/dev/null || true
     fi
 
-    if [ "$STARTED_PROXY" = true ]; then
-        echo "Stopping test proxy..."
-        safeyolo stop 2>/dev/null || true
+    if [ "$PROXY_IMPL" = "rust" ]; then
+        python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR"
     fi
 
     echo "Cleanup complete"
@@ -588,6 +629,8 @@ rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
 # command-path check prevent an unrelated process or another test instance
 # from being stopped.
 stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"
+stop_owned_pid_file "$PARENT_PID_FILE" "$SCRIPT_DIR/harness/sinkhole_parent.py" "$PARENT_ARGV_FILE"
+rm -f "$PARENT_PORT_FILE"
 safeyolo stop 2>/dev/null || true
 
 # --- Phase 1: Start infrastructure (idempotent) ---
@@ -639,14 +682,67 @@ else
     printf '%s\n%s\n' "$SINKHOLE_PID" "$SINKHOLE_START_ID" > "$SINKHOLE_PID_FILE"
 fi
 
+# The native proxy has no mitmproxy sinkhole addon. Give the installed process
+# an owned HTTP parent for synthetic hosts, while chaining all other requests
+# through the instance's previous parent when one was configured.
+if [ "$PROXY_IMPL" = "rust" ]; then
+    ORIGINAL_PARENT="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current "$SAFEYOLO_CONFIG_DIR")"
+    ORIGINAL_PARENT_CA="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current-ca "$SAFEYOLO_CONFIG_DIR")"
+    echo "Starting native fixture parent..."
+    PARENT_ARGS=(--port-file "$PARENT_PORT_FILE")
+    if [ -n "$ORIGINAL_PARENT" ]; then
+        PARENT_ARGS+=(--parent "$ORIGINAL_PARENT")
+    fi
+    if [ -n "$ORIGINAL_PARENT_CA" ]; then
+        PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
+    fi
+    python3 "$SCRIPT_DIR/harness/sinkhole_parent.py" "${PARENT_ARGS[@]}" &
+    PARENT_PID=$!
+    STARTED_PARENT=true
+    for i in $(seq 1 30); do
+        [ -s "$PARENT_PORT_FILE" ] && kill -0 "$PARENT_PID" 2>/dev/null && break
+        sleep 0.1
+    done
+    if [ ! -s "$PARENT_PORT_FILE" ] || ! kill -0 "$PARENT_PID" 2>/dev/null; then
+        echo "ERROR: native fixture parent did not start" >&2
+        exit 2
+    fi
+    if ! process_script_matches "$PARENT_PID" "$SCRIPT_DIR/harness/sinkhole_parent.py" || \
+       ! capture_process_argv "$PARENT_PID" "$PARENT_ARGV_FILE"; then
+        echo "ERROR: native fixture parent identity could not be recorded" >&2
+        exit 2
+    fi
+    PARENT_START_ID="$(process_start_identity "$PARENT_PID" 2>/dev/null || true)"
+    if [ -z "$PARENT_START_ID" ]; then
+        echo "ERROR: native fixture parent start identity could not be recorded" >&2
+        exit 2
+    fi
+    printf '%s\n%s\n' "$PARENT_PID" "$PARENT_START_ID" > "$PARENT_PID_FILE"
+    SELECTED_PARENT="http://127.0.0.1:$(cat "$PARENT_PORT_FILE")"
+    python3 "$SCRIPT_DIR/harness/native_parent_config.py" select "$SAFEYOLO_CONFIG_DIR" "$SELECTED_PARENT" \
+        --test-ca "$SAFEYOLO_TEST_CERT_DIR/ca.crt"
+    export SAFEYOLO_UPSTREAM_PROXY="$SELECTED_PARENT"
+fi
+
 # Proxy (test instance on separate ports)
 ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
-if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+if [ "$PROXY_IMPL" = "python" ] && \
+   curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
     echo "Test proxy already running"
 else
-    echo "Starting test proxy (port $TEST_PROXY_PORT, test mode)..."
-    safeyolo start --test --no-wait
+    echo "Starting installed $PROXY_IMPL test proxy (admin port $TEST_ADMIN_PORT)..."
     STARTED_PROXY=true
+    if [ "$PROXY_IMPL" = "rust" ]; then
+        if ! safeyolo start --no-wait; then
+            echo "ERROR: selected test proxy failed to start" >&2
+            exit 2
+        fi
+    else
+        if ! safeyolo start --test --no-wait; then
+            echo "ERROR: selected test proxy failed to start" >&2
+            exit 2
+        fi
+    fi
 
     for i in $(seq 1 30); do
         ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
@@ -655,13 +751,20 @@ else
         fi
         sleep 1
     done
+    if ! curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+        echo "ERROR: selected test proxy did not become healthy" >&2
+        exit 2
+    fi
     echo "  Test proxy ready"
 fi
 
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
     # Agent was cleaned at the top of the run; create fresh.
-    safeyolo agent add "$AGENT_NAME" "$REPO_ROOT" --no-run
+    if ! safeyolo agent add "$AGENT_NAME" "$REPO_ROOT" --no-run; then
+        echo "ERROR: test guest could not be provisioned" >&2
+        exit 2
+    fi
 
     # Start a host TCP listener on a random port. The in-VM
     # test_host_listener_unreachable probes this port to prove a
@@ -689,8 +792,11 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 
     echo "Booting test VM ($AGENT_NAME)..."
-    safeyolo agent run "$AGENT_NAME" --sandbox-only
     STARTED_VM=true
+    if ! safeyolo agent run "$AGENT_NAME" --sandbox-only; then
+        echo "ERROR: test guest could not be started" >&2
+        exit 2
+    fi
 
     echo "  Waiting for VM..."
     VM_READY=false
@@ -708,6 +814,19 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
+if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
+    ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
+    mkdir -p "$ARTIFACTS_DIR"
+    if ! python3 "$SCRIPT_DIR/installed_host_smoke.py" \
+        --mode attached --cli "$INSTALLED_CLI" --rust-bin "$INSTALLED_RUST_BIN" \
+        --rust-config "$SAFEYOLO_CONFIG_DIR/data/native.json" \
+        --config-dir "$SAFEYOLO_CONFIG_DIR" --working-directory "$SCRIPT_DIR" \
+        --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json"; then
+        echo "ERROR: installed Rust runtime identity was not verified" >&2
+        exit 2
+    fi
+fi
+
 echo ""
 
 # --- Phase 2: Run tests ---
@@ -719,14 +838,21 @@ ROOT_ISOLATION_RESULT=0
 FIREWALL_RESULT=0
 
 if [ "$RUN_PROXY" = true ]; then
-    echo "=== Proxy Functional Tests (host-side) ==="
+    if [ "$PROXY_IMPL" = "rust" ]; then
+        echo "=== Installed Native Host Ingress Check ==="
+    else
+        echo "=== Proxy Functional Tests (host-side) ==="
+    fi
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    # Directory-based invocation: any test file dropped into proxy/
-    # runs automatically. Avoids the silent-skip failure mode where a
-    # new test file was forgotten from a filename allowlist.
-    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 proxy/
+    # Keep the retained Python host suite and installed native host checks
+    # tied to their selected runtime. Each directory runs in full.
+    if [ "$PROXY_IMPL" = "rust" ]; then
+        pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 native/
+    else
+        pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 proxy/
+    fi
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
@@ -793,10 +919,15 @@ fi
 
 echo "=== Test Summary ==="
 if [ "$RUN_PROXY" = true ]; then
-    if [ "$PROXY_RESULT" = "0" ]; then
-        echo "Proxy tests:     PASSED"
+    if [ "$PROXY_IMPL" = "rust" ]; then
+        PROXY_LABEL="Native host check"
     else
-        echo "Proxy tests:     FAILED (exit code: $PROXY_RESULT)"
+        PROXY_LABEL="Proxy tests"
+    fi
+    if [ "$PROXY_RESULT" = "0" ]; then
+        echo "$PROXY_LABEL: PASSED"
+    else
+        echo "$PROXY_LABEL: FAILED (exit code: $PROXY_RESULT)"
     fi
 fi
 
