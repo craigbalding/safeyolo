@@ -34,8 +34,10 @@ The shared assertions cover:
   conflicts, omitted and explicit HTTP port 80, and a directly reached
   permitted loopback endpoint. In the parent-route case, the owned parent
   records only expected allowed authorities. Denied and approval-required rows
-  have no parent request. A separate body-bearing case shows that JSON agent
-  claims and forged identity headers cannot change trusted listener attribution.
+  have no parent request. Fresh and reused connection controls also count parent
+  accepts: a blocked request cannot open an unused parent connection. A separate
+  body-bearing case shows that JSON agent claims and forged identity headers
+  cannot change trusted listener attribution.
 - Before operator approval, the proxy returns 428 with no origin contact. The
   real operator client grants Alice's exact host and port. A separate client
   retry succeeds. The documented host-removal CLI revokes that grant. A policy
