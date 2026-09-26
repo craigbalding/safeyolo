@@ -878,7 +878,7 @@ def test_start_userns_holder_isolated_from_terminal_signals(
 
     assert len(popen_calls) == 1
     command, kwargs = popen_calls[0]
-    assert command[-4:] == ["unshare", "-Un", "sleep", "86400"]
+    assert command[-4:] == ["unshare", "-Un", "sleep", "infinity"]
     assert kwargs["start_new_session"] is True
     assert not holder.killed
     assert (isolated_env / "agents" / name / "userns.pid").read_text() == "4242"
