@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import gzip
+import http.client
 import json
 import os
 import socket
+import ssl
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 
+import h2.config
+import h2.connection
+import h2.events
 import pytest
+from mitmproxy.certs import CertStore
 
 from tests.proxy_migration.harness import launch_proxy
 from tests.proxy_migration.run import proxy_identity
 from tests.proxy_migration.scenarios import POLICY
+from tests.proxy_migration.test_http2_contract import origin_certificate, tls_tunnel
 
 CANARY = b"te-gzip-origin-canary\x00complete"
 GZIP_CANARY = gzip.compress(CANARY, mtime=0)
@@ -97,13 +104,30 @@ class _Origin(ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
-    def __init__(self, coding):
+    def __init__(self, coding, pem=None):
         self.coding = coding
         self.requests = []
         self.responses = []
         self.errors = []
+        self.accepts = 0
+        self.alpn = []
         self.lock = threading.Lock()
+        self.context = None
+        if pem is not None:
+            self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            self.context.load_cert_chain(pem)
+            self.context.set_alpn_protocols(["http/1.1"])
         super().__init__(("127.0.0.1", 0), _OriginHandler)
+
+    def get_request(self):
+        request, address = super().get_request()
+        with self.lock:
+            self.accepts += 1
+        if self.context is not None:
+            request = self.context.wrap_socket(request, server_side=True)
+            with self.lock:
+                self.alpn.append(request.selected_alpn_protocol())
+        return request, address
 
 
 class _OriginHandler(BaseRequestHandler):
@@ -119,11 +143,15 @@ class _OriginHandler(BaseRequestHandler):
                 target = line.split(b" ", 2)[1]
                 if target.endswith(b"/first"):
                     body = GZIP_CANARY if self.server.coding == "gzip" else CANARY
-                    transfer = (b"gzip, chunked" if self.server.coding == "gzip"
-                                else b"chunked")
+                    transfer = {
+                        "gzip": b"gzip, chunked",
+                        "plain": b"chunked",
+                        "malformed": b"gzip, chunked",
+                    }[self.server.coding]
                     response = (b"HTTP/1.1 200 OK\r\nTransfer-Encoding: " + transfer
                                 + b"\r\nConnection: keep-alive\r\n\r\n"
-                                + f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+                                + (b"g\r\n" if self.server.coding == "malformed" else
+                                   f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n"))
                 elif target.endswith(b"/second"):
                     response = (b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n"
                                 b"Connection: keep-alive\r\n\r\nsecond")
@@ -133,6 +161,8 @@ class _OriginHandler(BaseRequestHandler):
                     self.server.requests.append({"line": line, "headers": headers, "wire": head})
                     self.server.responses.append(response)
                 self.request.sendall(response)
+                if self.server.coding == "malformed":
+                    return
             except (AssertionError, OSError) as error:
                 with self.server.lock:
                     self.server.errors.append(repr(error))
@@ -140,8 +170,8 @@ class _OriginHandler(BaseRequestHandler):
 
 
 @contextmanager
-def _origin(coding):
-    origin = _Origin(coding)
+def _origin(coding, pem=None):
+    origin = _Origin(coding, pem)
     thread = threading.Thread(target=origin.serve_forever, daemon=True)
     thread.start()
     try:
@@ -258,6 +288,108 @@ def test_native_http10_rejects_unrepresentable_transfer_coding(proxy_backend, tm
                 finally:
                     _retain(proxy_backend, "http10-rejection", proxy, origin,
                             [request], reader, responses)
+
+
+def _h2_response(stream, connection, stream_id, authority, path):
+    connection.send_headers(stream_id, [
+        (":method", "GET"), (":scheme", "https"),
+        (":authority", authority), (":path", path),
+    ], end_stream=True)
+    stream.sendall(connection.data_to_send())
+    response = {"headers": [], "body": bytearray(), "ended": False}
+    while not response["ended"]:
+        data = stream.recv(65536)
+        assert data, f"HTTP/2 stream {stream_id} closed before completion: {response}"
+        for event in connection.receive_data(data):
+            if isinstance(event, h2.events.ResponseReceived) and event.stream_id == stream_id:
+                response["headers"] = event.headers
+            elif isinstance(event, h2.events.DataReceived):
+                if event.stream_id == stream_id:
+                    response["body"].extend(event.data)
+                connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+            elif isinstance(event, h2.events.StreamEnded) and event.stream_id == stream_id:
+                response["ended"] = True
+            elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                raise AssertionError(f"HTTP/2 stream {stream_id} failed: {event}")
+        if output := connection.data_to_send():
+            stream.sendall(output)
+    response["body"] = bytes(response["body"])
+    return response
+
+
+@pytest.mark.parametrize("coding", ["gzip", "plain", "malformed"])
+def test_http2_client_http1_origin_transfer_coding(proxy_backend, tmp_path, coding):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    pem, public = origin_certificate(directory)
+    with _origin(coding, pem) as origin, _origin("plain", pem) as denied:
+        authority = f"127.0.0.1:{origin.server_address[1]}"
+        denied_authority = f"127.0.0.1:{denied.server_address[1]}"
+        with launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
+            with tls_tunnel(proxy.paths["alice"], authority,
+                            directory / "ca/mitmproxy-ca-cert.pem") as stream:
+                client_alpn = stream.selected_alpn_protocol()
+                assert client_alpn == "h2"
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=True, header_encoding="utf-8"))
+                connection.initiate_connection()
+                stream.sendall(connection.data_to_send())
+                first = _h2_response(stream, connection, 1, authority, "/first")
+                second = _h2_response(stream, connection, 3, authority, "/second")
+            with socket.socket(socket.AF_UNIX) as bob:
+                bob.settimeout(5)
+                bob.connect(proxy.paths["bob"])
+                bob.sendall(f"CONNECT {denied_authority} HTTP/1.1\r\n"
+                            f"Host: {denied_authority}\r\n\r\n".encode())
+                denied_response = http.client.HTTPResponse(bob)
+                denied_response.begin()
+                assert denied_response.status == 403
+                denied_response.read()
+            with origin.lock:
+                requests = list(origin.requests)
+                origin_responses = list(origin.responses)
+                alpn = list(origin.alpn)
+                errors = list(origin.errors)
+            with denied.lock:
+                denied_effect = (denied.accepts, list(denied.requests))
+            assert alpn and set(alpn) == {"http/1.1"}
+            assert [row["line"] for row in requests] == [
+                b"GET /first HTTP/1.1", b"GET /second HTTP/1.1",
+            ]
+            assert all(name != b"te" for row in requests for name, _ in row["headers"])
+            assert not errors, errors
+            assert denied_effect == (0, [])
+            assert len(origin_responses) == 2
+            assert b"Transfer-Encoding: " + (b"chunked" if coding == "plain" else
+                                                 b"gzip, chunked") in origin_responses[0]
+            assert origin_responses[1].endswith(b"\r\n\r\nsecond")
+
+            first_headers = dict(first["headers"])
+            second_headers = dict(second["headers"])
+            forbidden = {"connection", "keep-alive", "proxy-connection", "transfer-encoding", "upgrade"}
+            assert forbidden.isdisjoint(first_headers)
+            assert forbidden.isdisjoint(second_headers)
+            assert "content-encoding" not in first_headers
+            assert first["ended"] and second["ended"]
+            if coding == "plain":
+                assert first_headers[":status"] == "200"
+                assert first["body"] == CANARY
+            elif coding == "gzip" and proxy_backend == "python":
+                # The historical comparator passes transfer-coded bytes on h2
+                # without an h2 coding declaration; this is a measured limit.
+                assert first_headers[":status"] == "200"
+                assert first["body"] == GZIP_CANARY
+                assert gzip.decompress(first["body"]) == CANARY
+            else:
+                # Malformed chunks fail on both backends. Rust also fails closed
+                # for valid gzip transfer coding that h2 cannot represent.
+                assert first_headers[":status"] == "502"
+                assert CANARY not in first["body"]
+                assert GZIP_CANARY not in first["body"]
+            assert second_headers[":status"] == "200"
+            assert second_headers["content-length"] == "6"
+            assert second["body"] == b"second"
 
 
 def test_transfer_coding_oracle_rejects_false_success():
