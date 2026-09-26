@@ -2102,9 +2102,11 @@ def _check_ambiguous_encoding(flow) -> str | None:
     if "?" in url:
         qs = url.split("?", 1)[1]
 
-        # Duplicate query parameters
+        # Check both wire and decoded names: an encoded alias can make the
+        # origin use a different value from the first one checked here.
         raw_keys = [p.split("=", 1)[0] for p in qs.split("&") if p]
-        if len(raw_keys) != len(set(raw_keys)):
+        qs_params = urllib.parse.parse_qs(qs, keep_blank_values=True)
+        if len(raw_keys) != len(set(raw_keys)) or len(qs_params) != len(raw_keys):
             return "duplicate query parameters"
 
         # Double-encoded percent in query string: %25xx
@@ -2118,7 +2120,6 @@ def _check_ambiguous_encoding(flow) -> str | None:
                 return "non-canonical percent encoding in query string"
 
         # Method override via _method query param
-        qs_params = urllib.parse.parse_qs(qs, keep_blank_values=True)
         if "_method" in qs_params:
             return "_method query parameter"
 
