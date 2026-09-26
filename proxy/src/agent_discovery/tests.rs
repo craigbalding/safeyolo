@@ -987,3 +987,40 @@ fn late_identity_change_preserves_snapshot_owner_and_suppresses_new_owner_seen()
     assert!(report["agents"]["bob"].get("last_seen").is_none());
     assert!(report["agents"].get("alice").is_none());
 }
+
+#[test]
+fn observe_reconciled_rejects_resolved_snapshot_without_owner() {
+    let owned = Owned::new();
+    let owner = AgentDiscovery::new();
+    let snapshot = owner
+        .reconcile(
+            IdentitySources {
+                uds_agent: Some("alice"),
+                defer_observation: true,
+                ..Default::default()
+            },
+            &owned.writer,
+            || panic!("deferred observation must not read the clock"),
+        )
+        .unwrap();
+    assert_eq!(snapshot.status, IdentityStatus::Resolved);
+    assert_eq!(snapshot.agent.as_deref(), Some("alice"));
+
+    let invalid = ReconciledIdentity {
+        agent: None,
+        ..snapshot.clone()
+    };
+    let calls = Cell::new(0);
+    let error = owner
+        .observe_reconciled(&invalid, || {
+            calls.set(calls.get() + 1);
+            42.0
+        })
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Value);
+    assert_eq!(calls.get(), 0);
+    assert!(owner.lock().unwrap().last_seen.is_empty());
+
+    owner.observe_reconciled(&snapshot, || 42.0).unwrap();
+    assert_eq!(owner.lock().unwrap().last_seen.get("alice"), Some(&42.0));
+}

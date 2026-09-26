@@ -356,13 +356,15 @@ impl AgentDiscovery {
 
     /// Apply a resolved request snapshot's source last-seen update. The
     /// snapshot's owner is retained even if the map changes after admission.
+    /// A resolved snapshot without an owner is rejected as an invalid value.
     pub fn observe_reconciled(
         &self,
         identity: &ReconciledIdentity,
         clock: impl FnOnce() -> f64,
     ) -> Result<()> {
         if identity.status == IdentityStatus::Resolved {
-            self.observe_trusted(identity.agent.as_deref().unwrap(), clock)?;
+            let agent = identity.agent.as_deref().ok_or(Error(ErrorKind::Value))?;
+            self.observe_trusted(agent, clock)?;
         }
         Ok(())
     }
