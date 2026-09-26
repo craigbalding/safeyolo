@@ -12,7 +12,9 @@ import os
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from safeyolo.core.destination import destination_key, network_approval_key
 
@@ -250,6 +252,7 @@ def scan_pending_approvals(
     *,
     max_lines: int | None = 50_000,
     on_error: ErrorHandler | None = None,
+    activity_out: dict[str, tuple[str, int]] | None = None,
 ) -> tuple[list[AuditEvent], set[str]]:
     """Reconstruct unresolved approval requests from the durable audit log."""
     if not log_path.exists():
@@ -319,6 +322,83 @@ def scan_pending_approvals(
     pending_by_key.update(desktop_pending)
     resolved_keys.update(desktop_resolved)
 
+    if activity_out is not None:
+        # Count only requests still pending. The timestamp is the first one
+        # visible in this bounded audit window, not a lifetime claim.
+        for event in parsed_events:
+            approval = event.get("approval")
+            if not isinstance(approval, dict) or not approval.get("required"):
+                continue
+            if approval.get("approval_type") == "desktop_present":
+                continue  # Repeatable desktop requests have separate semantics.
+            key = approval_dedup_key(event)
+            if key not in pending_by_key:
+                continue
+            seen = str(event.get("ts", ""))
+            prior_seen, prior_count = activity_out.get(key, (seen, 0))
+            activity_out[key] = (min(prior_seen, seen), prior_count + 1)
+
     pending = list(pending_by_key.values())
     pending.sort(key=lambda event: event.get("ts", ""))
     return pending, resolved_keys
+
+
+@dataclass(frozen=True)
+class PendingApprovalReview:
+    """Bounded, credential-free view of unresolved operator decisions."""
+
+    state: Literal["ready", "missing", "error"]
+    count: int = 0
+    examples: tuple[str, ...] = ()
+
+
+def _safe_review_field(value: object) -> str:
+    """Keep untrusted audit text inert in both Rich and plain doctor output."""
+    if not isinstance(value, str) or not value:
+        return "unknown"
+    allowed = "._:-"
+    return "".join(
+        char if char.isascii() and (char.isalnum() or char in allowed) else "?"
+        for char in value[:80]
+    )
+
+
+def pending_approval_review(
+    log_path: Path, *, agents: set[str] | None = None
+) -> PendingApprovalReview:
+    """Summarize recent pending approvals without exposing keys or fingerprints."""
+    if not log_path.exists():
+        return PendingApprovalReview("missing")
+    errors: list[Exception] = []
+    activity: dict[str, tuple[str, int]] = {}
+    try:
+        pending, _ = scan_pending_approvals(
+            log_path, on_error=errors.append, activity_out=activity
+        )
+    except Exception:
+        return PendingApprovalReview("error")
+    if errors:
+        return PendingApprovalReview("error")
+    if agents is not None:
+        pending = [event for event in pending if event.get("agent") in agents]
+
+    examples = []
+    for event in pending[:3]:
+        approval = event.get("approval")
+        details = event.get("details")
+        approval = approval if isinstance(approval, dict) else {}
+        details = details if isinstance(details, dict) else {}
+        kind = _safe_review_field(approval.get("approval_type"))
+        parts = [
+            f"agent={_safe_review_field(event.get('agent'))}",
+            f"kind={kind}",
+            f"destination={_safe_review_field(event.get('host'))}",
+        ]
+        if kind == "credential":
+            parts.append(f"classified={_safe_review_field(details.get('rule'))}")
+        key = approval_dedup_key(event)
+        if key in activity:
+            seen, requests = activity[key]
+            parts.extend((f"seen_since={_safe_review_field(seen)}", f"requests={requests}"))
+        examples.append(" ".join(parts))
+    return PendingApprovalReview("ready", len(pending), tuple(examples))

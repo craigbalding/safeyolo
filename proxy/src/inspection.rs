@@ -2260,7 +2260,7 @@ const BUILTINS: &str = r###"{
     },
     {
       "name": "huggingface-token",
-      "pattern": "hf_(?:(?:jwt|oauth)_)?[A-Za-z0-9_-]{20,}",
+      "pattern": "(?:^|[^A-Za-z0-9_.-])hf_(?:(?:jwt|oauth)_)?[A-Za-z0-9_-]{20,}",
       "target": "both",
       "scope": [
         "body",

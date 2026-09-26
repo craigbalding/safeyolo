@@ -1378,6 +1378,44 @@ def _check_log_health() -> DiagResult:
         )
 
 
+def _check_pending_approvals() -> DiagResult:
+    """Surface blocked operator decisions without suggesting automatic approval."""
+    from ..core.audit_stream import pending_approval_review
+
+    review = pending_approval_review(get_logs_dir() / "safeyolo.jsonl")
+    if review.state == "missing":
+        return DiagResult(
+            name="Pending approvals",
+            status="skip",
+            message="No audit log yet",
+        )
+    if review.state == "error":
+        return DiagResult(
+            name="Pending approvals",
+            status="warn",
+            message="Could not inspect the audit log for pending decisions",
+        )
+    if review.count == 0:
+        return DiagResult(
+            name="Pending approvals",
+            status="pass",
+            message="No unresolved decisions in the recent audit window",
+        )
+    return DiagResult(
+        name="Pending approvals",
+        status="warn",
+        message=f"{review.count} unresolved operator decision(s) in the recent audit window",
+        detail=(
+            "; ".join(review.examples)
+            + ". Review in `safeyolo watch` for this instance (same "
+            "SAFEYOLO_CONFIG_DIR and SAFEYOLO_LOGS_DIR); detector classifications "
+            "are provisional. "
+            "Verify the agent, destination, and requested action before deciding. "
+            "This warning is not an instruction to approve."
+        ),
+    )
+
+
 def _check_flow_store() -> DiagResult:
     """Check flow store SQLite database health."""
     db_path = get_logs_dir() / "flows.sqlite3"
@@ -1923,6 +1961,7 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Service gateway vault", _check_vault),
             ("Crash detection", _check_crash_logs),
             ("Log health", _check_log_health),
+            ("Pending approvals", _check_pending_approvals),
             ("Flow store", _check_flow_store),
             ("Running agents", _check_running_agents),
         ]

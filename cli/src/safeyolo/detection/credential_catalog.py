@@ -265,7 +265,7 @@ CREDENTIAL_FAMILIES: tuple[CredentialFamilySpec, ...] = (
         header_names=("authorization",),
         suggested_url="https://huggingface.co/settings/tokens",
         dlp_name="huggingface-token",
-        dlp_patterns=(r"hf_(?:(?:jwt|oauth)_)?[A-Za-z0-9_-]{20,}",),
+        dlp_patterns=(r"(?:^|[^A-Za-z0-9_.-])hf_(?:(?:jwt|oauth)_)?[A-Za-z0-9_-]{20,}",),
         dlp_message="Hugging Face access token detected",
         source_urls=(
             "https://huggingface.co/docs/hub/en/security-tokens",
@@ -293,11 +293,11 @@ CREDENTIAL_FAMILIES: tuple[CredentialFamilySpec, ...] = (
 
 
 def build_default_rule_configs() -> list[dict]:
-    """Build routing-rule constructor arguments from the catalogue."""
+    """Build routing rules that classify a complete credential, not a substring."""
     return [
         {
             "name": family.credential_type,
-            "patterns": list(family.classifier_patterns),
+            "patterns": [rf"\A(?:{pattern})\Z" for pattern in family.classifier_patterns],
             "allowed_hosts": list(family.allowed_hosts),
             "header_names": list(family.header_names),
             "suggested_url": family.suggested_url,

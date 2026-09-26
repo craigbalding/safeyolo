@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from .agents_store import load_agent
 from .api import AdminAPI
-from .config import get_agents_dir
+from .config import get_agents_dir, get_logs_dir
 from .coord import api as coord_api
 from .coord import nats_runtime as coord_nats
 from .factory_contract import FactoryContractError, load_approved_snapshot, load_snapshot, snapshot_id
@@ -137,6 +137,7 @@ def inspect_factory(name: str) -> FactoryDoctorReport:
 
     _inspect_room(checks, payload)
     _inspect_brief(checks, payload)
+    _inspect_pending_approvals(checks, payload)
     try:
         platform = get_platform()
     except Exception as exc:  # platform availability is itself a diagnostic
@@ -164,6 +165,40 @@ def inspect_factory(name: str) -> FactoryDoctorReport:
 
 def _fail(component: str, detail: str, recovery: str) -> FactoryDoctorCheck:
     return FactoryDoctorCheck("FAIL", component, detail, recovery)
+
+
+def _inspect_pending_approvals(
+    checks: list[FactoryDoctorCheck], payload: dict[str, Any]
+) -> None:
+    """Warn when a factory worker awaits an operator decision."""
+    from .core.audit_stream import pending_approval_review
+
+    agents = {role["agent"] for role in payload["roles"].values()}
+    review = pending_approval_review(get_logs_dir() / "safeyolo.jsonl", agents=agents)
+    if review.state == "missing":
+        return
+    if review.state == "error":
+        checks.append(
+            FactoryDoctorCheck(
+                "WARN", "operator-approvals", "approval audit state is unreadable",
+                "inspect the audit log and `safeyolo watch`",
+            )
+        )
+    elif review.count:
+        checks.append(
+            FactoryDoctorCheck(
+                "WARN",
+                "operator-approvals",
+                f"{review.count} unresolved decision(s) for factory workers "
+                "in the recent audit window: "
+                + "; ".join(review.examples),
+                "review in `safeyolo watch` for this instance (same "
+                "SAFEYOLO_CONFIG_DIR and SAFEYOLO_LOGS_DIR); classifications "
+                "are provisional; "
+                "verify agent, destination, and requested action before deciding; "
+                "this warning is not an instruction to approve",
+            )
+        )
 
 
 def _proxy_is_healthy() -> bool:

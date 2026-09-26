@@ -854,6 +854,43 @@ fn python_http_websocket_modes_scope_order_and_failure_differential() {
 }
 
 #[test]
+fn huggingface_builtin_ignores_fragments_inside_a_bearer_jwt() {
+    let scanner = Scanner::default();
+    scanner
+        .load_policy_config(&json!({"addons":{"pattern_scanner":{"builtin_sets":["secrets"]}}}))
+        .unwrap();
+
+    for payload in [
+        format!("abchf_{}xyz", "A".repeat(28)),
+        format!("hf_{}", "A".repeat(28)),
+    ] {
+        let jwt = format!("eyJhbGciOiJIUzI1NiJ9.{payload}.signature");
+        let header = format!("Bearer {jwt}");
+        let result = scanner
+            .scan_http_request(
+                UrlInput::Text("/"),
+                &[("Authorization", &header)],
+                None,
+                block(),
+            )
+            .unwrap();
+        assert_eq!(result.outcome, Outcome::NoMatch, "JWT payload: {payload}");
+    }
+
+    let header = format!("Bearer hf_{}", "A".repeat(28));
+    let result = scanner
+        .scan_http_request(
+            UrlInput::Text("/"),
+            &[("Authorization", &header)],
+            None,
+            block(),
+        )
+        .unwrap();
+    assert_eq!(result.outcome, Outcome::MatchBlocked);
+    assert_eq!(result.finding.unwrap().rule_name, "huggingface-token");
+}
+
+#[test]
 #[ignore = "Actual Python builtin catalogue and specimen parity; set SAFEYOLO_POLICY_PYTHON"]
 fn python_builtin_catalogue_order_and_detection_differential() {
     let builtins = python(

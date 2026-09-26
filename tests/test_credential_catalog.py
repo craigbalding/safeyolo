@@ -12,6 +12,7 @@ from safeyolo.detection import (
     build_dlp_pattern_configs,
     detect_credential_type,
 )
+from safeyolo.detection.credentials import analyze_headers
 
 
 def _anthropic_token(family: str) -> str:
@@ -44,6 +45,43 @@ def _anthropic_token(family: str) -> str:
 )
 def test_catalogue_classifies_provider_families(token, expected_type):
     assert detect_credential_type(token, DEFAULT_RULES) == expected_type
+
+
+@pytest.mark.parametrize(
+    "embedded_shape",
+    ["hf_" + "A" * 28, "ghp_" + "A" * 40, "sk-" + "A" * 30],
+)
+def test_provider_shape_inside_bearer_jwt_does_not_route_as_provider(embedded_shape):
+    """A token prefix inside another credential must not require approval."""
+    jwt = "eyJhbGciOiJIUzI1NiJ9." + "abc" + embedded_shape + "xyz.signature"
+
+    assert detect_credential_type(jwt, DEFAULT_RULES) is None
+    assert analyze_headers(
+        {"Authorization": f"Bearer {jwt}"}, DEFAULT_RULES, {}, {}, ["authorization"]
+    ) == []
+
+
+def test_actual_huggingface_bearer_token_is_still_detected():
+    huggingface = "hf_" + "A" * 28
+    assert any(
+        item["rule_name"] == "huggingface"
+        for item in analyze_headers(
+            {"Authorization": f"Bearer {huggingface}"}, DEFAULT_RULES, {}, {}, ["authorization"]
+        )
+    )
+
+
+def test_huggingface_dlp_distinguishes_embedded_jwt_text_from_a_real_token():
+    jwt = "eyJhbGciOiJIUzI1NiJ9." + "hf_" + "A" * 28 + ".signature"
+    huggingface = "hf_" + "A" * 28
+    family = next(f for f in CREDENTIAL_FAMILIES if f.family_id == "huggingface-token")
+
+    assert not any(re.search(pattern, f"Bearer {jwt}") for pattern in family.effective_dlp_patterns)
+    assert any(re.search(pattern, f"Bearer {huggingface}") for pattern in family.effective_dlp_patterns)
+    assert any(
+        re.search(pattern, f'{{"token":"{huggingface}"}}')
+        for pattern in family.effective_dlp_patterns
+    )
 
 
 def test_default_rules_are_exact_catalogue_projection():
