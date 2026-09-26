@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 import platform
+import socket
 import statistics
 import subprocess
 import sys
@@ -661,22 +662,26 @@ def stream_workload(backend, directory, seconds=2.0):
 
 def streamed_control_workload(backend, directory, seconds=2.0):
     """Hold one streamed response while an independent request completes."""
+    first_event = b"data: first-event\n\n"
+    data_event = b"data: " + b"x" * (16384 - 8) + b"\n\n"
     with origin_server(stream_seconds=seconds) as origin, launch_proxy(
         backend, directory, POLICY, native_policy=backend == "rust"
     ) as proxy:
         client = connection(proxy.paths["alice"])
+        response = None
         started = time.perf_counter()
         try:
             client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-control")
             response = client.getresponse()
             assert response.status == 200
-            first = response.read(len(b"data: first-event\n\n"))
+            first = response.read(len(first_event))
+            first_received_at = time.monotonic()
             first_seconds = time.perf_counter() - started
-            assert first == b"data: first-event\n\n"
+            assert first == first_event
             assert origin.stream_initial_sent.is_set()
+            assert origin.stream_first_flush_at <= first_received_at
             assert not origin.stream_finished.is_set()
             assert not origin.stream_release.is_set()
-            first_before_release = not origin.stream_release.is_set()
 
             control_started = time.perf_counter()
             status, _, body = request(
@@ -684,28 +689,36 @@ def streamed_control_workload(backend, directory, seconds=2.0):
             )
             control_seconds = time.perf_counter() - control_started
             assert status == 200 and body == b"hello"
+            assert control_seconds < 5  # The local client has a five-second socket timeout.
+            control_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
             assert not origin.stream_finished.is_set()
 
+            release_at = time.monotonic()
             origin.stream_release.set()
-            total = len(first)
+            received = bytearray(first)
             while chunk := response.read(16384):
-                total += len(chunk)
+                received.extend(chunk)
             elapsed = time.perf_counter() - started
-            expected = len(first) + max(0, origin.stream_chunks - 1) * 16384
-            assert total == expected
-            assert origin.stream_finished.is_set()
+            assert origin.stream_finished.wait(timeout=5)
+            assert bytes(received) == first_event + data_event * max(0, origin.stream_chunks - 1)
+            assert origin.stream_first_flush_at <= first_received_at < release_at
+            assert control_completed_at < release_at <= origin.stream_release_seen_at
+            assert origin.stream_release_seen_at <= origin.stream_finished_at
             assert origin.requests == [
                 {"method": "GET", "target": "/stream-control"},
                 {"method": "GET", "target": "/control"},
             ]
+            assert origin.accepts == 2
             return {
                 "workload": "streamed_control",
-                "bytes": total,
+                "bytes": len(received),
+                "body_sha256": hashlib.sha256(received).hexdigest(),
                 "elapsed_seconds": elapsed,
                 "first_event_seconds": first_seconds,
-                "first_event_before_release": first_before_release,
+                "first_event_before_release": first_received_at < release_at,
                 "control_elapsed_seconds": control_seconds,
-                "control_completed_before_stream_release": True,
+                "control_completed_before_stream_release": control_completed_at < release_at,
                 "stream_released_after_control": origin.stream_release.is_set(),
                 "runtime_memory_after": runtime_memory(proxy),
                 "resource_samples": [runtime_resources(proxy)],
@@ -713,6 +726,12 @@ def streamed_control_workload(backend, directory, seconds=2.0):
                 "origin_observation": {
                     "accepted_connections": origin.accepts,
                     "requests": list(origin.requests),
+                    "first_flush_at": origin.stream_first_flush_at,
+                    "first_received_at": first_received_at,
+                    "control_completed_at": control_completed_at,
+                    "released_at": release_at,
+                    "release_seen_at": origin.stream_release_seen_at,
+                    "finished_at": origin.stream_finished_at,
                     "stream_finished_after_read": origin.stream_finished.is_set(),
                 },
                 "proxy_identity": proxy_identity(proxy),
@@ -720,18 +739,17 @@ def streamed_control_workload(backend, directory, seconds=2.0):
             }
         finally:
             origin.stream_release.set()
+            if response is not None:
+                response.close()
             client.close()
 
 
 def streamed_slow_admin_workload(backend, directory, seconds=2.0):
-    """Keep a paced response unread while independent traffic and /stats run.
-
-    The reader deliberately pauses after the first event and between later
-    chunks.  The second request uses Alice's separate trusted listener, while
-    /stats uses the proxy's authenticated operator listener.  Both operations
-    must complete while the origin stream is still active; this records
-    responsiveness under a slow consumer without adding a product limit.
-    """
+    """Hold final SSE completion while a stalled reader, control, and /stats overlap."""
+    first_event = b"data: first-event\n\n"
+    last_event = b"data: last-event\n\n"
+    data_event = b"data: " + b"x" * (16384 - 8) + b"\n\n"
+    control_deadline = 5.0  # The local clients use five-second socket timeouts.
     token = "stream-slow-admin-fixture-token"
     token_file = directory / "operator-token"
     token_file.parent.mkdir(parents=True, exist_ok=True)
@@ -746,18 +764,32 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
         admin_api_token_file=token_file,
     ) as proxy:
         client = connection(proxy.paths["alice"])
+        # A small receive buffer makes the deliberate read pause meaningful
+        # even when the proxy and origin can write ahead.
+        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+        response = None
         started = time.perf_counter()
         try:
-            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream")
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-slow")
             response = client.getresponse()
             assert response.status == 200
-            first = response.read(16384)
+            first = response.read(len(first_event))
+            first_received_at = time.monotonic()
             first_seconds = time.perf_counter() - started
-            assert first and not origin.stream_finished.is_set()
+            assert first == first_event
+            assert origin.stream_initial_sent.is_set()
+            assert origin.stream_first_flush_at <= first_received_at
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
 
-            # Do not consume the stream while its origin is still producing
-            # data.  This is the controlled slow-consumer interval.
-            time.sleep(max(0.05, seconds / 4))
+            # The origin offers further bytes while this reader makes no body
+            # reads. Its final event still waits for the out-of-band release.
+            assert origin.stream_data_sent.wait(timeout=control_deadline)
+            pause_seconds = max(0.25, seconds / 4)
+            time.sleep(pause_seconds)
+            bytes_before_controls = origin.stream_bytes_sent
+            assert bytes_before_controls > 0
+            assert not origin.stream_release.is_set()
             assert not origin.stream_finished.is_set()
             held_resources = runtime_resources(proxy)
 
@@ -767,6 +799,9 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
             )
             control_elapsed = time.perf_counter() - control_started
             assert status == 200 and body == b"hello"
+            assert control_elapsed < control_deadline
+            control_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
             assert not origin.stream_finished.is_set()
 
             marker = json.loads(proxy.readiness_file.read_text())
@@ -783,35 +818,46 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
                 admin.close()
             admin_elapsed = time.perf_counter() - admin_started
             assert admin_status == 200 and admin_body
+            assert admin_elapsed < control_deadline
+            admin_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
             assert not origin.stream_finished.is_set()
             during_resources = runtime_resources(proxy)
 
-            total = len(first)
+            release_at = time.monotonic()
+            origin.stream_release.set()
+            received = bytearray(first)
             paced_chunks = 0
             while chunk := response.read(16384):
-                total += len(chunk)
+                received.extend(chunk)
                 paced_chunks += 1
                 time.sleep(0.02)
             elapsed = time.perf_counter() - started
-            assert origin.stream_finished.is_set()
-            assert total == origin.stream_chunks * 16384
+            assert origin.stream_finished.wait(timeout=control_deadline)
+            assert bytes(received) == first_event + data_event * origin.stream_chunks + last_event
+            assert origin.stream_first_flush_at <= first_received_at < release_at
+            assert control_completed_at < release_at and admin_completed_at < release_at
+            assert release_at <= origin.stream_release_seen_at <= origin.stream_finished_at
             request_events = [event for event in read_events(proxy.event_log)
                               if event.get("event") == "proxy.request"]
             error_events = [event for event in request_events if int(event.get("status", 200)) >= 400]
             assert origin.requests == [
-                {"method": "GET", "target": "/stream"},
+                {"method": "GET", "target": "/stream-slow"},
                 {"method": "GET", "target": "/control"},
             ]
+            assert origin.accepts == 2
             return {
                 "workload": "streamed_slow_consumer_admin",
-                "bytes": total,
+                "bytes": len(received),
+                "body_sha256": hashlib.sha256(received).hexdigest(),
                 "elapsed_seconds": elapsed,
                 "first_event_seconds": first_seconds,
-                "first_event_before_origin_completion": True,
-                "slow_consumer_pause_seconds": max(0.05, seconds / 4),
+                "first_event_before_release": first_received_at < release_at,
+                "slow_consumer_pause_seconds": pause_seconds,
+                "origin_bytes_sent_before_controls": bytes_before_controls,
                 "paced_chunks_after_pause": paced_chunks,
                 "control_elapsed_seconds": control_elapsed,
-                "control_completed_while_stream_active": True,
+                "control_completed_before_release": control_completed_at < release_at,
                 "request_counts": {
                     "origin_requests": len(origin.requests),
                     "origin_error_responses": 0,
@@ -830,7 +876,7 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
                     "body_bytes": len(admin_body),
                     "body_sha256": hashlib.sha256(admin_body).hexdigest(),
                     "content_type": admin_headers.get("Content-Type"),
-                    "completed_while_stream_active": True,
+                    "completed_before_release": admin_completed_at < release_at,
                 },
                 "runtime_resources": {
                     "before_controls": held_resources,
@@ -840,13 +886,23 @@ def streamed_slow_admin_workload(backend, directory, seconds=2.0):
                 "origin_observation": {
                     "accepted_connections": origin.accepts,
                     "requests": list(origin.requests),
-                    "stream_active_during_controls": True,
+                    "first_flush_at": origin.stream_first_flush_at,
+                    "first_received_at": first_received_at,
+                    "control_completed_at": control_completed_at,
+                    "admin_completed_at": admin_completed_at,
+                    "released_at": release_at,
+                    "release_seen_at": origin.stream_release_seen_at,
+                    "finished_at": origin.stream_finished_at,
+                    "stream_bytes_sent_before_controls": bytes_before_controls,
                     "stream_finished_after_read": origin.stream_finished.is_set(),
                 },
                 "proxy_identity": proxy_identity(proxy),
-                "limitation": "one paced slow consumer and one control/admin pair; no long-duration or repeated growth claim",
+                "limitation": "one finite stalled reader and one control/admin pair; no sustained backpressure or growth claim",
             }
         finally:
+            origin.stream_release.set()
+            if response is not None:
+                response.close()
             client.close()
 
 
