@@ -28,6 +28,9 @@ action = "network:request"
 resource = "*"
 effect = "allow"
 '''
+REFILL_RATE = 20
+REFILL_PER_HOST = PER_HOST_POLICY.replace("budget = 1", f"budget = {REFILL_RATE}")
+REFILL_GLOBAL = GLOBAL_POLICY.replace('"network:request" = 1', f'"network:request" = {REFILL_RATE}')
 
 
 def connect(path, authority, agent):
@@ -56,6 +59,125 @@ def wait_for_accepts(origin, expected):
     while origin.accepts < expected and time.monotonic() < deadline:
         time.sleep(0.01)
     assert origin.accepts == expected
+
+
+@pytest.mark.parametrize("scope", ["per-host", "global"])
+def test_network_connect_limit_recovers_after_refill(proxy_backend, tmp_path, scope):
+    """A denied fresh tunnel does not reset its separate GCRA budget."""
+    policy = REFILL_PER_HOST if scope == "per-host" else REFILL_GLOBAL
+    directory = tmp_path / proxy_backend
+    with origin_server() as target, origin_server() as neighbor:
+        with policy_proxy(
+            proxy_backend, directory, policy, eager_connect=True, agent_api=True,
+        ) as proxy:
+            attempts = []
+
+            def attempt(agent, host, origin):
+                before = (origin.accepts, len(origin.requests), len(proxy.events("proxy.egress")))
+                status, headers, body = connect(
+                    proxy.paths[agent], f"{host}:{origin.server_address[1]}", agent
+                )
+                if status == 200:
+                    wait_for_accepts(origin, before[0] + 1)
+                    assert len(proxy.events("proxy.egress")) == before[2] + 1
+                else:
+                    assert_rejection(status, headers, body, 429, host)
+                    assert json.loads(body)["reason"] == f"Request budget exceeded for {host}"
+                    assert (origin.accepts, len(proxy.events("proxy.egress"))) == (before[0], before[2])
+                assert len(origin.requests) == before[1]
+                request_id = {name.lower(): value for name, value in headers.items()}[
+                    "x-safeyolo-request-id"
+                ]
+                assert request_id and request_id != FORGED_REQUEST_ID
+                row = {
+                    "agent": agent, "host": host, "port": origin.server_address[1],
+                    "status": status, "request_id": request_id,
+                }
+                attempts.append(row)
+                return row
+
+            # Rate 20 permits a small burst, then one new admission after the
+            # three-second emission interval. Do not assume the burst count.
+            for _ in range(6):
+                row = attempt("alice", "127.0.0.1", target)
+                if row["status"] == 429:
+                    break
+                if len(attempts) == 1:
+                    first_admission = time.monotonic()
+            else:
+                pytest.fail("The configured CONNECT budget did not exhaust")
+            assert any(row["status"] == 200 for row in attempts)
+            assert attempt("alice", "127.0.0.1", target)["status"] == 429
+
+            neighbor_status = attempt("bob", "localhost", neighbor)["status"]
+            assert neighbor_status == (200 if scope == "per-host" else 429)
+
+            suffix = "127.0.0.1" if scope == "per-host" else "__global__"
+            connect_key = f"network:connect:{suffix}"
+            request_key = f"network:request:{suffix}"
+            before_request = assert_api_response(api_request(proxy, "/budgets"), 200)["budgets"]
+            assert connect_key in before_request and request_key not in before_request
+
+            # CONNECT has not spent the ordinary HTTP request counter.
+            before = (target.accepts, len(target.requests), len(proxy.events("proxy.egress")))
+            status, headers, body = send_request(
+                proxy.paths["alice"], f"http://127.0.0.1:{target.server_address[1]}/connect-control"
+            )
+            assert (status, body) == (200, b"hello")
+            wait_for_accepts(target, before[0] + 1)
+            assert len(target.requests) == before[1] + 1
+            assert target.requests[-1] == {"method": "GET", "target": "/connect-control"}
+            assert len(proxy.events("proxy.egress")) == before[2] + 1
+            http_id = {name.lower(): value for name, value in headers.items()}[
+                "x-safeyolo-request-id"
+            ]
+            after_request = assert_api_response(api_request(proxy, "/budgets"), 200)["budgets"]
+            assert {connect_key, request_key} <= set(after_request)
+
+            # The denied attempts do not change the refill schedule. Wait
+            # beyond the first admission's interval, with a timing margin.
+            time.sleep(max(0, first_admission + 3.5 - time.monotonic()))
+            recovered = attempt("alice", "127.0.0.1", target)
+            assert recovered["status"] == 200
+            assert len({row["request_id"] for row in attempts}) == len(attempts)
+            assert http_id not in {row["request_id"] for row in attempts}
+            assert reset_audits(proxy, proxy_backend) == []
+
+            audits = [
+                row for row in read_events(directory / "audit.jsonl")
+                if row.get("event") == "security.network_guard"
+                and row.get("details", {}).get("method") == "CONNECT"
+            ]
+            assert [
+                (row["agent"], row["host"], row["request_id"], row["decision"])
+                for row in audits
+            ] == [
+                (row["agent"], row["host"], row["request_id"],
+                 "budget_exceeded" if row["status"] == 429 else "allow")
+                for row in attempts
+            ]
+            assert all(row["details"]["port"] == attempt["port"]
+                       for row, attempt in zip(audits, attempts, strict=True))
+            assert all(row["details"]["connection_id"] for row in audits)
+            connect_requests = [
+                row for row in proxy.events("proxy.request")
+                if row["request_id"] in {attempt["request_id"] for attempt in attempts}
+            ]
+            if proxy_backend == "rust":
+                assert [(row["request_id"], row["status"]) for row in connect_requests] == [
+                    (row["request_id"], row["status"]) for row in attempts
+                ]
+                assert [row["connection_id"] for row in connect_requests] == [
+                    row["details"]["connection_id"] for row in audits
+                ]
+            else:
+                assert connect_requests == []  # Python records CONNECT in the security audit.
+            assert target.accepts == sum(
+                row["status"] == 200 and row["host"] == "127.0.0.1" for row in attempts
+            ) + 1  # The one independent HTTP request.
+            assert neighbor.accepts == int(neighbor_status == 200)
+            assert len(target.requests) == 1 and neighbor.requests == []
+            assert len(proxy.events("proxy.egress")) == target.accepts + neighbor.accepts
 
 
 @pytest.mark.parametrize("scope", ["per-host", "global"])
