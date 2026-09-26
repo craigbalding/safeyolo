@@ -7,9 +7,9 @@
 #   ./tests/blackbox/run-lane.sh vz      [run-tests.sh options]
 #   ./tests/blackbox/run-lane.sh proxy   [run-tests.sh options]
 #
-# Backend selection is forwarded to run-tests.sh.  The native selector is
-# proxy-only until Rust is wired into the VM lifecycle:
-#   ./tests/blackbox/run-lane.sh proxy --proxy-impl rust --rust-bin PATH
+# Backend selection is forwarded to run-tests.sh. A native VM lane uses the
+# Rust executable packaged by install.sh for the same installed CLI:
+#   ./tests/blackbox/run-lane.sh systrap --proxy-impl rust
 
 set -euo pipefail
 
@@ -72,7 +72,7 @@ fi
 # Host-side blackbox pytest uses the development dependency group.  The
 # product CLI still comes from install.sh's isolated uv tool environment.
 uv sync --frozen --group dev
-export PATH="$HOME/.local/bin:$REPO_ROOT/.venv/bin:$PATH"
+export PATH="$(uv tool dir --bin):$REPO_ROOT/.venv/bin:$PATH"
 
 if [ "$LANE" != "proxy" ]; then
     if [ "$(uname -s)" = "Linux" ]; then

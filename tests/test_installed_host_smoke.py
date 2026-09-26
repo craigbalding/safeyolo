@@ -8,6 +8,8 @@ import os
 import stat
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -51,7 +53,8 @@ def _native_config(path: Path, socket_path: Path, readiness: Path) -> None:
     )
 
 
-def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smoke_module) -> None:
+def test_discovery_records_selected_cli_and_native_identity(tmp_path: Path, smoke_module, monkeypatch) -> None:
+    monkeypatch.setattr(smoke_module, "_substrate_identity", lambda _config: {"status": "discovered", "kind": "gvisor"})
     real_cli = _python_cli(tmp_path / "real-safeyolo", "safeyolo 0.1.0")
     cli = tmp_path / "safeyolo"
     cli.symlink_to(real_cli)
@@ -94,6 +97,21 @@ def test_cli_identity_rejects_launcher_without_usable_interpreter(tmp_path: Path
 
     with pytest.raises(smoke_module.SmokeError, match="installed safeyolo package"):
         smoke_module._cli_identity(cli)
+
+
+def test_installed_binary_comes_from_cli_loaded_package(tmp_path: Path, smoke_module, monkeypatch) -> None:
+    package = tmp_path / "site-packages" / "safeyolo"
+    (package / "bin").mkdir(parents=True)
+    (package / "__init__.py").touch()
+    binary = _executable(package / "bin" / "safeyolo-proxy", "safeyolo-proxy 0.1.0")
+    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _cli: {"package_location": str(package / "__init__.py")})
+
+    selected, _ = smoke_module._installed_rust_binary(tmp_path / "safeyolo")
+
+    assert selected == binary.resolve()
+    binary.unlink()
+    with pytest.raises(smoke_module.SmokeError, match="Rust proxy executable"):
+        smoke_module._installed_rust_binary(tmp_path / "safeyolo")
 
 
 def test_rust_identity_rejects_a_different_program(tmp_path: Path, smoke_module) -> None:
@@ -244,6 +262,46 @@ def test_receipt_is_bound_to_supplied_native_paths(tmp_path: Path, smoke_module,
                 working_directory=working_directory,
                 require_running=True,
             )
+
+
+def test_authenticated_runtime_identity_matches_readiness_and_process(tmp_path: Path, smoke_module, monkeypatch) -> None:
+    token_file = tmp_path / "admin_token"
+    token_file.write_text("synthetic-operator-token\n")
+    observed = []
+
+    class Identity(BaseHTTPRequestHandler):
+        def do_GET(self):
+            observed.append((self.path, self.headers.get("Authorization")))
+            body = json.dumps({"schema_version": 1, "state": "active", "instance_id": "owned"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Identity)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        monkeypatch.setattr(smoke_module, "_process_start_token", lambda _pid: "owned-start")
+        native = {"raw": {"admin_api_token_file": str(token_file)}}
+        marker = {"admin_port": server.server_address[1], "instance_id": "owned"}
+        result = smoke_module._authenticated_runtime_identity(native, marker, os.getpid(), "owned-start")
+        assert result == {"status": "authenticated", "instance_id": "owned", "schema_version": 1}
+        assert observed == [("/admin/runtime-identity", "Bearer synthetic-operator-token")]
+        with pytest.raises(smoke_module.SmokeError, match="disagrees"):
+            smoke_module._authenticated_runtime_identity(
+                native, {**marker, "instance_id": "different"}, os.getpid(), "owned-start"
+            )
+        with pytest.raises(smoke_module.SmokeError, match="changed"):
+            smoke_module._authenticated_runtime_identity(native, marker, os.getpid(), "stale-start")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_smoke_logs_are_created_inside_disposable_state(tmp_path: Path, smoke_module) -> None:

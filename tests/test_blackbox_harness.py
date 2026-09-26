@@ -28,10 +28,33 @@ def test_compatibility_isolation_lane_selects_python_before_test_start():
     """The retained VM/Python lane must opt out of the native default."""
     harness = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
 
-    selector = "config['proxy']['backend'] = 'python'"
+    selector = "config['proxy']['backend'] = '$PROXY_IMPL'"
     start = "safeyolo start --test --no-wait"
+    assert 'PROXY_IMPL="python"' in harness
     assert selector in harness
     assert harness.index(selector) < harness.index(start)
+
+
+def test_installed_native_vm_lane_fails_before_instance_setup_without_packaged_binary(tmp_path):
+    """A native guest label cannot fall back to a checkout binary or Python."""
+    cli = tmp_path / "safeyolo"
+    cli.write_text("#!/bin/sh\nprintf 'safeyolo fixture\\n'\n")
+    cli.chmod(0o755)
+    config_dir = tmp_path / "test-instance"
+    result = subprocess.run(
+        [str(Path(__file__).parent / "blackbox" / "run-tests.sh"), "--isolation", "--proxy-impl", "rust"],
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "SAFEYOLO_TEST_CONFIG_DIR": str(config_dir),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "installed CLI has no usable packaged Rust proxy" in result.stderr
+    assert not config_dir.exists()
 
 
 def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
