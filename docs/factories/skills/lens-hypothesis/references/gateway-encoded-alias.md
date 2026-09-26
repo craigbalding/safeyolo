@@ -19,7 +19,8 @@ assert _authorization(_wire(origin.requests[-1])) == [
 Then vary only the bytes and order that can change the binding decision. Retain both copies of the key in the raw URL; a dictionary or URL builder could collapse or normalize them before the proxy sees them.
 
 ```python
-@settings(max_examples=84, deadline=None)
+@seed(766)
+@settings(max_examples=84, deadline=None, database=None)
 @given(
     position=st.integers(0, len("account") - 1),
     hex_upper=st.booleans(),

@@ -5,7 +5,8 @@ Use this shape when an earlier request could contaminate routing, authorization,
 The fixture had three local origins with distinct policy decisions: `allowed`, `denied`, and `approval`. First establish that a request to `allowed` succeeds and reaches that origin. Make it the first operation in every generated sequence as a continuing positive control. Keep the same Unix socket for the whole sequence; use a fresh socket between Hypothesis examples.
 
 ```python
-@settings(max_examples=36, deadline=None)
+@seed(775)
+@settings(max_examples=36, deadline=None, database=None)
 @given(
     blocker=st.sampled_from(["denied", "approval"]),
     middle=st.lists(
