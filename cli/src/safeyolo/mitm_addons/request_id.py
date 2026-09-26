@@ -10,6 +10,8 @@ Runs early in the addon chain to:
    retaining parsed HTTP/1.1 chunked framing until mitmproxy sends the body end
 5. On response, stamp X-SafeYolo-Request-Id so the originating agent can
    correlate its request without asking the operator to search host logs
+6. Refuse a WebSocket 101 if the origin selects a subprotocol the client did
+   not offer
 
 The request_id is stored in flow.metadata["request_id"] and should be included
 in all logged events for traceability. The ID format is defined by
@@ -279,7 +281,7 @@ class RequestIdGenerator:
                 del flow.request.headers[header]
 
     def response(self, flow: http.HTTPFlow):
-        """Stamp X-SafeYolo-Request-Id on the outbound response.
+        """Check WebSocket selection and stamp the outbound request ID.
 
         Applies to every response the proxy hands back — upstream-served,
         SafeYolo-synthesised block, and Agent API — so the originating
@@ -293,6 +295,23 @@ class RequestIdGenerator:
         """
         if not flow.response:
             return
+        if flow.websocket is not None and flow.response.status_code == 101:
+            selected = flow.response.headers.get_all("sec-websocket-protocol")
+            if selected:
+                offered = {
+                    token.strip()
+                    for header in flow.request.headers.get_all("sec-websocket-protocol")
+                    for token in header.split(",")
+                }
+                protocol = selected[0].strip() if len(selected) == 1 else ""
+                if not protocol or protocol not in offered:
+                    flow.response = http.Response.make(
+                        502, b"Invalid origin WebSocket subprotocol",
+                        {"Content-Type": "text/plain", "Connection": "close"},
+                    )
+                    # mitmproxy sets this before the response hook. A replaced
+                    # 101 must not enter its WebSocket relay after the local 502.
+                    flow.websocket = None
         request_id = flow.metadata.get("request_id")
         if not request_id:
             return

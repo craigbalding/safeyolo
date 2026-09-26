@@ -307,6 +307,11 @@ exercise blocking and logged delivery separately because Python's D32 defect
 affects compression across control frames. Native events check the storage
 spill and scanner outcome. This fixture does not impose a message-size limit or
 resolve the scanner's documented Python-regex compatibility gaps.
+The handshake cases observe each origin socket accept and upgrade request.
+They check an allowed second offered subprotocol, post-upgrade messages in both
+directions, blocked and logged inspection outcomes, and a denied agent with no
+additional origin contact. An unoffered origin selection returns 502 before
+application messages reach the origin; a later valid selection remains usable.
 
 The earlier focused launcher keeps lazy connection setup by default. Tunnel
 fixtures explicitly select the old production eager behavior; native CONNECT

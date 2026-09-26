@@ -213,12 +213,15 @@ class Peer:
 class OwnedOrigin(socketserver.ThreadingTCPServer):
     """Thread failures are returned to the controlling test, never suppressed."""
 
-    def __init__(self, script, *, pem=None, compressed=False, first_frame=None):
+    def __init__(self, script, *, pem=None, compressed=False, first_frame=None,
+                 subprotocol="fixture"):
         self.script = script
         self.compressed = compressed
         self.first_frame = first_frame
+        self.subprotocol = subprotocol
         self.preface_writes = 0
         self.accepts = 0
+        self.handshakes = queue.Queue()
         self.results = queue.Queue()
         self.errors = queue.Queue()
         self.context = None
@@ -254,10 +257,11 @@ class OriginHandler(socketserver.BaseRequestHandler):
                 assert headers["upgrade"] == ["websocket"]
                 key = headers["sec-websocket-key"][0]
                 assert len(base64.b64decode(key, validate=True)) == 16
+                self.server.handshakes.put((request_line, headers))
                 accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
                 response = ("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                             f"Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n"
-                            "Sec-WebSocket-Protocol: fixture\r\n")
+                            f"Sec-WebSocket-Protocol: {self.server.subprotocol}\r\n")
                 if self.server.compressed:
                     assert "permessage-deflate" in ",".join(headers["sec-websocket-extensions"])
                     response += "Sec-WebSocket-Extensions: permessage-deflate\r\n"
@@ -276,8 +280,10 @@ class OriginHandler(socketserver.BaseRequestHandler):
 
 
 @contextmanager
-def origin_server(script, *, pem=None, compressed=False, first_frame=None):
-    origin = OwnedOrigin(script, pem=pem, compressed=compressed, first_frame=first_frame)
+def origin_server(script, *, pem=None, compressed=False, first_frame=None,
+                  subprotocol="fixture"):
+    origin = OwnedOrigin(script, pem=pem, compressed=compressed, first_frame=first_frame,
+                         subprotocol=subprotocol)
     thread = threading.Thread(target=origin.serve_forever)
     thread.start()
     try:
@@ -292,7 +298,7 @@ def origin_server(script, *, pem=None, compressed=False, first_frame=None):
 
 
 @contextmanager
-def connect_peer(origin, *, path=None, ca=None, compressed=False):
+def websocket_handshake(origin, *, path=None, ca=None, compressed=False):
     stream = socket.socket(socket.AF_UNIX) if path else socket.socket()
     stream.settimeout(5)
     try:
@@ -315,14 +321,22 @@ def connect_peer(origin, *, path=None, ca=None, compressed=False):
             request += "Sec-WebSocket-Extensions: permessage-deflate\r\n"
         stream.sendall((request + "\r\n").encode())
         response, headers = read_head(stream)
+        yield stream, response, headers
+    finally:
+        stream.close()
+
+
+@contextmanager
+def connect_peer(origin, *, path=None, ca=None, compressed=False,
+                 subprotocol="fixture"):
+    with websocket_handshake(origin, path=path, ca=ca, compressed=compressed) as (
+            stream, response, headers):
         assert response.split()[1] == "101", (response, headers)
         assert headers["sec-websocket-accept"] == [
             base64.b64encode(hashlib.sha1((KEY + GUID).encode()).digest()).decode()]
-        assert headers["sec-websocket-protocol"] == ["fixture"]
+        assert headers["sec-websocket-protocol"] == [subprotocol]
         assert ("sec-websocket-extensions" in headers) == compressed
         yield Peer(stream, client=True, compressed=compressed)
-    finally:
-        stream.close()
 
 
 def prepare_tls(directory, tls):
@@ -903,6 +917,143 @@ def test_denied_websocket_opens_no_origin_connection(proxy_backend, tmp_path, tl
             with pytest.raises(TimeoutError):
                 origin.accept()
             assert proxy.events("proxy.egress") == []
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+@pytest.mark.parametrize("mode", ["block", "log"])
+def test_negotiated_websocket_messages_and_inspection(proxy_backend, tmp_path, tls, mode):
+    """Check admission and both inspected message directions after a selected 101."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+    request_messages = [(1, b"request-safe"), (1, b"PROJ-12345 request"),
+                        (1, b"request-end")]
+    response_messages = [(1, b"response-safe"), (1, b"PROJ-12345 response"),
+                         (1, b"response-end")]
+    expected_request = ([request_messages[0], request_messages[2]] if mode == "block"
+                        else request_messages)
+    expected_response = ([response_messages[0], response_messages[2]] if mode == "block"
+                         else response_messages)
+
+    def script(peer, results):
+        received = []
+        while not received or received[-1] != request_messages[-1]:
+            received.append(peer.receive())
+        results.put(received)
+        for opcode, payload in response_messages:
+            peer.send(opcode, payload)
+        assert peer.receive()[0] == 8
+        peer.close()
+
+    def conversation(origin, *, path=None, ca=None):
+        with connect_peer(origin, path=path, ca=ca, subprotocol="another") as peer:
+            for opcode, payload in request_messages:
+                peer.send(opcode, payload)
+            received = []
+            while not received or received[-1] != response_messages[-1]:
+                received.append(peer.receive())
+            peer.close()
+            assert peer.receive() == (8, struct.pack("!H", 1000) + b"fixture complete")
+        return origin.results.get(timeout=5), received
+
+    with origin_server(script, pem=pem, subprotocol="another") as origin:
+        assert conversation(origin, ca=public if tls else None) == (
+            request_messages, response_messages)
+        assert origin.accepts == 1
+        with launch_proxy(proxy_backend, directory, POLICY + PATTERN, tls=tls,
+                          upstream_ca=public, inspection={
+                              "block_websocket_request": mode == "block",
+                              "block_websocket_response": mode == "block",
+                          }) as proxy:
+            with socket.socket(socket.AF_UNIX) as denied:
+                denied.settimeout(5)
+                denied.connect(proxy.paths["bob"])
+                if tls:
+                    target = origin.authority
+                    method = "CONNECT"
+                else:
+                    target = f"http://{origin.authority}/socket"
+                    method = "GET"
+                denied.sendall((f"{method} {target} HTTP/1.1\r\n"
+                                f"Host: {origin.authority}\r\n"
+                                "Connection: Upgrade\r\nUpgrade: websocket\r\n"
+                                f"Sec-WebSocket-Key: {KEY}\r\n"
+                                "Sec-WebSocket-Version: 13\r\n\r\n").encode())
+                response, _ = read_head(denied)
+                assert response.split()[1] == "403", response
+            assert origin.accepts == 1
+            assert origin.handshakes.qsize() == 1
+            assert conversation(origin, path=proxy.paths["alice"],
+                                ca=proxy_ca if tls else None) == (
+                                    expected_request, expected_response)
+            assert origin.accepts == 2
+            handshakes = [origin.handshakes.get(timeout=5) for _ in range(2)]
+            for request_line, headers in handshakes:
+                assert request_line == "GET /socket HTTP/1.1"
+                assert headers["host"] == [origin.authority]
+                assert headers["sec-websocket-protocol"] == ["fixture, another"]
+            assert origin.handshakes.empty()
+            if proxy_backend == "rust":
+                starts = proxy.events("proxy.websocket.start")
+                assert len(starts) == 1 and starts[0]["subprotocol"] == "another"
+                findings = [row for row in proxy.events("proxy.websocket.message")
+                            if (row["inspection"].get("finding") or {}).get("rule_name") == "project-id"]
+                assert len(findings) == 2
+                assert {(row["from_client"], row["inspection"]["outcome"], row["dropped"])
+                        for row in findings} == {
+                            (True, "match_blocked" if mode == "block" else "match_logged",
+                             mode == "block"),
+                            (False, "match_blocked" if mode == "block" else "match_logged",
+                             mode == "block"),
+                        }
+        if proxy_backend == "python":
+            findings = [row for row in read_events(directory / "audit.jsonl")
+                        if row["event"] == "security.pattern_scanner"
+                        and row["details"].get("location") == "websocket_message"]
+            assert len(findings) == 2
+            assert {(row["details"]["direction"], row["decision"]) for row in findings} == {
+                ("request", "deny" if mode == "block" else "log"),
+                ("response", "deny" if mode == "block" else "log"),
+            }
+
+
+@pytest.mark.parametrize("tls", [False, True], ids=["ws", "wss"])
+def test_unoffered_origin_subprotocol_is_not_accepted(proxy_backend, tmp_path, tls):
+    """A valid offered selection remains usable; an unoffered reply is challenged."""
+    directory = tmp_path / proxy_backend
+    pem, public, proxy_ca = prepare_tls(directory, tls)
+
+    def script(peer, results):
+        try:
+            results.put(peer.receive())
+        except (EOFError, ConnectionResetError, BrokenPipeError, ssl.SSLError):
+            results.put(None)
+
+    with origin_server(script, pem=pem, subprotocol="unoffered") as origin:
+        with websocket_handshake(origin, ca=public if tls else None) as (_, response, headers):
+            assert response.split()[1] == "101"
+            assert headers["sec-websocket-protocol"] == ["unoffered"]
+        assert origin.results.get(timeout=5) is None
+        with launch_proxy(proxy_backend, directory, POLICY, tls=tls,
+                          upstream_ca=public, inspection={}) as proxy:
+            with websocket_handshake(origin, path=proxy.paths["alice"],
+                                     ca=proxy_ca if tls else None) as (stream, response, headers):
+                status = int(response.split()[1])
+                if status == 101:
+                    assert headers["sec-websocket-protocol"] == ["unoffered"]
+                    stream.sendall(frame(1, b"unoffered-message", masked=True))
+            delivered = origin.results.get(timeout=5)
+            assert origin.accepts == 2
+            assert origin.handshakes.qsize() == 2
+            assert status == 502, (response, headers)
+            assert delivered is None
+            origin.subprotocol = "another"
+            with connect_peer(origin, path=proxy.paths["alice"],
+                              ca=proxy_ca if tls else None,
+                              subprotocol="another") as peer:
+                peer.send(1, b"recovery-message")
+            assert origin.results.get(timeout=5) == (1, b"recovery-message")
+            assert origin.accepts == 3
+            assert origin.handshakes.qsize() == 3
 
 
 @pytest.mark.parametrize("scheme", ["ws", "wss"])
