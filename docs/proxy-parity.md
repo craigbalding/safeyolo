@@ -705,6 +705,67 @@ arbitrary concurrency, out-of-memory behavior, non-Linux hosts, WS/WSS,
 CONNECT/SSH, or the complete production chain, and they do not define a
 throughput target, service-level objective, or memory cap.
 
+### #639 pre-cutover workload result at R
+
+The frozen pre-cutover source candidate is
+`d229907079695cb464e81273f38d46c42522f57d` (R). On Linux aarch64, the
+guarded Cargo release build selected `safeyolo-proxy` SHA-256
+`933b0c9368279416ecd3e92ba60260882f2a328622b787378cdae31a40d073a8`.
+The Python comparator used Python 3.12.14 from `.venv` (interpreter SHA-256
+`0f1c0fc2c82cd4d382b9a2fc6f5ced5264709e1c1195e73a5f6a27fa74c2d0ed`).
+The native captures record `policy_mode: native` and no temporary Python policy adapter. The
+[accepted #639 measurements](https://github.com/craigbalding/safeyolo/issues/639#issuecomment-5794510585)
+remain the baseline for unchanged workload assumptions. These R selections
+use their existing inputs, repetitions, controls, and tolerances.
+
+| Accepted workload family | Selection at R and changed assumption | R result or reused result |
+|---|---|---|
+| Ordinary HTTP/HTTPS and short connections | **Reused.** The selected plain and fresh CONNECT+TLS inputs do not exercise the later approval, gateway, transfer-coding, or changed-authority branches. The short HTTPS workload's import change does not change its wire input. | Retain the accepted 1,536-request HTTP and two 480-request HTTPS comparisons, including their latency, throughput, error, RSS, and FD observations. No new throughput claim. |
+| Server-Sent Events (SSE) and slow consumer | **Affected/re-run.** The fixture now checks exact first/last events and ordering with an 8 KiB client receive buffer. | Python and native each delivered the first event before release, then exact 24,559,635-byte held and 24,576,037-byte slow-reader bodies. Each origin saw its stream and one independent control request: 2/2 correct, zero failed or incomplete per workload and backend. The 7.5-second no-read phase retained an authenticated `/stats` 200 and an allowed control response before release; both completed under the fixture's 5-second bound. External slow-reader RSS before controls → after drain was 123,900 → 123,900 KiB for Python and 31,856 → 34,712 KiB for native; FDs were 11 → 9 and 19 → 18. Linux `/proc` did not supply high-water RSS. |
+| Request streaming and capture/inspection limits | **Affected/re-run.** Native pattern denial now depends on request-hook completion; Python added request-head enforcement for a body that may stream. The shared fixture was added after the accepted slice. | The two selected cases passed on both backends (4/4). Per backend, five intended local denials had zero origin accepts; three permitted 10 MiB + 1 byte streamed requests and three 15/16/17-byte capture-limit requests reached the origin with exact hashes: six correct effects, zero failed or incomplete. The partial-byte, no-body-scan, and retained-capture assertions passed. External samples during the boundary test peaked at 155,400 KiB RSS / 14 FDs for Python and 186,960 KiB / 23 FDs for native. This short sample does not establish a sustained memory bound. |
+| WebSocket (WS/WSS) close and cancellation | **Affected/re-run.** Native relay now forwards each peer's Close and skips cancelled inspection work; the Python comparator gained the close hook. | The selected close and repeated incomplete-compressed-fragment cases passed 16/16 across Python/native and WS/WSS. Each three-session cancellation batch had zero origin data frames, zero completed-message events, and zero anonymous spools retained after Close. External native WS/WSS peaks were 45,708/41,592 KiB RSS and 21/21 FDs. In a diagnostic repeat of the same three-session native batches, FD counts returned to their pre-batch value of 15 after a 12-second idle observation; RSS was 40,068 → 39,904 KiB for WS and 42,116 → 41,124 KiB for WSS. The immediate FD/thread rise was transient within this window, not a lifetime bound. |
+| Raw CONNECT, Secure Shell (SSH), half-close, and abandoned uploads | **Reused.** The tunnel owner and exercised raw-CONNECT behavior are unchanged for these inputs. Later approval deferral and inner-HTTP authority handling are outside these raw tunnel inputs. | Retain the accepted repeated CONNECT, real SSH, half-close, cancelled-upload, and independent resource-reclamation observations. |
+| Service access, OAuth refresh, and approval activity | **Affected/re-run.** Audit confirmation and gateway route/token checks now execute on the request-access and approval path; the native fixture's held-refresh deadline changed. | A release-profile native integration process completed 3/3 concurrent service fixtures with zero failed or incomplete: three request-access and authorization events, one token request and one refresh follower per fixture, 24/24 health controls, and three authenticated `/stats` 200 responses while refresh was held. Paired Python/native risky-route and failed-audit controls passed 4/4; the denied stage delivered zero origin requests and a once grant produced one approved effect per backend. The native test executable was `gateway_workflow-f708795ac6307d3d`, SHA-256 `5dc2e58192075c6ae6486f934f202a575df35b7390e7be49af259140e1f56c4d`; external 10 ms `/proc` samples observed peak/last RSS 89,720/46,556 KiB, FDs 89/9, and threads 47/5. This is a release-profile test process, not the standalone proxy executable. |
+| Quiet, warm-up, repeat, and bounded retention | **Reused.** The measured retention/configuration code and `concurrent-admin-quiet` workload are unchanged for its allowed plain requests. | Retain the [accepted two matched 96-batch runs and 192-batch diagnostic](https://github.com/craigbalding/safeyolo/issues/639#issuecomment-5784648741), including the 1 KiB-per-batch noise tolerance, 5,000-row configured traffic-view cap, post-cap residual uncertainty, and unmeasured platforms. No new retention claim. |
+
+To reproduce the affected selection, run from a clean checkout of R on Linux
+aarch64 with the locked `uv` environment and Rust 1.94.0 available. Use a new
+empty output directory for each capture. The selected run used 30-second SSE
+streams, the existing 10 MiB streaming threshold, three cancellation sessions
+per WS/WSS case, and three concurrent service fixtures. The command groups
+below omit the accepted HTTP/HTTPS, raw CONNECT/SSH, and retention reruns.
+
+```sh
+CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=20 scripts/cargo_with_space.sh build --locked --release --manifest-path proxy/Cargo.toml
+out=$(mktemp -d /tmp/safeyolo-639-r.XXXXXX)
+uv run --frozen python -m tests.proxy_migration.run capture --backend python --python-source "$PWD" --python-executable "$PWD/.venv/bin/python" --workload stream-control --workload stream-slow-admin --stream-seconds 30 --evidence "$out/python-sse" --output "$out/python-sse.json"
+uv run --frozen python -m tests.proxy_migration.run capture --backend rust --rust-binary "$PWD/proxy/target/release/safeyolo-proxy" --rust-build-profile release --fixture-from "$out/python-sse.json" --workload stream-control --workload stream-slow-admin --stream-seconds 30 --evidence "$out/rust-sse" --output "$out/rust-sse.json"
+export SAFEYOLO_RUST_PROXY="$PWD/proxy/target/release/safeyolo-proxy" SAFEYOLO_RUST_NATIVE_ONLY=1
+uv run --frozen pytest -q tests/proxy_migration/test_request_streaming_inspection.py::test_request_inspection_before_and_after_streaming_boundary tests/proxy_migration/test_request_streaming_inspection.py::test_capture_limit_does_not_limit_buffered_inspection --proxy-backend python --proxy-backend rust
+uv run --frozen pytest -q tests/proxy_migration/test_websocket_contract.py::test_idle_control_ping_pong_and_close_are_forwarded_exactly tests/proxy_migration/test_websocket_contract.py::test_origin_close_after_client_close tests/proxy_migration/test_websocket_contract.py::test_missing_origin_close_does_not_become_clean_reply tests/proxy_migration/test_websocket_contract.py::test_repeated_compressed_fragment_cancellation_records_process_resources --proxy-backend python --proxy-backend rust
+uv run --frozen pytest -q tests/proxy_migration/test_gateway_risk_approval.py::test_running_gateway_prompt_requires_audit_append tests/proxy_migration/test_gateway_risk_approval.py::test_running_gateway_risk_approval_and_once_grant --proxy-backend python --proxy-backend rust
+unset SAFEYOLO_RUST_PROXY SAFEYOLO_RUST_NATIVE_ONLY
+CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=20 scripts/cargo_with_space.sh test --locked --release --manifest-path proxy/Cargo.toml --test gateway_workflow repeated_service_oauth_activity_runs_concurrently -- --exact --nocapture
+CARGO_BUILD_JOBS=1 SAFEYOLO_CARGO_RESERVE_GIB=20 scripts/cargo_with_space.sh build --locked --release --manifest-path proxy/Cargo.toml
+```
+
+The request-streaming and service-process samples read Linux
+`/proc/<pid>/{status,fd,task}` every 10 ms while each process was alive.
+The WS/WSS fixture records the same process counters before, during, and after
+each cancelled session. For the idle diagnostic, a temporary 12-second wait
+was inserted immediately before that fixture's final `batch_after` sample;
+the normal fixture was restored after the two native cases passed. These
+samples do not isolate allocator retention from every live buffer. The final
+Cargo build restores the standalone release executable after Cargo's test
+build relinks the target path; check its SHA-256 before another proxy workload.
+
+The [selected #621 dual-backend Linux result at `e46b25b8`](https://github.com/craigbalding/safeyolo/issues/620#issuecomment-5850425537)
+remains applicable to R: the subsequent PR #802 changed its installed launcher,
+while `proxy/` and `tests/proxy_migration/` did not change. This M1 selection
+does not repeat that suite or claim #637's installed pilot, #640's final
+post-deletion release candidate, non-Linux resources, or a universal memory
+ceiling.
+
 ## Run the initial development slice
 
 These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain
