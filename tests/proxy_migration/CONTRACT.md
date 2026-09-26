@@ -28,6 +28,21 @@ The shared assertions cover:
 
 - Two simultaneously active agent listeners, alternating allowed and denied
   HTTP requests, forged agent/request identifiers, and evidence attribution.
+- A shared network-policy table sends paired requests on two concurrent,
+  persistent agent sockets. It checks agent and global exact and wildcard
+  hosts, agent-wide denial over global exact allowance, endpoint and bare-host
+  conflicts, omitted and explicit HTTP port 80, and a directly reached
+  permitted loopback endpoint. In the parent-route case, the owned parent
+  records only expected allowed authorities. Denied and approval-required rows
+  have no parent request. A separate body-bearing case shows that JSON agent
+  claims and forged identity headers cannot change trusted listener attribution.
+- Before operator approval, the proxy returns 428 with no origin contact. The
+  real operator client grants Alice's exact host and port. A separate client
+  retry succeeds. The documented host-removal CLI revokes that grant. A policy
+  reload changes the next request on the same live connection to 403. A
+  separate opaque CONNECT case checks 428 admission, zero origin contact before
+  retry, an operator grant, and Bob's continued isolation. The intercepted CONNECT and
+  inner-request case below checks the separate HTTP decision after admission.
 - The origin-controlled request-ID cases join each HTTP response ID to its own
   trusted-agent runtime event, complete `/explain` audit result, and untruncated
   `/trace` decision. CONNECT admission IDs resolve to scoped audit and trace
