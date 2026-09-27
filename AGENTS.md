@@ -4,6 +4,9 @@ This file governs agents working on the SafeYolo repository. It complements,
 and does not replace, the [sandbox baseline](docs/AGENTS.md) that SafeYolo host
 scripts stage into running agents.
 
+Keep `/tmp` for small, throwaway files; use disk-backed storage for repositories
+and large build or test artifacts, then clean them up.
+
 ## Security boundaries and operator policy
 
 Follow the existing [security model](SECURITY.md#security-model): the host and
