@@ -70,9 +70,13 @@ class Parent(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, upstream_parent: str | None, ca_file: Path | None):
+    def __init__(
+        self, upstream_parent: str | None, ca_file: Path | None,
+        p2_ssh_port_file: Path | None = None,
+    ):
         self.upstream_parent = urlsplit(upstream_parent) if upstream_parent else None
         self.ca_file = ca_file
+        self.p2_ssh_port_file = p2_ssh_port_file
         if (
             self.upstream_parent
             and self.upstream_parent.scheme == "https"
@@ -104,6 +108,12 @@ class Request(BaseHTTPRequestHandler):
 
     def _peer(self, host: str, port: int, *, tls_origin: bool) -> tuple[socket.socket, bool]:
         fixture_host = host.rstrip(".").lower()
+        if (tls_origin and fixture_host == "failing.test" and port == 22
+                and self.server.p2_ssh_port_file):
+            ssh_port = int(self.server.p2_ssh_port_file.read_text().strip())
+            if not 1 <= ssh_port <= 65535:
+                raise ValueError("invalid P2 SSH port")
+            return _open_peer(SINKHOLE_HOST, ssh_port), False
         if fixture_host in SINKHOLE_HOSTS:
             sinkhole_port = (
                 SINKHOLE_HOST_HTTPS_PORTS.get(fixture_host, SINKHOLE_HTTPS_PORT)
@@ -246,8 +256,9 @@ def main() -> None:
     parser.add_argument("--port-file", type=Path, required=True)
     parser.add_argument("--parent")
     parser.add_argument("--ca-file", type=Path)
+    parser.add_argument("--p2-ssh-port-file", type=Path)
     args = parser.parse_args()
-    with Parent(args.parent, args.ca_file) as server:
+    with Parent(args.parent, args.ca_file, args.p2_ssh_port_file) as server:
         args.port_file.write_text(f"{server.server_address[1]}\n")
         server.serve_forever()
 

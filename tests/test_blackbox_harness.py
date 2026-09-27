@@ -57,6 +57,23 @@ def test_installed_native_vm_lane_fails_before_instance_setup_without_packaged_b
     assert not config_dir.exists()
 
 
+@pytest.mark.parametrize("options", [
+    ["--expect-platform", "vz", "--proxy-impl", "rust", "--p2"],
+    ["--expect-platform", "kvm", "--proxy-impl", "python", "--p2"],
+    ["--expect-platform", "kvm", "--proxy-impl", "rust", "--p2", "--kvm-p1"],
+])
+def test_linux_p2_rejects_a_different_lane_before_setup(tmp_path, options):
+    config_dir = tmp_path / "test-instance"
+    result = subprocess.run(
+        [str(Path(__file__).parent / "blackbox" / "run-tests.sh"), *options],
+        env={**os.environ, "SAFEYOLO_TEST_CONFIG_DIR": str(config_dir)},
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "--p2 requires --expect-platform kvm|systrap --proxy-impl rust" in result.stderr
+    assert not config_dir.exists()
+
+
 def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     """The compatibility lane must not kill unrelated process names."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()

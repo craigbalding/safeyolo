@@ -7,11 +7,15 @@ import sys
 import threading
 
 
-def bridge(path, authority):
-    with socket.socket(socket.AF_UNIX) as stream:
+def bridge(path, authority, *, tcp_proxy=False, test_context=None):
+    if test_context and any(character in test_context for character in "\r\n"):
+        raise ValueError("test context must fit one CONNECT header")
+    with socket.socket(socket.AF_INET if tcp_proxy else socket.AF_UNIX) as stream:
         stream.settimeout(5)
-        stream.connect(path)
-        stream.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
+        stream.connect(("127.0.0.1", int(path)) if tcp_proxy else path)
+        context_header = f"X-SafeYolo-Test-Context: {test_context}\r\n" if test_context else ""
+        stream.sendall((f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+                        f"{context_header}\r\n").encode())
         head = bytearray()
         while not head.endswith(b"\r\n\r\n"):
             byte = stream.recv(1)
@@ -43,5 +47,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("socket")
     parser.add_argument("authority")
+    parser.add_argument("--tcp-proxy", action="store_true", help="Use the guest localhost proxy port")
+    parser.add_argument("--test-context", help="Attach the caller's finite test context to CONNECT")
     arguments = parser.parse_args()
-    bridge(arguments.socket, arguments.authority)
+    bridge(arguments.socket, arguments.authority, tcp_proxy=arguments.tcp_proxy,
+           test_context=arguments.test_context)

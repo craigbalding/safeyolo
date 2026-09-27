@@ -247,6 +247,10 @@ class SinkholeHandler(BaseHTTPRequestHandler):
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")
 
+        p2_fixture = getattr(self.server, "p2_fixture", None)
+        if p2_fixture is not None and host == "failing.test" and p2_fixture.handle(self):
+            return
+
         # Route to handler
         handler = HANDLERS.get(host, DEFAULT_HANDLER)
         # HEAD describes the GET representation, while the observer keeps the
@@ -302,9 +306,14 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        p2_fixture = getattr(self.server, "p2_fixture", None)
 
         if parsed.path == "/health":
             self._send_json({"status": "ok"})
+        elif parsed.path == "/p2/health" and p2_fixture is not None:
+            self._send_json({"status": "ready", "directory": str(p2_fixture.directory)})
+        elif parsed.path.startswith("/p2/state/") and p2_fixture is not None:
+            self._send_json(p2_fixture.state(parsed.path.removeprefix("/p2/state/")))
         elif parsed.path == "/requests":
             host = query.get("host", [None])[0]
             since = query.get("since", [None])[0]
@@ -323,9 +332,16 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        p2_fixture = getattr(self.server, "p2_fixture", None)
         if self.path == "/requests/clear":
             clear_requests()
             self._send_json({"status": "cleared"})
+        elif self.path.startswith("/p2/release/") and p2_fixture is not None:
+            marker = self.path.removeprefix("/p2/release/")
+            if p2_fixture.release(marker):
+                self._send_json({"status": "released"})
+            else:
+                self._send_json({"error": "stream not found"}, 404)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -358,6 +374,7 @@ def run_servers(
     cert_path: str = "/certs/sinkhole.crt",
     key_path: str = "/certs/sinkhole.key",
     extra_https_certs: Optional[list] = None,
+    p2_directory: Path | None = None,
 ):
     """Run sinkhole (HTTP + HTTPS) and control API servers.
 
@@ -376,6 +393,12 @@ def run_servers(
     """
     # HTTP sinkhole (for non-TLS tests or fallback)
     http_server = SSLSafeThreadingHTTPServer(("0.0.0.0", http_port), SinkholeHandler)
+    p2_fixture = None
+    if p2_directory is not None:
+        from p2_fixture import P2Fixture
+
+        p2_fixture = P2Fixture(p2_directory)
+    http_server.p2_fixture = p2_fixture
     log.info(f"Sinkhole HTTP server listening on port {http_port}")
 
     # HTTPS sinkhole (for proxied HTTPS requests - ground truth testing)
@@ -383,6 +406,7 @@ def run_servers(
     ssl_context = load_tls_cert(Path(cert_path), Path(key_path))
     if ssl_context:
         https_server = SSLSafeThreadingHTTPServer(("0.0.0.0", https_port), SinkholeHandler)
+        https_server.p2_fixture = p2_fixture
         https_server.socket = ssl_context.wrap_socket(https_server.socket, server_side=True)
         log.info(f"Sinkhole HTTPS server listening on port {https_port}")
 
@@ -402,6 +426,7 @@ def run_servers(
 
     # Control API (threading for concurrent health checks during tests)
     control = NoReverseDNSThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
+    control.p2_fixture = p2_fixture
     log.info(f"Control API listening on port {control_port}")
 
     # Run servers in background threads
@@ -443,6 +468,7 @@ if __name__ == "__main__":
     parser.add_argument("--control-port", type=int, default=9999, help="Port for control API")
     parser.add_argument("--cert", type=str, default="/certs/sinkhole.crt", help="TLS certificate path")
     parser.add_argument("--key", type=str, default="/certs/sinkhole.key", help="TLS key path")
+    parser.add_argument("--p2-dir", type=Path, help="Enable finite installed guest P2 fixtures in this directory")
     parser.add_argument(
         "--extra-cert", action="append", default=[],
         metavar="NAME:PORT:CERT:KEY",
@@ -465,4 +491,5 @@ if __name__ == "__main__":
         cert_path=args.cert,
         key_path=args.key,
         extra_https_certs=extras,
+        p2_directory=args.p2_dir,
     )
