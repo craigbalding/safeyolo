@@ -366,16 +366,18 @@ credential inspection and injection, WebMITM, and complete agent management
 remain incomplete. Native listeners include the supplied JSON entries and
 the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
 
-`./install.sh` builds `proxy/target/release/safeyolo-proxy` through the Cargo
-space guard and installs a wheel containing that exact native executable. The
-installed binary is selected by the generated native default; the wheel keeps
+`./install.sh` builds `proxy/target/release/safeyolo-proxy` with Cargo and
+installs a wheel containing that exact native executable. The installer does
+not impose the factory host's disk-space reserve. The installed binary is
+selected by the generated native default; the wheel keeps
 the Python CLI and comparator dependencies so an operator can explicitly set
 `proxy.backend: python` for rollback.
 
 ### Cargo disk-space guard and target retirement
 
-Use `scripts/cargo_with_space.sh` for Rust builds and tests. It reserves 20 GiB
-by default on the filesystem containing `CARGO_TARGET_DIR` (or `./target`) and
+Use `scripts/cargo_with_space.sh` for factory Rust builds and tests on shared
+hosts. It reserves 20 GiB by default on the filesystem containing
+`CARGO_TARGET_DIR` (or `./target`) and
 checks again every 15 seconds while Cargo runs. It refuses a new build below
 that reserve. If a running command crosses the reserve, it finishes that command
 then exits 75 so callers do not dispatch another batch. Set

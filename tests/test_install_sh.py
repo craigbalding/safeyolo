@@ -1,6 +1,7 @@
 """Hermetic acceptance tests for the source checkout installer."""
 
 import os
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -284,15 +285,50 @@ def test_install_avoids_empty_nounset_array_expansion() -> None:
     assert 'uv tool install "${tool_args[@]}"' in source
 
 
-def test_install_builds_and_packages_the_locked_release_proxy() -> None:
-    """Normal source installs produce the artifact consumed by wheel builds."""
-    source = (REPO_ROOT / "install.sh").read_text()
+def test_install_builds_native_proxy_without_factory_disk_reserve(tmp_path: Path) -> None:
+    """A source install can start its native build below the factory's reserve."""
+    checkout = tmp_path / "checkout"
+    (checkout / "proxy").mkdir(parents=True)
+    (checkout / "scripts").mkdir()
+    for relative in (
+        "install.sh",
+        "pyproject.toml",
+        "proxy/Cargo.toml",
+        "scripts/cargo_with_space.sh",
+    ):
+        shutil.copy2(REPO_ROOT / relative, checkout / relative)
 
-    assert 'SAFEYOLO_CARGO_RESERVE_GIB=20' in source
-    assert '"$REPO_ROOT/scripts/cargo_with_space.sh"' in source
-    assert 'build --locked --release --manifest-path proxy/Cargo.toml' in source
-    assert 'proxy/target/release/safeyolo-proxy' in source
-    assert 'tool_args+=("$python_interpreter" "$REPO_ROOT")' in source
+    fake_bin, log, state = make_fake_uv(tmp_path)
+    cargo_log = tmp_path / "cargo.log"
+    fake_cargo = fake_bin / "cargo"
+    fake_cargo.write_text(
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" >> "$FAKE_CARGO_LOG"\n'
+        "mkdir -p proxy/target/release\n"
+        'printf "#!/bin/sh\\nexit 0\\n" > proxy/target/release/safeyolo-proxy\n'
+        "chmod +x proxy/target/release/safeyolo-proxy\n"
+    )
+    fake_cargo.chmod(0o755)
+    fake_df = fake_bin / "df"
+    fake_df.write_text(
+        "#!/bin/bash\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'testfs 2097152 1048576 1048576 50%% /tmp\\n'\n"
+    )
+    fake_df.chmod(0o755)
+
+    result = run_installer(
+        checkout,
+        fake_bin,
+        log,
+        state,
+        SAFEYOLO_SKIP_RUST_BUILD="0",
+        FAKE_CARGO_LOG=str(cargo_log),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert cargo_log.read_text() == "build --locked --release --manifest-path proxy/Cargo.toml\n"
+    assert (checkout / "proxy/target/release/safeyolo-proxy").is_file()
 
 
 def test_wheel_maps_the_built_native_proxy_into_the_runtime_package() -> None:

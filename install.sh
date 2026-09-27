@@ -49,9 +49,7 @@ build_native_proxy() {
   echo "install.sh: building the release Rust proxy" >&2
   if ! (
     cd "$REPO_ROOT"
-    SAFEYOLO_CARGO_RESERVE_GIB=20 \
-      "$REPO_ROOT/scripts/cargo_with_space.sh" \
-      build --locked --release --manifest-path proxy/Cargo.toml
+    cargo build --locked --release --manifest-path proxy/Cargo.toml
   ); then
     echo "install.sh: Rust proxy build failed; the Python CLI was not installed" >&2
     return 1
