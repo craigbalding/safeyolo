@@ -999,6 +999,9 @@ class TestAgentAdd:
         """add calls plat.prepare_rootfs and saves metadata (no host script)."""
         folder = tmp_path / "project"
         folder.mkdir()
+        (config_dir / "config.yaml").write_text(
+            "version: 1\nsandbox: true\nproxy:\n  port: 8180\n  admin_port: 9090\n"
+        )
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
         mock_platform = _platform()
@@ -1016,6 +1019,8 @@ class TestAgentAdd:
         assert result.exit_code == 0
         mock_platform.prepare_rootfs.assert_called_once_with("test")
         assert "added" in result.output.lower()
+        assert "Proxy: http://127.0.0.1:8080 (via in-guest forwarder)" in result.output
+        assert "Proxy: http://127.0.0.1:8180" not in result.output
 
     def test_idempotent_readd_with_same_config(self, runner, config_dir, tmp_path):
         """Re-adding with same folder + no host-script is idempotent (runs agent)."""

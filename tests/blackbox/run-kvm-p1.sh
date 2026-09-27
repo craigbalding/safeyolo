@@ -10,7 +10,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
-FROZEN_R=0af5c7e22d5e8a45fc321e24eab8355414358f10
+FROZEN_R=a1f85d90bacdb271fc9681847ad2202b46c0e4ad
 
 if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
     echo "ERROR: KVM P1 requires the selected Ubuntu x86_64 guest" >&2

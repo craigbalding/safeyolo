@@ -15,6 +15,34 @@ from urllib.parse import urlsplit
 REQUEST_ID = re.compile(r"req-[0-9a-f]{32}\Z")
 GUEST_SOCKET = Path("/safeyolo/proxy/proxy.sock")
 AGENT_API = "http://_safeyolo.proxy.internal"
+GUEST_PROXY = "http://127.0.0.1:8080"
+
+
+def is_mounted_forwarder(argv: list[str]) -> bool:
+    """Recognize the guest listener and the mounted per-agent UDS route."""
+    if len(argv) != 3 or Path(argv[0]).name != "socat":
+        return False
+    listener, *options = argv[1].split(",")
+    return (
+        listener == "TCP-LISTEN:8080"
+        and "bind=127.0.0.1" in options
+        and argv[2].split(",", 1)[0] == f"UNIX-CONNECT:{GUEST_SOCKET}"
+    )
+
+
+def forwarder_identity(proc_root: Path = Path("/proc")) -> dict:
+    """Observe the running guest TCP-to-agent-UDS forwarder."""
+    for pid_dir in proc_root.iterdir():
+        if not pid_dir.name.isdecimal():
+            continue
+        try:
+            argv = [part.decode() for part in (pid_dir / "cmdline").read_bytes().split(b"\0") if part]
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            # A process may exit while /proc is enumerated.
+            continue
+        if is_mounted_forwarder(argv):
+            return {"pid": int(pid_dir.name), "argv": argv}
+    raise AssertionError("guest localhost proxy has no running SafeYolo UDS forwarder")
 
 
 def request(proxy_host: str, proxy_port: int, target: str, headers: dict[str, str]) -> dict:
@@ -92,9 +120,11 @@ def main() -> None:
     assert re.fullmatch(r"p1-[0-9a-f]{32}", args.marker)
 
     proxy = urlsplit(os.environ["HTTP_PROXY"])
+    assert os.environ["HTTP_PROXY"] == GUEST_PROXY
     assert proxy.scheme == "http" and proxy.hostname and proxy.port
     assert GUEST_SOCKET.is_socket(), f"missing guest bridge: {GUEST_SOCKET}"
     socket_stat = GUEST_SOCKET.stat()
+    forwarder = forwarder_identity()
     token = Path("/app/agent_token").read_text().strip()
     assert token and "\n" not in token and "\r" not in token
 
@@ -121,6 +151,7 @@ def main() -> None:
                 "guest_socket": str(GUEST_SOCKET),
                 "guest_socket_mode": oct(stat.S_IMODE(socket_stat.st_mode)),
                 "guest_proxy": os.environ["HTTP_PROXY"],
+                "forwarder": forwarder,
                 "allow": allowed,
                 "deny": denied,
             },

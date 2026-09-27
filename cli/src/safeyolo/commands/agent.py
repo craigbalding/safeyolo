@@ -67,6 +67,7 @@ log = logging.getLogger("safeyolo.agent")
 console = Console()
 
 DEFAULT_AGENT_MEMORY_MB = 4096
+GUEST_PROXY_PORT = 8080
 
 def write_event(
     event: str,
@@ -816,15 +817,13 @@ def _run_agent_impl(
     # Guest's HTTP_PROXY port. Both platforms use the in-guest forwarder
     # on a fixed port (8080); the host bridge decouples it from whatever
     # port mitmproxy is actually on.
-    guest_proxy_port = 8080
-
     def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
             name=name,
             workspace_path=str(workspace_path),
             agent_args=agent_args_str,
             extra_env=extra_env,
-            proxy_port=guest_proxy_port,
+            proxy_port=GUEST_PROXY_PORT,
             gateway_ip=gateway_ip,
             guest_ip=guest_ip,
             attribution_ip=attribution_ip,
@@ -1526,8 +1525,9 @@ def add(  # DOC: README.md, docs/AGENTS.md
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    cfg = load_config()
-    panel_lines.append(f"Proxy: http://127.0.0.1:{cfg.get('proxy', {}).get('port', 8080)} (via in-guest forwarder)")
+    panel_lines.append(
+        f"Proxy: http://127.0.0.1:{GUEST_PROXY_PORT} (via in-guest forwarder)"
+    )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     event_details: dict = {"folder": folder_str}
