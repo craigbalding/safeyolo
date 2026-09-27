@@ -29,8 +29,8 @@ Works with Claude Code, OpenAI Codex, and other coding agents.
   request history and test context. Agents can inspect their policy and block
   reasons to resolve problems.
 
-SafeYolo is **pre-v1** and currently installed from source. It builds on
-[mitmproxy](https://mitmproxy.org/), with microVM patterns informed by
+SafeYolo is **pre-v1** and currently installed from source. The installed proxy
+is a Rust executable. Its microVM patterns are informed by
 [Shuru](https://github.com/superhq-ai/shuru/).
 
 ## Quick Start
