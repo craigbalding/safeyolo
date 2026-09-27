@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
-FROZEN_R=a1f85d90bacdb271fc9681847ad2202b46c0e4ad
+FROZEN_R=729b48abd2920c424e6513ef0c2eaa6a1f306299
 PLATFORM="${1:-}"
 
 case "$PLATFORM" in
@@ -58,6 +58,8 @@ export SAFEYOLO_CONFIG_DIR="$PILOT_DIR/source-instance"
 export SAFEYOLO_TEST_CONFIG_DIR="$PILOT_DIR/test-instance"
 export SAFEYOLO_TEST_AGENT=bbtest
 export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="$PILOT_DIR/observations"
+export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_TEST_CONFIG_DIR/data/coord"
+export SAFEYOLO_NATS_TEST_INSTANCE="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 export CARGO_BUILD_JOBS=1
 unset SAFEYOLO_RUST_PROXY SAFEYOLO_PYTHON_SOURCE SAFEYOLO_TEST_CERT_DIR SAFEYOLO_TEST_KEY_DIR
 mkdir -p "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
@@ -86,6 +88,7 @@ cleanup() {
         done
     done
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/data/proxy-rust.json" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_COORD_DATA_DIR/nats/nats.pid.json" ] || cleanup_failed=1
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/sinkhole.pid" ] || cleanup_failed=1
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/native-parent.pid" ] || cleanup_failed=1
     if [ "$cleanup_failed" -ne 0 ]; then

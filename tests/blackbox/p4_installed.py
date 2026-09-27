@@ -17,9 +17,10 @@ from pathlib import Path
 
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _agent_map, _sha256
-from kvm_p1_ingress import FROZEN_R, installed_identity, runsc_identity
+from kvm_p1_ingress import installed_identity, runsc_identity
 from p2_installed_linux import control
 
+FROZEN_R = "729b48abd2920c424e6513ef0c2eaa6a1f306299"
 PEER = "bbpeer"
 FIXTURE = "failing.test"
 
@@ -114,7 +115,7 @@ def runtime_identity(config_dir: Path, cli: str, binary: str, checkout: Path, ou
         ],
         timeout=40,
     )
-    return installed_identity(json.loads(output.read_text()), checkout)
+    return installed_identity(json.loads(output.read_text()), checkout, frozen_revision=FROZEN_R)
 
 
 def wait_stopped(config_dir: Path) -> None:
@@ -203,7 +204,7 @@ def main() -> None:
     checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == FROZEN_R
     first_runtime = json.loads(args.runtime.read_text())
-    first_identity = installed_identity(first_runtime, checkout)
+    first_identity = installed_identity(first_runtime, checkout, frozen_revision=FROZEN_R)
     native = json.loads((config_dir / "data/native.json").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
     assert Path(native["upstream_ca_file"]).is_file()

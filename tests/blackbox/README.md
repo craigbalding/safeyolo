@@ -451,7 +451,7 @@ separate host execution.
 ### Finite installed P3 consumer pilot for issue #637
 
 Run `run-p3.sh` on an operator-owned disposable host with a clean checkout that
-contains frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`.
+contains frozen revision `729b48abd2920c424e6513ef0c2eaa6a1f306299`.
 Use a disposable Ubuntu systrap host or a physical Apple Silicon Mac with
 Virtualization.framework. The host needs `uv`, `git`, Python 3, the
 prerequisites for `run-lane.sh`, and working loopback TCP bind and connect.
@@ -462,6 +462,7 @@ Consumer requests in the pilot use its owned fixture origin. Setup may
 download the pinned install dependencies. The lane preserves the configured
 parent proxy and certificate
 authority for other destinations.
+The installed CLI starts owned Coord in the disposable test instance.
 
 From the repository root on the selected host, run the command for its actual
 guest mechanism:
@@ -475,9 +476,9 @@ guest mechanism:
 ```
 
 The wrapper installs frozen source R in an isolated `uv` tool directory. It
-starts a disposable native proxy, two real guests, an owned HTTP origin, and
-the test instance's Coord backing service. Guest calls use each guest's local
-proxy forwarder. The selection checks service approval and exact vault
+starts a disposable native proxy, two real guests, and an owned HTTP origin.
+Guest calls use each guest's local proxy forwarder. The selection checks
+service approval and exact vault
 credential delivery, a stolen gateway token from the second guest, contract
 binding and one-use route approval, test-context and own trace/flow access,
 Coord history and attention resolution, collaboration approval and closure,
@@ -507,13 +508,15 @@ inspect the procedure without starting the disposable instance.
 Run `run-p4.sh` on an operator-owned disposable Ubuntu systrap host or a
 physical Apple Silicon Mac with Virtualization.framework. Use a clean
 checkout that contains frozen revision
-`a1f85d90bacdb271fc9681847ad2202b46c0e4ad`. The host needs `uv`,
+`729b48abd2920c424e6513ef0c2eaa6a1f306299`. The host needs `uv`,
 `git`, Python 3, the `run-lane.sh` bootstrap prerequisites, and loopback TCP
 bind and connect. The Linux operator account needs noninteractive `sudo` for
 bootstrap. Local test ports 8180, 8181, 9190, 18080, 18443–18452, and
 19999 must be free. The disposable proxy and guests must be stopped before
 the command. Setup may download pinned install dependencies. The lane keeps
 the configured parent proxy and certificate authority for nonfixture traffic.
+The wrapper gives the installed CLI's owned Coord service a disposable data
+directory and checks its cleanup.
 
 From the repository root on the selected host, run the command for its guest
 mechanism:
@@ -549,8 +552,9 @@ observations after independent review. `status: passed` and `cleanup: stopped`
 mean the runner and cleanup completed; they do not mark P4 accepted. The
 wrapper stops both guests, the proxy, and owned fixture processes. If cleanup
 fails, run the exact three cleanup commands printed by the wrapper. Check that
-the guest PID files, native proxy receipt, and agent sockets are gone before reusing
-the host. The disposable directory remains available for diagnosis.
+the guest PID files, native proxy receipt, and Coord NATS PID file are gone.
+Check that agent sockets are gone before reusing the host. The disposable
+directory remains available for diagnosis.
 
 The approved Bristol physical Mac route currently cannot bind or connect
 loopback TCP. The wrapper checks that prerequisite before installation. A VZ
