@@ -25,8 +25,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy as _launch_proxy
 from tests.proxy_migration.harness import read_events
 from tests.proxy_migration.scenarios import POLICY
@@ -213,7 +213,7 @@ def prepare_tls(directory, tls):
     if not tls:
         return None, None, None
     pem, public = origin_certificate(directory)
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     return pem, public, directory / "ca/mitmproxy-ca-cert.pem"
 
 

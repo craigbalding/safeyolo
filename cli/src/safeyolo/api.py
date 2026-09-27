@@ -222,11 +222,11 @@ class AdminAPI:
         except httpx.RemoteProtocolError:
             raise APIError(
                 "Server disconnected unexpectedly - admin API may have crashed. "
-                "Check ~/.local/state/safeyolo/mitmproxy.log for details."
+                "Run safeyolo doctor for details."
             )
         except httpx.ReadError:
             raise APIError(
-                f"Connection lost while reading response from {self.base_url}. Check ~/.local/state/safeyolo/mitmproxy.log for errors."
+                f"Connection lost while reading response from {self.base_url}. Run safeyolo doctor for details."
             )
         except httpx.TimeoutException:
             raise APIError(

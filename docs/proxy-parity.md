@@ -482,22 +482,22 @@ silently reduce accepted message sizes to a library default.
 | D73 | Before this repair, the Python proxy forwarded an origin's WebSocket 101 that selected a subprotocol absent from the client's offer. The client saw the invalid selection, and the origin received an application message. Native rejected the same response before forwarding the 101. | The Python response hook now returns a correlated local 502 and disables the pending WebSocket relay for an unoffered selection. It still permits an origin to select the client's second offered protocol. The shared [WS/WSS fixture](../tests/proxy_migration/test_websocket_contract.py) checks the invalid response, zero forwarded application messages, a valid next handshake, and bidirectional inspected traffic on both backends. Independent acceptance remains pending. |
 | D74 | Both proxies folded repeated Authorization fields before checking for a reserved gateway token. When an ordinary value preceded a token, the gateway missed it and allowed the request to reach an owned origin with the token in its Authorization fields. A comma-separated ordinary value had the same effect. Both also forwarded a token after a tab instead of a space. At PR #795's first head, Python additionally forwarded a token after UTF-8 line or paragraph separator; Rust forwarded one after raw NEL (0x85) or NBSP (0xA0). Both selected a valid gateway Authorization while forwarding a second raw token in `X-Api-Key` to the origin. | The corrected gateway fallback checks original header bytes with one separator rule: comma, source-recognized single-byte whitespace, or UTF-8 Unicode whitespace before `sgw_`. Gateway selection also rejects more than one raw header field carrying a reserved token. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks both field orders, comma, tab, the four review-found byte forms, the second-token case, a plain duplicate-value control, and zero upstream accepts on denial. A valid gateway request still replaces its token with the vaulted credential; an ordinary signed target keeps its raw path, query order and body. Independent acceptance remains pending. |
 
-## Development CLI process selection
+## Native CLI process ownership
 
-The [CLI development workflow](DEVELOPERS.md#rust-proxy-development-backend)
-selects the packaged Rust executable and generated native JSON configuration
-by default through `proxy.backend: rust`. Set `proxy.backend: python`
-explicitly for the retained comparator or operator rollback. Start, status and
-stop use the native readiness marker and a separate process lifetime record; no
-launch failure selects Python automatically. Rust shutdown waits for process
-exit.
+The [CLI development workflow](DEVELOPERS.md#native-proxy-development)
+selects the packaged Rust executable and generated native JSON configuration.
+Existing `proxy.backend: rust` settings remain valid. This package rejects a
+Python backend setting; the historical comparator runs from a pinned separate
+checkout, and explicit rollback installs that prior package. Start, status and
+stop use the native readiness marker and a separate process lifetime record.
+Rust shutdown waits for process exit.
 
-The source installer now builds the locked release executable with the Cargo
-space guard and packages it into the installed CLI. The default instance
-configuration points at a generated native JSON file whose policy, state,
-listener map, audit and readiness paths remain under the existing instance
-directories. The wheel retains the Python CLI and comparator dependencies for
-explicit rollback; it does not authorize deleting those paths.
+The source installer builds the locked release executable and packages it into
+the installed CLI. The default instance configuration points at a generated
+native JSON file whose policy, state, listener map, audit and readiness paths
+remain under the existing instance directories. The wheel retains the Python
+CLI; historical comparator and rollback dependencies live in their selected
+prior checkout or package.
 
 The shared CLI admin client selects the recorded native IPv4 loopback endpoint
 and credentials. It verifies process identity before requests and follows a
@@ -770,12 +770,13 @@ does not repeat that suite or claim #637's installed pilot, #640's final
 post-deletion release candidate, non-Linux resources, or a universal memory
 ceiling.
 
-## Run the initial development slice
+## Run the native development slice
 
 These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain
 specified in [proxy/rust-toolchain.toml](../proxy/rust-toolchain.toml). Run from
 the repository root. The fixtures create isolated policy files, sockets and
 local upstream servers. They do not start an operator's configured instance.
+Set `SAFEYOLO_RUST_PROXY` to the executable built from this checkout.
 
 ```sh
 uv sync --frozen --group dev
@@ -783,35 +784,29 @@ cd proxy
 cargo build --locked
 cargo test --locked
 cd ..
-uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
-SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
-uv run --frozen pytest -q tests/test_rust_temporary_policy.py
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+  uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 ```
 
 The Rust fixture launches `safeyolo-proxy --config PATH`. The JSON configuration
-provides `listeners` with `agent_id` and `socket_path`, `readiness_file` and
-`event_log`. Select exactly one of `policy_file` for native network policy or
-`temporary_policy_socket` for the separately named
-[temporary network-policy adapter](../tools/proxy_migration/temporary_policy.py).
-The native-policy fixture starts no Python adapter. Optional
+provides `listeners` with `agent_id` and `socket_path`, `readiness_file`,
+`event_log`, and `policy_file` for native network policy. Optional
 `parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
 `tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
 `SIGHUP` reads the configuration again. `SIGTERM` initiates shutdown.
 
-The adapter socket is private host state and must remain outside agent mounts.
-The adapter receives header names and request metadata, never header values or
-body bytes. It uses the existing Python policy decision point in blocking mode.
-It does not supply credential inspection, service operations or the complete
-NetworkGuard response and approval workflow.
+The optional historical comparator uses the pinned source commit named in
+[the migration contract](../tests/proxy_migration/CONTRACT.md). Create that
+checkout and its Python environment outside this checkout. Set
+`SAFEYOLO_PYTHON_SOURCE` to that checkout and `SAFEYOLO_PYTHON_EXECUTABLE` to
+its Python executable. Then run the following command from this repository
+root. The Python process imports the pinned package; normal native setup has
+no mitmproxy dependency.
 
-The shared Rust migration lane sets `SAFEYOLO_RUST_NATIVE_ONLY=1`, so its
-proxy fixtures select `policy_file` and do not start the temporary Python
-policy process. The separately named `tests/test_rust_temporary_policy.py`
-check and explicit adapter fixture remain because the historical comparator
-and rollback evidence still use them. This removes the adapter from the
-normal native contract path without deleting its retained test or comparator
-consumer.
+```sh
+uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
+```
 
 Native policy uses the existing Rust policy matcher and network guard once per
 request. The source options `network_guard_enabled`, `network_guard_block` and
@@ -822,8 +817,8 @@ The shared audit writer emits canonical `security.network_guard` records for
 deny, warn, approval-required, budget and homoglyph decisions, plus allowed
 CONNECT admission. Ordinary allowed HTTP emits no network security event.
 Development `proxy.network_guard` diagnostics retain the guard intents without
-raw queries or application bytes. Approval persistence and the remaining
-production pipeline still require integration. The bounded local API reads are
+raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
+results and the final #640 release gates. The bounded local API reads are
 described below.
 
 Owner validation at `22c9a008` on Linux aarch64 passed all 36 native policy wire cases and

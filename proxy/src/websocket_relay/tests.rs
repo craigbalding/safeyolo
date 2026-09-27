@@ -33,7 +33,7 @@ fn runtime(directory: &Path) -> Runtime {
         "inspection":{"policy_file":scanner,"block_websocket_request":true,"block_websocket_response":true},
     }))
     .unwrap();
-    let mut runtime = Runtime::new(config, "owned-memory", Arc::default(), None, None).unwrap();
+    let mut runtime = Runtime::new(config, "owned-memory", None, None).unwrap();
     // Avoid ambient queue/rotation settings affecting these synthetic records.
     runtime.audit = Arc::new(audit::Writer::new(
         directory.join("audit.jsonl"),

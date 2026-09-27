@@ -14,6 +14,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .agent_command_supervisor import _write_json, _write_text
@@ -67,6 +68,7 @@ class RustProcess:
     admin_token_file: str | None
     config_file: str | None = None
     working_directory: str | None = None
+    binary_path: str | None = None
 
 
 def read_process() -> RustProcess | None:
@@ -91,7 +93,7 @@ def read_process() -> RustProcess | None:
             not isinstance(process.admin_token_file, str) or not Path(process.admin_token_file).is_absolute()
         ))
         or any(value is not None and (not isinstance(value, str) or not Path(value).is_absolute())
-               for value in (process.config_file, process.working_directory))
+               for value in (process.config_file, process.working_directory, process.binary_path))
     ):
         raise RuntimeError(f"Invalid Rust proxy process record: {state_file()}")
     return process
@@ -147,12 +149,91 @@ def _path(value: object, field: str) -> Path:
     return Path(value).absolute()
 
 
+def _ensure_signing_ca(cert_dir: Path) -> Path:
+    """Keep an existing instance CA, or create its initial native signing CA."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    cert_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    combined = cert_dir / "mitmproxy-ca.pem"
+    public = cert_dir / "mitmproxy-ca-cert.pem"
+    if not combined.exists() and public.exists():
+        raise RuntimeError(f"Signing CA key is missing while trust root exists: {combined}")
+    if combined.exists():
+        source = combined.read_bytes()
+        try:
+            key = serialization.load_pem_private_key(source, password=None)
+            certificate = x509.load_pem_x509_certificate(source)
+            key_public = key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            cert_public = certificate.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Cannot read existing signing CA: {combined}") from exc
+        if key_public != cert_public:
+            raise RuntimeError(f"Signing CA key and certificate do not match: {combined}")
+        certificate_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        if public.exists():
+            try:
+                trusted = x509.load_pem_x509_certificate(public.read_bytes())
+            except ValueError as exc:
+                raise RuntimeError(f"Cannot read existing trust root: {public}") from exc
+            if trusted != certificate:
+                raise RuntimeError(f"Signing CA and installed trust root differ: {cert_dir}")
+        else:
+            _write_text(public, certificate_pem.decode("ascii"), mode=0o600)
+    else:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mitmproxy")])
+        now = datetime.now(UTC)
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()),
+                critical=False,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True, content_commitment=False,
+                    key_encipherment=False, data_encipherment=False,
+                    key_agreement=False, key_cert_sign=True, crl_sign=True,
+                    encipher_only=False, decipher_only=False,
+                ), critical=True,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        certificate_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        _write_text(
+            combined,
+            (
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                ) + certificate_pem
+            ).decode("ascii"),
+            mode=0o600,
+        )
+        _write_text(public, certificate_pem.decode("ascii"), mode=0o600)
+    return public
+
+
 def _default_native_config(config: dict) -> dict:
     """Build the release native config from the existing CLI instance paths."""
-    # The Python and native backends must use the same persistent signing CA.
-    # Import here because proxy.py imports this module for backend dispatch.
-    from . import proxy as proxy_module
-
     proxy_options = config.get("proxy", {})
     if not isinstance(proxy_options, dict):
         raise ValueError("proxy configuration must be a mapping")
@@ -160,7 +241,7 @@ def _default_native_config(config: dict) -> dict:
     logs_dir = get_logs_dir(create=True)
     service_directories = resolve_service_directories(get_config_dir() / "services")
     cert_dir = get_config_dir() / "certs"
-    proxy_module._ensure_certs(cert_dir)
+    _ensure_signing_ca(cert_dir)
     signing_ca = cert_dir / "mitmproxy-ca.pem"
     if not signing_ca.is_file():
         raise RuntimeError(f"Native signing CA is unavailable: {signing_ca}")
@@ -525,10 +606,6 @@ def start(config: dict) -> None:
     # Bootstrap may have created an empty placeholder before first start.
     ensure_agent_token(get_data_dir())
     launch.readiness.unlink(missing_ok=True)
-    log.warning(
-        "Starting Rust proxy from native JSON; HTTP credential inspection, "
-        "vault injection and the full operator UI/management workflows are not yet implemented"
-    )
     env = os.environ.copy()
     env["SAFEYOLO_DATA_DIR"] = str(get_data_dir().absolute())
     env["SAFEYOLO_LOG_PATH"] = str((get_logs_dir(create=True) / "safeyolo.jsonl").absolute())
@@ -538,7 +615,7 @@ def start(config: dict) -> None:
     env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
     process = RustProcess(None, None, str(launch.readiness), launch.admin_port,
                           str(launch.admin_token) if launch.admin_token else None,
-                          str(launch.config), str(Path.cwd()))
+                          str(launch.config), str(Path.cwd()), str(launch.binary))
     # A failed identity observation must not send a later stop down the legacy
     # PID path. Retain one lifetime record throughout launch, even before readiness.
     _write_json(state_file(), asdict(process))

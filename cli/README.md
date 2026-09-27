@@ -70,11 +70,12 @@ checks Apple Silicon and the Swift helper.
 | Plain text without color or wrapping | `safeyolo doctor --raw` |
 | Machine-readable JSON | `safeyolo doctor --json` |
 
-If `mitmdump` is missing from the installed tool environment, the optional pipx
-fallback installs mitmproxy and injects SafeYolo's addon dependencies:
+If `safeyolo start` reports that the Rust proxy executable is missing, run the
+repository installer again from the same checkout. It builds the native proxy
+and reinstalls the CLI package:
 
 ```sh
-./scripts/install-mitmproxy-pipx.sh
+./install.sh reinstall
 ```
 
 ## Commands
@@ -86,7 +87,7 @@ fallback installs mitmproxy and injects SafeYolo's addon dependencies:
 | `safeyolo init` | Initialize configuration with interactive wizard |
 | `safeyolo start` | Start the host proxy process |
 | `safeyolo stop` | Stop the host proxy process |
-| `safeyolo status` | Show proxy status, addon stats, and memory usage |
+| `safeyolo status` | Show native proxy readiness, executable, and agents |
 | `safeyolo build` | Build platform-specific guest artifacts from source |
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
@@ -131,16 +132,19 @@ for the experiment workflow.
 
 #### Start options
 
-Normal startup uses the Rust backend and its generated instance configuration.
-Set `proxy.backend: python` explicitly for the retained Python comparator or
-source-backed development options; see the [native development workflow](../docs/DEVELOPERS.md#rust-proxy-development-backend).
+Normal startup uses the Rust proxy and its generated instance configuration.
+The old Python backend and source/test start flags are unavailable. Historical
+comparisons run from a pinned prior checkout with their own environment; see
+[the migration contract](../tests/proxy_migration/CONTRACT.md).
 
 ```bash
-safeyolo start              # Normal start
-safeyolo start --dev        # Python source mode after setting proxy.backend: python
-safeyolo start --test       # Python test mode after setting proxy.backend: python
-safeyolo start --no-wait    # Skip waiting for healthy status
+safeyolo start
+safeyolo status
+safeyolo start --no-wait
 ```
+
+`safeyolo status` reports the selected Rust executable and readiness. The
+`--no-wait` option returns after launch without waiting for the health check.
 
 Build guest artifacts separately with `safeyolo build`. Linux uses an unpacked
 rootfs tree. macOS uses a kernel, initramfs, and ext4 rootfs image. See the
@@ -160,34 +164,14 @@ safeyolo doctor             # Report host prerequisites, runtime, agents
 | `safeyolo logs -f` | Follow logs in real-time |
 | `safeyolo logs --event security` | Show structured security events |
 | `safeyolo logs --raw` | Output raw JSONL |
-| `tail -n 50 ~/.local/state/safeyolo/mitmproxy.log` | Show raw mitmproxy/upstream failures (default log path) |
+| `safeyolo logs --tail 50` | Show recent native proxy events and failures |
 
-### WebMITM interface
+### Traffic inspection
 
-WebMITM listens only on host loopback at `127.0.0.1:8081`. For a remote
-SafeYolo host, it can be persistently exposed to the tailnet without opening a
-public listener:
-
-```bash
-safeyolo proxy web share --tailnet          # Fixed HTTPS port 443
-safeyolo proxy web share --tailnet --port 8446
-safeyolo proxy web status
-safeyolo proxy web open
-safeyolo proxy web unshare
-```
-
-The mapping follows the SafeYolo proxy lifecycle and is restored after a
-restart; it has no daily TTL. Port collisions fail without replacing existing
-Tailscale Serve mappings, so per-agent desktop previews can coexist on their
-own ports. Funnel is never enabled. WebMITM still requires the existing host
-admin credential. Enabling, changing, or disabling the mapping on a running
-host is applied live without restarting the proxy or interrupting agents.
-
-Remote WebMITM access is an administrative capability: a logged-in operator
-can inspect and manipulate proxied traffic. Restrict the URL with Tailnet
-ACLs/grants and do not distribute the admin credential. If Tailscale reports
-`serve config denied`, run `sudo tailscale set --operator=$USER` once on the
-host, then retry the SafeYolo command.
+The first Rust proxy release provides the read-only terminal inspector and
+selected exports. WebMITM and its tailnet sharing commands remain registered
+but are unavailable with the native proxy. Run `safeyolo traffic --help` for
+the supported inspection and export commands.
 
 ### Approval Workflow
 
@@ -582,8 +566,6 @@ When a credential is blocked:
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
-| `SAFEYOLO_TUI` | Set to `true` for mitmproxy terminal user interface (TUI) mode (default: headless) |
-| `SAFEYOLO_BLOCK` | Set to `true` to enable blocking for all security addons |
 
 ## License
 

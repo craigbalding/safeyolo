@@ -4,7 +4,7 @@
 This is intentionally a small post-build check.  It does not decide which
 Python dependencies are retained or removed; it proves that the wheel being
 examined carries the executable selected by the native default and that CLI
-registration does not need the retained Python proxy runtime.
+registration does not need the removed Python proxy runtime.
 """
 
 from __future__ import annotations
@@ -20,14 +20,10 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 REQUIRED_MEMBERS = {
-    "pdp/__init__.py": "retained Python policy package",
     "safeyolo/bin/safeyolo-proxy": "native proxy executable",
     "safeyolo/proxy.py": "retained CLI proxy facade",
     "safeyolo/rust_proxy.py": "native launch path",
 }
-BLOCKED_RUNTIME = ("mitmproxy", "safeyolo.mitm_addons", "safeyolo.traffic_master")
-
-
 def _safe_member(name: str) -> None:
     path = PurePosixPath(name)
     if not name or path.is_absolute() or ".." in path.parts:
@@ -46,6 +42,12 @@ def inspect_wheel(wheel: Path, *, expected_binary_sha256: str | None = None) -> 
         missing = sorted(set(REQUIRED_MEMBERS) - set(members))
         if missing:
             raise ValueError("wheel is missing required members: " + ", ".join(missing))
+        obsolete = sorted(name for name in members if name.startswith(
+            ("pdp/", "safeyolo/mitm_addons/", "safeyolo/proxy_modes/", "safeyolo/traffic_master.py",
+             "safeyolo/storage/flow_store.py", "safeyolo/core/plumb_service.py")
+        ))
+        if obsolete:
+            raise ValueError("wheel contains obsolete Python proxy code: " + ", ".join(obsolete))
 
         binary_info = members["safeyolo/bin/safeyolo-proxy"]
         if binary_info.is_dir():
@@ -79,7 +81,6 @@ def inspect_wheel(wheel: Path, *, expected_binary_sha256: str | None = None) -> 
             "native_binary_size": len(binary),
             "native_binary_sha256": binary_sha256,
             "native_binary_mode": f"{mode:04o}" if mode else "unspecified",
-            "policy_package": "pdp/__init__.py",
             "dist_info_metadata": dist_info,
         }
 
@@ -95,7 +96,7 @@ blocked = ("mitmproxy", "safeyolo.mitm_addons", "safeyolo.traffic_master")
 class BlockPythonProxyRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if any(fullname == name or fullname.startswith(name + ".") for name in blocked):
-            raise AssertionError(f"native wheel import required retained Python runtime: {fullname}")
+            raise AssertionError(f"native wheel import required removed Python runtime: {fullname}")
         return None
 
 sys.meta_path.insert(0, BlockPythonProxyRuntime())

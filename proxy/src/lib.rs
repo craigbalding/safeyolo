@@ -367,7 +367,6 @@ pub(crate) struct Runtime {
     pub(crate) coord: Arc<agent_api::CoordClient>,
     via_token: String,
     events: Arc<Mutex<File>>,
-    temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     instance_id: String,
 }
 
@@ -376,24 +375,15 @@ impl Runtime {
     fn new(
         config: Config,
         default_via: &str,
-        temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
     ) -> Result<Self, Error> {
-        Self::load(
-            config,
-            default_via,
-            temporary_policy_lock,
-            previous,
-            admin_address,
-            &mut None,
-        )
+        Self::load(config, default_via, previous, admin_address, &mut None)
     }
 
     fn load(
         config: Config,
         default_via: &str,
-        temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
         service_files: &mut Option<services::CatalogMetadata>,
@@ -658,7 +648,6 @@ impl Runtime {
                 }
             }
             let runtime = Self {
-                temporary_policy_lock,
                 parent,
                 tls,
                 certificate_authority,
@@ -1335,7 +1324,6 @@ pub struct Proxy {
     draining: Vec<JoinHandle<()>>,
     default_via: String,
     readiness_file: PathBuf,
-    temporary_policy_lock: Arc<tokio::sync::Mutex<()>>,
     circuit_snapshots: Option<circuit_runtime::Snapshots>,
     service_files: Option<services::CatalogMetadata>,
     service_check_at: Option<tokio::time::Instant>,
@@ -1350,17 +1338,14 @@ impl Proxy {
             .as_ref()
             .map(admin_listener::Prepared::address);
         let default_via = uuid::Uuid::new_v4().simple().to_string();
-        let temporary_policy_lock = Arc::new(tokio::sync::Mutex::new(()));
         let (runtime, service_files) = {
             let config = config.clone();
             let default_via = default_via.clone();
-            let temporary_policy_lock = temporary_policy_lock.clone();
             tokio::task::spawn_blocking(move || {
                 let mut service_files = None;
                 let runtime = Runtime::load(
                     config,
                     &default_via,
-                    temporary_policy_lock,
                     None,
                     admin_address,
                     &mut service_files,
@@ -1378,7 +1363,6 @@ impl Proxy {
             draining: Vec::new(),
             default_via,
             readiness_file: config.readiness_file.clone(),
-            temporary_policy_lock,
             circuit_snapshots: None,
             service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
             service_files,
@@ -1676,7 +1660,6 @@ impl Proxy {
         let runtime = Arc::new(Runtime::load(
             config.clone(),
             &self.default_via,
-            self.temporary_policy_lock.clone(),
             Some(&previous),
             self.admin.as_ref().map(admin_listener::Running::address),
             &mut service_files,

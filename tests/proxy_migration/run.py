@@ -230,8 +230,7 @@ def short_connections(backend, directory, count):
 
 def short_https_connections(backend, directory, count):
     """Run fresh HTTP/1.1 requests through the existing CONNECT/TLS fixture."""
-    from mitmproxy.certs import CertStore
-
+    from safeyolo.rust_proxy import _ensure_signing_ca
     from tests.proxy_migration.test_http2_contract import (
         origin_certificate,
         tls_tunnel,
@@ -241,7 +240,7 @@ def short_https_connections(backend, directory, count):
     )
 
     directory.mkdir(parents=True, exist_ok=True)
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     origin_pem, origin_ca = origin_certificate(directory)
     with tls_origin_server(origin_pem, protocols=("http/1.1",)) as origin, launch_proxy(
         backend,
@@ -1176,7 +1175,7 @@ def capture(args):
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
         "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
-        "tools": {package: version(package) for package in ("pytest", "mitmproxy", "httpx")},
+        "tools": {package: version(package) for package in ("pytest", "httpx")},
         "command": sys.argv, "candidate": candidate_identity(args),
         "contracts": results, "workloads": workloads,
         "tolerances": {

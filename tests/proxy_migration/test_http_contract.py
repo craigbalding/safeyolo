@@ -14,8 +14,8 @@ from urllib.parse import urlsplit
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration import scenarios
 from tests.proxy_migration.harness import connection, launch_proxy, read_events, request
 from tests.proxy_migration.run import (
@@ -361,7 +361,7 @@ def test_connect_and_inner_request_ids_keep_scoped_connection_evidence(proxy_bac
     directory = tmp_path / proxy_backend
     directory.mkdir()
     pem, public = origin_certificate(directory)
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     policy = '''[[permissions]]
 action = "network:request"
 resource = "*"

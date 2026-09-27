@@ -50,7 +50,7 @@ as the operator's user ID. On Linux, `safeyolo agent run` does not use host
 
 ### Fail closed
 
-When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Destination mismatches return HTTP 428 with actionable feedback. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
+When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Credential requests that require approval return HTTP 428; explicit denials return HTTP 403. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
 The Agent API virtual hostname is also contained independently of its handler.
 An adjacent request guard runs before policy, credential, and observability
 addons, so a missing, disabled, import-failed, or uncaught handler receives a
@@ -129,7 +129,7 @@ As a safety net, the credential guard detects credentials in request headers via
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
 | **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
-| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. Python registers `credguard_scan_urls` and `credguard_scan_bodies` but does not use them; setting them does not enable these scans. The native proxy has no equivalent options. |
+| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The native proxy has no options to enable these scans. |
 
 ## Reporting Security Issues
 

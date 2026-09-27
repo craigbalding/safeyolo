@@ -16,7 +16,7 @@ def proxy_backend(request):
 
 def pytest_generate_tests(metafunc):
     if "proxy_backend" in metafunc.fixturenames:
-        backends = metafunc.config.getoption("--proxy-backend") or ["python"]
+        backends = metafunc.config.getoption("--proxy-backend") or ["rust"]
         metafunc.parametrize("proxy_backend", backends, indirect=True)
 
 

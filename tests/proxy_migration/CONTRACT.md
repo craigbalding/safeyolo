@@ -8,18 +8,23 @@ origin or the running SafeYolo instance.
 
 ## Run the contracts
 
-From the repository root on Linux or macOS, install the locked Python test
+From the repository root on Linux or macOS, install the locked native test
 dependencies with `uv sync --frozen --group dev`. Build the Rust binary with
-`cargo build --locked --manifest-path proxy/Cargo.toml`. The following command
-starts and stops isolated Python and Rust fixtures:
+`cargo build --locked --manifest-path proxy/Cargo.toml`. Use a separate clean
+checkout of pre-cutover commit
+`2ca598ce11d7c375a024b38eb3e7b4104a795d84` for the historical Python
+HTTP comparator and run `uv sync --frozen --group dev --python 3.12.14` there.
+The following command starts and stops isolated Python and Rust fixtures:
 
 ```sh
+SAFEYOLO_PYTHON_SOURCE=/path/to/pre-cutover-checkout \
+SAFEYOLO_PYTHON_EXECUTABLE=/path/to/pre-cutover-checkout/.venv/bin/python \
 uv run --frozen pytest -q tests/proxy_migration \
   --proxy-backend python --proxy-backend rust
 ```
 
-The Python backend is the default for shared tests. The full-production tests
-always use Python and currently skip platforms other than Linux. Set
+Rust is the default for shared tests. The full-production historical cases
+use the selected Python comparator and currently skip platforms other than Linux. Set
 `SAFEYOLO_RUST_PROXY` to select a built binary at another path. A missing
 requested binary is an error. The fixture
 does not select a different backend after a failure.
@@ -28,8 +33,8 @@ To include the historical circuit-state rollback case, use a clean checkout at
 its locked Python 3.12.14 `.venv` with
 `uv sync --frozen --python 3.12.14 --group dev`. Set
 `SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` to that checkout.
-That test uses the comparator's own Python fixture; other Python cases continue
-to run the selected current source. Without this separate fixture, the rollback
+That test uses the older comparator's own Python fixture; other Python cases
+use the explicit pre-cutover HTTP checkout. Without this separate fixture, the rollback
 case skips.
 
 The shared assertions cover:

@@ -1,6 +1,6 @@
 """Per-agent egress and shell diagnostics.
 
-Walks the host-visible hops from a named agent's UDS to mitmproxy, then checks
+Walks the host-visible hops from a named agent's UDS to the native proxy, then checks
 the authenticated Agent API and its source-derived attribution separately.
 Used by `safeyolo agent diag <name>`.
 
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 import socket
 import time
 from dataclasses import dataclass
@@ -29,7 +28,6 @@ from .config import (
     get_agent_map_path,
     get_agent_token_path,
     get_agents_dir,
-    get_logs_dir,
 )
 from .proxy import is_proxy_running
 from .sockets import path_for as socket_path_for
@@ -134,9 +132,8 @@ def _entry_socket_path(name: str, entry: dict) -> str:
     )
 
 
-def _mitmproxy_log_remediation() -> str:
-    log_path = get_logs_dir() / "mitmproxy.log"
-    return f"tail -n 50 {shlex.quote(str(log_path))}"
+def _native_log_remediation() -> str:
+    return "safeyolo doctor"
 
 
 @dataclass
@@ -187,7 +184,7 @@ def _check_attribution_ip(entry: dict) -> Check:
     if not ip:
         return Check("Attribution IP", "FAIL", "no 'ip' field in agent map entry")
     # Attribution IP is encoded into the per-agent UDS directory
-    # (`<ip>_<agent>/proxy.sock`) and parsed by mitmproxy's UnixInstance at
+    # (`<ip>_<agent>/proxy.sock`) and parsed by the native listener at
     # bind time. No lo0 alias or kernel bind required.
     return Check("Attribution IP", "PASS", f"{ip} (UDS directory)")
 
@@ -344,7 +341,7 @@ def _check_proxy_transport(
     *,
     timeout: float = 5.0,
 ) -> Check:
-    """Prove only UDS accept, mitmproxy parsing, and the return path.
+    """Prove only UDS accept, native proxy parsing, and the return path.
 
     The deliberately hostless request should be rejected locally. Any complete
     HTTP response proves the transport contract, not Agent API health.
@@ -361,12 +358,12 @@ def _check_proxy_transport(
             "Proxy transport",
             "FAIL",
             str(exc),
-            _mitmproxy_log_remediation(),
+            _native_log_remediation(),
         )
     return Check(
         "Proxy transport",
         "PASS",
-        f"mitmdump answered HTTP {response.status_code} ({len(raw)}B)",
+        f"Native proxy answered HTTP {response.status_code} ({len(raw)}B)",
     )
 
 
@@ -399,7 +396,7 @@ def _agent_api_response(
             "Agent API",
             "FAIL",
             f"{path}: {exc}",
-            _mitmproxy_log_remediation(),
+            _native_log_remediation(),
         )
 
     marker = response.headers.get("x-safeyolo-agent-api", "")
@@ -407,7 +404,7 @@ def _agent_api_response(
         remediation = (
             "safeyolo logs --tail 20"
             if response.status_code in {401, 403} and marker.casefold() == "true"
-            else _mitmproxy_log_remediation()
+            else _native_log_remediation()
         )
         return None, Check(
             "Agent API",
@@ -420,7 +417,7 @@ def _agent_api_response(
             "Agent API",
             "FAIL",
             f"{path}: HTTP 200 without the Agent API handler marker",
-            _mitmproxy_log_remediation(),
+            _native_log_remediation(),
         )
     return response, None
 
@@ -483,7 +480,7 @@ def _check_agent_api(
             "Agent API",
             "FAIL",
             "identity-scoped response is not JSON",
-            _mitmproxy_log_remediation(),
+            _native_log_remediation(),
         )
     attributed_agent = body.get("agent") if isinstance(body, dict) else None
     if attributed_agent != name:
@@ -491,7 +488,7 @@ def _check_agent_api(
             "Agent API",
             "FAIL",
             f"source attribution mismatch (expected {name!r}, got {attributed_agent!r})",
-            _mitmproxy_log_remediation(),
+            _native_log_remediation(),
         )
 
     return Check(

@@ -104,7 +104,6 @@ fn config(
         ],
         agent_map_file: String::new(),
         data_dir: Some(directory.path().join("data")),
-        temporary_policy_socket: None,
         policy_file: Some(policy.to_owned()),
         gateway_builtin_services_dir: None,
         gateway_services_dir: None,

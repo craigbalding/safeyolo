@@ -5,24 +5,29 @@ stale pathnames is a separately reported baseline failure, not API acceptance.
 """
 
 import json
+import os
 import subprocess
 import sys
 
 import pytest
 
-from tests.proxy_migration.harness import REPO
+from tests.proxy_migration.harness import REPO, python_proxy_environment
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="This baseline capture measures Linux /proc RSS")
 
 
 @pytest.fixture(scope="module")
-def production_result(tmp_path_factory):
+def production_result(tmp_path_factory, request):
+    if "python" not in (request.config.getoption("--proxy-backend") or ["rust"]):
+        pytest.skip("Historical production capture runs in the Python comparator leg")
+    source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+    environment = python_proxy_environment(python_source=source)
+    executable = os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE", sys.executable)
     directory = tmp_path_factory.mktemp("full-production") / "capture"
     completed = subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "tests.proxy_migration.full_production",
+            executable,
+            str(REPO / "tests/proxy_migration/full_production.py"),
             "--output",
             str(directory),
             "--api-requests",
@@ -33,6 +38,7 @@ def production_result(tmp_path_factory):
             "2",
         ],
         cwd=REPO,
+        env=environment,
         text=True,
         capture_output=True,
         timeout=60,

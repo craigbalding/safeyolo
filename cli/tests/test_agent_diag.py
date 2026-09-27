@@ -98,7 +98,7 @@ def test_proxy_transport_passes_on_complete_generic_http_response(tmp_path):
     assert result == Check(
         "Proxy transport",
         "PASS",
-        f"mitmdump answered HTTP 400 ({len(response)}B)",
+        f"Native proxy answered HTTP 400 ({len(response)}B)",
     )
     assert requests == [b"GET / HTTP/1.0\r\nConnection: close\r\n\r\n"]
 
@@ -125,7 +125,7 @@ def test_proxy_transport_rejects_empty_malformed_and_partial_responses(
 
     assert result.status == "FAIL"
     assert expected in result.message
-    assert "mitmproxy.log" in result.remediation
+    assert "safeyolo doctor" in result.remediation
 
 
 def test_proxy_transport_timeout_is_a_failure(tmp_path):
@@ -209,7 +209,7 @@ def test_degraded_layers(tmp_config_dir):
     assert "HTTP 503" in agent_api.message
     assert doctor.status == "fail"
     assert "HTTP 503" in doctor.message
-    assert "mitmproxy.log" in doctor.remediation
+    assert "safeyolo logs --tail 50" in doctor.remediation
     assert token not in repr((transport, agent_api, doctor))
 
 
@@ -250,7 +250,7 @@ def test_agent_api_rejects_generic_containment_malformed_and_partial_health(
     assert result.status == "FAIL"
     assert expected in result.message
     assert token not in repr(result)
-    assert "mitmproxy.log" in result.remediation
+    assert "safeyolo doctor" in result.remediation
 
 
 def test_agent_api_rejects_source_attribution_mismatch(tmp_path, tmp_config_dir):

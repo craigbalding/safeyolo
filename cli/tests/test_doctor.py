@@ -3,6 +3,7 @@
 import json
 import ssl
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import httpx
@@ -12,13 +13,11 @@ import yaml
 from safeyolo.commands.doctor import (
     DiagResult,
     _build_bundle,
-    _check_addon_loading,
     _check_admin_api,
     _check_baseline,
     _check_ca_cert,
     _check_config_dir,
     _check_coord_message_plane,
-    _check_crash_logs,
     _check_firewall,
     _check_flow_store,
     _check_guest_images,
@@ -36,12 +35,6 @@ from safeyolo.commands.doctor import (
 )
 from safeyolo.commands.vault import _load_vault
 from safeyolo.core.vault import Vault
-from safeyolo.runtime_identity import (
-    DevSourceIdentity,
-    EvidenceState,
-    SourceFingerprint,
-    WorkingTreeState,
-)
 
 
 class _OpenSocket:
@@ -75,232 +68,44 @@ class TestCheckConfigDir:
 
 
 class TestCheckProxyRunning:
-    """_check_proxy_process verifies the host mitmproxy is running."""
+    def test_native_process_reports_binary_and_readiness(self, monkeypatch):
+        from safeyolo import rust_proxy
 
-    def test_proxy_running(self, tmp_config_dir, monkeypatch):
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
-        (tmp_config_dir / "data" / "proxy.pid").write_text("12345\n")
+        process = SimpleNamespace(pid=12345, binary_path="/usr/bin/safeyolo-proxy", config_file="/state/native.json")
+        monkeypatch.setattr(rust_proxy, "read_process", lambda: process)
+        monkeypatch.setattr(rust_proxy, "is_alive", lambda current: current is process)
+        monkeypatch.setattr(rust_proxy, "readiness", lambda current: {"ready": True})
         result = _check_proxy_process()
         assert result.status == "pass"
         assert "PID 12345" in result.message
+        assert "/usr/bin/safeyolo-proxy" in result.detail
 
-    def test_proxy_running_missing_pidfile(self, tmp_config_dir, monkeypatch):
-        # Race: is_proxy_running() saw the pidfile but it's gone now.
-        # Falls back to a generic message rather than crashing.
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: True)
-        result = _check_proxy_process()
-        assert result.status == "pass"
-        assert "mitmdump" in result.message.lower()
-        assert "PID" not in result.message
+    def test_native_process_missing_or_not_ready(self, monkeypatch):
+        from safeyolo import rust_proxy
 
-    def test_proxy_not_running(self, monkeypatch):
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
-        result = _check_proxy_process()
-        assert result.status == "fail"
-
-
-def _runtime_identity_document(
-    *,
-    mode: str = "production",
-    revision: str | None = "a" * 40,
-    digest: str = "b" * 64,
-    build_state: str = "known",
-    start_token: str = "linux:boot:42",
-) -> dict:
-    source = None
-    if mode == "dev":
-        source = {
-            "roots": {"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
-            "revision": revision,
-            "revision_state": "known" if revision else "unknown",
-            "working_tree": "clean",
-            "fingerprint": {
-                "state": "known",
-                "digest": digest,
-                "file_count": 12,
-                "error": None,
-            },
-        }
-    return {
-        "schema_version": 1,
-        "mode": mode,
-        "build": {
-            "package_version": "1.2.3",
-            "source_revision": revision,
-            "build_identifier": "release-7",
-            "provenance": "dev-checkout" if mode == "dev" else "build-environment",
-            "state": build_state,
-        },
-        "process": {
-            "pid": 12345,
-            "started_at": "2026-08-29T12:00:00+00:00",
-            "start_token": start_token,
-            "start_token_state": "known",
-        },
-        "source": source,
-    }
+        monkeypatch.setattr(rust_proxy, "read_process", lambda: None)
+        assert _check_proxy_process().status == "fail"
+        process = SimpleNamespace(pid=12345, binary_path=None, config_file=None)
+        monkeypatch.setattr(rust_proxy, "read_process", lambda: process)
+        monkeypatch.setattr(rust_proxy, "is_alive", lambda current: True)
+        monkeypatch.setattr(rust_proxy, "readiness", lambda current: None)
+        assert _check_proxy_process().status == "fail"
 
 
 class TestCheckRuntimeIdentity:
-    @pytest.fixture(autouse=True)
-    def _live_proxy_identity(self, tmp_config_dir, monkeypatch):
-        (tmp_config_dir / "data" / "proxy.pid").write_text("12345\n")
-        monkeypatch.setattr(
-            "safeyolo.config.get_admin_token", lambda: "test-admin-token"
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor.process_start_token",
-            lambda pid: "linux:boot:42",
-        )
+    def test_native_binary_identity_and_missing_path(self, monkeypatch, tmp_path):
+        from safeyolo import rust_proxy
 
-    def test_production_uses_stamp_without_scanning_checkout(self, monkeypatch):
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document()),
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor.capture_dev_source_identity",
-            lambda roots: pytest.fail("production doctor scanned source"),
-        )
-
-        result = _check_runtime_identity()
-
-        assert result.status == "pass"
-        assert "1.2.3" in result.message
-
-    def test_unknown_production_stamp_is_limited_evidence(self, monkeypatch):
-        document = _runtime_identity_document(revision=None, build_state="unknown")
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(200, json=document),
-        )
-
-        result = _check_runtime_identity()
-
-        assert result.status == "warn"
-        assert "source revision is unknown" in result.message
-
-    @pytest.mark.parametrize(
-        ("current_revision", "current_digest", "working_tree", "message"),
-        [
-            ("a" * 40, "b" * 64, WorkingTreeState.CLEAN, "matches current"),
-            ("a" * 40, "c" * 64, WorkingTreeState.DIRTY, "dirty same-commit"),
-            ("d" * 40, "b" * 64, WorkingTreeState.CLEAN, "revision drift"),
-        ],
-    )
-    def test_dev_comparison_classifies_generation_state(
-        self,
-        monkeypatch,
-        current_revision,
-        current_digest,
-        working_tree,
-        message,
-    ):
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document(mode="dev")),
-        )
-        current = DevSourceIdentity(
-            roots={"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
-            revision=current_revision,
-            revision_state=EvidenceState.KNOWN,
-            working_tree=working_tree,
-            fingerprint=SourceFingerprint(
-                state=EvidenceState.KNOWN,
-                digest=current_digest,
-                file_count=12,
-            ),
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor.capture_dev_source_identity",
-            lambda roots: current,
-        )
-
-        result = _check_runtime_identity()
-
-        assert message in result.message
-        if current_digest == "b" * 64 and current_revision == "a" * 40:
-            assert result.status == "pass"
-            assert result.remediation == ""
-        else:
-            assert result.status == "warn"
-            assert "restart required" in result.message
-            assert result.remediation == "safeyolo stop && safeyolo start --dev"
-
-    def test_missing_current_source_is_explicitly_unknown(self, monkeypatch):
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document(mode="dev")),
-        )
-        current = DevSourceIdentity(
-            roots={},
-            revision=None,
-            revision_state=EvidenceState.UNKNOWN,
-            working_tree=WorkingTreeState.UNKNOWN,
-            fingerprint=SourceFingerprint(
-                state=EvidenceState.UNKNOWN,
-                digest=None,
-                file_count=0,
-                error="source-root-unreadable:safeyolo",
-            ),
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor.capture_dev_source_identity",
-            lambda roots: current,
-        )
-
-        result = _check_runtime_identity()
-
-        assert result.status == "warn"
-        assert "unknown" in result.message
-        assert "source-root-unreadable" in result.detail
-
-    def test_lost_git_evidence_does_not_report_a_clean_match(self, monkeypatch):
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(
-                200, json=_runtime_identity_document(mode="dev")
-            ),
-        )
-        current = DevSourceIdentity(
-            roots={"safeyolo": "/checkout/safeyolo", "pdp": "/checkout/pdp"},
-            revision=None,
-            revision_state=EvidenceState.UNKNOWN,
-            working_tree=WorkingTreeState.UNKNOWN,
-            fingerprint=SourceFingerprint(
-                state=EvidenceState.KNOWN,
-                digest="b" * 64,
-                file_count=12,
-            ),
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.doctor.capture_dev_source_identity",
-            lambda roots: current,
-        )
-
-        result = _check_runtime_identity()
-
-        assert result.status == "warn"
-        assert "checkout comparison is unknown" in result.message
-
-    def test_pid_reuse_is_rejected_before_source_comparison(self, monkeypatch):
-        tokens = iter(["linux:boot:old", "linux:boot:new"])
-        monkeypatch.setattr("safeyolo.commands.doctor.process_start_token", lambda pid: next(tokens))
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *args, **kwargs: httpx.Response(200, json=_runtime_identity_document()),
-        )
-
-        result = _check_runtime_identity()
-
-        assert result.status == "warn"
-        assert "reused or restarted" in result.message
+        binary = tmp_path / "safeyolo-proxy"
+        binary.write_text("owned")
+        process = SimpleNamespace(pid=12345, binary_path=str(binary))
+        monkeypatch.setattr(rust_proxy, "read_process", lambda: process)
+        monkeypatch.setattr(rust_proxy, "is_alive", lambda current: True)
+        assert _check_runtime_identity().status == "pass"
+        binary.unlink()
+        assert _check_runtime_identity().status == "warn"
+        monkeypatch.setattr(rust_proxy, "is_alive", lambda current: False)
+        assert _check_runtime_identity().status == "fail"
 
 
 class TestCheckCoordMessagePlane:
@@ -497,36 +302,6 @@ class TestCheckBaseline:
         baseline.write_text(yaml.dump({"metadata": {"version": "1.0"}}))
         result = _check_baseline()
         assert result.status == "warn"
-
-
-class TestCheckCrashLogs:
-    def test_no_crashes(self, tmp_config_dir):
-        from safeyolo.config import get_logs_dir
-
-        logs_dir = get_logs_dir()
-        log_file = logs_dir / "mitmproxy.log"
-        log_file.write_text("2024-01-01 INFO normal log line\n" * 10)
-        result = _check_crash_logs()
-        assert result.status == "pass"
-
-    def test_traceback_found(self, tmp_config_dir):
-        from safeyolo.config import get_logs_dir
-
-        logs_dir = get_logs_dir()
-        log_file = logs_dir / "mitmproxy.log"
-        log_file.write_text(
-            "2024-01-01 INFO normal\n"
-            "Traceback (most recent call last):\n"
-            '  File "foo.py", line 1\n'
-            "SyntaxError: invalid syntax\n"
-        )
-        result = _check_crash_logs()
-        assert result.status == "warn"
-        assert "traceback" in result.message.lower()
-
-    def test_no_log_file(self, tmp_config_dir):
-        result = _check_crash_logs()
-        assert result.status == "pass"
 
 
 class TestCheckLogHealth:
@@ -915,8 +690,7 @@ class TestCheckPipelineProbe:
         result = _check_pipeline_probe()
         assert result.status == "fail"
         assert "503" in result.message
-        assert "mitmproxy.log" in result.remediation
-        assert result.remediation.startswith("tail -n 50 ")
+        assert "safeyolo logs" in result.remediation
         assert "--security" not in result.remediation
 
     def test_401_uses_security_log(self, tmp_config_dir, monkeypatch):
@@ -988,7 +762,7 @@ class TestCheckPipelineProbe:
 
         assert result.status == "fail"
         assert "handler marker" in result.message
-        assert "mitmproxy.log" in result.remediation
+        assert "safeyolo logs" in result.remediation
 
     def test_1200_status_fails(self, tmp_config_dir, monkeypatch):
         _make_agent_socket(tmp_config_dir)
@@ -1007,6 +781,9 @@ class TestCheckAdminApi:
 
     def test_check_admin_api_healthy(self, tmp_config_dir, monkeypatch):
         """Returns pass when admin API responds with 200 and port is open."""
+        from safeyolo import rust_proxy
+
+        monkeypatch.setattr(rust_proxy, "read_process", lambda: SimpleNamespace(admin_port=9090))
 
         def mock_create_connection(address, timeout=None):
             return _OpenSocket()
@@ -1024,45 +801,19 @@ class TestCheckAdminApi:
         assert "http://127.0.0.1:9090/health" in result.message
 
 
-class TestCheckAddonLoading:
-    def test_no_token(self, tmp_config_dir, monkeypatch):
-        monkeypatch.setattr("safeyolo.config.get_admin_token", lambda: None)
-        result = _check_addon_loading()
-        assert result.status == "warn"
-        assert "No admin token" in result.message
-
-    def test_stats_success(self, tmp_config_dir, monkeypatch):
-        monkeypatch.setattr("safeyolo.config.get_admin_token", lambda: "test-token")
-        get = create_autospec(httpx.get, spec_set=True)
-        get.return_value = httpx.Response(
-            200,
-            json={
-                "proxy": {},
-                "credential-guard": {"checks": 10},
-                "network-guard": {"checks": 5},
-            },
-        )
-        monkeypatch.setattr(httpx, "get", get)
-        result = _check_addon_loading()
-        assert result.status == "pass"
-        assert "2 addons" in result.message
-        assert "http://127.0.0.1:9090/stats" in result.message
-
-
 class TestRunChecks:
     def test_proxy_down_skips_dependents(self, tmp_config_dir, monkeypatch):
-        """When the proxy is down, dependent checks (Admin API, Addon loading, Pipeline probe) are skipped."""
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        """When the proxy is down, dependent Admin API and pipeline checks are skipped."""
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         results = _run_checks()
         names = {r.name: r.status for r in results}
         assert names["Proxy running"] == "fail"
         assert names["Admin API"] == "skip"
-        assert names["Addon loading"] == "skip"
         assert names["Pipeline probe"] == "skip"
 
     def test_linux_run_checks_omits_vsock_term(self, tmp_config_dir, monkeypatch):
         monkeypatch.setattr("platform.system", lambda: "Linux")
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
 
         results = _run_checks()
 
@@ -1071,7 +822,7 @@ class TestRunChecks:
     def test_macos_run_checks_omits_user_namespaces(self, tmp_config_dir, monkeypatch):
         monkeypatch.setattr("platform.system", lambda: "Darwin")
         monkeypatch.setattr("platform.machine", lambda: "arm64")
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         bin_dir = tmp_config_dir / "bin"
         bin_dir.mkdir()
         for name in ("safeyolo-vm", "vsock-term"):
@@ -1090,7 +841,7 @@ class TestRunChecks:
 
         monkeypatch.setattr("platform.system", lambda: "Darwin")
         monkeypatch.setattr("platform.machine", lambda: "arm64")
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
 
         def fail_probe():
             raise VMError("Virtualization is not supported on this machine")
@@ -1110,7 +861,7 @@ class TestRunChecks:
 
         monkeypatch.setattr("platform.system", lambda: "Darwin")
         monkeypatch.setattr("platform.machine", lambda: "arm64")
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         calls = 0
 
         def changing_probe():
@@ -1146,7 +897,7 @@ class TestBuildBundle:
 class TestDoctorCLI:
     def test_doctor_runs(self, cli_runner, tmp_config_dir, monkeypatch):
         """Smoke test that doctor command runs without crashing."""
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         monkeypatch.setattr(
             "subprocess.run",
             lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
@@ -1165,7 +916,7 @@ class TestDoctorCLI:
         now it streams to stdout so `safeyolo doctor --json | jq ...` works.
         Exit code preserved (1 on any fail).
         """
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         monkeypatch.setattr(
             "subprocess.run",
             lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
@@ -1189,7 +940,7 @@ class TestDoctorCLI:
 
     def test_doctor_raw(self, cli_runner, tmp_config_dir, monkeypatch):
         """--raw emits human output with no color / no wrap; long tokens survive."""
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
         monkeypatch.setattr(
             "subprocess.run",
             lambda *args, **kwargs: subprocess.CompletedProcess([], 1, "", ""),
@@ -1204,7 +955,7 @@ class TestDoctorCLI:
 
     def test_doctor_json_fix_incompatible(self, cli_runner, tmp_config_dir, monkeypatch):
         """--json + --fix is refused (fix output would corrupt the JSON stream)."""
-        monkeypatch.setattr("safeyolo.commands.doctor.is_proxy_running", lambda: False)
+        monkeypatch.setattr("safeyolo.rust_proxy.read_process", lambda: None)
 
         from safeyolo.cli import app
 
@@ -1239,7 +990,7 @@ class TestCheckEgressStructural:
         )
         result = _check_firewall()
         assert result.status == "warn"
-        assert "mitmdump not running" in result.message
+        assert "Rust proxy not running" in result.message
         assert result.remediation == "safeyolo start"
 
 

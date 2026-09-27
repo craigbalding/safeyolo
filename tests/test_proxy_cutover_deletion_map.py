@@ -57,7 +57,7 @@ def _table_rows() -> list[list[str]]:
     rows: list[list[str]] = []
     in_table = False
     for line in LEDGER.read_text(encoding="utf-8").splitlines():
-        if line.startswith("| ID | Current path |"):
+        if line.startswith("| ID | Original path |"):
             in_table = True
             continue
         if not in_table:
@@ -87,54 +87,29 @@ def test_ledger_covers_current_runtime_owners_and_existing_paths() -> None:
     for row in rows:
         current_path = row[1].strip("`")
         path = REPO_ROOT / current_path.rstrip("/")
-        assert path.exists(), current_path
-        assert row[5] == "retained", row
+        state = row[5]
+        if state.startswith("removed"):
+            assert not path.exists(), current_path
+        else:
+            assert path.exists(), current_path
+        assert state.startswith(("removed", "retained", "updated")), row
         assert row[3] and row[4], row
         for check in _paths_from_checks(row[4]):
             assert (REPO_ROOT / check).exists(), (current_path, check)
 
 
-def test_ledger_keeps_native_default_and_explicit_python_rollback_contract() -> None:
+def test_ledger_records_native_cutover_and_explicit_package_rollback() -> None:
     text = LEDGER.read_text(encoding="utf-8")
-    for required in (
-        "`proxy.backend: python`",
-        "`proxy.backend: rust`",
-        "`tests/proxy_migration`",
-        "`SAFEYOLO_SKIP_RUST_BUILD=1`",
-        "installed rollback",
-        "Normal launch uses `proxy.backend: rust`",
-    ):
-        assert required in text
+    assert "41 pre-cutover owners" in text
+    assert "no Python backend selection or automatic fallback" in text
+    assert "pinned prior Python checkout" in text
+    assert "physical macOS/VZ" in text
 
 
-def test_ledger_is_only_a_plan_until_replacement_evidence_exists() -> None:
-    text = LEDGER.read_text(encoding="utf-8")
-    assert "every row is currently **retained**" in text
-    assert "default switch does not authorize" in text
-
-
-def test_native_migration_lane_does_not_start_the_retained_policy_adapter() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "proxy-rust.yml").read_text(
-        encoding="utf-8"
-    )
-    docs = (REPO_ROOT / "docs" / "proxy-parity.md").read_text(encoding="utf-8")
-
-    # The release-facing Rust contract command must select policy_file through
-    # the existing harness switch. Keep the Python comparator and adapter
-    # checks as separately named commands so a later deletion cannot silently
-    # remove their evidence.
-    assert 'SAFEYOLO_RUST_NATIVE_ONLY: "1"' in workflow
+def test_native_migration_lane_has_no_policy_adapter() -> None:
+    workflow = (REPO_ROOT / ".github" / "workflows" / "proxy-rust.yml").read_text(encoding="utf-8")
+    config = (REPO_ROOT / "proxy" / "src" / "config.rs").read_text(encoding="utf-8")
     assert "--proxy-backend rust" in workflow
-    assert "tests/test_rust_temporary_policy.py" in workflow
-    assert (
-        "SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q "
-        "tests/proxy_migration --proxy-backend rust"
-    ) in docs
-
-    # The source-backed adapter remains intentionally retained until the
-    # ledger's replacement and rollback gates are complete.
-    adapter = REPO_ROOT / "tools" / "proxy_migration" / "temporary_policy.py"
-    assert adapter.exists()
-    assert "temporary_policy_socket" in (
-        REPO_ROOT / "proxy" / "src" / "config.rs"
-    ).read_text(encoding="utf-8")
+    assert "temporary_policy_socket" not in config
+    assert not (REPO_ROOT / "tools" / "proxy_migration" / "temporary_policy.py").exists()
+    assert "SAFEYOLO_PYTHON_SOURCE" in workflow

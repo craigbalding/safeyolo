@@ -96,7 +96,6 @@ pub struct Config {
     /// Per-process state directory for credential HMAC and local Agent API
     /// material. The key itself is never part of Config serialization.
     pub data_dir: Option<PathBuf>,
-    pub temporary_policy_socket: Option<PathBuf>,
     pub policy_file: Option<PathBuf>,
     /// Explicit development catalog sources, published with native policy.
     /// Both paths are required together; this does not enable HTTP injection.
@@ -260,8 +259,8 @@ impl Config {
         if self.flow_pruner_max == 0 || self.flow_pruner_max_body_bytes == 0 {
             return Err("flow_pruner_max and flow_pruner_max_body_bytes must be positive".into());
         }
-        if self.temporary_policy_socket.is_some() == self.policy_file.is_some() {
-            return Err("configure exactly one policy_file or temporary_policy_socket".into());
+        if self.policy_file.is_none() {
+            return Err("native proxy requires policy_file".into());
         }
         if self.gateway_builtin_services_dir.is_some() != self.gateway_services_dir.is_some() {
             return Err(
@@ -279,7 +278,6 @@ impl Config {
         }
         for path in [&self.readiness_file, &self.event_log]
             .into_iter()
-            .chain(self.temporary_policy_socket.iter())
             .chain(self.policy_file.iter())
         {
             if !paths.insert(path) {
@@ -357,7 +355,7 @@ mod tests {
     fn credential_guard_block_defaults_alias_serializes_and_resolves_values() {
         let base = json!({
             "listeners": [],
-            "temporary_policy_socket": "policy.sock",
+            "policy_file": "policy.json",
             "readiness_file": "ready",
             "event_log": "events"
         });

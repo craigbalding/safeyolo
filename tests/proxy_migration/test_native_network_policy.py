@@ -17,8 +17,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy, read_events
 from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.scenarios import FORGED_REQUEST_ID, POLICY, origin_server
@@ -687,7 +687,7 @@ def test_native_policy_connect_and_inner_https_have_separate_decisions(proxy_bac
     directory = tmp_path / proxy_backend
     directory.mkdir()
     pem, public = origin_certificate(directory)
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     policy = '''[[permissions]]
 action = "network:request"
 resource = "*"

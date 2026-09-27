@@ -13,8 +13,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy, request
 from tests.proxy_migration.scenarios import POLICY, Origin
 from tests.proxy_migration.test_http2_contract import origin_certificate
@@ -25,7 +25,7 @@ def test_connect_has_no_http_path(proxy_backend, tmp_path, effect, default_effec
     """An authority-form CONNECT must not match an HTTP slash-path condition."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     policy = f'''[[permissions]]
 action = "network:request"
 resource = "*"
@@ -72,7 +72,7 @@ condition = {{ method = "CONNECT", path_prefix = "/" }}
 def test_https_origin_verification(proxy_backend, tmp_path, certificate_host, trusted, status):
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, certificate_host)])
     now = datetime.now(UTC)
@@ -139,7 +139,7 @@ def test_https_not_yet_valid_origin_certificate_is_rejected(proxy_backend, tmp_p
     """A trusted-but-not-yet-valid origin certificate cannot reach HTTP."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.now(UTC)
     not_valid_before = now + timedelta(days=1)
@@ -300,6 +300,11 @@ def _write_mtls_material(directory):
         .not_valid_before(now - timedelta(days=1))
         .not_valid_after(now + timedelta(days=1))
         .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+        .add_extension(x509.KeyUsage(digital_signature=True, content_commitment=False,
+                                     key_encipherment=False, data_encipherment=False,
+                                     key_agreement=False, key_cert_sign=True, crl_sign=True,
+                                     encipher_only=False, decipher_only=False), critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -319,6 +324,7 @@ def _write_mtls_material(directory):
             )
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.ExtendedKeyUsage([usage]), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
             .sign(ca_key, hashes.SHA256())
         )
         return key, certificate
@@ -397,7 +403,7 @@ def test_https_origin_requires_client_certificate_before_http(proxy_backend, tmp
     """A mutual-TLS origin rejects the proxy before it can send HTTP bytes."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     ca_file, server_file, client_file = _write_mtls_material(directory)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(server_file)
@@ -537,7 +543,7 @@ def test_https_tls12_origin_records_version_and_cipher(proxy_backend, tmp_path):
     """An allowed request reaches an origin restricted to TLS 1.2 and one cipher."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     server_pem, origin_ca = origin_certificate(directory)
     cipher_name = "ECDHE-RSA-AES128-GCM-SHA256"
     origin_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

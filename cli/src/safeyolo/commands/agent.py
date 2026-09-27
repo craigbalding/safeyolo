@@ -645,7 +645,7 @@ def _run_agent_impl(
     if not is_proxy_running():
         console.print("[yellow]SafeYolo proxy is not running. Starting...[/yellow]")
         try:
-            start_proxy(proxy_port=proxy_port, admin_port=admin_port)
+            start_proxy()
             if not wait_for_healthy(timeout=30):
                 console.print("[red]SafeYolo proxy failed to start.[/red]")
                 raise typer.Exit(1)

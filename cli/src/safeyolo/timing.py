@@ -8,13 +8,11 @@ without changing synchronization or readiness behavior.
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import re
 import sys
 import time
-from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -38,12 +36,6 @@ _command_started_ns = PROCESS_STARTED_AT_NS
 _checkpoint_name: str | None = None
 _checkpoint_started_ns = 0
 _emitted = False
-_addon_totals: dict[tuple[str, str], list[float | int]] = defaultdict(
-    lambda: [0.0, 0, 0.0]
-)
-_addon_profiler_installed = False
-# This mutable test seam is read and restored across separate startup hooks.
-_original_addon_invoke: Callable[..., Any] | None = None
 
 
 def enabled() -> bool:
@@ -177,82 +169,6 @@ def record_process_imports(name: str) -> None:
     """Record child imports from package initialization to this call."""
     if _path is not None:
         _event(name, PROCESS_STARTED_AT_NS, time.monotonic_ns())
-
-
-def _addon_name(addon: Any) -> str:
-    name = getattr(addon, "name", None)
-    if isinstance(name, str) and name:
-        return Path(name).stem
-    return addon.__class__.__name__
-
-
-def install_mitmproxy_addon_profiling() -> None:
-    """Aggregate lifecycle-hook costs while profiling a traffic master.
-
-    This mirrors mitmproxy's small ``invoke_addon`` dispatcher only when the
-    profile flag is active. Request/response hooks are deliberately excluded,
-    and the wrapper is removed at readiness so it cannot affect live traffic.
-    """
-    global _addon_profiler_installed, _original_addon_invoke
-    if _path is None or _addon_profiler_installed:
-        return
-
-    from mitmproxy import addonmanager
-
-    async def profiled_invoke(manager, addon, event):
-        hook_name = event.__class__.__name__.removesuffix("Hook").lower()
-        tracked = hook_name in {"load", "configure", "running"}
-        for child, func in manager._iter_hooks(addon, event):
-            started_ns = time.monotonic_ns() if tracked else 0
-            try:
-                result = func(*event.args())
-                if result is not None and inspect.isawaitable(result):
-                    _ = await result
-            finally:
-                if tracked:
-                    duration_ms = (time.monotonic_ns() - started_ns) / 1_000_000
-                    totals = _addon_totals[(_addon_name(child), hook_name)]
-                    totals[0] = float(totals[0]) + duration_ms
-                    totals[1] = int(totals[1]) + 1
-                    totals[2] = max(float(totals[2]), duration_ms)
-
-    _original_addon_invoke = addonmanager.AddonManager.invoke_addon
-    addonmanager.AddonManager.invoke_addon = profiled_invoke
-    _addon_profiler_installed = True
-
-
-def uninstall_mitmproxy_addon_profiling() -> None:
-    """Restore mitmproxy's dispatcher after startup reaches readiness."""
-    global _addon_profiler_installed
-    if not _addon_profiler_installed or _original_addon_invoke is None:
-        return
-    from mitmproxy import addonmanager
-
-    addonmanager.AddonManager.invoke_addon = _original_addon_invoke
-    _addon_profiler_installed = False
-
-
-def flush_addon_profile(stage: str) -> None:
-    """Append aggregate addon-hook measurements collected so far."""
-    if _path is None:
-        return
-    now = time.monotonic_ns()
-    for (addon, hook), (total_ms, count, max_ms) in sorted(_addon_totals.items()):
-        _append(
-            {
-                "schema": 1,
-                "operation": _operation,
-                "process": _process,
-                "pid": os.getpid(),
-                "category": "addon",
-                "name": f"{addon}.{hook}",
-                "stage": stage,
-                "ended_ns": now,
-                "duration_ms": round(float(total_ms), 3),
-                "details": {"count": int(count), "max_ms": round(float(max_ms), 3)},
-            }
-        )
-    _addon_totals.clear()
 
 
 def _read_events() -> list[dict[str, Any]]:

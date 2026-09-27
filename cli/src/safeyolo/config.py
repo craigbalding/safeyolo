@@ -42,8 +42,8 @@ DEFAULT_CONFIG = {
         "upstream_proxy": "",
         # Empty means derive a stable token from this instance's coord ID.
         "via_token": "",
-        # Native Rust is the release backend. Set `backend: python` explicitly
-        # for the retained comparator and operator rollback path.
+        # The current package selects native Rust. Historical comparison and
+        # explicit rollback select a pinned prior package instead.
         "backend": "rust",
         "rust_config": DEFAULT_NATIVE_CONFIG,
     },

@@ -202,7 +202,7 @@ async fn ordinary_h1_without_test_context_logs_plain_and_decoded_gzip() {
     let directory = tempfile::tempdir().unwrap();
     let proxy = Proxy::start(config(directory.path(), false)).await.unwrap();
     let runtime = proxy.runtime.read().unwrap().clone();
-    assert!(runtime.policy.is_some() && runtime.config.temporary_policy_socket.is_none());
+    assert!(runtime.policy.is_some());
     let (origin, address) = listener().await;
     let host = address.ip().to_string();
     let port = address.port();

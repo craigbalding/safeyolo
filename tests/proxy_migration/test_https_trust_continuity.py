@@ -1,8 +1,10 @@
 """Upstream TLS trust and interception CA continuity through real proxies."""
 
 import http.client
+import os
 import socket
 import ssl
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,8 +12,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy
 from tests.proxy_migration.test_authority_consistency import (
     ALLOWED,
@@ -169,7 +171,7 @@ def test_upstream_tls_uses_logical_name_sni_and_additional_ca(proxy_backend, tmp
         _server(Origin("future-leaf", tls_context=future_context)) as future,
         _server(Parent(allowed, wrong_name, allowed, wrong_name)) as parent,
     ):
-        CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "proxy/ca")
         client_ca = directory / "proxy/ca/mitmproxy-ca-cert.pem"
         parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
         with launch_proxy(proxy_backend, directory / "proxy", POLICY, native_policy=True,
@@ -210,7 +212,7 @@ def test_upstream_tls_uses_logical_name_sni_and_additional_ca(proxy_backend, tmp
 
         # The same complete chain fails when the additional root is absent.
         parent.connect_override = allowed
-        CertStore.from_store(directory / "without-extra-ca/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "without-extra-ca/ca")
         without_extra_ca = directory / "without-extra-ca/ca/mitmproxy-ca-cert.pem"
         with launch_proxy(proxy_backend, directory / "without-extra-ca", POLICY,
                           native_policy=True, credential_head_decision=True,
@@ -232,13 +234,20 @@ def test_python_ca_is_reused_by_rust_after_restart(proxy_backend, tmp_path):
     """A Python-generated CA remains the client trust anchor across Rust starts."""
     if proxy_backend == "python":
         pytest.skip("The cross-backend transition runs in the Rust leg")
+    comparator = os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
+    if not comparator:
+        pytest.skip("The pinned Python comparator is required for this transition")
     directory = tmp_path / "ca-transition"
     with _peers(directory / "peers") as (parent, peers, trust):
         _, _, allowed, _ = peers
         proxy_dir = directory / "proxy"
         ca_dir = proxy_dir / "ca"
         ca_dir.mkdir(parents=True)
-        CertStore.from_store(ca_dir, "mitmproxy", 2048)
+        subprocess.run(
+            [comparator, "-c", "from mitmproxy.certs import CertStore; from pathlib import Path; import sys; "
+             "CertStore.from_store(Path(sys.argv[1]), 'mitmproxy', 2048)", str(ca_dir)],
+            check=True, timeout=30,
+        )
         original = _ca_files(ca_dir)
         key = serialization.load_pem_private_key(original["mitmproxy-ca.pem"], password=None)
         certificate = x509.load_pem_x509_certificate(original["mitmproxy-ca-cert.pem"])

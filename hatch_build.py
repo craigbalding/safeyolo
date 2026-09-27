@@ -117,9 +117,8 @@ class CustomBuildHook(BuildHookInterface):
         # The installer builds the native proxy before invoking uv. Include
         # that exact release artifact in wheel installs so the native default
         # does not depend on the source checkout or an inherited environment
-        # variable. Development checkouts without a release build retain the
-        # Python comparator package path, while normal install.sh runs build
-        # the release artifact before invoking this hook.
+        # variable. A source checkout can use its selected development binary;
+        # install.sh builds the release artifact before invoking this hook.
         native_binary = project_root / "proxy" / "target" / "release" / "safeyolo-proxy"
         if native_binary.is_file():
             build_data["force_include"][str(native_binary)] = "safeyolo/bin/safeyolo-proxy"

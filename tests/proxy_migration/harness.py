@@ -34,11 +34,13 @@ def python_proxy_command():
 
 def python_proxy_environment(*, python_source=None):
     """Build the import path for a selected Python product checkout."""
-    source_root = Path(python_source).expanduser().resolve() if python_source else REPO
+    if python_source is None:
+        raise ValueError("Select a pinned SAFEYOLO_PYTHON_SOURCE for the historical comparator")
+    source_root = Path(python_source).expanduser().resolve()
     return {
         **os.environ,
         "PYTHONPATH": os.pathsep.join(
-            [str(source_root / "cli/src"), str(source_root), str(REPO)]
+            [str(source_root / "cli/src"), str(REPO), str(source_root)]
         ),
     }
 
@@ -55,6 +57,7 @@ class RunningProxy:
     event_log: Path
     process: subprocess.Popen
     readiness_file: Path
+    # Kept for historical resource comparisons; current native runs have no child adapter.
     policy_process: subprocess.Popen | None = None
 
     def events(self, kind):
@@ -217,7 +220,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         # test modules from this checkout on the inherited path while making
         # the launched Python proxy import the caller-selected package.
         python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
-        env = python_proxy_environment(python_source=python_source)
+        env = python_proxy_environment(python_source=python_source) if backend == "python" else os.environ.copy()
         env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         if python_config_dir is not None:
             env["SAFEYOLO_CONFIG_DIR"] = str(python_config_dir)
@@ -229,7 +232,6 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 token_file.touch(mode=0o600)
                 token_file.write_bytes(agent_api_token)
             env["SAFEYOLO_DATA_DIR"] = str(api_data)
-        bridge = None
         # The explicit product parent setting belongs to this fixture. Standard
         # HTTP(S)_PROXY and CA environment variables remain untouched.
         if parent_proxy:
@@ -258,36 +260,14 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         elif backend == "rust":
             config["ignore_hosts"] = list(ignore_hosts)
             config["agent_api_enabled"] = agent_api
-            # Release acceptance must exercise the native policy/inspection
-            # path.  Keep the temporary adapter available for direct,
-            # development comparisons, but let the selected runner force
-            # native policy for every Rust fixture.
-            native_policy_only = os.environ.get("SAFEYOLO_RUST_NATIVE_ONLY") == "1"
-            use_native_policy = native_policy or native_policy_only
-            if use_native_policy:
-                config["policy_file"] = str(policy)
-            else:
-                policy_socket = str(Path(sockets) / "policy.sock")
-                bridge_directory = directory / "policy-bridge"
-                bridge_directory.mkdir()
-                bridge = stack.enter_context(child_process(
-                    [sys.executable, str(REPO / "tools/proxy_migration/temporary_policy.py"),
-                     "--socket", policy_socket, "--policy", str(policy)], bridge_directory, env,
-                ))
-                wait_ready(bridge, [Path(policy_socket)], bridge_directory / "process.log")
-                config["temporary_policy_socket"] = policy_socket
+            # Every current Rust fixture uses the native policy file.
+            config["policy_file"] = str(policy)
             (directory / "native-policy-provenance.json").write_text(
-                json.dumps(
-                    {
-                        "backend": "rust",
-                        "policy_mode": "native" if use_native_policy else "temporary_adapter",
-                        "policy_file": config.get("policy_file"),
-                        "temporary_policy_socket": config.get("temporary_policy_socket"),
-                        "temporary_policy_adapter": bridge is not None,
-                    },
-                    indent=2,
-                )
-                + "\n"
+                json.dumps({
+                    "backend": "rust", "policy_mode": "native",
+                    "policy_file": str(policy), "temporary_policy_socket": None,
+                    "temporary_policy_adapter": False,
+                }, indent=2) + "\n"
             )
             if tls:
                 config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
@@ -318,7 +298,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             readiness_file=readiness,
             expected_backend="python" if backend == "python" else "rust-m2",
         )
-        yield RunningProxy(paths, Path(config["event_log"]), process, readiness, bridge)
+        yield RunningProxy(paths, Path(config["event_log"]), process, readiness)
 
 
 def connection(path):

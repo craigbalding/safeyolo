@@ -24,7 +24,7 @@ use hyper_util::rt::TokioIo;
 use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::TcpStream;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use crate::request_trace::RequestTrace;
@@ -1158,9 +1158,12 @@ async fn decide(
     identity: &ConnectionIdentity,
     request: &PolicyRequest<'_>,
     trace: Option<&Arc<RequestTrace>>,
-    tasks: &UpgradeTasks,
 ) -> Result<PolicyDecision, Error> {
-    if let Some(policy) = &runtime.policy {
+    let policy = runtime
+        .policy
+        .as_ref()
+        .ok_or("native policy is not configured")?;
+    {
         use crate::network_guard::{Options, OutcomeKind, Pdp, Request};
 
         let trace = trace.and_then(|trace| {
@@ -1245,6 +1248,7 @@ async fn decide(
             "event": "proxy.network_guard", "agent": identity.request_agent(),
             "connection_id": request.connection_id, "request_id": request.request_id,
             "host": request.host, "port": request.port,
+            "method": request.method, "scheme": request.scheme,
             "outcome": outcome.kind, "trace": outcome.trace,
             "trace_requested": request.trace_requested,
             "audit": outcome.audit, "metadata": outcome.metadata, "pdp": outcome.pdp,
@@ -1257,7 +1261,7 @@ async fn decide(
             }
             None => (None, Vec::new(), None),
         };
-        return Ok(PolicyDecision {
+        Ok(PolicyDecision {
             allow,
             decision: if allow { "allow" } else { "deny" }.into(),
             status,
@@ -1265,45 +1269,8 @@ async fn decide(
             body,
             blocked_by: outcome.metadata.get("blocked_by").cloned(),
             block_reason: outcome.metadata.get("block_reason").cloned(),
-        });
+        })
     }
-    // The temporary adapter has one policy/state owner. Queue here instead of
-    // overflowing its Unix accept queue or replaying a charged decision. The
-    // lock is shared across reload snapshots and released on cancellation.
-    let _policy_guard = runtime.temporary_policy_lock.lock().await;
-    let socket = UnixStream::connect(
-        runtime
-            .config
-            .temporary_policy_socket
-            .as_deref()
-            .ok_or("policy is not configured")?,
-    )
-    .await?;
-    let (mut sender, connection) =
-        hyper::client::conn::http1::handshake(TokioIo::new(socket)).await?;
-    let _task = HttpTask::unobserved(tasks.spawn(async move {
-        let _ = connection.await;
-    }));
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("/decision")
-        .header(header::HOST, "temporary-policy")
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONNECTION, "close")
-        .body(full(serde_json::to_vec(request)?))?;
-    async {
-        let response = sender.send_request(request).await?;
-        if response.status() != StatusCode::OK {
-            return Err("temporary policy adapter failed".into());
-        }
-        // A decision is small control data; never buffer an application body here.
-        let bytes = Limited::new(response.into_body(), 1024 * 1024)
-            .collect()
-            .await?
-            .to_bytes();
-        Ok(serde_json::from_slice::<PolicyDecision>(&bytes)?)
-    }
-    .await
 }
 
 fn strip_hop_headers(headers: &mut HeaderMap) {
@@ -2305,7 +2272,6 @@ where
             trace_requested: hygiene.trace_requested,
         },
         trace.as_ref(),
-        &upgrades,
     )
     .await?;
     if decision.allow != (decision.decision == "allow") {
