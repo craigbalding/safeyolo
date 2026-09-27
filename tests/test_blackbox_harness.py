@@ -303,7 +303,9 @@ def test_kvm_lane_prepares_operator_access_before_product_bootstrap():
     assert 'if [ "$LANE" = "kvm" ]; then' in lane
     assert 'OPERATOR_UID="$(id -u)"' in lane
     assert operator_acl in lane
-    assert lane.index(operator_acl) < lane.index("    safeyolo bootstrap\n")
+    assert lane.index(operator_acl) < lane.index(
+        '    safeyolo bootstrap --source-checkout "$INSTALL_ROOT"\n'
+    )
     # The harness supplies only its operator prerequisite. Product setup owns
     # the separate persistent uid 100000 ACL and udev rule.
     assert 'setfacl -m "u:100000:rw"' not in lane

@@ -499,56 +499,61 @@ class TestLifecycleStatus:
 
 class TestLifecycleBuild:
 
-    def test_build_script_not_found_exits_one(self, runner, config_dir, monkeypatch):
-        """If build-all.sh doesn't exist at the expected repo-relative path, exits 1."""
-        # Point the build script path to a non-existent directory
-        fake_parents = Path("/tmp/not-a-repo")
-        with patch.object(Path, "resolve", return_value=fake_parents / "cli" / "src" / "safeyolo" / "commands" / "lifecycle.py", autospec=True,):
-            # Simpler: just patch the computed script path directly
-            pass
-
-        # The function derives the path from __file__.parents[4], so we can't
-        # easily mock Path resolution. Instead, test the failure case by mocking
-        # subprocess.run to simulate a build failure.
-        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "build-all.sh"), autospec=True,):
-            result = runner.invoke(app, ["build"])
-
+    def test_missing_selected_checkout_exits_one(self, runner, config_dir, tmp_path):
+        """An explicit missing source cannot fall back to another checkout."""
+        result = runner.invoke(app, ["build", "--source-checkout", str(tmp_path)])
         assert result.exit_code == 1
-        assert "failed" in result.output.lower()
+        assert "Cannot find guest/build-all.sh in" in result.output
+        assert str(tmp_path) in result.output
+        assert "--source-checkout PATH" in result.output
 
-    def test_build_copies_artifacts_to_share(self, runner, config_dir, tmp_path):
-        """Successful build copies artifacts to ~/.safeyolo/share/."""
-        # Create fake build output
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-        (out_dir / "Image").write_bytes(b"kernel")
-        (out_dir / "initramfs.cpio.gz").write_bytes(b"initramfs")
-        (out_dir / "rootfs-base.ext4").write_bytes(b"rootfs")
+    def test_bootstrap_passes_selected_checkout_to_build(
+        self, runner, config_dir, tmp_path
+    ):
+        """The installed-lane bootstrap build uses its selected checkout."""
+        with (
+            patch("safeyolo.commands.bootstrap._needs_init", return_value=False, autospec=True),
+            patch("safeyolo.commands.bootstrap._needs_build", return_value=True, autospec=True),
+            patch("safeyolo.commands.bootstrap._needs_setup", return_value=False, autospec=True),
+            patch("safeyolo.commands.bootstrap._missing_deps", return_value=([], None), autospec=True),
+            patch("safeyolo.commands.bootstrap._platform.system", return_value="Darwin", autospec=True),
+            patch("safeyolo.commands.lifecycle.build", autospec=True) as build,
+        ):
+            result = runner.invoke(
+                app, ["bootstrap", "--source-checkout", str(tmp_path)]
+            )
 
-        # Create fake build script
-        build_script = tmp_path / "build-all.sh"
+        assert result.exit_code == 0, result.output
+        build.assert_called_once_with(source_checkout=tmp_path)
+
+    def test_installed_build_defaults_to_current_checkout(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """A wheel path uses the working checkout and its output directory."""
+        from safeyolo.commands import lifecycle
+
+        checkout = tmp_path / "checkout"
+        build_script = checkout / "guest" / "build-all.sh"
+        build_script.parent.mkdir(parents=True)
         build_script.touch()
+        monkeypatch.chdir(checkout)
+        monkeypatch.setattr(
+            lifecycle,
+            "__file__",
+            str(tmp_path / "venv/lib/python3.12/site-packages/safeyolo/commands/lifecycle.py"),
+        )
 
         with (
-            patch("subprocess.run", autospec=True,),
-            patch.object(
-                Path, "exists",
-                side_effect=lambda self=None: True,
-            autospec=True,
-            ),
+            patch("safeyolo.commands.lifecycle._preflight_linux_build_storage", return_value=[], autospec=True),
+            patch("safeyolo.commands.lifecycle.subprocess.run", autospec=True) as run,
+            patch("safeyolo.commands.lifecycle._install_guest_artifacts", autospec=True) as install,
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True),
         ):
-            # This is tricky to mock because of Path resolution from __file__
-            # Testing the artifact copy logic directly instead
-            import shutil
+            result = runner.invoke(app, ["build"])
 
-            share_dir = config_dir / "share"
-            for artifact in ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]:
-                src = out_dir / artifact
-                shutil.copy2(str(src), str(share_dir / artifact))
-
-        assert (config_dir / "share" / "Image").read_bytes() == b"kernel"
-        assert (config_dir / "share" / "initramfs.cpio.gz").read_bytes() == b"initramfs"
-        assert (config_dir / "share" / "rootfs-base.ext4").read_bytes() == b"rootfs"
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with([str(build_script)], check=True)
+        install.assert_called_once_with(build_script.parent / "out", config_dir / "share")
 
     def test_install_guest_artifacts_includes_cache_paths(self, tmp_path):
         """The installer copies the Linux cache bind manifest too."""

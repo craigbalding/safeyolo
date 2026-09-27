@@ -51,7 +51,10 @@ The commands below install the CLI, initialize `~/.safeyolo/`, and build the
 platform's guest artifacts. On Linux, missing build packages cause bootstrap
 to print an installation command and stop. Run the printed command, then rerun
 `safeyolo bootstrap`. Runtime setup explains any privileged changes before
-using `sudo`, which may prompt for your password.
+using `sudo`, which may prompt for your password. Run bootstrap from the source
+checkout because the guest build script remains there. When running the installed
+CLI elsewhere, pass that checkout with `--source-checkout` to `safeyolo bootstrap`
+or `safeyolo build`.
 
 ```sh
 git clone https://github.com/craigbalding/safeyolo.git

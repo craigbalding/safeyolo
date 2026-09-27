@@ -464,6 +464,11 @@ def bootstrap(  # DOC: README.md
         "--check",
         help="Report what would run without doing anything. Exits non-zero if any step is needed.",
     ),
+    source_checkout: Path | None = typer.Option(
+        None,
+        "--source-checkout",
+        help="Checkout containing guest/build-all.sh for the build step.",
+    ),
 ) -> None:
     """One-command first-run setup: preflight + init + build + setup.
 
@@ -602,7 +607,7 @@ def bootstrap(  # DOC: README.md
                 console.print("[bold]▶ safeyolo build[/bold]  (may take several minutes on first run)")
             from .lifecycle import build as _build
             try:
-                _build()
+                _build(source_checkout=source_checkout)
                 steps_run.append("build")
             except SystemExit as e:
                 if e.code not in (0, None):

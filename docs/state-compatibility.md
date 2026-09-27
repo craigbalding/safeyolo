@@ -12,10 +12,11 @@ The selected prior comparator is the Python proxy from repository commit
 `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a` (2026-09-16), the baseline named by
 issue #638. It is a source checkpoint rather than a tagged wheel release. Its
 installed comparator uses Python 3.12.14, SafeYolo 0.1.0, and mitmproxy 12.2.3
-from the locked `uv.lock`. The pre-cutover Rust binary is frozen at
-`d229907079695cb464e81273f38d46c42522f57d`. The installed candidate
-package has a separate source revision because package-path repairs follow
-that binary. The earlier inventory base was
+from the locked `uv.lock`. The pre-cutover Rust binary baseline was built from
+`d229907079695cb464e81273f38d46c42522f57d`. The installed P1 candidate
+uses source revision `0af5c7e22d5e8a45fc321e24eab8355414358f10` after
+the guest build path repair; its Rust source is unchanged. The earlier inventory
+base was
 `4bf05bf232c843f04b9acf391fe097daac14776d`.
 
 All fixture names and credential values are synthetic. The installed transition
