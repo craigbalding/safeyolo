@@ -451,7 +451,7 @@ separate host execution.
 ### Finite installed P3 consumer pilot for issue #637
 
 Run `run-p3.sh` on an operator-owned disposable host with a clean checkout that
-contains frozen revision `b3dd161e6be66456250c6c5062aada5962a5e0e4`.
+contains frozen revision `36462777e23c368adda65c9d880fe2fd8c8c76cb`.
 Use a disposable Ubuntu systrap host or a physical Apple Silicon Mac with
 Virtualization.framework. The host needs `uv`, `git`, Python 3, the
 prerequisites for `run-lane.sh`, and working loopback TCP bind and connect.
