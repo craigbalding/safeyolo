@@ -22,6 +22,7 @@
 #   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
 #   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --p2
 #   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p3
+#   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p4
 #   ./run-tests.sh --expect-platform systrap --proxy-impl rust --p3-config-only
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
@@ -86,6 +87,7 @@ RUST_BIN=""
 KVM_P1=false
 P2=false
 P3=false
+P4=false
 P3_CONFIG_ONLY=false
 PYTEST_FORWARD_ARGS=()
 
@@ -162,6 +164,10 @@ while [[ $# -gt 0 ]]; do
             P3=true
             shift
             ;;
+        --p4)
+            P4=true
+            shift
+            ;;
         --p3-config-only)
             P3=true
             P3_CONFIG_ONLY=true
@@ -187,18 +193,25 @@ if [ "$KVM_P1" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
     exit 2
 fi
 if [ "$P2" = true ] && { [ "$KVM_P1" = true ] || \
-   [ "$P3" = true ] || \
+   [ "$P3" = true ] || [ "$P4" = true ] || \
    { [ "$EXPECTED_PLATFORM" != "kvm" ] && [ "$EXPECTED_PLATFORM" != "systrap" ]; } || \
    [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
    [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
     echo "ERROR: --p2 requires --expect-platform kvm|systrap --proxy-impl rust and no suite override" >&2
     exit 2
 fi
-if [ "$P3" = true ] && { [ "$KVM_P1" = true ] || \
+if [ "$P3" = true ] && { [ "$KVM_P1" = true ] || [ "$P4" = true ] || \
    { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
    [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
    [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
     echo "ERROR: --p3 requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+if [ "$P4" = true ] && { [ "$KVM_P1" = true ] || \
+   { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --p4 requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
     exit 2
 fi
 
@@ -401,6 +414,15 @@ if [ "$KVM_P1" = true ] || [ "$P2" = true ]; then
 fi
 if [ "$P2" = true ]; then
     safeyolo policy host add failing.test
+fi
+if [ "$P4" = true ]; then
+    safeyolo policy host deny evil.com
+    safeyolo policy host add failing.test
+    safeyolo policy host add future-leaf.test
+    safeyolo policy host add example-chain-test.test
+    safeyolo policy host add wrong-san.test
+    safeyolo policy host add self-signed.test
+    safeyolo policy host add expired-leaf.test
 fi
 if [ "$P3" = true ]; then
     export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
@@ -706,7 +728,7 @@ safeyolo stop 2>/dev/null || true
 # --- Phase 1: Start infrastructure (idempotent) ---
 
 # Sinkhole (shared — not instance-specific)
-if { [ "$P2" = true ] || [ "$P3" = true ]; } && curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+if { [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ]; } && curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
     echo "ERROR: selected pilot requires its own owned sinkhole; control port 19999 is already in use" >&2
     exit 2
 fi
@@ -715,10 +737,14 @@ if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
 else
     echo "Starting sinkhole..."
     P2_SINKHOLE_ARGS=()
-    if [ "$P2" = true ] || [ "$P3" = true ]; then
+    P4_CERT_ARGS=()
+    if [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ]; then
         rm -rf "$SAFEYOLO_CONFIG_DIR/p2-fixture"
         mkdir -m 0700 "$SAFEYOLO_CONFIG_DIR/p2-fixture"
         P2_SINKHOLE_ARGS=(--p2-dir "$SAFEYOLO_CONFIG_DIR/p2-fixture")
+    fi
+    if [ "$P4" = true ]; then
+        P4_CERT_ARGS=(--extra-cert "future:18452:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key")
     fi
     PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SCRIPT_DIR/sinkhole/server.py" \
         --http-port 18080 \
@@ -734,6 +760,7 @@ else
         --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
         --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
         --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
+        "${P4_CERT_ARGS[@]}" \
         "${P2_SINKHOLE_ARGS[@]}" \
         &
     SINKHOLE_PID=$!
@@ -932,6 +959,14 @@ if [ "$P3" = true ]; then
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
         --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p3.json"
+    exit $?
+fi
+if [ "$P4" = true ]; then
+    python3 "$SCRIPT_DIR/p4_installed.py" \
+        --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
+        --platform "$EXPECTED_PLATFORM" \
+        --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p4.json"
     exit $?
 fi
 

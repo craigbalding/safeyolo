@@ -314,6 +314,8 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ready", "directory": str(p2_fixture.directory)})
         elif parsed.path.startswith("/p2/state/") and p2_fixture is not None:
             self._send_json(p2_fixture.state(parsed.path.removeprefix("/p2/state/")))
+        elif parsed.path.startswith("/p4/state/") and p2_fixture is not None:
+            self._send_json(p2_fixture.p4_state(parsed.path.removeprefix("/p4/state/")))
         elif parsed.path == "/requests":
             host = query.get("host", [None])[0]
             since = query.get("since", [None])[0]
@@ -342,6 +344,12 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "released"})
             else:
                 self._send_json({"error": "stream not found"}, 404)
+        elif self.path.startswith("/p4/release/") and p2_fixture is not None:
+            marker = self.path.removeprefix("/p4/release/")
+            if p2_fixture.release_p4(marker):
+                self._send_json({"status": "released"})
+            else:
+                self._send_json({"error": "held HTTP request not found"}, 404)
         else:
             self._send_json({"error": "not found"}, 404)
 
