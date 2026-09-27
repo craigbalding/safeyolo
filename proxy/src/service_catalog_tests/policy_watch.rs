@@ -304,6 +304,219 @@ approval_default='once'
     fixture.stop().await;
 }
 
+#[test]
+fn expiry_prune_serializes_service_authorization_and_revocation() {
+    owned_child(
+        "service_catalog_tests::policy_watch::expiry_prune_serializes_service_authorization_and_revocation",
+        expiry_prune_and_admin_workflow(),
+    );
+}
+
+async fn expiry_prune_and_admin_workflow() {
+    use crate::credentials::{Credential, Secret, Vault};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut settings = config(root);
+    let path = root.join("policy.toml");
+    settings.policy_file = Some(path.clone());
+    settings.admin_port = Some(0);
+    settings.admin_api_token_file = Some(root.join("admin-token"));
+    let builtin = root.join("builtin");
+    let services = root.join("services");
+    std::fs::create_dir(&builtin).unwrap();
+    std::fs::create_dir(&services).unwrap();
+    settings.gateway_builtin_services_dir = Some(builtin);
+    settings.gateway_services_dir = Some(services.clone());
+    std::fs::write(root.join("admin-token"), "owned-admin-token").unwrap();
+    std::fs::create_dir(root.join("data")).unwrap();
+    std::fs::write(root.join("data/vault.key"), "owned-vault-passphrase").unwrap();
+    Vault::unlock(
+        root.join("data/vault.yaml.enc"),
+        &Secret::new("owned-vault-passphrase"),
+    )
+    .unwrap()
+    .store(Credential::new(
+        "owned-vault-ref",
+        "bearer",
+        Secret::new("owned-origin-secret"),
+    ))
+    .unwrap();
+    std::fs::write(
+        services.join("basic.yaml"),
+        r#"schema_version: 1
+name: basic
+default_host: basic.test
+auth: {type: bearer, allow_http: true}
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /p3/read
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        &path,
+        r#"version = '2.0'
+[hosts]
+'basic.test' = {egress='allow', service='basic'}
+[agents.alice]
+image='owned'
+[agents.bob]
+image='owned'
+"#,
+    )
+    .unwrap();
+    let mut fixture = Fixture::start(directory, settings).await;
+    let port = fixture.proxy.admin.as_ref().unwrap().address().port();
+    assert_eq!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+
+    // The admin request reaches the shared lock after expiry has reread the
+    // baseline. The expiry deletion and later authorization must both persist.
+    insert_expired_host(&path, "first-expired.invalid");
+    let authorized = prune_while_admin_waits(
+        &fixture,
+        &path,
+        admin_post(
+            port,
+            "/admin/agents/alice/services",
+            json!({"service":"basic","capability":"reader","credential":"owned-vault-ref"}),
+        ),
+    );
+    assert_eq!(authorized.status, 200);
+    assert_eq!(authorized.value()["status"], "authorized");
+    let saved: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    assert!(saved["hosts"].get("first-expired.invalid").is_none());
+    assert!(saved["agents"]["alice"]["services"].get("basic").is_some());
+    assert!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"]
+            .get("basic")
+            .is_none()
+    );
+    assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
+    let allowed = fixture.read("alice", "GET", TOKEN).await.value();
+    let token = allowed["authorized"]["basic"]["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(token.starts_with("sgw_"));
+    assert_eq!(
+        fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert_eq!(
+        agent_get(&fixture.directory.path().join("bob.sock"), &token)
+            .await
+            .status,
+        403
+    );
+
+    // The opposite admin mutation must stay gone after a concurrent prune and
+    // the next watcher publication, including an already issued gateway token.
+    insert_expired_host(&path, "second-expired.invalid");
+    let revoked = prune_while_admin_waits(
+        &fixture,
+        &path,
+        admin_delete(port, "/admin/agents/alice/services/basic"),
+    );
+    assert_eq!(revoked.status, 200);
+    let saved: toml_edit::DocumentMut = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    assert!(saved["hosts"].get("second-expired.invalid").is_none());
+    assert!(saved["agents"]["alice"].get("services").is_none());
+    assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
+    assert_eq!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert_eq!(
+        fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert_eq!(
+        agent_get(&fixture.directory.path().join("alice.sock"), &token)
+            .await
+            .status,
+        403
+    );
+    assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
+    fixture.stop().await;
+}
+
+fn insert_expired_host(path: &Path, host: &str) {
+    let source = std::fs::read_to_string(path).unwrap();
+    assert!(source.contains("[hosts]\n"));
+    let updated = source.replacen(
+        "[hosts]\n",
+        &format!("[hosts]\n'{host}'={{egress='deny',expires=2001-01-01T00:00:00Z}}\n"),
+        1,
+    );
+    std::fs::write(path, updated).unwrap();
+}
+
+fn prune_while_admin_waits(
+    fixture: &Fixture,
+    path: &Path,
+    admin: impl std::future::Future<Output = Reply> + Send + 'static,
+) -> Reply {
+    let before = fixture.runtime();
+    let (at_lock_tx, at_lock_rx) = std::sync::mpsc::sync_channel(1);
+    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+    let handle = tokio::runtime::Handle::current();
+    let policy_path = path.to_owned();
+    crate::policy::after_next_expiry_read(move || {
+        let independent = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(policy_path.parent().unwrap().join(".policy.toml.lock"))
+            .unwrap();
+        assert!(matches!(
+            independent.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        crate::approvals::before_next_policy_lock(policy_path, move || {
+            at_lock_tx.send(()).unwrap();
+        });
+        handle.spawn(async move {
+            reply_tx.send(admin.await).unwrap();
+        });
+        at_lock_rx.recv_timeout(LIMIT).unwrap();
+    });
+    let candidate = crate::policy_runtime::load(
+        path,
+        before
+            .policy
+            .as_ref()
+            .unwrap()
+            .gateway()
+            .unwrap()
+            .registry(),
+        before.policy.as_ref(),
+        &before.audit,
+    )
+    .unwrap();
+    let reply = reply_rx.recv_timeout(LIMIT).unwrap();
+    fixture.proxy.publish_policy(&before, candidate).unwrap();
+    reply
+}
+
+async fn agent_get(socket: &Path, token: &str) -> Reply {
+    let request = format!(
+        "GET http://basic.test/p3/read HTTP/1.1\r\nHost: basic.test\r\n\
+         Authorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(LIMIT, stream.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    reply(response)
+}
+
 async fn authorize_service(port: u16, service: &str, capability: &str) {
     let reply = admin_post(
         port,

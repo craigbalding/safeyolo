@@ -40,12 +40,30 @@ mod watch;
 thread_local! {
     static AFTER_BASELINE_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         std::cell::RefCell::new(None);
+    static AFTER_EXPIRY_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
 }
 
 #[cfg(test)]
 pub(crate) fn after_next_baseline_read(callback: impl FnOnce() + 'static) {
     AFTER_BASELINE_READ.with(|pending| {
         assert!(pending.replace(Some(Box::new(callback))).is_none());
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn after_next_expiry_read(callback: impl FnOnce() + 'static) {
+    AFTER_EXPIRY_READ.with(|pending| {
+        assert!(pending.replace(Some(Box::new(callback))).is_none());
+    });
+}
+
+#[cfg(test)]
+fn run_after_expiry_read() {
+    AFTER_EXPIRY_READ.with(|pending| {
+        if let Some(callback) = pending.borrow_mut().take() {
+            callback();
+        }
     });
 }
 use baseline::{Baseline, Builder as BaselineBuilder};
