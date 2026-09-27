@@ -14,8 +14,9 @@ issue #638. It is a source checkpoint rather than a tagged wheel release. Its
 installed comparator uses Python 3.12.14, SafeYolo 0.1.0, and mitmproxy 12.2.3
 from the locked `uv.lock`. The pre-cutover Rust binary baseline was built from
 `d229907079695cb464e81273f38d46c42522f57d`. The installed P1 candidate
-uses source revision `0af5c7e22d5e8a45fc321e24eab8355414358f10` after
-the guest build path repair; its Rust source is unchanged. The earlier inventory
+uses source revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`. This
+revision corrects the guest build path and `agent add` proxy port display. Its
+Rust source is unchanged. The earlier inventory
 base was
 `4bf05bf232c843f04b9acf391fe097daac14776d`.
 

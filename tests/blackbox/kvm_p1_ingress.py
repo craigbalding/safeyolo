@@ -16,7 +16,7 @@ from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _sha256
 from isolation.p1_guest_requests import is_mounted_forwarder
 
-FROZEN_R = "0af5c7e22d5e8a45fc321e24eab8355414358f10"
+FROZEN_R = "a1f85d90bacdb271fc9681847ad2202b46c0e4ad"
 
 
 def runsc_identity(config_dir: Path, agent: str, listener: Path) -> dict:

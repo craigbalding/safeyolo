@@ -709,8 +709,9 @@ throughput target, service-level objective, or memory cap.
 
 The workload run used pre-cutover source
 `d229907079695cb464e81273f38d46c42522f57d`. The installed P1 pilot pins
-`0af5c7e22d5e8a45fc321e24eab8355414358f10` (R) after the guest build
-source path repair. Rust source and the selected #639 workload fixtures are
+`a1f85d90bacdb271fc9681847ad2202b46c0e4ad` (R). This revision corrects
+the guest build source path and the `agent add` proxy port display. Rust source
+and the selected #639 workload fixtures are
 unchanged across those commits. On Linux aarch64, the guarded Cargo release
 build selected `safeyolo-proxy` SHA-256
 `933b0c9368279416ecd3e92ba60260882f2a328622b787378cdae31a40d073a8`.
