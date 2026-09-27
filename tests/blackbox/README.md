@@ -503,12 +503,12 @@ It cannot execute the VZ pilot until that host capability is available. The
 wrapper checks loopback before installation, so this route can check out and
 inspect the procedure without starting the disposable instance.
 
-### Finite installed P4 lifecycle pilot for issue #637
+### Finite installed P4/P6 lifecycle pilot for issue #637
 
 Run `run-p4.sh` on an operator-owned disposable Ubuntu systrap host or a
 physical Apple Silicon Mac with Virtualization.framework. Use a clean
 checkout that contains frozen revision
-`729b48abd2920c424e6513ef0c2eaa6a1f306299`. The host needs `uv`,
+`2faba3306de7c099e2913e0eebc8907ff3eba148`. The host needs `uv`,
 `git`, Python 3, the `run-lane.sh` bootstrap prerequisites, and loopback TCP
 bind and connect. The Linux operator account needs noninteractive `sudo` for
 bootstrap. Local test ports 8180, 8181, 9190, 18080, 18443–18452, and
@@ -530,7 +530,8 @@ mechanism:
 ```
 
 The wrapper installs frozen source R in an isolated `uv` tool directory. It
-starts a disposable native proxy and real guests. The selection adds, uses,
+starts a disposable native proxy and real guests. It also starts a separate
+installed native proxy and guest in an owner instance. The selection adds, uses,
 and removes a second agent listener while the first stays usable. An operator
 policy change denies new requests while an admitted SSE response finishes;
 restoring that policy permits new requests. The guest exercises the valid
@@ -538,23 +539,26 @@ private CA, wrong host, untrusted, future, and expired leaf fixtures. The
 invalid cases must produce no application request at the owned origin. An
 exact `self-signed.test:443` passthrough change exposes the origin leaf, keeps
 an established TLS session usable after removal, and returns new sessions to
-inspected TLS. After a same-state restart, a final stop runs with an
+inspected TLS. After a same-state restart, the second stop runs with an
 active HTTP response, SSE response, WebSocket, and CONNECT tunnel. The guest
 checks the completed responses and tunnel closure; host logs check the owned
-response and WebSocket close events.
+response and WebSocket close events. The pilot completes three start/stop
+cycles, checks the stopped proxy and guest after each cycle, and checks fresh
+allowed and denied traffic after each restart. The separate owner instance
+serves allowed and denied controls throughout those cycles and stops afterward.
 
-Expect `P4: installed guest configuration, TLS and drain verified` and
+Expect `P4/P6: installed guest configuration, TLS, drain and three-cycle recovery verified` and
 `P4 result: exit 0`. Inspect `systrap-p4.json` or `vz-p4.json` in the printed
 observations directory. The report records the installed binary and host,
-guest bridges, fixture deliveries, reload effects, shutdown ownership, and
-one installation with two start/stop cycles. P6 can reuse supported-host
-observations after independent review. `status: passed` and `cleanup: stopped`
-mean the runner and cleanup completed; they do not mark P4 accepted. The
-wrapper stops both guests, the proxy, and owned fixture processes. If cleanup
-fails, run the exact three cleanup commands printed by the wrapper. Check that
-the guest PID files, native proxy receipt, and Coord NATS PID file are gone.
-Check that agent sockets are gone before reusing the host. The disposable
-directory remains available for diagnosis.
+guest bridges, fixture deliveries, reload effects, shutdown ownership, three
+start/stop cycles, and the separate owner's continuity. `status: passed` and
+`cleanup: stopped` mean the runner and cleanup completed; they do not mark P4
+or P6 accepted. The wrapper stops the disposable guests, both proxy instances,
+and owned fixture processes. If cleanup fails, inspect the printed disposable
+directory and use the printed cleanup commands for the affected instance. Check
+that guest PID files, native proxy receipts, Coord NATS PID files, and agent
+sockets are gone before reusing the host. The disposable directory remains
+available for diagnosis.
 
 The approved Bristol physical Mac route currently cannot bind or connect
 loopback TCP. The wrapper checks that prerequisite before installation. A VZ

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Run #637 P4 with frozen installed source and disposable real guests.
+# Run #637 P4/P6 with frozen installed source and disposable real guests.
 # The selected host must support its named guest mechanism and loopback TCP.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
-FROZEN_R=729b48abd2920c424e6513ef0c2eaa6a1f306299
+FROZEN_R=2faba3306de7c099e2913e0eebc8907ff3eba148
 PLATFORM="${1:-}"
 
 case "$PLATFORM" in
@@ -56,6 +56,8 @@ export UV_TOOL_DIR="$PILOT_DIR/uv-tools"
 export UV_TOOL_BIN_DIR="$PILOT_DIR/bin"
 export SAFEYOLO_CONFIG_DIR="$PILOT_DIR/source-instance"
 export SAFEYOLO_TEST_CONFIG_DIR="$PILOT_DIR/test-instance"
+export SAFEYOLO_P4_OWNER_CONFIG_DIR="$PILOT_DIR/owner-instance"
+export SAFEYOLO_P4_SOURCE_CONFIG_DIR="$SAFEYOLO_CONFIG_DIR"
 export SAFEYOLO_TEST_AGENT=bbtest
 export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="$PILOT_DIR/observations"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_TEST_CONFIG_DIR/data/coord"
@@ -70,6 +72,16 @@ cleanup() {
     trap - EXIT
     rm -f "$SAFEYOLO_TEST_CONFIG_DIR/agents/bbtest/config-share/p4-passthrough-go" || cleanup_failed=1
     if [ -x "$UV_TOOL_BIN_DIR/safeyolo" ]; then
+        if [ -f "$SAFEYOLO_P4_OWNER_CONFIG_DIR/config.yaml" ]; then
+            if [ -d "$SAFEYOLO_P4_OWNER_CONFIG_DIR/agents/bbowner" ]; then
+                SAFEYOLO_CONFIG_DIR="$SAFEYOLO_P4_OWNER_CONFIG_DIR" \
+                    SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/coord" SAFEYOLO_SUBNET_BASE=76 \
+                    "$UV_TOOL_BIN_DIR/safeyolo" agent stop bbowner >/dev/null 2>&1 || cleanup_failed=1
+            fi
+            SAFEYOLO_CONFIG_DIR="$SAFEYOLO_P4_OWNER_CONFIG_DIR" \
+                SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/coord" \
+                "$UV_TOOL_BIN_DIR/safeyolo" stop >/dev/null 2>&1 || cleanup_failed=1
+        fi
         for agent in bbpeer bbtest; do
             if [ -d "$SAFEYOLO_TEST_CONFIG_DIR/agents/$agent" ]; then
                 SAFEYOLO_CONFIG_DIR="$SAFEYOLO_TEST_CONFIG_DIR" \
@@ -88,17 +100,29 @@ cleanup() {
         done
     done
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/data/proxy-rust.json" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/data/proxy-readiness.json" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/proxy-rust.json" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/proxy-readiness.json" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_P4_OWNER_CONFIG_DIR/agents/bbowner/container.pid" ] || cleanup_failed=1
+    [ ! -e "$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/coord/nats/nats.pid.json" ] || cleanup_failed=1
+    for owned_socket in "$SAFEYOLO_P4_OWNER_CONFIG_DIR"/data/sockets/*_bbowner/proxy.sock; do
+        [ ! -e "$owned_socket" ] || cleanup_failed=1
+    done
     [ ! -e "$SAFEYOLO_COORD_DATA_DIR/nats/nats.pid.json" ] || cleanup_failed=1
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/sinkhole.pid" ] || cleanup_failed=1
     [ ! -e "$SAFEYOLO_TEST_CONFIG_DIR/native-parent.pid" ] || cleanup_failed=1
     if [ "$cleanup_failed" -ne 0 ]; then
-        echo "ERROR: disposable P4 proxy or guest cleanup failed: $SAFEYOLO_TEST_CONFIG_DIR" >&2
+        echo "ERROR: disposable P4/P6 cleanup failed: $SAFEYOLO_TEST_CONFIG_DIR or $SAFEYOLO_P4_OWNER_CONFIG_DIR" >&2
         printf 'Cleanup command: SAFEYOLO_CONFIG_DIR=%q %q agent stop bbpeer\n' \
             "$SAFEYOLO_TEST_CONFIG_DIR" "$UV_TOOL_BIN_DIR/safeyolo" >&2
         printf 'Cleanup command: SAFEYOLO_CONFIG_DIR=%q %q agent stop bbtest\n' \
             "$SAFEYOLO_TEST_CONFIG_DIR" "$UV_TOOL_BIN_DIR/safeyolo" >&2
         printf 'Cleanup command: SAFEYOLO_CONFIG_DIR=%q %q stop\n' \
             "$SAFEYOLO_TEST_CONFIG_DIR" "$UV_TOOL_BIN_DIR/safeyolo" >&2
+        printf 'Cleanup command: SAFEYOLO_CONFIG_DIR=%q SAFEYOLO_COORD_DATA_DIR=%q SAFEYOLO_SUBNET_BASE=76 %q agent stop bbowner\n' \
+            "$SAFEYOLO_P4_OWNER_CONFIG_DIR" "$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/coord" "$UV_TOOL_BIN_DIR/safeyolo" >&2
+        printf 'Cleanup command: SAFEYOLO_CONFIG_DIR=%q SAFEYOLO_COORD_DATA_DIR=%q %q stop\n' \
+            "$SAFEYOLO_P4_OWNER_CONFIG_DIR" "$SAFEYOLO_P4_OWNER_CONFIG_DIR/data/coord" "$UV_TOOL_BIN_DIR/safeyolo" >&2
         result=1
     fi
     local report="$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR/$PLATFORM-p4.json"

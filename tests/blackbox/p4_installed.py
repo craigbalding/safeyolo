@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise finite P4 configuration, TLS and shutdown through installed guests."""
+"""Exercise installed P4 configuration and P6 recovery through real guests."""
 
 from __future__ import annotations
 
@@ -15,18 +15,21 @@ import tomllib
 import uuid
 from pathlib import Path
 
+import yaml
 from host.sinkhole_client import SinkholeClient
-from installed_host_smoke import _agent_map, _sha256
+from installed_host_smoke import _agent_map, _pid_alive, _probe_agent_health, _process_start_token, _sha256
 from kvm_p1_ingress import installed_identity, runsc_identity
 from p2_installed_linux import control
 
-FROZEN_R = "729b48abd2920c424e6513ef0c2eaa6a1f306299"
+FROZEN_R = "2faba3306de7c099e2913e0eebc8907ff3eba148"
 PEER = "bbpeer"
 FIXTURE = "failing.test"
 
 
-def checked(command: list[str], *, timeout: int = 35) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+def checked(
+    command: list[str], *, timeout: int = 35, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
     assert result.returncode == 0, f"{command[0]} exited {result.returncode}: {result.stderr[-900:]}"
     return result
 
@@ -55,8 +58,8 @@ def observation(output: str, phase: str, agent: str) -> dict:
     return value["result"]
 
 
-def guest(cli: str, agent: str, phase: str, marker: str) -> dict:
-    return observation(checked(guest_command(cli, agent, phase, marker), timeout=55).stdout, phase, agent)
+def guest(cli: str, agent: str, phase: str, marker: str, *, env: dict[str, str] | None = None) -> dict:
+    return observation(checked(guest_command(cli, agent, phase, marker), timeout=55, env=env).stdout, phase, agent)
 
 
 def held_guest(cli: str, agent: str, phase: str, marker: str) -> tuple[subprocess.Popen[str], str]:
@@ -65,11 +68,18 @@ def held_guest(cli: str, agent: str, phase: str, marker: str) -> tuple[subproces
     )
     try:
         assert process.stdout is not None
-        ready, _, _ = select.select([process.stdout], [], [], 25)
-        assert ready, f"guest {phase} did not reach its admitted-work boundary"
-        line = process.stdout.readline()
-        assert line.strip() == f"P4_READY={phase}", (phase, line)
-        return process, line
+        output = bytearray()
+        deadline = time.monotonic() + 25
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, f"guest {phase} did not reach its admitted-work boundary: {bytes(output)[-900:]}"
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            assert ready, f"guest {phase} did not reach its admitted-work boundary: {bytes(output)[-900:]}"
+            chunk = os.read(process.stdout.fileno(), 4096)
+            assert chunk, f"guest {phase} exited before its admitted-work boundary: {bytes(output)[-900:]}"
+            output.extend(chunk)
+            if f"P4_READY={phase}".encode() in output.splitlines():
+                return process, output.decode("utf-8", "replace")
     except Exception:
         stop_child(process)
         raise
@@ -126,11 +136,138 @@ def wait_stopped(config_dir: Path) -> None:
         time.sleep(0.05)
 
 
-def assert_proxy_stopped(config_dir: Path, listener: Path) -> None:
+def assert_proxy_stopped(config_dir: Path, listener: Path, runtime: dict) -> None:
     wait_stopped(config_dir)
     assert not (config_dir / "data/proxy-rust.json").exists(), "native lifetime receipt remains"
+    pid = runtime["pid"]
+    assert not (_pid_alive(pid) and _process_start_token(pid) == runtime["receipt"]["start_token"]), (
+        f"native process {pid} remains live after stop"
+    )
     with socket.socket(socket.AF_UNIX) as closed:
         assert closed.connect_ex(str(listener)) != 0, "native agent listener still accepts"
+    assert not listener.exists(), f"native agent listener remains after stop: {listener}"
+
+
+def stop_guest(cli: str, config_dir: Path, agent: str) -> None:
+    pid_file = config_dir / "agents" / agent / "container.pid"
+    pid = int(pid_file.read_text()) if pid_file.exists() else None
+    start_token = _process_start_token(pid) if pid is not None else None
+    checked([cli, "agent", "stop", agent], timeout=60)
+    assert not pid_file.exists(), f"guest PID file remains after stop: {pid_file}"
+    if start_token is not None:
+        assert not (_pid_alive(pid) and _process_start_token(pid) == start_token), (
+            f"guest process {pid} remains live after stop"
+        )
+
+
+def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
+    checked([cli, "agent", "run", agent, "--sandbox-only"], timeout=120)
+    listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == agent)
+    path = Path(listener["path"])
+    assert path.is_socket(), f"restarted guest has no native listener: {path}"
+    return path
+
+
+def prepare_owner(
+    cli: str, config_dir: Path, source_dir: Path, native: dict, binary: str, output: Path
+) -> tuple[dict, dict[str, str], Path]:
+    """Keep one separate installed proxy and guest live across P4's stops."""
+    env = os.environ.copy()
+    env["SAFEYOLO_CONFIG_DIR"] = str(config_dir)
+    env["SAFEYOLO_LOGS_DIR"] = str(config_dir / "logs")
+    env["SAFEYOLO_LOG_PATH"] = str(config_dir / "logs/safeyolo.jsonl")
+    env["SAFEYOLO_SUBNET_BASE"] = "76"
+    env["SAFEYOLO_COORD_DATA_DIR"] = str(config_dir / "data/coord")
+    env["SAFEYOLO_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
+    checked([cli, "init", "--no-interactive"], env=env)
+    for name in ("share", "bin"):
+        source = source_dir / name
+        target = config_dir / name
+        assert source.is_dir(), f"owner instance needs bootstrapped {source}"
+        target.rmdir()
+        target.symlink_to(source, target_is_directory=True)
+    config_path = config_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["proxy"]["backend"] = "rust"
+    config["proxy"]["admin_port"] = 0
+    config["proxy"]["upstream_proxy"] = native["parent_proxy"]
+    config["proxy"]["upstream_ca_cert"] = native["upstream_ca_file"]
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    checked([cli, "policy", "host", "add", FIXTURE], env=env)
+    checked([cli, "policy", "host", "deny", "evil.com"], env=env)
+    checked(
+        [cli, "agent", "add", "bbowner", str(Path(__file__).resolve().parents[2]), "--no-run"], timeout=120, env=env
+    )
+    checked([cli, "start", "--no-wait"], env=env)
+    checked([cli, "agent", "run", "bbowner", "--sandbox-only"], timeout=120, env=env)
+    checked(
+        [
+            "python3",
+            str(Path(__file__).with_name("installed_host_smoke.py")),
+            "--mode",
+            "attached",
+            "--cli",
+            cli,
+            "--rust-bin",
+            binary,
+            "--rust-config",
+            str(config_dir / "data/native.json"),
+            "--config-dir",
+            str(config_dir),
+            "--working-directory",
+            str(Path(__file__).parent),
+            "--agent",
+            "bbowner",
+            "--output",
+            str(output),
+        ],
+        timeout=40,
+        env=env,
+    )
+    report = json.loads(output.read_text())
+    assert report["status"] == "attached_ready" and report["runtime"]["status"] == "ready", report
+    assert report["candidate"]["sha256"] == _sha256(Path(binary))
+    assert Path(report["runtime"]["actual_executable"]).resolve() == Path(binary).resolve()
+    owner_native = json.loads((config_dir / "data/native.json").read_text())
+    assert owner_native["parent_proxy"] == native["parent_proxy"]
+    assert owner_native["upstream_ca_file"] == native["upstream_ca_file"]
+    report["config_sha256"] = _sha256(config_path)
+    report["policy_sha256"] = _sha256(config_dir / "policy.toml")
+    listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == "bbowner")
+    assert _probe_agent_health(listener, config_dir)["status"] == 200
+    return report, env, Path(listener["path"])
+
+
+def owner_controls(
+    cli: str, config_dir: Path, listener: Path, owner: dict, env: dict[str, str], marker: str, sinkhole: SinkholeClient
+) -> dict:
+    """Check the untouched owner process and fresh allowed/denied traffic."""
+    runtime = owner["runtime"]
+    readiness = json.loads((config_dir / "data/proxy-readiness.json").read_text())
+    assert _pid_alive(runtime["pid"])
+    assert _process_start_token(runtime["pid"]) == runtime["receipt"]["start_token"]
+    assert readiness["pid"] == runtime["pid"]
+    assert readiness["instance_id"] == runtime["readiness"]["instance_id"]
+    assert _sha256(config_dir / "config.yaml") == owner["config_sha256"]
+    assert _sha256(config_dir / "policy.toml") == owner["policy_sha256"]
+    agent = {"agent_id": "bbowner", "path": str(listener)}
+    assert _probe_agent_health(agent, config_dir)["status"] == 200
+    allowed = guest(cli, "bbowner", "echo", marker, env=env)
+    denied = guest(cli, "bbowner", "canary", marker, env=env)
+    assert allowed["status"] == 200 and denied["status"] == 403
+    assert len([row for row in sinkhole.get_requests(host=FIXTURE) if row.path == f"/p4/echo/{marker}"]) == 1
+    assert not any(row.path == f"/p4/canary/{marker}" for row in sinkhole.get_requests(host="evil.com"))
+    return {"pid": runtime["pid"], "instance_id": readiness["instance_id"], "allowed": 200, "denied": 403}
+
+
+def recovery_controls(cli: str, agent: str, sinkhole: SinkholeClient) -> dict:
+    marker = "p4-" + uuid.uuid4().hex
+    allowed = guest(cli, agent, "echo", marker)
+    denied = guest(cli, agent, "canary", marker)
+    assert allowed["status"] == 200 and denied["status"] == 403
+    assert len([row for row in sinkhole.get_requests(host=FIXTURE) if row.path == f"/p4/echo/{marker}"]) == 1
+    assert not any(row.path == f"/p4/canary/{marker}" for row in sinkhole.get_requests(host="evil.com"))
+    return {"marker": marker, "allowed": allowed, "denied": denied}
 
 
 def event_rows(path: Path) -> list[dict]:
@@ -226,12 +363,20 @@ def main() -> None:
     binary = first_identity["candidate"]["path"]
     marker = "p4-" + uuid.uuid4().hex
     sinkhole = SinkholeClient("http://127.0.0.1:19999")
+    owner_dir = Path(os.environ["SAFEYOLO_P4_OWNER_CONFIG_DIR"]).resolve()
+    source_dir = Path(os.environ["SAFEYOLO_P4_SOURCE_CONFIG_DIR"]).resolve()
     peer_added = False
     active: subprocess.Popen[str] | None = None
+    owner_env: dict[str, str] | None = None
+    owner_listener: Path | None = None
     release = config_dir / "agents" / args.agent / "config-share" / "p4-passthrough-go"
     try:
         sinkhole.wait_for_receiver_ready(timeout=10)
         sinkhole.clear_requests()
+        owner, owner_env, owner_listener = prepare_owner(
+            cli, owner_dir, source_dir, native, binary, args.output.with_name("p4-owner-runtime.json")
+        )
+        owner_checks = [owner_controls(cli, owner_dir, owner_listener, owner, owner_env, marker, sinkhole)]
         checked([cli, "agent", "add", PEER, str(Path(__file__).resolve().parents[2]), "--no-run"])
         peer_added = True
         checked([cli, "agent", "run", PEER, "--sandbox-only"], timeout=120)
@@ -319,17 +464,26 @@ def main() -> None:
         trust_before = _sha256(Path(native["upstream_ca_file"]))
         policy_before = _sha256(config_dir / "policy.toml")
         checked([cli, "stop"], timeout=40)
-        assert_proxy_stopped(config_dir, Path(first_listener["path"]))
+        assert_proxy_stopped(config_dir, Path(first_listener["path"]), first_identity["runtime"])
+        stop_guest(cli, config_dir, args.agent)
+        owner_checks.append(
+            owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
+        )
         checked([cli, "start", "--no-wait"], timeout=40)
+        second_listener = start_guest(cli, config_dir, args.agent)
         second_runtime_path = args.output.with_name("p4-restarted-runtime.json")
         second_identity = runtime_identity(config_dir, cli, binary, checkout, second_runtime_path, args.agent)
-        assert second_identity["runtime"]["pid"] != first_identity["runtime"]["pid"]
+        assert (
+            second_identity["runtime"]["receipt"]["start_token"] != first_identity["runtime"]["receipt"]["start_token"]
+        )
         assert _sha256(Path(native["tls_ca_file"])) == ca_before
         assert _sha256(Path(native["upstream_ca_file"])) == trust_before
         assert _sha256(config_dir / "policy.toml") == policy_before
-        assert guest(cli, args.agent, "echo", marker)["status"] == 200
-        assert guest(cli, args.agent, "canary", marker)["status"] == 403
-        assert not any(row.path == f"/p4/canary/{marker}" for row in sinkhole.get_requests(host="evil.com"))
+        first_recovery = recovery_controls(cli, args.agent, sinkhole)
+        assert guest(cli, args.agent, "self-signed", marker)["status"] == 502
+        assert (
+            len([row for row in sinkhole.get_requests(host="self-signed.test") if row.path == f"/p4/tls/{marker}"]) == 1
+        )
 
         drain_marker = "p4-" + uuid.uuid4().hex
         drain_sse_marker = "p2-" + drain_marker[3:]
@@ -350,8 +504,32 @@ def main() -> None:
             stop_child(stopping)
         assert control("GET", f"/p4/state/{drain_marker}")["finished"]
         assert control("GET", f"/p2/state/{drain_sse_marker}")["finished"]
-        assert_proxy_stopped(config_dir, Path(first_listener["path"]))
+        assert_proxy_stopped(config_dir, second_listener, second_identity["runtime"])
         ownership = assert_shutdown_ownership(config_dir, args.agent, drain_marker)
+        stop_guest(cli, config_dir, args.agent)
+        owner_checks.append(
+            owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
+        )
+
+        checked([cli, "start", "--no-wait"], timeout=40)
+        third_listener = start_guest(cli, config_dir, args.agent)
+        third_runtime_path = args.output.with_name("p4-recovery-runtime.json")
+        third_identity = runtime_identity(config_dir, cli, binary, checkout, third_runtime_path, args.agent)
+        assert third_identity["runtime"]["receipt"]["start_token"] not in {
+            first_identity["runtime"]["receipt"]["start_token"],
+            second_identity["runtime"]["receipt"]["start_token"],
+        }
+        second_recovery = recovery_controls(cli, args.agent, sinkhole)
+        checked([cli, "stop"], timeout=40)
+        assert_proxy_stopped(config_dir, third_listener, third_identity["runtime"])
+        stop_guest(cli, config_dir, args.agent)
+        owner_checks.append(
+            owner_controls(cli, owner_dir, owner_listener, owner, owner_env, "p4-" + uuid.uuid4().hex, sinkhole)
+        )
+        checked([cli, "agent", "stop", "bbowner"], timeout=60, env=owner_env)
+        checked([cli, "stop"], timeout=40, env=owner_env)
+        assert_proxy_stopped(owner_dir, owner_listener, owner["runtime"])
+        assert not (owner_dir / "agents/bbowner/container.pid").exists()
         report = {
             "status": "selected_checks_passed",
             "frozen_revision": FROZEN_R,
@@ -382,15 +560,32 @@ def main() -> None:
                 "same_upstream_trust_sha256": trust_before,
                 "same_policy_sha256": policy_before,
                 "runtime": second_identity,
+                "controls": first_recovery,
             },
             "drain": {"guest": drained, "ownership": ownership},
+            "owner": {
+                "runtime": owner["runtime"],
+                "config_sha256": owner["config_sha256"],
+                "policy_sha256": owner["policy_sha256"],
+                "checks": owner_checks,
+                "stopped": True,
+            },
+            "recovery": {"runtime": third_identity, "controls": second_recovery},
             "start_stop_cycles": [
-                {"pid": first_identity["runtime"]["pid"], "stopped": True},
-                {"pid": second_identity["runtime"]["pid"], "stopped": True},
+                {"pid": first_identity["runtime"]["pid"], "stopped": True, "guest_stopped": True},
+                {
+                    "pid": second_identity["runtime"]["pid"],
+                    "stopped": True,
+                    "guest_stopped": True,
+                    "active_drain": True,
+                },
+                {"pid": third_identity["runtime"]["pid"], "stopped": True, "guest_stopped": True},
             ],
         }
         args.output.write_text(json.dumps(report, indent=2) + "\n")
-        print(f"{args.platform} P4: installed guest configuration, TLS and drain verified ({args.output})")
+        print(
+            f"{args.platform} P4/P6: installed guest configuration, TLS, drain and three-cycle recovery verified ({args.output})"
+        )
     finally:
         release.unlink(missing_ok=True)
         stop_child(active)
