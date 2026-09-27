@@ -1,30 +1,28 @@
-name: Policy transaction chaos
+name: Issue 667 Linux process-group witness
 
 on:
-  schedule:
-    - cron: "41 4 * * *"
   workflow_dispatch:
-    inputs:
-      seed:
-        description: "Optional single Hypothesis seed; blank uses the three published seeds"
-        required: false
-        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: policy-chaos-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  hermetic-policy-chaos:
-    name: Hermetic policy chaos
+  process-group:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 7d1dd5afcc56dc6e35667d845d66912f82d9e94f
+
+      - name: Show source and host identity
+        run: |
+          test "$(git rev-parse HEAD)" = 7d1dd5afcc56dc6e35667d845d66912f82d9e94f
+          test -z "${BASH_ENV:-}"
+          git rev-parse HEAD
+          uname -a
+          cat /etc/os-release
+          command -v setsid
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -35,27 +33,8 @@ jobs:
       - name: Set up Python 3.12
         run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --frozen --group dev
-
-      - name: Run policy transaction chaos
-        env:
-          REQUESTED_SEED: ${{ inputs.seed }}
+      - name: Exercise validator timeout on a real process group
         run: |
-          mkdir -p artifacts
-          args=(run --output artifacts/policy-chaos.json)
-          if [ -n "$REQUESTED_SEED" ]; then
-            args+=(--seed "$REQUESTED_SEED")
-          else
-            args+=(--published-seeds)
-          fi
-          uv run python -m tools.policy_chaos "${args[@]}"
-
-      - name: Upload policy assurance evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: policy-chaos-${{ github.run_id }}
-          path: artifacts/policy-chaos.json
-          retention-days: 14
-          if-no-files-found: warn
+          uv run --no-project --with pytest==9.0.3 --python 3.12 \
+            python -m pytest -vv -q \
+            tests/test_cargo_with_space.py::test_linux_validator_timeout_kills_real_setsid_group_only
