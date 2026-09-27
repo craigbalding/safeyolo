@@ -43,6 +43,275 @@ fn policy_events(runtime: &Runtime) -> Vec<Value> {
         .collect()
 }
 
+#[test]
+fn authorization_during_policy_publication_reaches_the_agent_gateway() {
+    owned_child(
+        "service_catalog_tests::policy_watch::authorization_during_policy_publication_reaches_the_agent_gateway",
+        authorization_during_publication(),
+    );
+}
+
+async fn authorization_during_publication() {
+    use crate::credentials::{Credential, Secret, Vault};
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let mut settings = config(root);
+    settings.policy_file = Some(root.join("policy.toml"));
+    settings.admin_port = Some(0);
+    settings.admin_api_token_file = Some(root.join("admin-token"));
+    let builtin = root.join("builtin");
+    let services = root.join("services");
+    std::fs::create_dir(&builtin).unwrap();
+    std::fs::create_dir(&services).unwrap();
+    settings.gateway_builtin_services_dir = Some(builtin);
+    settings.gateway_services_dir = Some(services.clone());
+    std::fs::write(root.join("admin-token"), "owned-admin-token").unwrap();
+    std::fs::create_dir(root.join("data")).unwrap();
+    std::fs::write(root.join("data/vault.key"), "owned-vault-passphrase").unwrap();
+    Vault::unlock(
+        root.join("data/vault.yaml.enc"),
+        &Secret::new("owned-vault-passphrase"),
+    )
+    .unwrap()
+    .store(Credential::new(
+        "owned-vault-ref",
+        "bearer",
+        Secret::new("owned-origin-secret"),
+    ))
+    .unwrap();
+    std::fs::write(
+        services.join("basic.yaml"),
+        r#"schema_version: 1
+name: basic
+default_host: basic.test
+auth: {type: bearer, allow_http: true}
+capabilities:
+  reader:
+    routes:
+      - methods: [GET]
+        path: /p3/read
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        services.join("contract.yaml"),
+        r#"schema_version: 1
+name: contract
+default_host: contract.test
+auth: {type: bearer, allow_http: true}
+risky_routes:
+  - path: /p3/write
+    methods: [POST]
+    tactics: [impact]
+capabilities:
+  writer:
+    routes:
+      - methods: [POST]
+        path: /p3/write
+    contract:
+      template: p3.write.v1
+      bindings:
+        project: {source: operator, type: enum, options: [alpha, beta]}
+        ticket: {source: operator, type: string}
+      operations:
+        - name: write
+          request:
+            method: POST
+            path: /p3/write
+            query:
+              allow:
+                ticket: {equals_var: ticket}
+            body:
+              allow:
+                project: {equals_var: project}
+      enforcement: {request_shape: enforced, transport_hygiene: enforced, state_capture: declared, state_enforcement: declared, response_validators: declared}
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("policy.toml"),
+        r#"version = '2.0'
+[hosts]
+'basic.test' = {egress='allow', service='basic'}
+'contract.test' = {egress='allow', service='contract'}
+[agents.alice]
+image='owned'
+[agents.bob]
+image='owned'
+[[risk]]
+account='agent'
+tactics=['impact']
+decision='require_approval'
+approval_default='once'
+"#,
+    )
+    .unwrap();
+    let path = root.join("policy.toml");
+    let mut fixture = Fixture::start(directory, settings).await;
+    let original = fixture.runtime();
+    let port = fixture.proxy.admin.as_ref().unwrap().address().port();
+    assert_eq!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+
+    let socket = fixture.directory.path().join("alice.sock");
+    let challenge = agent_post(
+        &socket,
+        "http://_safeyolo.proxy.internal/gateway/request-access",
+        TOKEN,
+        json!({"service":"contract","capability":"writer","reason":"p3 handoff"}),
+    )
+    .await;
+    assert_eq!(challenge.status, 200);
+    assert_eq!(challenge.value()["decision"], "needs_contract_binding");
+    let submitted = agent_post(
+        &socket,
+        "http://_safeyolo.proxy.internal/gateway/submit-binding",
+        TOKEN,
+        json!({"service":"contract","capability":"writer",
+               "bindings":{"project":"alpha","ticket":"T-1"},"purpose_code":"write"}),
+    )
+    .await;
+    assert_eq!(submitted.status, 202);
+    authorize_service(port, "basic", "reader").await;
+    let binding = admin_post(
+        port,
+        "/admin/gateway/contract-binding",
+        json!({"agent":"alice","service":"contract","capability":"writer",
+               "template":"p3.write.v1","bindings":{"project":"alpha","ticket":"T-1"},
+               "grantable_operations":["write"]}),
+    )
+    .await;
+    assert_eq!(binding.status, 200);
+    // This candidate has read the basic authorization but has not yet been
+    // published. The second admin write must remain visible to the watcher.
+    let candidate = crate::policy_runtime::load(
+        &path,
+        original
+            .policy
+            .as_ref()
+            .unwrap()
+            .gateway()
+            .unwrap()
+            .registry(),
+        original.policy.as_ref(),
+        &original.audit,
+    )
+    .unwrap();
+    authorize_service(port, "contract", "writer").await;
+    fixture.proxy.publish_policy(&original, candidate).unwrap();
+    let first = fixture.read("alice", "GET", TOKEN).await.value();
+    assert!(
+        first["authorized"]["basic"]["token"]
+            .as_str()
+            .unwrap()
+            .starts_with("sgw_")
+    );
+    assert!(first["authorized"].get("contract").is_none());
+    assert_eq!(
+        fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert_eq!(policy_events(&original).len(), 2);
+
+    assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
+    let second = fixture.read("alice", "GET", TOKEN).await.value();
+    assert!(
+        second["authorized"]["basic"]["token"]
+            .as_str()
+            .unwrap()
+            .starts_with("sgw_")
+    );
+    let contract_token = second["authorized"]["contract"]["token"].as_str().unwrap();
+    assert!(contract_token.starts_with("sgw_"));
+    assert_eq!(
+        fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert_eq!(policy_events(&original).len(), 3);
+    let prompt = agent_post(
+        &socket,
+        "http://contract.test/p3/write?ticket=T-1",
+        contract_token,
+        json!({"project":"alpha"}),
+    )
+    .await;
+    assert_eq!(prompt.status, 428);
+    let peer = agent_post(
+        &fixture.directory.path().join("bob.sock"),
+        "http://contract.test/p3/write?ticket=T-1",
+        contract_token,
+        json!({"project":"alpha"}),
+    )
+    .await;
+    assert_eq!(peer.status, 403);
+    assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
+    fixture.stop().await;
+}
+
+async fn authorize_service(port: u16, service: &str, capability: &str) {
+    let reply = admin_post(
+        port,
+        "/admin/agents/alice/services",
+        json!({"service":service,"capability":capability,"credential":"owned-vault-ref"}),
+    )
+    .await;
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.value()["status"], "authorized");
+}
+
+async fn admin_post(port: u16, path: &str, payload: Value) -> Reply {
+    use tokio::net::TcpStream;
+    let body = payload.to_string();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\n\
+         Authorization: Bearer owned-admin-token\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(LIMIT, stream.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    reply(response)
+}
+
+async fn agent_post(socket: &Path, target: &str, token: &str, payload: Value) -> Reply {
+    let body = payload.to_string();
+    let host = target
+        .strip_prefix("http://")
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap();
+    let request = format!(
+        "POST {target} HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = UnixStream::connect(socket).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(LIMIT, stream.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    reply(response)
+}
+
+fn reply(response: Vec<u8>) -> Reply {
+    let response = String::from_utf8(response).unwrap();
+    let (head, body) = response.split_once("\r\n\r\n").unwrap();
+    Reply {
+        status: head.split_whitespace().nth(1).unwrap().parse().unwrap(),
+        body: body.into(),
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn standalone_policy_checks_retry_newer_failures_and_rearm_without_a_catalog() {
     let directory = tempfile::tempdir().unwrap();

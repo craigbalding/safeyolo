@@ -1384,6 +1384,10 @@ reappears at an equal or older timestamp can therefore remain unnoticed. A new
 baseline path starts new observation history. Source-string policy mutations
 retain the previous file observations. Explicit and catalog-driven file reloads
 refresh them, preventing a duplicate policy-watcher reload of the same state.
+During a live Runtime publication, the candidate keeps its observed baseline
+timestamp. An operator service authorization committed after that observation
+remains eligible for the next watcher check. Startup still observes the file
+after legacy grant normalization, before the admin listener starts.
 
 A policy-file reload uses the accepted service registry and retains existing
 transport, inspection, audit and budget owners. It does not read catalog files
