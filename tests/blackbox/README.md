@@ -397,6 +397,57 @@ authenticated operator runtime identity against the process-bound readiness
 marker. The report leaves guest origin requests, cross-guest socket access,
 and unsupported hardware explicitly for the retained pilot.
 
+### Finite installed Linux P2 pilot for issue #637
+
+Run this selection on each operator-owned disposable Ubuntu host: the supported
+systrap host and the fresh libvirt guest on the KVM VPS. Use a clean checkout
+that contains frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`.
+The KVM target must expose a usable `/dev/kvm`; the systrap target selects
+software isolation. The host needs `uv`, `git`, `dpkg-deb`, `ssh-keygen`,
+`sshd`, and the normal `run-lane.sh` bootstrap prerequisites. The operator
+account needs noninteractive host `sudo` for bootstrap and KVM setup. Neither
+the disposable proxy nor its `bbtest` guest needs to be running before the
+command. Local control port 19999 must be free; the wrapper fails if another
+sinkhole owns it.
+
+From the repository root on the selected host, run one command for its actual
+guest mechanism:
+
+```bash
+./tests/blackbox/run-p2-linux.sh systrap
+```
+
+```bash
+./tests/blackbox/run-p2-linux.sh kvm
+```
+
+The wrapper installs the locked R source through `install.sh` in an isolated
+`uv` tool directory. It starts a separate native test proxy and a real guest.
+The guest fetches and installs a disposable Debian package, clones an owned
+read-only repository, receives the first held SSE event before the host
+releases completion, exchanges exact WS and WSS markers, checks a blocked
+WebSocket canary, and runs one OpenSSH command over CONNECT with a pinned
+fixture host key. The disposable SSH server accepts only the selected marker
+command and disables forwarding. The origin uses the reserved `failing.test`
+hostname routed to the owned sinkhole. The wrapper keeps the caller's parent
+proxy and CA settings.
+It removes the disposable SSH keys and stops both the test proxy and guest.
+On KVM, the existing lane also grants the operator account access to
+`/dev/kvm`; that disposable-host ACL remains until the device or host resets.
+
+Expect `Linux <platform> P2: ... verified` followed by
+`Linux <platform> P2 result: exit 0`. The printed observations directory
+contains `linux-<platform>-p2.json`. Check `status: passed` and
+`cleanup: stopped`, then inspect the recorded installed binary, guest bridge,
+owned origin deliveries, early SSE state, WS/WSS peer markers, denied canary,
+and SSH command marker. A failed or timed-out run reports a nonzero exit. If
+cleanup reports a failure, run the two exact cleanup commands printed by the
+wrapper. They stop `bbtest` and then the disposable proxy; check that the
+guest PID, native receipt, and agent socket are gone before reusing the host.
+The wrapper's status does not mark P2 accepted; the actual KVM and systrap
+runs and independent review supply that result. macOS/VZ P2 remains a
+separate host execution.
+
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*

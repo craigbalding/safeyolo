@@ -19,13 +19,15 @@ from isolation.p1_guest_requests import is_mounted_forwarder
 FROZEN_R = "a1f85d90bacdb271fc9681847ad2202b46c0e4ad"
 
 
-def runsc_identity(config_dir: Path, agent: str, listener: Path) -> dict:
+def runsc_identity(
+    config_dir: Path, agent: str, listener: Path, *, platform: str = "kvm"
+) -> dict:
     agent_dir = config_dir / "agents" / agent
     pid = int((agent_dir / "container.pid").read_text())
     assert pid > 1, f"invalid gVisor PID: {pid}"
     argv = [part.decode() for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part]
     assert argv and Path(argv[0]).name == "runsc-sandbox", f"PID {pid} is not a runsc sandbox"
-    assert "--platform=kvm" in argv, f"running gVisor PID {pid} did not select KVM"
+    assert f"--platform={platform}" in argv, f"running gVisor PID {pid} did not select {platform}"
     assert f"--bundle={agent_dir}" in argv, f"running gVisor PID {pid} is not this guest"
 
     oci = json.loads((agent_dir / "config.json").read_text())
@@ -36,7 +38,7 @@ def runsc_identity(config_dir: Path, agent: str, listener: Path) -> dict:
         "guest bridge mount does not name the installed native agent listener"
     )
     assert "ro" in mount["options"], "guest bridge mount is not read only"
-    return {"pid": pid, "platform": "kvm", "bundle": str(agent_dir), "proxy_mount": mount}
+    return {"pid": pid, "platform": platform, "bundle": str(agent_dir), "proxy_mount": mount}
 
 
 def installed_identity(runtime: dict, install_checkout: Path) -> dict:

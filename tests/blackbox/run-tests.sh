@@ -20,6 +20,7 @@
 #   ./run-tests.sh --proxy --proxy-impl python|rust|both
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
 #   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
+#   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --p2
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
 #   ./run-tests.sh --proxy -- --collect-only
@@ -81,6 +82,7 @@ PROXY_IMPL_SELECTED=false
 PYTHON_SOURCE=""
 RUST_BIN=""
 KVM_P1=false
+P2=false
 PYTEST_FORWARD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -148,6 +150,10 @@ while [[ $# -gt 0 ]]; do
             KVM_P1=true
             shift
             ;;
+        --p2)
+            P2=true
+            shift
+            ;;
         --)
             shift
             PYTEST_FORWARD_ARGS=("$@")
@@ -165,6 +171,13 @@ if [ "$KVM_P1" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
    [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
    [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
     echo "ERROR: --kvm-p1 requires --expect-platform kvm --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+if [ "$P2" = true ] && { [ "$KVM_P1" = true ] || \
+   { [ "$EXPECTED_PLATFORM" != "kvm" ] && [ "$EXPECTED_PLATFORM" != "systrap" ]; } || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --p2 requires --expect-platform kvm|systrap --proxy-impl rust and no suite override" >&2
     exit 2
 fi
 
@@ -359,11 +372,14 @@ if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo ""
 fi
 
-if [ "$KVM_P1" = true ]; then
+if [ "$KVM_P1" = true ] || [ "$P2" = true ]; then
     # This rule belongs only to the disposable instance and is loaded before
     # the native process starts. The owned parent maps evil.com to the same
     # sinkhole, so its absence there is a meaningful denial observation.
     safeyolo policy host deny evil.com
+fi
+if [ "$P2" = true ]; then
+    safeyolo policy host add failing.test
 fi
 
 # Restore a parent selected by an interrupted native run before reading or
@@ -388,8 +404,8 @@ config_path.write_text(yaml.dump(config, default_flow_style=False))
 
 # Configure target_hosts for test_context addon so the flow recorder
 # captures tagged flows. The blackbox cross-agent isolation test uses
-# X-SafeYolo-Test-Context headers on httpbin.org probes — without target_hosts,
-# test_context doesn't tag them and the flow recorder drops them.
+# X-SafeYolo-Test-Context headers on the selected fixture host — without
+# target_hosts, test_context doesn't tag them and the flow recorder drops them.
 python3 -c "
 import yaml
 from pathlib import Path
@@ -399,7 +415,10 @@ addons = yaml.safe_load(addons_path.read_text())
 # test_context metadata so the flow recorder captures it. Python test mode
 # disables blocking for its host suite; native checks supply a valid context
 # header while retaining native test-context enforcement.
-addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = ['httpbin.org']
+targets = ['httpbin.org']
+if '$P2' == 'true':
+    targets.append('failing.test')
+addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = targets
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
 
@@ -656,11 +675,21 @@ safeyolo stop 2>/dev/null || true
 # --- Phase 1: Start infrastructure (idempotent) ---
 
 # Sinkhole (shared — not instance-specific)
+if [ "$P2" = true ] && curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+    echo "ERROR: P2 requires its own owned sinkhole; control port 19999 is already in use" >&2
+    exit 2
+fi
 if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
     echo "Sinkhole already running"
 else
     echo "Starting sinkhole..."
-    python3 "$SCRIPT_DIR/sinkhole/server.py" \
+    P2_SINKHOLE_ARGS=()
+    if [ "$P2" = true ]; then
+        rm -rf "$SAFEYOLO_CONFIG_DIR/p2-fixture"
+        mkdir -m 0700 "$SAFEYOLO_CONFIG_DIR/p2-fixture"
+        P2_SINKHOLE_ARGS=(--p2-dir "$SAFEYOLO_CONFIG_DIR/p2-fixture")
+    fi
+    PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SCRIPT_DIR/sinkhole/server.py" \
         --http-port 18080 \
         --https-port 18443 \
         --control-port 19999 \
@@ -674,6 +703,7 @@ else
         --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
         --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
         --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
+        "${P2_SINKHOLE_ARGS[@]}" \
         &
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
@@ -715,6 +745,9 @@ if [ "$PROXY_IMPL" = "rust" ]; then
     fi
     if [ -n "$ORIGINAL_PARENT_CA" ]; then
         PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
+    fi
+    if [ "$P2" = true ]; then
+        PARENT_ARGS+=(--p2-ssh-port-file "$SAFEYOLO_CONFIG_DIR/p2-fixture/ssh.port")
     fi
     python3 "$SCRIPT_DIR/harness/sinkhole_parent.py" "${PARENT_ARGS[@]}" &
     PARENT_PID=$!
@@ -852,6 +885,14 @@ if [ "$KVM_P1" = true ]; then
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
         --output "$ARTIFACTS_DIR/kvm-p1.json"
+    exit $?
+fi
+if [ "$P2" = true ]; then
+    timeout --signal=TERM --kill-after=10s 6m python3 "$SCRIPT_DIR/p2_installed_linux.py" \
+        --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
+        --platform "$EXPECTED_PLATFORM" \
+        --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+        --output "$ARTIFACTS_DIR/linux-$EXPECTED_PLATFORM-p2.json"
     exit $?
 fi
 
