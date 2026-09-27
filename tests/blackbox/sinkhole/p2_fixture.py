@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from tests.proxy_migration.websocket_peer import Peer
 
 MARKER = re.compile(r"p2-[0-9a-f]{32}\Z")
+P4_MARKER = re.compile(r"p4-[0-9a-f]{32}\Z")
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 PACKAGE_PATH = "/p2/package/safeyolo-p2-fixture.deb"
 REPO_PREFIX = "/p2/repo.git/"
@@ -24,6 +25,7 @@ class P2Fixture:
         self.lock = threading.Lock()
         self.streams: dict[str, dict] = {}
         self.websockets: list[dict] = []
+        self.held_http: dict[str, dict] = {}
 
     def state(self, marker: str) -> dict:
         with self.lock:
@@ -43,6 +45,23 @@ class P2Fixture:
             stream["release"].set()
             return True
 
+    def p4_state(self, marker: str) -> dict:
+        with self.lock:
+            held = self.held_http.get(marker)
+            return {
+                "first_sent": bool(held and held["first_sent"]),
+                "released": bool(held and held["release"].is_set()),
+                "finished": bool(held and held["finished"]),
+            }
+
+    def release_p4(self, marker: str) -> bool:
+        with self.lock:
+            held = self.held_http.get(marker)
+            if held is None:
+                return False
+            held["release"].set()
+            return True
+
     @staticmethod
     def _body(handler, body: bytes, content_type: str = "application/octet-stream") -> None:
         handler.send_response(200)
@@ -54,6 +73,20 @@ class P2Fixture:
 
     def handle(self, handler) -> bool:
         path = urlsplit(handler.path).path
+        if path.startswith("/p4/echo/"):
+            marker = path.removeprefix("/p4/echo/")
+            if not P4_MARKER.fullmatch(marker):
+                handler.send_error(400, "Invalid P4 marker")
+            else:
+                self._body(handler, f"echo:{marker}".encode())
+            return True
+        if path.startswith("/p4/hold/"):
+            marker = path.removeprefix("/p4/hold/")
+            if not P4_MARKER.fullmatch(marker):
+                handler.send_error(400, "Invalid P4 marker")
+            else:
+                self._held_http(handler, marker)
+            return True
         if path == PACKAGE_PATH:
             package = self.directory / "safeyolo-p2-fixture.deb"
             if not package.is_file():
@@ -87,6 +120,31 @@ class P2Fixture:
                 self._websocket(handler, marker)
             return True
         return False
+
+    def _held_http(self, handler, marker: str) -> None:
+        held = {"release": threading.Event(), "first_sent": False, "finished": False}
+        with self.lock:
+            if marker in self.held_http:
+                handler.send_error(409, "P4 HTTP marker already used")
+                return
+            self.held_http[marker] = held
+        first = f"first:{marker}\n".encode()
+        last = f"last:{marker}\n".encode()
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/plain")
+        handler.send_header("Content-Length", str(len(first) + len(last)))
+        handler.end_headers()
+        try:
+            handler.wfile.write(first)
+            handler.wfile.flush()
+            with self.lock:
+                held["first_sent"] = True
+            if held["release"].wait(15):
+                handler.wfile.write(last)
+                handler.wfile.flush()
+        finally:
+            with self.lock:
+                held["finished"] = True
 
     def _sse(self, handler, marker: str) -> None:
         stream = {"release": threading.Event(), "first_sent": False, "finished": False}

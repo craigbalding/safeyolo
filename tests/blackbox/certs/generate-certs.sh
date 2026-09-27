@@ -45,6 +45,7 @@ if [ "$1" = "--force" ]; then
     rm -f nc_intermediate.crt nc_leaf.crt nc_chain.pem
     rm -f extra_int.crt extra_leaf.crt junk_a.crt junk_b.crt extra_chain.pem
     rm -f expired_leaf.crt expired_chain.pem
+    rm -f future_leaf.crt future_chain.pem
     rm -f wrong_san_leaf.crt wrong_san_chain.pem
     rm -f self_signed_chain.pem
     rm -f aia_int.crt aia_leaf.crt aia_chain.pem
@@ -53,7 +54,7 @@ if [ "$1" = "--force" ]; then
     rm -f "$KEY_DIR/rsa_int_b.key" "$KEY_DIR/rsa_int_a.key" "$KEY_DIR/rsa_deep_chain.key"
     rm -f "$KEY_DIR/nc_intermediate.key" "$KEY_DIR/nc_chain.key"
     rm -f "$KEY_DIR/extra_int.key" "$KEY_DIR/extra_chain.key" "$KEY_DIR/junk_a.key" "$KEY_DIR/junk_b.key"
-    rm -f "$KEY_DIR/expired_chain.key" "$KEY_DIR/wrong_san_chain.key" "$KEY_DIR/self_signed_chain.key"
+    rm -f "$KEY_DIR/expired_chain.key" "$KEY_DIR/future_chain.key" "$KEY_DIR/wrong_san_chain.key" "$KEY_DIR/self_signed_chain.key"
     rm -f "$KEY_DIR/aia_int.key" "$KEY_DIR/aia_chain.key"
 fi
 
@@ -63,11 +64,12 @@ fi
 if [ -f ca.crt ] && [ -f sinkhole.crt ] \
    && [ -f ecc_chain.pem ] && [ -f test-ca-b-crosssigned.crt ] \
    && [ -f rsa_deep_chain.pem ] && [ -f nc_chain.pem ] \
-   && [ -f extra_chain.pem ] && [ -f expired_chain.pem ] \
+   && [ -f extra_chain.pem ] && [ -f expired_chain.pem ] && [ -f future_chain.pem ] \
    && [ -f wrong_san_chain.pem ] && [ -f self_signed_chain.pem ] \
    && [ -f aia_chain.pem ] \
    && [ -f "$KEY_DIR/ca.key" ] && [ -f "$KEY_DIR/sinkhole.key" ] \
-   && [ -f "$KEY_DIR/ecc_chain.key" ] && [ -f "$KEY_DIR/aia_chain.key" ]; then
+   && [ -f "$KEY_DIR/ecc_chain.key" ] && [ -f "$KEY_DIR/aia_chain.key" ] \
+   && [ -f "$KEY_DIR/future_chain.key" ]; then
     echo "Certificates already exist. Use --force to regenerate."
     exit 0
 fi
@@ -586,6 +588,47 @@ EOF
 
     rm -rf "$EXP_TMP"
     echo "   Created: expired_chain.pem (leaf notAfter=2021-01-01; upstream verify MUST reject)"
+fi
+
+# A trusted chain with a leaf that cannot be valid during this finite pilot.
+# Use the same signer and OpenSSL CA path as the expired-leaf fixture above.
+if [ ! -f future_chain.pem ] || [ ! -f "$KEY_DIR/future_chain.key" ]; then
+    FUTURE_TMP=$(mktemp -d)
+    touch "$FUTURE_TMP/index.txt"
+    echo 1000 > "$FUTURE_TMP/serial"
+    cat > "$FUTURE_TMP/ca.cnf" << EOF
+[ca]
+default_ca = my_ca
+[my_ca]
+new_certs_dir = $FUTURE_TMP
+database = $FUTURE_TMP/index.txt
+serial = $FUTURE_TMP/serial
+default_md = sha256
+policy = policy_any
+x509_extensions = v3_leaf
+email_in_dn = no
+rand_serial = no
+unique_subject = no
+[policy_any]
+commonName = supplied
+organizationName = optional
+countryName = optional
+[v3_leaf]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:future-leaf.test
+EOF
+    openssl genrsa -out "$KEY_DIR/future_chain.key" 2048
+    openssl req -new -key "$KEY_DIR/future_chain.key" \
+        -out "$FUTURE_TMP/future_leaf.csr" \
+        -subj "/CN=future-leaf.test/O=SafeYolo Blackbox Test/C=US"
+    openssl ca -config "$FUTURE_TMP/ca.cnf" \
+        -cert ecc_intermediate.crt -keyfile "$KEY_DIR/ecc_intermediate.key" \
+        -in "$FUTURE_TMP/future_leaf.csr" -out future_leaf.crt \
+        -batch -notext -startdate 20400101000000Z -enddate 20410101000000Z
+    cat future_leaf.crt ecc_intermediate.crt test-ca-b-crosssigned.crt > future_chain.pem
+    rm -rf "$FUTURE_TMP"
 fi
 
 # ===========================================================================
