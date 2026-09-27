@@ -152,7 +152,7 @@ PY
     if [ "$LANE" = "vz" ]; then
         # bootstrap builds the guest artifacts; the source install deliberately
         # leaves this host-native Swift helper as an explicit macOS step.
-        make -C "$REPO_ROOT/vm" install
+        make -C "$INSTALL_ROOT/vm" install
     fi
 
     safeyolo bootstrap --source-checkout "$INSTALL_ROOT"
