@@ -513,13 +513,14 @@ impl Runtime {
             } else {
                 None
             };
-            // Store::open/reload may normalize legacy grant metadata in place.
-            // Re-observe after that durable normalization so the accepted
-            // Runtime watermark describes the bytes whose token was exposed;
-            // otherwise the policy watcher performs a synthetic second
-            // publication immediately after startup/reload.
+            // Initial startup has no live admin writer. Store::open may
+            // normalize legacy grant metadata, so observe its durable result.
+            // During a live config reload, keep the candidate's earlier
+            // watermark so an authorization committed after compilation is
+            // picked up by the policy watcher.
             if let Some(policy) = policy.as_mut()
                 && gateway_grants.is_some()
+                && previous.is_none()
             {
                 policy
                     .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
@@ -1630,7 +1631,7 @@ impl Proxy {
         result
     }
 
-    fn publish_policy(&self, previous: &Runtime, mut policy: policy::Policy) -> Result<(), Error> {
+    fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
         let previous_guard = previous
             .credential_guard
             .as_ref()
@@ -1643,14 +1644,9 @@ impl Proxy {
         } else {
             None
         };
-        if gateway_grants.is_some() {
-            policy.observe_baseline_files(Some(
-                previous
-                    .policy
-                    .as_ref()
-                    .ok_or("native policy is unavailable")?,
-            ))?;
-        }
+        // The candidate observed the policy file when it was compiled. Keep
+        // that watermark: an admin authorization can commit while the grant
+        // store reloads, and the next watcher check must see that later write.
         let runtime = Arc::new(Runtime {
             policy: Some(policy),
             credential_guard: Some(credential_guard),

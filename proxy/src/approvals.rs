@@ -580,6 +580,15 @@ pub(crate) struct SaveError {
 }
 
 pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> {
+    save_policy_with_metadata(path, source).map(|_| ())
+}
+
+/// Return the written file's metadata before rename, so a caller can identify
+/// its own replacement even if another writer replaces the path immediately.
+pub(crate) fn save_policy_with_metadata(
+    path: &Path,
+    source: &str,
+) -> std::result::Result<std::fs::Metadata, SaveError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -587,7 +596,7 @@ pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), 
     let temporary =
         TemporaryPolicy(parent.join(format!(".policy-{}.toml", uuid::Uuid::new_v4().simple())));
     let mut committed = false;
-    let result = (|| -> std::io::Result<()> {
+    let result = (|| -> std::io::Result<std::fs::Metadata> {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -595,12 +604,61 @@ pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), 
             .open(&temporary.0)?;
         file.write_all(source.as_bytes())?;
         file.sync_all()?;
+        let written = file.metadata()?;
         drop(file);
         std::fs::rename(&temporary.0, path)?;
         committed = true;
-        File::open(parent)?.sync_all()
+        File::open(parent)?.sync_all()?;
+        Ok(written)
     })();
     result.map_err(|error| SaveError { error, committed })
+}
+
+/// Share the policy.toml mutation lock among native admin, grant, and expiry
+/// writers, including writers in other processes that use the same lock file.
+pub(crate) fn lock_policy(path: &Path) -> std::io::Result<File> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(parent.join(".policy.toml.lock"))?;
+    #[cfg(test)]
+    {
+        let callback = {
+            let mut pending = BEFORE_NEXT_POLICY_LOCK.lock().unwrap();
+            if pending
+                .as_ref()
+                .is_some_and(|(expected, _)| expected == path)
+            {
+                pending.take().map(|(_, callback)| callback)
+            } else {
+                None
+            }
+        };
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+    lock.lock()?;
+    Ok(lock)
+}
+
+#[cfg(test)]
+type LockCallback = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+static BEFORE_NEXT_POLICY_LOCK: std::sync::Mutex<Option<(PathBuf, LockCallback)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn before_next_policy_lock(path: PathBuf, callback: impl FnOnce() + Send + 'static) {
+    let mut pending = BEFORE_NEXT_POLICY_LOCK.lock().unwrap();
+    assert!(pending.replace((path, Box::new(callback))).is_none());
 }
 
 pub(crate) fn update_policy<T>(
@@ -615,15 +673,12 @@ pub(crate) fn update_policy<T>(
             message: "native durable network approvals currently require policy.toml".into(),
         });
     }
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(parent.join(".policy.toml.lock"))?;
-    lock.lock()?;
+    let lock = lock_policy(path)?;
     let original = std::fs::read_to_string(path)?;
     let (mut document, mut context) = crate::policy::parse_toml_for_edit(&original)
         .map_err(|error| invalid(error.to_string()))?;

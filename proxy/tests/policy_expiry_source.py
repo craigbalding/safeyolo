@@ -421,6 +421,20 @@ def check_contract(rows):
     assert len(rows) == 10 and sum(len(row["steps"]) for row in rows) == 17
 
 
+def add_native_lock_file_expectations(rows):
+    """Record the native lock file without changing Python's disk observations."""
+    for row in rows:
+        if row["input"]["filename"] != "policy.toml":
+            continue
+        lock_created = False
+        for step in row["steps"]:
+            # Python expiry saves without a lock. Native pruning acquires the
+            # shared policy lock before the same reached save and retains it.
+            lock_created |= any(item["phase"] == "save_enter" for item in step["timeline"])
+            if lock_created:
+                step["native_remaining_files"] = sorted([*step["remaining_files"], ".policy.toml.lock"])
+
+
 def no_network(*_args, **_kwargs):
     raise AssertionError("expiry source oracle has no network operations")
 
@@ -443,6 +457,7 @@ def run():
         modules = SimpleNamespace(loader=loader, audit_writer=audit_writer, roundtrip=toml_roundtrip)
         rows = [observe(spec, directory / str(index), modules) for index, spec in enumerate(cases())]
         check_contract(rows)
+        add_native_lock_file_expectations(rows)
         assert not (directory / "unused-audit.jsonl").exists()
         result = {
             "rows": rows,

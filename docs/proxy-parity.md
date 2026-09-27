@@ -1377,13 +1377,22 @@ Existing native parser representation limits remain: for example, native JSON
 rejects `NaN` during decoding and returns a zero list maximum, while Python
 decodes it and then raises when the watcher expects a mapping.
 
-Successful file loads capture new baseline, addon and list timestamps after
-compilation. The candidate retains the previous addon timestamp when that
-sibling is absent and the baseline path is unchanged. An addon that later
-reappears at an equal or older timestamp can therefore remain unnoticed. A new
-baseline path starts new observation history. Source-string policy mutations
-retain the previous file observations. Explicit and catalog-driven file reloads
-refresh them, preventing a duplicate policy-watcher reload of the same state.
+The source watcher captures baseline, addon and list timestamps after compilation.
+Native Runtime captures them before reading the baseline and retains that
+watermark after successful compilation and publication. An operator service
+authorization committed during compilation or publication remains eligible for
+the next watcher check. The late observation still detects read errors; it does
+not advance the accepted watermark. A successful expiry prune can advance the
+baseline timestamp to its own replacement only when the prune reread the same
+source that was compiled. Startup observes again after legacy grant
+normalization, before the admin listener starts.
+
+The candidate retains the previous addon timestamp when that sibling is absent
+and the baseline path is unchanged. An addon that later reappears at an equal or
+older timestamp can therefore remain unnoticed. A new baseline path starts new
+observation history. Source-string policy mutations retain the previous file
+observations. Explicit and catalog-driven file reloads refresh them, preventing
+a duplicate policy-watcher reload of the same state when no write intervenes.
 
 A policy-file reload uses the accepted service registry and retains existing
 transport, inspection, audit and budget owners. It does not read catalog files
@@ -1404,12 +1413,13 @@ cover deadlines, retry, accepted registry reuse, authenticated HTTP/1 views and
 retained budget state. These are implementation evidence, not independent
 migration acceptance.
 
-The observation is not a filesystem snapshot: a file can change between its
-content read and subsequent stat. Native preserves the reached observation
-phases without claiming the source's exact repeated-stat races or thread
-interleaving. Task-file activation remains a separate library capability. Source
-watcher restart races remain outside this native control-loop comparison. Time
-passing without a file change does not itself trigger host-expiry pruning.
+The source observation is not a filesystem snapshot: a file can change between
+its content read and subsequent stat. Native uses the earlier Runtime watermark
+to retry such changes; it does not claim the source's exact repeated-stat races
+or thread interleaving. Task-file activation remains a separate library
+capability. Source watcher restart races remain outside this native control-loop
+comparison. Time passing without a file change does not itself trigger
+host-expiry pruning.
 Native startup continues to reject an invalid initial configuration.
 
 ### Expired hosts in policy TOML
@@ -1421,27 +1431,36 @@ performs the same early write for top-level hosts. D15 retains the native
 correction for expired agent-scoped hosts as well.
 
 The loader uses the names already removed from its parsed candidate. It rereads
-the TOML with a comment-preserving parser and removes only those names. It does
-not recompute expiry from that second read. An unchanged document is not written.
+the TOML with a comment-preserving parser under the approval transaction's
+file lock. It removes a named entry only if that entry has not changed since
+the first read. It does not recompute expiry from the second read. An unchanged
+document is not written.
 The existing low-level policy writer creates a mode-0600 temporary file, syncs
 it, replaces the configured path and syncs the parent directory. A configured
 symlink is replaced; its former target is unchanged. Public `Policy` file
 constructors and reload methods remain read-only, and YAML/JSON loads do not
 write their source files.
 
-Read or save I/O failures report a diagnostic and allow the already-pruned
-candidate to continue, as the source does. This includes a directory-sync failure
-after replacement is visible. A second-read decoding or TOML parse failure
+When the native lock, read or save fails, the loader reports a diagnostic and
+continues with the already-pruned candidate. Source has the same behavior for
+read and save I/O failures. This includes a directory-sync failure after
+replacement is visible. A second-read decoding or TOML parse failure
 rejects the candidate at the later processing-error boundary. A successful
 pruning write is not undone if later compilation or observation rejects the
 candidate: the old policy remains active while the disk edit remains visible.
-Successful observation captures the post-replacement timestamp, preventing an
-extra watcher reload for that write.
+If the pruning reread matches the compiled source, Runtime records the
+timestamp of its own replacement to avoid an extra watcher reload. If the
+pruning reread differs, Runtime retains the earlier watermark so another check
+can load the intervening edit.
 
-This load-time cleanup uses the existing atomic file writer without the approval
-transaction's lock, activation callback or rollback. It is not a transaction
-across disk and Runtime. A concurrent edit between the first read and the pruning
-read can still lose a renewed entry with the same name; source has the same race.
+This load-time cleanup holds the approval transaction's file lock from its
+second read through the atomic replacement. It does not use an activation
+callback or rollback, and it is not a transaction across disk and Runtime.
+An admin edit committed before the second read remains in the reread document;
+an edit attempted during pruning waits for the lock. If an admin changes the
+same expired host between the first read and the locked reread, native keeps
+the newer entry for the next load. Source expiry cleanup uses no shared lock
+and can still overwrite a concurrent edit.
 Native temporary-file ownership removes its temporary on an earlier write or
 rename failure. Source's `delete=False` temporary can remain if write, flush or
 file sync fails before its cleanup variable is assigned; that difference is a
@@ -1463,6 +1482,12 @@ formatting difference and equality of every other saved byte. The agent-expiry
 row remains the D15 source witness; two source save-failure rows use disclosed move and directory-sync
 seams. Native [helper tests](../proxy/src/policy/expiry/tests.rs) separately
 exercise reached read/decode/parse errors and real rename-failure cleanup.
+After native expiry pruning acquires the policy lock, it retains
+`.policy.toml.lock` beside the policy file. The Python source does not create
+this lock. The generated
+fixture keeps Python's `remaining_files` observation and records the native
+disk difference in `native_remaining_files`; the native replay checks that
+field when present.
 The [Runtime workflow](../proxy/src/service_catalog_tests/policy_expiry.rs) checks
 startup, watcher, explicit and catalog loads, rejection/retry, HTTP/1 views and
 retained budgets. This is finite implementation evidence; source fault seams,
