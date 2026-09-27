@@ -6,7 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INVENTORY = REPO_ROOT / "docs" / "state-compatibility.md"
 
 REQUIRED_FAMILIES = {
-    "Baseline policy, host/agent settings, lists and task policy (durable)",
+    "Baseline policy, host/agent settings and lists (durable); task policy (process-local through current APIs)",
     "Approvals (durable policy mutation)",
     "Service definitions/catalog (durable files, watched)",
     "Service authorization, contracts, grants and bindings (durable policy records; session leases ephemeral)",
@@ -53,7 +53,9 @@ def test_writer_matrix_contains_every_durable_and_ephemeral_family() -> None:
 def test_writer_matrix_retains_explicit_rollback_and_unresolved_owners() -> None:
     text = " ".join(INVENTORY.read_text(encoding="utf-8").split())
     for required in (
-        "OAuth refresh and alternate service catalogs",
+        "installed OAuth refresh or user catalog paths",
+        "task-policy API still has a process-local registry",
+        "Provider lease observations remain provider-owned",
         "installed-instance rollback",
         "Flow evidence (durable SQLite)",
         "Coordination/collaboration state (external service boundary)",

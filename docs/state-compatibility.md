@@ -10,23 +10,24 @@ the named consumer and the selected prior release has read and used it.
 
 The selected prior comparator is the Python proxy from repository commit
 `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a` (2026-09-16), the baseline named by
-issue #638. It is a source checkout rather than a tagged wheel release. Its
-runtime identity is Python 3.12.14, SafeYolo 0.1.0, and mitmproxy 12.2.3 from
-the locked `uv.lock` (wheel SHA256
-`df75ccd15ccb39ab55ce9dd4130312270e8ba208eb927a7cbe50cb52678ec722`). Native
-candidate identity is recorded separately for each final integrated build;
-the current inventory base is `4bf05bf232c843f04b9acf391fe097daac14776d`.
+issue #638. It is a source checkpoint rather than a tagged wheel release. Its
+installed comparator uses Python 3.12.14, SafeYolo 0.1.0, and mitmproxy 12.2.3
+from the locked `uv.lock`. The pre-cutover Rust binary is frozen at
+`d229907079695cb464e81273f38d46c42522f57d`. The installed candidate
+package has a separate source revision because package-path repairs follow
+that binary. The earlier inventory base was
+`4bf05bf232c843f04b9acf391fe097daac14776d`.
 
-All fixture names and credential values are synthetic. Fixtures must record
-file hashes, IDs, scopes, relationships, and effective decisions, while
-excluding passphrases, bearer values, private keys, and raw credential
-material from logs and evidence.
+All fixture names and credential values are synthetic. The installed transition
+reports its package and process identities, durable-state checks, scopes,
+relationships, and effective decisions. It excludes passphrases, bearer values,
+private keys, and raw credential material from ordinary output.
 
 ## Writer and reader matrix
 
 | State family and lifetime | Source writer → reader | Native writer → reader | Format and security invariants | Existing controls and owner dependency |
 | --- | --- | --- | --- | --- |
-| Baseline policy, host/agent settings, lists and task policy (durable) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the policy document; `policy/loader.py`, `mitm_addons/policy_engine.py` and task consumers read it. | `proxy/src/approvals.rs`, policy expiry and task writers update the existing locked policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` read and publish one accepted snapshot. | TOML is canonical for mutations; JSON/YAML are accepted policy inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. | `proxy/tests/policy.rs`, `proxy/tests/state_policy_transition.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. Root/policy writer owner must complete the integrated task and reload consumers. |
+| Baseline policy, host/agent settings and lists (durable); task policy (process-local through current APIs) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the baseline policy document; `policy/loader.py` and `mitm_addons/policy_engine.py` read it. The Python task API registers a task in memory; a separately configured task file is a reader input. | `proxy/src/approvals.rs` and policy expiry update the locked baseline policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` publish it. Native task APIs update a process-local registry and overlay, not that file. | TOML is canonical for baseline mutations; JSON/YAML are accepted inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. A restart clears process-local task registrations. | `proxy/tests/policy.rs`, `proxy/tests/state_policy_transition.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. #638 W2's task-policy operation awaits the operator's durable-versus-process-local contract choice. |
 | Approvals (durable policy mutation) | `cli/src/safeyolo/policy/engine.py` approval mutation helpers write the policy TOML; policy loader and network consumers read the result. | `proxy/src/approvals.rs::save_policy` writes atomically under the existing policy lock; `policy_runtime.rs` and `policy.rs` read the accepted candidate. | Preserve scoped agent/host/port/action, expiry and rate values; failed activation leaves the previous bytes and decision active. | `proxy/tests/approvals.rs`, `proxy/tests/state_policy_transition.rs`, policy reload tests, `tests/proxy_migration/test_native_network_policy.py`. Approval writer owner supplies final consumer transition. |
 | Service definitions/catalog (durable files, watched) | `cli/src/safeyolo/services/*.yaml`, `core/service_loader.py` and service commands write/read ordered YAML definitions. | `proxy/src/services/catalog.rs` reads builtin and user directories; `proxy/src/lib.rs` publishes the accepted catalog with policy/routes/tokens. No second service writer is introduced in this issue. | YAML source order, merge/override precedence, timestamps, malformed-file retention, and empty/removal semantics remain visible. | `proxy/src/services/catalog_tests.rs`, `proxy/tests/service_catalog_source.py/.json`, gateway workflow tests. The bounded current-head `selected_python_native_python_service_catalog_roundtrip` proves Python-written synthetic definitions → native Rust catalog publication → Python readback across user override, removal and empty-directory stages, with exact YAML hashes and `0600` modes. #624 remains the native catalog/gateway writer owner; no Rust catalog writer is claimed. |
 | Service authorization, contracts, grants and bindings (durable policy records; session leases ephemeral) | `cli/src/safeyolo/mitm_addons/service_gateway.py`, `commands/services.py`, and `commands/agent.py` author and consume policy records. | `proxy/src/grants.rs`, `contracts.rs`, `admin_api/gateway.rs` and existing policy transaction helpers write/read the same policy file; process-local once reservations are intentionally ephemeral. | Keep stable grant/binding IDs, scope, revocation and consumption state; preserve unrelated TOML; do not resurrect removed access or claim exactly-once across restart. | `proxy/tests/grants.rs`, `contracts.rs`, `gateway_snapshot.rs`, `gateway_workflow.rs`, `gateway_contract_workflow.rs`. The opt-in `selected_python_native_python_native_grants_bindings_transition` uses the real Python `ServiceGateway` writer/reader and native `Store` consumers across one policy file, including legacy default normalization and rollback. The bounded `selected_python_native_python_service_authorization_rollback` drives a native injected request, restart and a Python `ServiceGateway` grant/binding rollback on the same policy. #624/#625 owners supply remaining live writers and gateway path. |
@@ -36,44 +37,68 @@ material from logs and evidence.
 | Circuit cache and counters (durable when configured; worker/process lifetime) | `cli/src/safeyolo/mitm_addons/circuit_breaker.py` and its snapshot worker write/read JSON state; operator circuit APIs consume it. | `proxy/src/circuits.rs` and its process-owned snapshot worker write/read the existing JSON state; `runtime.rs` and circuit APIs use the published domains. | Preserve host keys, counters, streak/open timing, settings and valid state. Malformed state is rejected without partial publication; absent/empty path is explicit no-write. | `proxy/tests/circuit_persistence.rs`, `circuit_persistence_close.rs`, `tests/proxy_migration/test_circuit_reload.py`, `test_operator_circuits.py`. The opt-in `test_selected_python_native_python_circuit_state_transition` is the owned Python→Rust→Python→Rust fixture: it records state hashes, proves Python open-state blocking, and proves final Rust reads Python's change, blocks first, then recovers. |
 | Flow evidence (durable SQLite) | `cli/src/safeyolo/storage/flow_store.py` and `core/flow_writer.py` write; source flow APIs/readers and doctor tooling read. | `proxy/src/flow_store.rs` and `http/flow_recording.rs` write/read the retained version-2 SQLite schema, including version-1 migration. | Preserve owners/tags, request IDs, body presence/truncation, compression and transaction rollback; failed tags must not commit a row later. | `proxy/tests/flow_store*.rs`, `proxy/src/flow_store/details/tests.rs`, `tests/proxy_migration/test_http_test_context.py`. #635 owner supplies final integrated evidence writer/readers. |
 | Audit, trace and metrics evidence (append-only files or process state) | `cli/src/safeyolo/core/{audit_writer,trace,flow_writer}.py` and readers/stream APIs write/read JSONL, trace and SQLite evidence. | `proxy/src/audit.rs`, trace/metrics modules and shared runtime writers write/read the retained schemas. | Preserve owner, correlation, decision, scope and failure attribution; no raw credentials; report write failure separately from application success. | `proxy/src/audit_runtime_tests.rs`, audit/trace/API tests, `docs/proxy-parity.md` evidence sections. Audit/evidence owners must supply final integrated readers. |
-| Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` and `core/plumb_service.py` write/read external NATS/SQLite state. | Native coordination uses the existing external service boundary; the bounded declaration transition in `proxy/tests/coord_state_cross_version.rs` reads and writes the retained v0 SQLite state without a proxy-owned replacement store. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes; do not copy service state into a new local format. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, and the bounded native/Python declaration transition. Resource leases/provider live state and the complete coordination writer set remain open. |
+| Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/coord_state_cross_version.rs`, and the installed transition below. |
 | Readiness, runtime identity, listener registry and task registry (ephemeral) | Source startup/lifecycle writes readiness/PID markers and keeps listener/task state in process memory; restart intentionally creates a new process state. | `proxy/src/lib.rs` and `runtime.rs` own readiness/listeners and the process-local task registry; native admin/API writers do not persist these records. | Verify cleanup, identity attribution and restart reset. Do not treat an in-memory snapshot as durable rollback evidence. | `tests/proxy_migration/test_readiness.py`, `test_operator_task_api.py`, `test_agent_api_status.py`; #637 owns installed lifecycle and #627 owns retained operator controls. |
 
-## Transition sequence and evidence
+## Installed Linux transition and recovery
 
-The eventual fixture runs sequentially on isolated directories:
+On an isolated Linux instance, install the exact Python comparator checkpoint
+and the current candidate as separate wheels in separate Python 3.12
+environments. The candidate wheel must contain the frozen R native binary.
+Keep both installed command paths available and use one disposable
+`SAFEYOLO_CONFIG_DIR` for the transition. The procedure is:
 
-1. The selected Python comparator writes each supported durable family with
-   synthetic identities and records hashes and effective reads.
-2. Native starts against those exact files, reads and uses them through its
-   existing consumers, then performs one supported mutation per family.
-3. Native stops cleanly. The selected Python comparator reopens the files and
-   checks effective policy, authorization, credential selection, CA identity,
-   circuit behavior, and flow evidence, rather than only parsing bytes.
-4. Native starts again against the Python-readable post-native state and
-   repeats the allowed/denied and scoped reads. Invalid candidates, external
-   replacement/removal, salt changes, empty vault removal, failed row/tag
-   transactions, and malformed circuit state are separate disposable cases.
+1. Start the old installed CLI with `proxy.backend: python`. Create the policy,
+   vault, certificate authority (CA), catalog, and external coordination state.
+   Verify the initial denied request and trusted Transport Layer Security (TLS)
+   request. Stop it and check that its listener and process markers are gone.
+2. Set `proxy.backend: rust` in the same configuration. Start the installed
+   candidate CLI. Read old state through native consumers. Write an approval,
+   service authorization, contract binding, grant, refreshed credential,
+   circuit state, flow, audit event, coordination message, and collaboration
+   state. Stop it without restoring a state backup.
+3. Select `proxy.backend: python` again and start the selected old CLI. Read and
+   use the native writes. Revoke the approval, service authorization, binding,
+   and grant; refresh the credential; reset the circuit; tag the flow; and
+   reply through coordination and collaboration. Stop it cleanly.
+4. Select `proxy.backend: rust` and start the same candidate wheel again.
+   Verify the old revocations, refreshed credential, recovered circuit, flow
+   tag, retained messages, CA and key continuity, and an unrelated permitted
+   control. Close the collaboration and stop the final native process.
 
-The fixture must retain a manifest containing the two exact implementation
-identities, package/tool versions, per-family before/after hashes, IDs and
-scopes, commands, exit statuses, and effective observations. It must not claim
-rollback until the final integrated writer set from #624–#629 and #635–#637 is
-available. Until then, this document records the owned inventory and the
-unresolved dependencies explicitly.
+`tests/blackbox/installed_state_transition.py` runs these steps against a new
+disposable state directory. From the repository root, set `OLD_PYTHON` and
+`OLD_CLI` to the interpreter and CLI from the exact old wheel, `RUST_CLI` to the
+candidate wheel's CLI, `RUST_REVISION` to that wheel's full source commit, and
+`STATE_PARENT` to a writable directory outside the checkout. The script
+checks the installed package revisions and the executed native binary path.
+Compare the candidate binary with the frozen R binary separately when building
+the wheel. The Linux ARM64 run at R used binary SHA-256
+`933b0c9368279416ecd3e92ba60260882f2a328622b787378cdae31a40d073a8`
+in both the frozen R and candidate wheels.
 
-The currently executable owned transitions are the circuit, encrypted-vault,
-interception-CA/key, grants/bindings and host-policy approval rows. With
-`SAFEYOLO_PYTHON_SOURCE` set to the current Python source under test,
-`SAFEYOLO_CIRCUIT_COMPARATOR_SOURCE` set to the clean comparator checkout at
-`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`,
-and `SAFEYOLO_RUST_PROXY` set to the candidate binary, the migration test writes an
-open circuit and proves a Python open-state block, reads and recovers it in
-Rust, reopens and mutates it in Python, then returns to Rust for another
-open-state block and recovery. Its manifest contains exact runtime and launch
-identity, SHA-256 state hashes, and effective origin-contact counts; it contains
-no secret material. The remaining rows require their final integrated writer
-owners before they can be promoted to the same process sequence.
+```sh
+"$OLD_PYTHON" tests/blackbox/installed_state_transition.py \
+  --old-cli "$OLD_CLI" --rust-cli "$RUST_CLI" \
+  --rust-revision "$RUST_REVISION" --state-parent "$STATE_PARENT"
+```
+
+The successful run prints `linux_installed_transition_passed`, the four
+process identities, effective request and state observations, and the retained
+disposable state path. No untouched pre-native snapshot is restored. The
+existing component controls below cover malformed state, failed transactions,
+large grant values, and service-catalog empty semantics; the installed run
+exercises their supported cross-version path once.
+
+The task-policy API still has a process-local registry in both implementations.
+Its durable-versus-process-local requirement awaits the operator's #638 choice;
+the installed run does not assert a durable task-policy round trip. The macOS
+installed return remains dependent on #637's host prerequisite. Provider lease
+observations remain provider-owned: the old reader sees its unchanged snapshot,
+while native preserves the resource advertisement and reports lease state
+`unknown`. Neither process persists an active wait or claims its transient
+state survives replacement. Trace and metrics counters also reset with their
+owning process; durable audit and flow records remain readable.
 
 The host-policy approval row has a separate opt-in transition in
 `proxy/tests/state_policy_transition.rs`.
@@ -136,9 +161,10 @@ declaration route, and reads its own write. After the native consumer closes,
 Python reads that generation and writes the next declaration set, and a fresh
 native consumer reloads it. The evidence records the comparator and NATS
 binary identities plus a raw v0 database hash for each writer generation.
-This proves the declaration slice at the existing SQLite/NATS boundary; it
-does not close resource leases, provider live state, the complete coordination
-writer set, or the separate worker-lifetime acceptance.
+That bounded fixture proves the declaration slice at the existing SQLite/NATS
+boundary. The installed transition above adds the selected room, attention,
+message, collaboration, and provider-ownership observations. Neither test
+claims that active waits or provider-owned leases are proxy-persisted state.
 
 The grants/bindings row has a separate opt-in transition.
 `selected_python_native_python_native_grants_bindings_transition` uses the old
@@ -170,8 +196,9 @@ same locked TOML round-trip writer used by the source agent store. A fresh
 native process reads the rollback with no authorized service token and rejects
 the same request before origin delivery. The manifest records runtime
 identities, state hashes, file mode, token fingerprints, IDs, and effective
-status without secret values. OAuth refresh and alternate service catalogs
-remain separate writer-owner gaps.
+status without secret values. That component fixture alone did not exercise
+the installed OAuth refresh or user catalog paths; the installed transition
+above exercises those selected paths.
 
 The installed-instance rollback command is now available in the disposable
 host smoke lane. Run `tests/blackbox/installed_host_smoke.py --mode smoke
