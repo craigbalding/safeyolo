@@ -155,7 +155,7 @@ PY
         make -C "$REPO_ROOT/vm" install
     fi
 
-    safeyolo bootstrap
+    safeyolo bootstrap --source-checkout "$INSTALL_ROOT"
 fi
 
 if [ "$LANE" = "proxy" ]; then

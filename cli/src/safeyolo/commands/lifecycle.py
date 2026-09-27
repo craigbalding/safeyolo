@@ -1029,20 +1029,31 @@ def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
         console.print("  Installed rootfs-tree")
 
 
-def build() -> None:  # DOC: docs/DEVELOPERS.md
+def build(  # DOC: docs/DEVELOPERS.md
+    source_checkout: Path | None = typer.Option(
+        None,
+        "--source-checkout",
+        help="Checkout containing guest/build-all.sh (needed for an installed CLI run outside the checkout).",
+    ),
+) -> None:
     """Build platform-specific guest artifacts.
 
     Linux builds an unpacked rootfs tree. macOS builds a kernel, initramfs,
     and ext4 rootfs image through Lima. Output is installed in
     ~/.safeyolo/share/.
     """
-    # Find build script
-    repo_root = Path(__file__).resolve().parents[4]
-    build_script = repo_root / "guest" / "build-all.sh"
+    package_checkout = Path(__file__).resolve().parents[4]
+    if source_checkout is not None:
+        checkout = source_checkout.expanduser().resolve()
+    elif (package_checkout / "guest" / "build-all.sh").is_file():
+        checkout = package_checkout
+    else:
+        checkout = Path.cwd().resolve()
+    build_script = checkout / "guest" / "build-all.sh"
 
-    if not build_script.exists():
-        console.print("[red]Cannot find guest/build-all.sh[/red]")
-        console.print("Run from the SafeYolo repo checkout.")
+    if not build_script.is_file():
+        console.print(f"[red]Cannot find guest/build-all.sh in {checkout}[/red]")
+        console.print("Run from a SafeYolo checkout or pass --source-checkout PATH.")
         raise typer.Exit(1)
 
     storage_failures = _preflight_linux_build_storage(build_script)
@@ -1050,7 +1061,7 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
         _print_linux_build_storage_failure(storage_failures)
         raise typer.Exit(1)
 
-    console.print("[bold]Building guest artifacts...[/bold]")
+    console.print(f"[bold]Building guest artifacts from {checkout}...[/bold]")
     console.print("This takes several minutes on first build.\n")
 
     try:
@@ -1061,6 +1072,9 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
     except subprocess.CalledProcessError as err:
         console.print(f"[red]Build failed with exit code {err.returncode}[/red]")
         raise typer.Exit(1)
+    except OSError as err:
+        console.print(f"[red]Cannot execute {build_script}: {err}[/red]")
+        raise typer.Exit(1) from err
 
     # Install to ~/.safeyolo/share/
     share_dir = get_config_dir() / "share"
