@@ -299,7 +299,16 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
         raise typer.Exit(1) from err
     if running:
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
-        _start_coord_best_effort()
+        coord = _start_coord_best_effort()
+        if coord == "healthy":
+            console.print("[dim]Coord dependency is already healthy.[/dim]")
+        elif coord == "repaired":
+            console.print("[green]Coord dependency repaired.[/green]")
+        else:
+            console.print(
+                "[yellow]SafeYolo proxy remains running, but Coord is degraded.[/yellow] "
+                "Run safeyolo doctor for details."
+            )
         raise typer.Exit(0)
 
     console.print("[bold]Starting SafeYolo (Rust proxy)...[/bold]")

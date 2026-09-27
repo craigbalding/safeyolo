@@ -84,7 +84,7 @@ def test_first_run_bootstrap_selects_native_config(tmp_path, monkeypatch):
     assert (config_dir / "lists" / "package-registries.txt").is_file()
 
 
-@pytest.mark.parametrize("flag", ["--test", "--dev", "--flow-cache"])
+@pytest.mark.parametrize("flag", ["--test", "--dev", "--flow-cache", "--flow-cache-bytes"])
 def test_removed_development_flags_cannot_start_proxy(command, flag):
     result = command.runner.invoke(app, ["start", flag])
     assert result.exit_code != 0
