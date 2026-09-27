@@ -32,7 +32,7 @@ from safeyolo.core.operator_event_server import OperatorEventServer
 from safeyolo.operator_approvals import approve
 from safeyolo.traffic_inspector import TrafficInspector
 
-FROZEN_R = "36462777e23c368adda65c9d880fe2fd8c8c76cb"
+FROZEN_R = "d6a947f1343c5a854b735c22a0ce90d641dd5ac0"
 ROOM = "p3-owned-room"
 PEER = "bbpeer"
 

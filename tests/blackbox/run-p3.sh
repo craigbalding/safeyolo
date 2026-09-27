@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
-FROZEN_R=36462777e23c368adda65c9d880fe2fd8c8c76cb
+FROZEN_R=d6a947f1343c5a854b735c22a0ce90d641dd5ac0
 PLATFORM="${1:-}"
 
 case "$PLATFORM" in
