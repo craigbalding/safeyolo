@@ -3278,8 +3278,10 @@ and binding through its `ServiceGateway` writers, and removes the service
 record through the locked TOML round-trip writer used by the source agent
 store. A fresh native process reads that rollback with no authorized service
 token and rejects the request with no additional origin contact. This is
-bounded to one service and route; OAuth refresh, alternate catalog cases and
-installed rollback remain separate gaps.
+bounded to one service and route. The selected OAuth refresh, user catalog,
+and installed Linux rollback paths are exercised together in
+[`installed_state_transition.py`](../tests/blackbox/installed_state_transition.py).
+The task-policy contract and macOS installed return remain pending under #638.
 
 The native plumb owner applies the same process-lifetime rule to its blocking
 SQLite calls, memory projections and conversation long polls. Agent request-chat,
