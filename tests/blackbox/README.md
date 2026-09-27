@@ -448,6 +448,60 @@ The wrapper's status does not mark P2 accepted; the actual KVM and systrap
 runs and independent review supply that result. macOS/VZ P2 remains a
 separate host execution.
 
+### Finite installed P3 consumer pilot for issue #637
+
+Run `run-p3.sh` on an operator-owned disposable host with a clean checkout that
+contains frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`.
+Use a disposable Ubuntu systrap host or a physical Apple Silicon Mac with
+Virtualization.framework. The host needs `uv`, `git`, Python 3, the
+prerequisites for `run-lane.sh`, and working loopback TCP bind and connect.
+The Linux operator account needs noninteractive
+`sudo` for bootstrap. Local test ports 8180, 8181, 9190, 18080, 18443–18451,
+and 19999 must be free. No disposable proxy or guest needs to be running.
+Consumer requests in the pilot use its owned fixture origin. Setup may
+download the pinned install dependencies. The lane preserves the configured
+parent proxy and certificate
+authority for other destinations.
+
+From the repository root on the selected host, run the command for its actual
+guest mechanism:
+
+```bash
+./tests/blackbox/run-p3.sh systrap
+```
+
+```bash
+./tests/blackbox/run-p3.sh vz
+```
+
+The wrapper installs frozen source R in an isolated `uv` tool directory. It
+starts a disposable native proxy, two real guests, an owned HTTP origin, and
+the test instance's Coord backing service. Guest calls use each guest's local
+proxy forwarder. The selection checks service approval and exact vault
+credential delivery, a stolen gateway token from the second guest, contract
+binding and one-use route approval, test-context and own trace/flow access,
+Coord history and attention resolution, collaboration approval and closure,
+and an authenticated operator event. The read-only inspector filters retained
+flows, reads a WebSocket transcript, and exports one selected raw request.
+The export can contain the disposable gateway token. Keep the printed
+observations directory private.
+
+Expect the `P3: six installed guest journeys and operator effects verified`
+line and a `P3 result: exit 0` line. In the printed observations directory,
+inspect `systrap-p3.json` or `vz-p3.json` for `status: passed`,
+`cleanup: stopped`, and the named origin, peer, backing-service, event, and
+inspector effects. The wrapper stops both guests, the proxy, and the owned fixture
+processes. If cleanup fails, run the exact three cleanup commands printed by
+the wrapper and verify the guest PID files, native proxy receipt, agent
+sockets, and Coord NATS PID file are gone. The disposable directory remains
+available for diagnosis. A passed wrapper is a host observation; independent
+review decides P3 acceptance.
+
+The current Bristol seatbelt-mac route cannot bind and connect loopback TCP.
+It cannot execute the VZ pilot until that host capability is available. The
+wrapper checks loopback before installation, so this route can check out and
+inspect the procedure without starting the disposable instance.
+
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*
