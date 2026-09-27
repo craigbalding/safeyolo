@@ -10,7 +10,11 @@ from typer.testing import CliRunner
 from safeyolo import rust_proxy
 from safeyolo.cli import app
 from safeyolo.commands import lifecycle, policy
+from safeyolo.coord import nats_runtime
+from safeyolo.coord.identity import instance_id_file
 from safeyolo.platform import get_platform
+
+_start_owned_coord = lifecycle._start_coord_best_effort
 
 
 @pytest.fixture
@@ -77,8 +81,9 @@ def test_rust_start_uses_native_owner_and_preserves_python_test_setting(command)
     command.mocks["check_running_backend"].assert_called_once_with()
     command.mocks["start_proxy"].assert_called_once_with()
     command.mocks["wait_for_healthy"].assert_called_once_with(timeout=30)
-    for name in ("check_guest_images", "missing_guest_images", "_start_coord_best_effort", "_web_tailnet_runtime"):
+    for name in ("check_guest_images", "missing_guest_images", "_web_tailnet_runtime"):
         command.mocks[name].assert_not_called()
+    command.mocks["_start_coord_best_effort"].assert_called_once_with()
     assert command.config_path.read_bytes() == before
     assert "Rust native backend" in result.output and "owned-native.json" in result.output
     assert "localhost" not in result.output and "safeyolo agent add" not in result.output
@@ -113,17 +118,95 @@ def test_rust_up_no_wait_still_uses_central_start_readiness(command):
     assert result.exit_code == 0, result.output
     command.mocks["start_proxy"].assert_called_once_with()
     command.mocks["wait_for_healthy"].assert_not_called()
+    command.mocks["_start_coord_best_effort"].assert_called_once_with()
     assert "Rust native backend" in result.output
 
 
-def test_running_rust_skips_launch_and_python_coord(command):
+def test_running_rust_reconciles_coord_without_relaunch(command):
     command.mocks["check_running_backend"].return_value = True
     result = command.runner.invoke(app, ["start"])
     assert result.exit_code == 0 and "already running" in result.output
     command.mocks["start_proxy"].assert_not_called()
     command.mocks["wait_for_healthy"].assert_not_called()
-    command.mocks["_start_coord_best_effort"].assert_not_called()
+    command.mocks["_start_coord_best_effort"].assert_called_once_with()
     command.preflight.assert_not_called()
+
+
+def test_rust_coord_failure_keeps_proxy_usable(command):
+    command.mocks["_start_coord_best_effort"].return_value = "degraded"
+    first = command.runner.invoke(app, ["start"])
+    assert first.exit_code == 0, first.output
+    assert "Rust native backend is running" in first.output
+    command.mocks["check_running_backend"].return_value = True
+    repeated = command.runner.invoke(app, ["start"])
+    assert repeated.exit_code == 0, repeated.output
+    assert "Coord is degraded" in repeated.output
+    assert "safeyolo doctor" in repeated.output
+    command.mocks["start_proxy"].assert_called_once_with()
+    assert command.mocks["_start_coord_best_effort"].call_count == 2
+
+
+def test_rust_owned_coord_failure_warns_without_stopping_proxy(command, isolated_coord, monkeypatch):
+    monkeypatch.setattr(lifecycle, "_start_coord_best_effort", _start_owned_coord)
+    monkeypatch.setattr(nats_runtime, "is_healthy", lambda: False)
+
+    def unavailable(*, ready_timeout):
+        assert ready_timeout == 10.0
+        raise RuntimeError("owned NATS could not start")
+
+    monkeypatch.setattr(nats_runtime, "start_server", unavailable)
+    result = command.runner.invoke(app, ["start"])
+    assert result.exit_code == 0, result.output
+    assert "coord message plane failed to start" in result.output
+    assert "Rust native backend is running" in result.output
+    command.mocks["stop_proxy"].assert_not_called()
+    event = command.mocks["write_event"].call_args
+    assert event.args == ("ops.coord_nats_start_failed",)
+    assert event.kwargs["details"]["error"] == "owned NATS could not start"
+
+
+def test_rust_start_reconciles_real_owned_nats_and_stop_cleans_it(command, nats_env, monkeypatch):
+    monkeypatch.setattr(lifecycle, "_start_coord_best_effort", _start_owned_coord)
+
+    first = command.runner.invoke(app, ["start"])
+    assert first.exit_code == 0, first.output
+    assert nats_runtime.is_healthy()
+    assert nats_runtime.status()["state"] == "healthy"
+    instance_id = instance_id_file().read_text()
+
+    command.mocks["check_running_backend"].return_value = True
+    repeated = command.runner.invoke(app, ["start"])
+    assert repeated.exit_code == 0, repeated.output
+    assert "already healthy" in repeated.output
+    assert nats_runtime.is_healthy()
+    command.mocks["start_proxy"].assert_called_once_with()
+
+    nats_runtime.stop_server()
+    assert not nats_runtime.is_healthy()
+    repaired = command.runner.invoke(app, ["start"])
+    assert repaired.exit_code == 0, repaired.output
+    assert "Coord dependency repaired" in repaired.output
+    assert nats_runtime.is_healthy()
+
+    command.mocks["is_proxy_running"].return_value = True
+    stopped = command.runner.invoke(app, ["stop"])
+    assert stopped.exit_code == 0, stopped.output
+    assert nats_runtime.status()["state"] == "not-running"
+    assert not nats_runtime.nats_pid_path().exists()
+    command.mocks["stop_proxy"].assert_called_once_with()
+
+    command.mocks["check_running_backend"].return_value = False
+    restarted = command.runner.invoke(app, ["start"])
+    assert restarted.exit_code == 0, restarted.output
+    assert nats_runtime.is_healthy()
+    assert instance_id_file().read_text() == instance_id
+    assert command.mocks["start_proxy"].call_count == 2
+    command.mocks["is_proxy_running"].return_value = False
+    stopped_again = command.runner.invoke(app, ["stop"])
+    assert stopped_again.exit_code == 0, stopped_again.output
+    assert "not running" in stopped_again.output
+    assert nats_runtime.status()["state"] == "not-running"
+    assert not nats_runtime.nats_pid_path().exists()
 
 
 @pytest.mark.parametrize("backend", ["rust", "python"])
@@ -244,10 +327,11 @@ def test_status_uses_live_rust_receipt_after_selection_changes(command, monkeypa
     else:
         assert "not ready" in result.output and "unavailable until ready" in result.output
     assert "8123" not in result.output and "9191" not in result.output
-    assert "WebMITM" not in result.output and "Coord" not in result.output
+    assert "WebMITM" not in result.output
+    assert "Coord (nats-server)" in result.output and "not running" in result.output
     for name in ("get_api", "check_guest_images", "_web_tailnet_runtime", "check_running_backend"):
         command.mocks[name].assert_not_called()
-    coord.status.assert_not_called()
+    coord.status.assert_called_once_with()
     platform.assert_not_called()
 
 
