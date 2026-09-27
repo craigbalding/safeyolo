@@ -22,6 +22,7 @@
 #   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
 #   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --p2
 #   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p3
+#   ./run-tests.sh --expect-platform systrap --proxy-impl rust --p3-config-only
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
 #   ./run-tests.sh --proxy -- --collect-only
@@ -85,6 +86,7 @@ RUST_BIN=""
 KVM_P1=false
 P2=false
 P3=false
+P3_CONFIG_ONLY=false
 PYTEST_FORWARD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -158,6 +160,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --p3)
             P3=true
+            shift
+            ;;
+        --p3-config-only)
+            P3=true
+            P3_CONFIG_ONLY=true
             shift
             ;;
         --)
@@ -325,7 +332,7 @@ fi
 export SAFEYOLO_BLACKBOX_PROXY_BACKEND="$PROXY_IMPL"
 INSTALLED_CLI=""
 INSTALLED_RUST_BIN=""
-if [ "$PROXY_IMPL" = "rust" ]; then
+if [ "$PROXY_IMPL" = "rust" ] && [ "$P3_CONFIG_ONLY" = false ]; then
     INSTALLED_CLI="$(command -v safeyolo || true)"
     if [ -z "$INSTALLED_CLI" ]; then
         echo "ERROR: the installed safeyolo CLI is required for the native VM lane" >&2
@@ -421,27 +428,30 @@ config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
-# Configure target_hosts for test_context addon so the flow recorder
-# captures tagged flows. The blackbox cross-agent isolation test uses
-# X-SafeYolo-Test-Context headers on the selected fixture host — without
-# target_hosts, test_context doesn't tag them and the flow recorder drops them.
+# Configure test_context targets before the native process starts. P3's
+# basic and contract hosts send no context header; its explicit context
+# header still opts the non-target request into provenance and recording.
 python3 -c "
 import yaml
 from pathlib import Path
 addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
 addons = yaml.safe_load(addons_path.read_text())
-# target_hosts enables test_context to tag matching traffic with
-# test_context metadata so the flow recorder captures it. Python test mode
-# disables blocking for its host suite; native checks supply a valid context
-# header while retaining native test-context enforcement.
-targets = ['httpbin.org']
+if '$P3' == 'true':
+    targets = ['failing.test']
+else:
+    targets = ['httpbin.org']
 if '$P2' == 'true':
     targets.append('failing.test')
-if '$P3' == 'true':
-    targets.extend(['failing.test', 'legitimate-api.com', 'httpbin.org'])
 addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = targets
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 "
+
+# Focused launcher probe: the final addon file above is the one the installed
+# proxy would load. No proxy, fixture, or guest has been started yet.
+if [ "$P3_CONFIG_ONLY" = true ]; then
+    echo "P3 configuration prepared; no proxy or guest started"
+    exit 0
+fi
 
 # Symlink shared guest artifacts (rootfs, kernel) from the caller's
 # source instance. init creates an empty share/ dir — replace it with
