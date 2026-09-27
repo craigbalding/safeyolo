@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shlex
 import subprocess
 import tomllib
@@ -15,6 +14,7 @@ from pathlib import Path
 
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _sha256
+from isolation.p1_guest_requests import is_mounted_forwarder
 
 FROZEN_R = "0af5c7e22d5e8a45fc321e24eab8355414358f10"
 
@@ -98,11 +98,19 @@ def guest_observation(cli: str, agent: str, marker: str) -> dict:
     return json.loads(lines[0])
 
 
-def check_guest_and_origin(guest: dict, sinkhole: SinkholeClient, marker: str, agent: str) -> dict:
+def check_guest_route(guest: dict) -> None:
+    """Bind the guest's localhost proxy to the mounted per-agent UDS."""
     assert guest["guest_socket"] == "/safeyolo/proxy/proxy.sock"
-    assert re.fullmatch(r"http://10\.200\.[0-9]+\.[0-9]+:8080", guest["guest_proxy"]), (
-        "guest did not use its mounted SafeYolo proxy route"
+    assert guest["guest_proxy"] == "http://127.0.0.1:8080", "guest proxy is not its localhost forwarder"
+    forwarder = guest["forwarder"]
+    assert type(forwarder["pid"]) is int and forwarder["pid"] > 1
+    assert is_mounted_forwarder(forwarder["argv"]), (
+        "guest localhost listener is not wired to the mounted SafeYolo UDS"
     )
+
+
+def check_guest_and_origin(guest: dict, sinkhole: SinkholeClient, marker: str, agent: str) -> dict:
+    check_guest_route(guest)
     expected = json.dumps(
         {
             "received": True,
