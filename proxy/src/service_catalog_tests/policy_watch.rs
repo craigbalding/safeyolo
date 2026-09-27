@@ -44,9 +44,9 @@ fn policy_events(runtime: &Runtime) -> Vec<Value> {
 }
 
 #[test]
-fn authorization_during_policy_publication_reaches_the_agent_gateway() {
+fn authorization_during_policy_load_and_publication_reaches_the_agent_gateway() {
     owned_child(
-        "service_catalog_tests::policy_watch::authorization_during_policy_publication_reaches_the_agent_gateway",
+        "service_catalog_tests::policy_watch::authorization_during_policy_load_and_publication_reaches_the_agent_gateway",
         authorization_during_publication(),
     );
 }
@@ -247,6 +247,60 @@ approval_default='once'
     .await;
     assert_eq!(peer.status, 403);
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
+
+    // Remove basic, then reauthorize it after the next loader has read the
+    // baseline but before compilation/observation completes. The accepted
+    // candidate cannot claim the later admin write in its watermark.
+    let revoked = admin_delete(port, "/admin/agents/alice/services/basic").await;
+    assert_eq!(revoked.status, 200);
+    assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
+    assert!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"]
+            .get("basic")
+            .is_none()
+    );
+    let before = fixture.runtime();
+    let (sent, done) = std::sync::mpsc::sync_channel(1);
+    let runtime = tokio::runtime::Handle::current();
+    crate::policy::after_next_baseline_read(move || {
+        runtime.spawn(async move {
+            authorize_service(port, "basic", "reader").await;
+            sent.send(()).unwrap();
+        });
+        done.recv_timeout(LIMIT).unwrap();
+    });
+    let candidate = crate::policy_runtime::load(
+        &path,
+        before
+            .policy
+            .as_ref()
+            .unwrap()
+            .gateway()
+            .unwrap()
+            .registry(),
+        before.policy.as_ref(),
+        &before.audit,
+    )
+    .unwrap();
+    fixture.proxy.publish_policy(&before, candidate).unwrap();
+    assert!(
+        fixture.read("alice", "GET", TOKEN).await.value()["authorized"]
+            .get("basic")
+            .is_none()
+    );
+    assert!(fixture.proxy.reload_policy_if_changed().await.unwrap());
+    let restored = fixture.read("alice", "GET", TOKEN).await.value();
+    assert!(
+        restored["authorized"]["basic"]["token"]
+            .as_str()
+            .unwrap()
+            .starts_with("sgw_")
+    );
+    assert_eq!(
+        fixture.read("bob", "GET", TOKEN).await.value()["authorized"],
+        json!({})
+    );
+    assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
     fixture.stop().await;
 }
 
@@ -269,6 +323,23 @@ async fn admin_post(port: u16, path: &str, payload: Value) -> Reply {
          Authorization: Bearer owned-admin-token\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
+    );
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    timeout(LIMIT, stream.read_to_end(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    reply(response)
+}
+
+async fn admin_delete(port: u16, path: &str) -> Reply {
+    use tokio::net::TcpStream;
+    let request = format!(
+        "DELETE {path} HTTP/1.1\r\nHost: localhost\r\n\
+         Authorization: Bearer owned-admin-token\r\nContent-Length: 0\r\n\
+         Connection: close\r\n\r\n"
     );
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(request.as_bytes()).await.unwrap();

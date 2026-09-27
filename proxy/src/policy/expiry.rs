@@ -12,18 +12,20 @@ use super::{Result, invalid};
 pub(super) fn persist_expired_hosts(
     path: &Path,
     expired: &[(Option<String>, String)],
-) -> Result<()> {
+    loaded_source: Option<&str>,
+) -> Result<Option<f64>> {
     let source = match fs::read(path) {
         Ok(source) => Zeroizing::new(source),
         Err(error) => {
             warning(&error);
-            return Ok(());
+            return Ok(None);
         }
     };
     // Python's UnicodeDecodeError is outside the source OSError catch. Keep
     // decoding distinct from read I/O without rendering any policy bytes.
     let source =
         std::str::from_utf8(&source).map_err(|_| invalid("policy expiry TOML is not UTF-8"))?;
+    let same_source = loaded_source == Some(source);
     let mut document = source
         .parse::<DocumentMut>()
         .map_err(|_| invalid("policy expiry TOML is invalid"))?;
@@ -44,11 +46,13 @@ pub(super) fn persist_expired_hosts(
     }
     if changed {
         let changed = Zeroizing::new(document.to_string());
-        if let Err(error) = crate::approvals::save_policy(path, &changed) {
-            warning(&error.error);
+        match crate::approvals::save_policy_with_metadata(path, &changed) {
+            Ok(written) if same_source => return Ok(Some(super::watch::mtime(&written))),
+            Ok(_) => {}
+            Err(error) => warning(&error.error),
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn warning(error: &std::io::Error) {

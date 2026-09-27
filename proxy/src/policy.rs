@@ -35,6 +35,19 @@ mod source;
 mod stats;
 mod test_context_targets;
 mod watch;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_BASELINE_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn after_next_baseline_read(callback: impl FnOnce() + 'static) {
+    AFTER_BASELINE_READ.with(|pending| {
+        assert!(pending.replace(Some(Box::new(callback))).is_none());
+    });
+}
 use baseline::{Baseline, Builder as BaselineBuilder};
 pub use budgets::{BudgetResetError, BudgetStatsError};
 use source::{ParsedPolicy, TemporalEntry};
@@ -539,6 +552,26 @@ impl Policy {
         Ok(replacement)
     }
 
+    /// Load the Runtime candidate against a watermark captured before its
+    /// source read. Only a replacement written by this same expiry pass may
+    /// advance that watermark.
+    pub(crate) fn load_runtime_baseline_at(
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+        previous: Option<&Policy>,
+        times: &mut watch::PolicyFileTimes,
+    ) -> std::result::Result<Self, PolicyLoadError> {
+        let mut replacement =
+            Self::load_baseline_at_with_times(path, registry, now_ms, true, Some(times))?;
+        if let Some(previous) = previous {
+            replacement.budgets = previous.budgets.clone();
+            replacement.evaluations = previous.evaluations.clone();
+            replacement.task = previous.task.clone();
+        }
+        Ok(replacement)
+    }
+
     /// Task loading uses the shipped IAM schema. Host-centric task keys are
     /// ignored by Python's UnifiedPolicy loader and are not compiled here.
     pub fn with_task_source(&self, source: &str, format: Format) -> Result<Self> {
@@ -626,6 +659,16 @@ impl Policy {
         now_ms: f64,
         persist_expired_hosts: bool,
     ) -> std::result::Result<Self, PolicyLoadError> {
+        Self::load_baseline_at_with_times(path, registry, now_ms, persist_expired_hosts, None)
+    }
+
+    fn load_baseline_at_with_times(
+        path: &Path,
+        registry: Option<Arc<crate::services::Registry>>,
+        now_ms: f64,
+        persist_expired_hosts: bool,
+        mut times: Option<&mut watch::PolicyFileTimes>,
+    ) -> std::result::Result<Self, PolicyLoadError> {
         let source = std::fs::read_to_string(path).map_err(|error| {
             load_error(
                 PolicyLoadStage::Read,
@@ -635,6 +678,12 @@ impl Policy {
                 },
             )
         })?;
+        #[cfg(test)]
+        AFTER_BASELINE_READ.with(|pending| {
+            if let Some(callback) = pending.borrow_mut().take() {
+                callback();
+            }
+        });
         let format = match path.extension().and_then(|extension| extension.to_str()) {
             Some("toml") => Format::Toml,
             Some("yaml" | "yml") => Format::Yaml,
@@ -648,8 +697,12 @@ impl Policy {
         if persist_expired_hosts && matches!(format, Format::Toml) && !expired.is_empty() {
             // Source persists the removed names before addon/list processing or
             // validation. A later rejected candidate does not undo this write.
-            expiry::persist_expired_hosts(path, &expired)
+            let replacement_time = expiry::persist_expired_hosts(path, &expired, Some(&source))
                 .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
+            if let (Some(replacement_time), Some(times)) = (replacement_time, times.as_deref_mut())
+            {
+                times.record_own_expiry_write(replacement_time);
+            }
         }
         // Existing loader merges sibling addons.yaml defaults before compilation.
         let addons = path.with_file_name("addons.yaml");

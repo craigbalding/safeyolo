@@ -10,10 +10,16 @@ use super::{
 };
 
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(super) struct PolicyFileTimes {
+pub(crate) struct PolicyFileTimes {
     baseline: f64,
     addons: f64,
     lists: f64,
+}
+
+impl PolicyFileTimes {
+    pub(super) fn record_own_expiry_write(&mut self, baseline: f64) {
+        self.baseline = baseline;
+    }
 }
 
 impl Policy {
@@ -35,14 +41,14 @@ impl Policy {
         Ok(changed || lists > previous.lists)
     }
 
-    /// Runtime calls this only after successful candidate compilation, before
-    /// publication. Failed observation leaves all current observations intact.
-    pub(crate) fn observe_baseline_files(&mut self, previous: Option<&Policy>) -> Result<()> {
-        let Some(path) = &self.baseline_path else {
-            return Ok(());
-        };
+    /// Capture the watermark before reading source content. A later write must
+    /// remain visible after this candidate is published.
+    pub(crate) fn capture_baseline_files(
+        path: &Path,
+        previous: Option<&Policy>,
+    ) -> Result<PolicyFileTimes> {
         let prior = previous
-            .filter(|previous| previous.baseline_path.as_ref() == Some(path))
+            .filter(|previous| previous.baseline_path.as_deref() == Some(path))
             .and_then(|previous| previous.file_times)
             .unwrap_or_default();
         let baseline = modified(path)?;
@@ -54,11 +60,24 @@ impl Policy {
             prior.addons
         };
         let lists = lists_max_mtime(path)?;
-        self.file_times = Some(PolicyFileTimes {
+        Ok(PolicyFileTimes {
             baseline,
             addons,
             lists,
-        });
+        })
+    }
+
+    pub(crate) fn adopt_baseline_files(&mut self, times: PolicyFileTimes) {
+        self.file_times = Some(times);
+    }
+
+    /// Post-compile observation is still used by startup after legacy grant
+    /// normalization and by the source watcher oracle.
+    pub(crate) fn observe_baseline_files(&mut self, previous: Option<&Policy>) -> Result<()> {
+        let Some(path) = &self.baseline_path else {
+            return Ok(());
+        };
+        self.file_times = Some(Self::capture_baseline_files(path, previous)?);
         Ok(())
     }
 }
@@ -95,7 +114,7 @@ fn modified(path: &Path) -> Result<f64> {
         .map_err(read_error)
 }
 
-fn mtime(metadata: &fs::Metadata) -> f64 {
+pub(super) fn mtime(metadata: &fs::Metadata) -> f64 {
     // Compare floating st_mtime, not the catalog's exact nanoseconds/size key.
     metadata.mtime() as f64 + metadata.mtime_nsec() as f64 * 1e-9
 }

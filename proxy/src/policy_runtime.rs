@@ -17,10 +17,21 @@ pub(crate) fn load(
     previous: Option<&Policy>,
     writer: &Writer,
 ) -> Result<Policy, Error> {
-    let result = match previous {
-        Some(policy) => policy.reload_baseline_at(path, registry, policy::current_time_ms(), true),
-        None => Policy::load_baseline_at(path, registry, policy::current_time_ms(), true),
-    };
+    let (mut observed, early_observation_error) =
+        match Policy::capture_baseline_files(path, previous) {
+            Ok(times) => (times, None),
+            // Still run the source loader so a missing or invalid baseline retains
+            // its established error stage and audit event. No candidate with a
+            // failed early observation can be published.
+            Err(error) => (Default::default(), Some(error)),
+        };
+    let result = Policy::load_runtime_baseline_at(
+        path,
+        registry,
+        policy::current_time_ms(),
+        previous,
+        &mut observed,
+    );
     let mut policy = result.map_err(|failure| {
         if writer.emit(rejected(&failure)).is_err() {
             evidence_failure("rejected");
@@ -28,16 +39,23 @@ pub(crate) fn load(
         // Evidence failure must not replace the rejected configuration's cause.
         Box::new(failure.error) as Error
     })?;
-    // Observe after compilation but before the candidate can be published.
-    // Source can partially publish before this I/O fails; retain one complete
-    // native policy and its accepted watch timestamps instead.
-    policy.observe_baseline_files(previous).map_err(|error| {
-        if writer.emit(failed(&error.message)).is_err() {
-            evidence_failure("rejected");
-        }
-        Box::new(error) as Error
-    })?;
+    if let Some(error) = early_observation_error {
+        return Err(observation_error(writer, error));
+    }
+    // Retain the late validation/error boundary, then use the earlier source
+    // watermark. A write during compilation must remain visible to the watcher.
+    policy
+        .observe_baseline_files(previous)
+        .map_err(|error| observation_error(writer, error))?;
+    policy.adopt_baseline_files(observed);
     Ok(policy)
+}
+
+fn observation_error(writer: &Writer, error: policy::PolicyError) -> Error {
+    if writer.emit(failed(&error.message)).is_err() {
+        evidence_failure("rejected");
+    }
+    Box::new(error)
 }
 
 pub(crate) fn accepted(policy: Option<&Policy>, writer: &Writer) {
@@ -105,7 +123,40 @@ fn evidence_failure(outcome: &str) {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("policy.toml");
+        let original = "version = '2.0'\n[hosts]\n'expired.invalid'={egress='deny',expires=2001-01-01T00:00:00Z}\n";
+        std::fs::write(&path, original).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1000)),
+            )
+            .unwrap();
+        let changed = format!("{original}'new.invalid'={{egress='allow'}}\n");
+        let changed_path = path.clone();
+        policy::after_next_baseline_read(move || std::fs::write(changed_path, changed).unwrap());
+        let writer = Writer::new(directory.path().join("audit.jsonl"), Default::default());
+        let candidate = load(&path, None, None, &writer).unwrap();
+        assert!(
+            candidate.baseline().unwrap().unwrap()["hosts"]
+                .get("new.invalid")
+                .is_none()
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("new.invalid")
+        );
+        assert!(candidate.baseline_files_changed().unwrap());
+        assert!(writer.shutdown(Duration::from_secs(5)).unwrap());
+    }
 
     #[test]
     fn post_compile_observation_failure_keeps_prior_policy_and_reports_processing_error() {

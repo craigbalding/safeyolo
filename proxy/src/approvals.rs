@@ -580,6 +580,15 @@ pub(crate) struct SaveError {
 }
 
 pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> {
+    save_policy_with_metadata(path, source).map(|_| ())
+}
+
+/// Return the written file's metadata before rename, so a caller can identify
+/// its own replacement even if another writer replaces the path immediately.
+pub(crate) fn save_policy_with_metadata(
+    path: &Path,
+    source: &str,
+) -> std::result::Result<std::fs::Metadata, SaveError> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -587,7 +596,7 @@ pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), 
     let temporary =
         TemporaryPolicy(parent.join(format!(".policy-{}.toml", uuid::Uuid::new_v4().simple())));
     let mut committed = false;
-    let result = (|| -> std::io::Result<()> {
+    let result = (|| -> std::io::Result<std::fs::Metadata> {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -595,10 +604,12 @@ pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), 
             .open(&temporary.0)?;
         file.write_all(source.as_bytes())?;
         file.sync_all()?;
+        let written = file.metadata()?;
         drop(file);
         std::fs::rename(&temporary.0, path)?;
         committed = true;
-        File::open(parent)?.sync_all()
+        File::open(parent)?.sync_all()?;
+        Ok(written)
     })();
     result.map_err(|error| SaveError { error, committed })
 }

@@ -36,7 +36,7 @@ description = "keep the agent"
 inline = { hosts = { "inline.invalid" = { egress = "allow" }, "retained.invalid" = { egress = "deny" } } }
 "#;
     fs::write(&path, source).unwrap();
-    persist_expired_hosts(&path, &entries()).unwrap();
+    persist_expired_hosts(&path, &entries(), None).unwrap();
     let saved = fs::read_to_string(&path).unwrap();
     assert!(saved.starts_with("# owned policy comment\n"));
     assert!(saved.contains("# keep this comment"));
@@ -80,7 +80,7 @@ fn absent_names_do_not_replace_or_reformat_the_document() {
     fs::write(&path, source).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
     let before = fs::metadata(&path).unwrap();
-    persist_expired_hosts(&path, &entries()).unwrap();
+    persist_expired_hosts(&path, &entries(), None).unwrap();
     let after = fs::metadata(&path).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), source);
     assert_eq!(after.ino(), before.ino());
@@ -92,8 +92,8 @@ fn absent_names_do_not_replace_or_reformat_the_document() {
 fn read_io_is_contained_but_decoding_and_parse_failures_propagate() {
     let directory = tempfile::tempdir().unwrap();
     let missing = directory.path().join("missing.toml");
-    persist_expired_hosts(&missing, &entries()).unwrap();
-    persist_expired_hosts(directory.path(), &entries()).unwrap();
+    persist_expired_hosts(&missing, &entries(), None).unwrap();
+    persist_expired_hosts(directory.path(), &entries(), None).unwrap();
     assert!(!missing.exists());
     let invalid = directory.path().join("invalid.toml");
     for (bytes, message) in [
@@ -101,7 +101,7 @@ fn read_io_is_contained_but_decoding_and_parse_failures_propagate() {
         (b"\xff".as_slice(), "policy expiry TOML is not UTF-8"),
     ] {
         fs::write(&invalid, bytes).unwrap();
-        let error = persist_expired_hosts(&invalid, &entries()).unwrap_err();
+        let error = persist_expired_hosts(&invalid, &entries(), None).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Invalid);
         assert_eq!(error.message, message);
         assert_eq!(fs::read(&invalid).unwrap(), bytes);
@@ -117,7 +117,7 @@ fn configured_symlink_is_replaced_and_its_target_is_unchanged() {
     let source = "[hosts]\n'remove.invalid'={egress='allow'}\n";
     fs::write(&target, source).unwrap();
     symlink(&target, &path).unwrap();
-    persist_expired_hosts(&path, &entries()).unwrap();
+    persist_expired_hosts(&path, &entries(), None).unwrap();
     assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
     assert_eq!(fs::read_to_string(&target).unwrap(), source);
     assert!(
