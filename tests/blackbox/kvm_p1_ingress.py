@@ -16,7 +16,7 @@ from pathlib import Path
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _sha256
 
-FROZEN_R = "d229907079695cb464e81273f38d46c42522f57d"
+FROZEN_R = "0af5c7e22d5e8a45fc321e24eab8355414358f10"
 
 
 def runsc_identity(config_dir: Path, agent: str, listener: Path) -> dict:

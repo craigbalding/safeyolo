@@ -705,11 +705,14 @@ arbitrary concurrency, out-of-memory behavior, non-Linux hosts, WS/WSS,
 CONNECT/SSH, or the complete production chain, and they do not define a
 throughput target, service-level objective, or memory cap.
 
-### #639 pre-cutover workload result at R
+### #639 pre-cutover workload result retained for R
 
-The frozen pre-cutover source candidate is
-`d229907079695cb464e81273f38d46c42522f57d` (R). On Linux aarch64, the
-guarded Cargo release build selected `safeyolo-proxy` SHA-256
+The workload run used pre-cutover source
+`d229907079695cb464e81273f38d46c42522f57d`. The installed P1 pilot pins
+`0af5c7e22d5e8a45fc321e24eab8355414358f10` (R) after the guest build
+source path repair. Rust source and the selected #639 workload fixtures are
+unchanged across those commits. On Linux aarch64, the guarded Cargo release
+build selected `safeyolo-proxy` SHA-256
 `933b0c9368279416ecd3e92ba60260882f2a328622b787378cdae31a40d073a8`.
 The Python comparator used Python 3.12.14 from `.venv` (interpreter SHA-256
 `0f1c0fc2c82cd4d382b9a2fc6f5ced5264709e1c1195e73a5f6a27fa74c2d0ed`).
