@@ -41,7 +41,9 @@ def runsc_identity(
     return {"pid": pid, "platform": platform, "bundle": str(agent_dir), "proxy_mount": mount}
 
 
-def installed_identity(runtime: dict, install_checkout: Path) -> dict:
+def installed_identity(
+    runtime: dict, install_checkout: Path, *, frozen_revision: str = FROZEN_R
+) -> dict:
     assert runtime["status"] == "attached_ready", "installed runtime was not attached and ready"
     cli = runtime["cli"]
     candidate = runtime["candidate"]
@@ -50,7 +52,7 @@ def installed_identity(runtime: dict, install_checkout: Path) -> dict:
     assert running["authenticated_runtime_identity"]["status"] == "authenticated"
     package = Path(cli["package_location"]).resolve().parent
     stamp = json.loads((package / "_build_identity.json").read_text())
-    assert stamp["source_revision"] == FROZEN_R and stamp["state"] == "known", (
+    assert stamp["source_revision"] == frozen_revision and stamp["state"] == "known", (
         "installed CLI wheel does not carry the frozen R build identity"
     )
     packaged = (package / "bin" / "safeyolo-proxy").resolve()

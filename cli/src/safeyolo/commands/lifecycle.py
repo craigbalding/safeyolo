@@ -363,8 +363,6 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
 
     if running:
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
-        if backend == "rust":
-            raise typer.Exit(0)
         _profile_enter("coord message plane reconciliation")
         coord_outcome = _start_coord_best_effort()
         if coord_outcome == "healthy":
@@ -474,6 +472,13 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
             )
             raise typer.Exit(1)
 
+    # Coord message plane (nats-server). Best-effort: a failure here
+    # marks coord degraded, it does NOT block the proxy from being
+    # usable. `safeyolo status` and `safeyolo doctor` surface the
+    # degraded state so the operator can investigate.
+    _profile_enter("coord message plane (nats-server) start")
+    _start_coord_best_effort()
+
     if backend == "rust":
         _profile_enter("render startup result")
         console.print(
@@ -485,13 +490,6 @@ def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
             )
         )
         return
-
-    # Coord message plane (nats-server). Best-effort: a failure here
-    # marks coord degraded, it does NOT block the proxy from being
-    # usable. `safeyolo status` and `safeyolo doctor` surface the
-    # degraded state so the operator can investigate.
-    _profile_enter("coord message plane (nats-server) start")
-    _start_coord_best_effort()
 
     # Show connection info
     _profile_enter("render startup result")
@@ -540,6 +538,7 @@ def stop(  # DOC: cli/README.md
 
     if not is_proxy_running():
         # Also reap a dead remain-on-exit traffic pane left by a failed start.
+        _stop_coord_best_effort()
         stop_proxy()
         console.print("[yellow]SafeYolo proxy is not running.[/yellow]")
         raise typer.Exit(0)
@@ -689,27 +688,25 @@ def status() -> None:
             table.add_row("Admin Port", "unavailable until ready")
         else:
             table.add_row("Admin Port", f"{native.admin_port} (configured; not ready)")
-        console.print(table)
-        return
-
-    table.add_row("Proxy Port", str(config["proxy"]["port"]))
-    table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
-    web_tailnet = _web_tailnet_runtime(config)
-    if web_tailnet.get("enabled"):
-        state = str(web_tailnet.get("state", "unknown"))
-        style = "green" if state == "healthy" else "yellow"
-        value = f"[{style}]{state}[/{style}]"
-        if web_tailnet.get("url"):
-            value += f" · {web_tailnet['url']}"
-        table.add_row("WebMITM Tailnet", value)
     else:
-        table.add_row("WebMITM Tailnet", "disabled")
+        table.add_row("Proxy Port", str(config["proxy"]["port"]))
+        table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
+        web_tailnet = _web_tailnet_runtime(config)
+        if web_tailnet.get("enabled"):
+            state = str(web_tailnet.get("state", "unknown"))
+            style = "green" if state == "healthy" else "yellow"
+            value = f"[{style}]{state}[/{style}]"
+            if web_tailnet.get("url"):
+                value += f" · {web_tailnet['url']}"
+            table.add_row("WebMITM Tailnet", value)
+        else:
+            table.add_row("WebMITM Tailnet", "disabled")
 
-    # Guest images
-    if check_guest_images():
-        table.add_row("Guest Images", "[green]available[/green]")
-    else:
-        table.add_row("Guest Images", "[yellow]missing[/yellow]")
+        # Guest images
+        if check_guest_images():
+            table.add_row("Guest Images", "[green]available[/green]")
+        else:
+            table.add_row("Guest Images", "[yellow]missing[/yellow]")
 
     # Coord message plane. Degraded / not-started here means the coord
     # API will 503; the proxy stays fine. See `safeyolo doctor` for
@@ -741,6 +738,10 @@ def status() -> None:
                 "[yellow]not running[/yellow]  "
                 "[dim](coord API will 503; run `safeyolo doctor`)[/dim]",
             )
+
+    if native is not None:
+        console.print(table)
+        return
 
     # Host firewall row removed -- egress isolation is structural (agent
     # sandbox has no external interface; the only path out is a per-agent

@@ -19,7 +19,7 @@ from pathlib import Path
 
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _agent_map, _sha256
-from kvm_p1_ingress import FROZEN_R, installed_identity, runsc_identity
+from kvm_p1_ingress import installed_identity, runsc_identity
 from p2_installed_linux import control
 from websockets.sync.client import connect
 
@@ -32,6 +32,7 @@ from safeyolo.core.operator_event_server import OperatorEventServer
 from safeyolo.operator_approvals import approve
 from safeyolo.traffic_inspector import TrafficInspector
 
+FROZEN_R = "729b48abd2920c424e6513ef0c2eaa6a1f306299"
 ROOM = "p3-owned-room"
 PEER = "bbpeer"
 
@@ -290,7 +291,7 @@ def main() -> None:
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
     assert revision == FROZEN_R, f"pilot installed {revision}, expected frozen R"
     runtime = json.loads(args.runtime.read_text())
-    identity = installed_identity(runtime, install_checkout)
+    identity = installed_identity(runtime, install_checkout, frozen_revision=FROZEN_R)
     native = json.loads((config_dir / "data/native.json").read_text())
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
