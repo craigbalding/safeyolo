@@ -2,8 +2,10 @@
 """Run the #638 Linux installed Python -> Rust -> Python -> Rust transition.
 
 Run this with the selected old Python wheel's interpreter. The two CLI paths
-must be independently installed wheels. All state and test endpoints are
-disposable; the script prints a bounded, secret-free observation.
+must be independently installed wheels. Set SAFEYOLO_PDP_DIR to the pdp/
+directory in the clean old-source checkout: that checkpoint's wheel omits the
+top-level pdp package needed by its proxy process. All state and test
+endpoints are disposable; the script prints a bounded, secret-free observation.
 """
 
 from __future__ import annotations

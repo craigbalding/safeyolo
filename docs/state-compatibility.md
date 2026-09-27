@@ -45,8 +45,10 @@ private keys, and raw credential material from ordinary output.
 On an isolated Linux instance, install the exact Python comparator checkpoint
 and the current candidate as separate wheels in separate Python 3.12
 environments. The candidate wheel must contain the frozen R native binary.
-Keep both installed command paths available and use one disposable
-`SAFEYOLO_CONFIG_DIR` for the transition. The procedure is:
+Keep both installed command paths and the clean comparator source checkout
+available. The comparator wheel omits the top-level `pdp` package that its
+proxy imports; set `SAFEYOLO_PDP_DIR` to that checkout's `pdp/` directory.
+Use one disposable `SAFEYOLO_CONFIG_DIR` for the transition. The procedure is:
 
 1. Start the old installed CLI with `proxy.backend: python`. Create the policy,
    vault, certificate authority (CA), catalog, and external coordination state.
@@ -67,10 +69,11 @@ Keep both installed command paths available and use one disposable
    control. Close the collaboration and stop the final native process.
 
 `tests/blackbox/installed_state_transition.py` runs these steps against a new
-disposable state directory. From the repository root, set `OLD_PYTHON` and
-`OLD_CLI` to the interpreter and CLI from the exact old wheel, `RUST_CLI` to the
+disposable state directory. From the repository root, set `OLD_SOURCE` to a
+clean checkout at `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`, `OLD_PYTHON`
+and `OLD_CLI` to the interpreter and CLI from its wheel, `RUST_CLI` to the
 candidate wheel's CLI, `RUST_REVISION` to that wheel's full source commit, and
-`STATE_PARENT` to a writable directory outside the checkout. The script
+`STATE_PARENT` to a writable directory outside both checkouts. The script
 checks the installed package revisions and the executed native binary path.
 Compare the candidate binary with the frozen R binary separately when building
 the wheel. The Linux ARM64 run at R used binary SHA-256
@@ -78,7 +81,8 @@ the wheel. The Linux ARM64 run at R used binary SHA-256
 in both the frozen R and candidate wheels.
 
 ```sh
-"$OLD_PYTHON" tests/blackbox/installed_state_transition.py \
+SAFEYOLO_PDP_DIR="$OLD_SOURCE/pdp" \
+  "$OLD_PYTHON" tests/blackbox/installed_state_transition.py \
   --old-cli "$OLD_CLI" --rust-cli "$RUST_CLI" \
   --rust-revision "$RUST_REVISION" --state-parent "$STATE_PARENT"
 ```
