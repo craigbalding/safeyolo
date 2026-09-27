@@ -667,7 +667,7 @@ impl Policy {
         registry: Option<Arc<crate::services::Registry>>,
         now_ms: f64,
         persist_expired_hosts: bool,
-        mut times: Option<&mut watch::PolicyFileTimes>,
+        times: Option<&mut watch::PolicyFileTimes>,
     ) -> std::result::Result<Self, PolicyLoadError> {
         let source = std::fs::read_to_string(path).map_err(|error| {
             load_error(
@@ -699,8 +699,7 @@ impl Policy {
             // validation. A later rejected candidate does not undo this write.
             let replacement_time = expiry::persist_expired_hosts(path, &expired, Some(&source))
                 .map_err(|error| load_error(PolicyLoadStage::Prepare, error))?;
-            if let (Some(replacement_time), Some(times)) = (replacement_time, times.as_deref_mut())
-            {
+            if let (Some(replacement_time), Some(times)) = (replacement_time, times) {
                 times.record_own_expiry_write(replacement_time);
             }
         }
