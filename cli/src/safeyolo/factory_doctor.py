@@ -24,7 +24,7 @@ from .platform import AgentPlatform, get_platform
 DoctorStatus = Literal["PASS", "WARN", "FAIL"]
 _AGENT_ID_RE = re.compile(r"ag-[0-9a-f]{32}")
 _SIMPLE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
-_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "d66abe31f7f7cf011109d5e757a27f81173ff45f5da57c800dde0ee26adceafb"
+_BACKLOG_COORDINATOR_CONTRACT_SHA256 = "d3259ba929014ef100224164d971dac17de5c3b6a2829a3c71b464d9e447661b"
 _SUPERVISOR_LIMITS = {
     "wait_seconds": (1, 300, 300),
     "page_limit": (1, 16, 16),
