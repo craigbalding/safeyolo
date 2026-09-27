@@ -188,7 +188,10 @@ fn seven_source_workflows_match_disk_effects_loads_and_accepted_policy() {
                 .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
                 .collect();
             remaining.sort();
-            assert_eq!(json!(remaining), expected["remaining_files"], "{name}");
+            let expected_files = expected
+                .get("native_remaining_files")
+                .unwrap_or(&expected["remaining_files"]);
+            assert_eq!(&json!(remaining), expected_files, "{name}");
             let policy = policy.as_ref().unwrap();
             let observed = &expected["policy"];
             let times = policy.file_times.unwrap();

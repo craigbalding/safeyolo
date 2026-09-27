@@ -183,6 +183,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         }
       ],
@@ -791,6 +795,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         }
       ],
@@ -1230,6 +1238,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         }
       ],
@@ -1389,7 +1401,12 @@
             "mode": "0o640",
             "mtime_ns": 1000000000000,
             "is_symlink": false
-          }
+          },
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml",
+            "target.toml"
+          ]
         }
       ],
       "actual_thread_started": false
@@ -1546,6 +1563,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         },
         {
@@ -1678,6 +1699,10 @@
             }
           },
           "remaining_files": [
+            "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
             "policy.toml"
           ]
         }
@@ -1841,6 +1866,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         },
         {
@@ -1953,6 +1982,10 @@
             }
           },
           "remaining_files": [
+            "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
             "policy.toml"
           ]
         }
@@ -2295,6 +2328,10 @@
           },
           "remaining_files": [
             "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
+            "policy.toml"
           ]
         },
         {
@@ -2337,6 +2374,10 @@
             }
           },
           "remaining_files": [
+            "policy.toml"
+          ],
+          "native_remaining_files": [
+            ".policy.toml.lock",
             "policy.toml"
           ]
         }
