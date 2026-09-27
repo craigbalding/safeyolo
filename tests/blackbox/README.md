@@ -321,10 +321,9 @@ runtime artifacts.
 
 Selected Rust runs set native policy mode for every migration fixture.  Each
 fixture writes `native-policy-provenance.json`, which records the policy file
-and confirms that no temporary Python policy adapter was started.  Direct
-pytest invocations retain the temporary adapter when a test does not request
-`native_policy=True`; those runs are development comparisons and are not
-release acceptance.
+and confirms that no temporary Python policy adapter was started. Direct Rust
+pytest invocations use the same native policy path. Historical Python runs
+require an explicit pinned source checkout.
 
 ### Sinkhole observation fidelity
 

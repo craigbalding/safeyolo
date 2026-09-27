@@ -52,9 +52,9 @@ sha256 = "9c7bd81e46077cdda2adef96d3ddabfe72e6f7bdc8f60a78e0ddf80ca1687b2d"
 
 [[factory_acceptance]]
 id = "FACTORY-AGENT-ROOM-BOUNDARY"
-description = "A retained Relay-to-Forge-to-Lens stream survives restart, accepts new events, and keeps a receive-only observer from sending."
-node = "tests/test_agent_api_coord.py::test_nested_factory_agent_rooms_survive_restart_and_reject_observer_send"
-sha256 = "1644f0d1d69d372bc1470f13262b3fa12f97b53d95a918aee2761a2bcf4672d4"
+description = "A retained Relay-to-Forge-to-Lens Coord stream survives restart, accepts new events, and keeps a receive-only observer from sending."
+node = "cli/tests/test_coord_attention.py::test_factory_agent_rooms_survive_restart_and_reject_observer_send"
+sha256 = "862c639338caf9ba7345c803096396247496e42175d976babf9c504f5a9557fe"
 
 [[factory_acceptance]]
 id = "FACTORY-HANDOFF-AUTHORITY"
@@ -110,59 +110,5 @@ description = "Restart does not present the same factory proposal revision again
 node = "cli/tests/test_coord_factory_proposals.py::test_restart_does_not_represent_same_revision"
 sha256 = "947b089ebe43a3b70174f144fa79a7beab149fa8fdd3a67dab96329973ac8b71"
 
-[boundary."tests/test_network_guard.py"]
-subjects = ["NetworkGuard"]
-
-[boundary."tests/test_contract_enforcement.py"]
-subjects = ["ServiceGateway"]
-
-[boundary."tests/test_service_gateway.py"]
-subjects = ["ServiceGateway"]
-
-[boundary."tests/test_admin_shield.py"]
-subjects = ["AdminShield"]
-
-[boundary."tests/test_operator_provenance.py"]
-subjects = ["OperatorProvenance"]
-
-[boundary."tests/test_probe_sink.py"]
-subjects = ["ProbeSink"]
-
-[boundary."tests/test_pattern_scanner.py"]
-subjects = ["PatternScanner"]
-
-[boundary."tests/test_circuit_breaker.py"]
-subjects = ["CircuitBreaker"]
-
-[boundary."tests/test_transport_guard.py"]
-subjects = ["AgentAPIRequestGuard", "TransportGuard"]
-
-[boundary."tests/test_loop_guard.py"]
-subjects = ["LoopGuard"]
-
-[boundary."tests/test_credential_guard.py"]
-subjects = ["CredentialGuard", "guard"]
-
-[boundary."tests/test_service_discovery_file.py"]
-subjects = ["ServiceDiscovery", "d"]
-
-[boundary."tests/test_agent_identity_resolution.py"]
-subjects = ["AgentAPI", "RequestIdGenerator", "ServiceDiscovery", "ServiceGateway"]
-
-[boundary."tests/test_base.py"]
-subjects = ["SecurityAddon"]
-
-[boundary."tests/test_sse_streaming.py"]
-subjects = ["SSEStreaming"]
-
-[boundary."tests/test_request_logger.py"]
-subjects = ["RequestLogger"]
-
-[boundary."tests/test_flow_recorder.py"]
-subjects = ["FlowRecorder"]
-
-[boundary."tests/test_agent_api.py"]
-subjects = ["AgentAPI"]
-
-[boundary."tests/test_admin_api.py"]
-subjects = ["AdminRequestHandler", "AdminAPI"]
+# Python addon boundary declarations were retired with the removed runtime.
+# Native boundary checks live in proxy/tests and the selected blackbox lanes.

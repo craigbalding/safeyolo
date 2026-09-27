@@ -183,6 +183,10 @@ is meant to find.
 The two experiment rounds changed the assurance design, independently of the
 individual defects they happened to expose:
 
+This table records pre-cutover learning. The Python experiment runner and its
+scheduled workflow are retired in the Rust cutover; rows that describe them
+do not claim current native coverage.
+
 | Experimental learning | Production control |
 |---|---|
 | Serialized shape can agree while authorization differs | Focused tests compare active and fresh-process decisions |
@@ -192,15 +196,16 @@ individual defects they happened to expose:
 | One broken operation can halt unrelated discovery | Generated sequences and runner groups remain split by mutation family |
 | Failure meaning changes at rename | Faults are named by commit stage and have old/new visibility oracles |
 | Child death is not storage power loss | Process death and abrupt disposable-VM death are reported as different evidence |
-| Broad generation discovers; small examples prevent recurrence | Focused regressions run on pull requests and bounded Hypothesis groups run nightly |
+| Broad generation discovers; small examples prevent recurrence | Focused regressions remain; bounded native generated sequences are an open release assurance gap |
 | A source mutation may be behaviorally inert | Holdouts receive credit only after an independent probe proves an effective change |
 | Runtime guesses are poor enrollment criteria | Reports retain measured distributions; timeouts are deadlock guards only |
 
-The production engineering entrypoint is `uv run python -m tools.policy_chaos`.
-Its default mode uses generated temporary policies. Its fault mode requires a
-disposable-VM sentinel plus two explicit opt-ins, and exposes a prepare/recover
-protocol so an external KVM VPS controller can perform abrupt guest power-off.
-The repository tool does not provision, stop, or destroy outer VMs.
+The historical engineering entrypoint `uv run python -m tools.policy_chaos`
+is available only from the pinned pre-cutover checkout
+`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Its temporary-policy and
+guarded disposable-VM fault results describe the Python implementation.
+The current native release still needs generated policy transaction and
+failure-stage checks before those assurance claims can be accepted.
 
 ## Review trigger
 

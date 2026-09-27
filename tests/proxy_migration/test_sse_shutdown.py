@@ -131,8 +131,9 @@ def test_early_sse_disconnect_exits_and_restarts(proxy_backend, tmp_path):
 
         restart_dir = directory / "restart"
         restart_dir.mkdir()
-        environment = python_proxy_environment(
-            python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+        environment = (
+            python_proxy_environment(python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE"))
+            if proxy_backend == "python" else os.environ.copy()
         )
         environment["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         with child_process(proxy.process.args, restart_dir, environment) as process:

@@ -155,7 +155,7 @@ def selected_process_environment(args):
     """Bind each capture to an explicit implementation and policy path."""
     names = (
         "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PYTHON_EXECUTABLE",
-        "SAFEYOLO_RUST_PROXY", "SAFEYOLO_RUST_NATIVE_ONLY",
+        "SAFEYOLO_RUST_PROXY",
     )
     previous = {name: os.environ.get(name) for name in names}
     source = Path(args.python_source).expanduser().resolve()
@@ -166,13 +166,10 @@ def selected_process_environment(args):
         # the system interpreter and silently drop the locked dependencies.
         os.environ["SAFEYOLO_PYTHON_EXECUTABLE"] = str(Path(args.python_executable).expanduser())
         os.environ.pop("SAFEYOLO_RUST_PROXY", None)
-        os.environ.pop("SAFEYOLO_RUST_NATIVE_ONLY", None)
     else:
         if binary is None or not binary.is_file():
             raise ValueError("--rust-binary must identify an existing native proxy executable")
         os.environ["SAFEYOLO_RUST_PROXY"] = str(binary)
-        # A resource comparison must not include a Python policy bridge.
-        os.environ["SAFEYOLO_RUST_NATIVE_ONLY"] = "1"
     try:
         yield
     finally:

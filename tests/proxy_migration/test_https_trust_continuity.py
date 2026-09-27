@@ -32,6 +32,11 @@ CA_FILES = (
     "mitmproxy-ca.pem", "mitmproxy-ca-cert.pem", "mitmproxy-ca-cert.cer",
     "mitmproxy-ca.p12", "mitmproxy-ca-cert.p12", "mitmproxy-dhparam.pem",
 )
+CA_KEY_USAGE = x509.KeyUsage(
+    digital_signature=True, content_commitment=False, key_encipherment=False,
+    data_encipherment=False, key_agreement=False, key_cert_sign=True,
+    crl_sign=True, encipher_only=None, decipher_only=None,
+)
 
 
 def _get(stream, path):
@@ -109,6 +114,9 @@ def _ca_chain(directory, label, now):
             .public_key(root_key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=2)).not_valid_after(now + timedelta(days=30))
             .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+            .add_extension(CA_KEY_USAGE, critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
             .sign(root_key, hashes.SHA256()))
     intermediate_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     intermediate_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"{label} intermediate")])
@@ -116,6 +124,9 @@ def _ca_chain(directory, label, now):
                     .public_key(intermediate_key.public_key()).serial_number(x509.random_serial_number())
                     .not_valid_before(now - timedelta(days=2)).not_valid_after(now + timedelta(days=10))
                     .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+                    .add_extension(CA_KEY_USAGE, critical=True)
+                    .add_extension(x509.SubjectKeyIdentifier.from_public_key(intermediate_key.public_key()), critical=False)
+                    .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
                     .sign(root_key, hashes.SHA256()))
     root_file = directory / f"{label}-root.pem"
     root_file.write_bytes(root.public_bytes(serialization.Encoding.PEM))
@@ -132,6 +143,7 @@ def _chain_leaf(directory, label, host, intermediate_key, intermediate, now, *, 
                    .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
                    .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
                    .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                   .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(intermediate_key.public_key()), critical=False)
                    .sign(intermediate_key, hashes.SHA256()))
     pem = directory / f"{label}.pem"
     pem.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
