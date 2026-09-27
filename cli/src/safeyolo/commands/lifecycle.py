@@ -414,7 +414,7 @@ def stop(  # DOC: cli/README.md
 def stop_all() -> None:
     """Stop SafeYolo proxy, all agents, and tear down networking."""
 
-    if prior_python_proxy_running():
+    if not is_proxy_running() and prior_python_proxy_running():
         console.print(
             "[red]A prior Python proxy is running.[/red] "
             "Stop it with the pinned prior package before using this CLI."

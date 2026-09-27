@@ -20,7 +20,6 @@ fi
 # Any NEW occurrence outside this allowlist is a real regression.
 ALLOWLIST=(
     "scripts/no-docker-host.sh"
-    "tests/test_admin_shield.py"
 )
 
 hits=$(

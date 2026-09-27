@@ -2,21 +2,73 @@
 
 import importlib.util
 import os
+import select
 import socket
+import socketserver
 import ssl
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-
-from tests.test_connect_live import proxy
 
 SOURCE = Path(__file__).resolve().parents[1] / "contrib/macos-seatbelt-agent"
 spec = importlib.util.spec_from_file_location("ssh_via_proxy", SOURCE / "ssh-via-proxy.py")
 transport = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(transport)
+
+
+class _ConnectServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class _ConnectHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.settimeout(10)
+        source = self.request.makefile("rb")
+        request = source.readline(4096)
+        while source.readline(4096) not in (b"\r\n", b""):
+            pass
+        assert request.startswith(b"CONNECT 127.0.0.1:")
+        if self.server.effect != "allow":
+            status = b"403 Forbidden" if self.server.effect == "deny" else b"428 Precondition Required"
+            self.request.sendall(
+                b"HTTP/1.1 " + status + b"\r\nX-Blocked-By: network-guard\r\n"
+                b"Content-Length: 0\r\n\r\n"
+            )
+            return
+
+        target = request.split()[1].decode("ascii")
+        host, port = target.rsplit(":", 1)
+        with socket.create_connection((host, int(port)), timeout=10) as upstream:
+            self.request.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            peers = (self.request, upstream)
+            while True:
+                readable, _, _ = select.select(peers, (), (), 10)
+                if not readable:
+                    return
+                for peer in readable:
+                    data = peer.recv(65536)
+                    if not data:
+                        return
+                    (upstream if peer is self.request else self.request).sendall(data)
+
+
+@contextmanager
+def _connect_proxy(effect):
+    server = _ConnectServer(("127.0.0.1", 0), _ConnectHandler)
+    server.effect = effect
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 @pytest.mark.parametrize("value", ["", "socks5://localhost:1080", "http://user:secret@localhost:8080"])
@@ -28,12 +80,12 @@ def test_requires_configured_http_proxy(monkeypatch, value):
 
 
 @pytest.mark.parametrize("effect,status", [("deny", "403"), ("prompt", "428")])
-def test_policy_rejection_preserves_status_and_does_not_connect(tmp_path, monkeypatch, effect, status):
+def test_connect_rejection_preserves_status_and_does_not_connect(monkeypatch, effect, status):
     with socket.socket() as server:
         server.bind(("127.0.0.1", 0))
         server.listen()
         server.settimeout(0.2)
-        with proxy(tmp_path, effect) as port:
+        with _connect_proxy(effect) as port:
             monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
             with pytest.raises(OSError, match=status) as error:
                 transport.connect("127.0.0.1", server.getsockname()[1])
@@ -44,7 +96,7 @@ def test_policy_rejection_preserves_status_and_does_not_connect(tmp_path, monkey
                 server.accept()
 
 
-def test_ssh_bytes_through_real_policy_proxy_without_tcp_override(tmp_path, monkeypatch):
+def test_ssh_bytes_through_connect_proxy_without_tcp_override(monkeypatch):
     payload = b"SSH-2.0-test-client\r\n" + bytes(range(256)) * 1024
     reply = b"SSH-2.0-test-server\r\n" + payload
     received = bytearray()
@@ -66,7 +118,7 @@ def test_ssh_bytes_through_real_policy_proxy_without_tcp_override(tmp_path, monk
 
         thread = threading.Thread(target=serve)
         thread.start()
-        with proxy(tmp_path, "allow", allowed_port=server.getsockname()[1]) as port:
+        with _connect_proxy("allow") as port:
             monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{port}")
             with transport.connect("127.0.0.1", server.getsockname()[1]) as stream:
                 stream.settimeout(10)

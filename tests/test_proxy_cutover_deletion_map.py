@@ -72,8 +72,16 @@ def _table_rows() -> list[list[str]]:
     return rows
 
 
-def _paths_from_checks(checks: str) -> list[str]:
-    return [item.strip().strip("`") for item in checks.split("<br>")]
+def _paths_from_checks(checks: str) -> list[tuple[str, bool]]:
+    paths = []
+    for item in checks.split("<br>"):
+        item = item.strip()
+        historical = item.startswith("historical: ")
+        if historical:
+            item = item.removeprefix("historical: ")
+        assert item.startswith("`") and item.endswith("`")
+        paths.append((item.strip("`"), historical))
+    return paths
 
 
 def test_ledger_covers_current_runtime_owners_and_existing_paths() -> None:
@@ -94,8 +102,9 @@ def test_ledger_covers_current_runtime_owners_and_existing_paths() -> None:
             assert path.exists(), current_path
         assert state.startswith(("removed", "retained", "updated")), row
         assert row[3] and row[4], row
-        for check in _paths_from_checks(row[4]):
-            assert (REPO_ROOT / check).exists(), (current_path, check)
+        for check, historical in _paths_from_checks(row[4]):
+            exists = (REPO_ROOT / check).exists()
+            assert exists != historical, (current_path, check)
 
 
 def test_ledger_records_native_cutover_and_explicit_package_rollback() -> None:

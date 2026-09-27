@@ -147,6 +147,21 @@ def test_stop_uses_native_process_owner(command):
     command.mocks["stop_proxy"].assert_called_once_with()
 
 
+def test_stop_all_uses_native_owner_even_with_shared_pid_marker(command, monkeypatch):
+    from safeyolo import platform
+
+    command.mocks["is_proxy_running"].return_value = True
+    command.mocks["prior_python_proxy_running"].return_value = True
+    host = SimpleNamespace(cleanup_all=lambda _agents: None, unload_firewall_rules=lambda: None)
+    monkeypatch.setattr(platform, "get_platform", lambda: host)
+
+    result = command.runner.invoke(app, ["stop", "--all"])
+
+    assert result.exit_code == 0, result.output
+    command.mocks["prior_python_proxy_running"].assert_not_called()
+    command.mocks["stop_proxy"].assert_called_once_with()
+
+
 def test_prior_python_process_requires_prior_package_for_status_and_stop(command):
     command.mocks["prior_python_proxy_running"].return_value = True
     for arguments in (["status"], ["stop"], ["stop", "--all"]):

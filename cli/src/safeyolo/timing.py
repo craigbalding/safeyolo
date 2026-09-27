@@ -2,8 +2,7 @@
 
 The public CLI enables this with ``--profile``. ``SAFEYOLO_TIMING=1`` remains
 supported for existing agent-run diagnostics. Events are appended atomically
-to a per-command JSONL artifact so the proxy child can contribute timings
-without changing synchronization or readiness behavior.
+to a per-command JSONL artifact without changing lifecycle behavior.
 """
 
 from __future__ import annotations
@@ -125,17 +124,6 @@ def enable(operation: str, *, requested: bool = True) -> Path | None:
         _checkpoint_started_ns,
     )
     return _path
-
-
-def child_environment(process: str) -> dict[str, str]:
-    """Return profile variables to merge into a child environment."""
-    if _path is None or _emitted:
-        return {}
-    return {
-        _PATH_ENV: str(_path),
-        _OPERATION_ENV: _operation,
-        _PROCESS_ENV: process,
-    }
 
 
 def enter(name: str) -> None:
