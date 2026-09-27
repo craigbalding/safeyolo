@@ -27,7 +27,7 @@ private keys, and raw credential material from ordinary output.
 
 | State family and lifetime | Source writer → reader | Native writer → reader | Format and security invariants | Existing controls and owner dependency |
 | --- | --- | --- | --- | --- |
-| Baseline policy, host/agent settings and lists (durable); task policy (process-local through current APIs) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the baseline policy document; `policy/loader.py` and `mitm_addons/policy_engine.py` read it. The Python task API registers a task in memory; a separately configured task file is a reader input. | `proxy/src/approvals.rs` and policy expiry update the locked baseline policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` publish it. Native task APIs update a process-local registry and overlay, not that file. | TOML is canonical for baseline mutations; JSON/YAML are accepted inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. A restart clears process-local task registrations. | `proxy/tests/policy.rs`, `proxy/tests/state_policy_transition.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. #638 W2's task-policy operation awaits the operator's durable-versus-process-local contract choice. |
+| Baseline policy, host/agent settings and lists (durable); task policy (process-local through current APIs) | `cli/src/safeyolo/policy/engine.py` and `policy/toml_roundtrip.py` write the baseline policy document; `policy/loader.py` and `mitm_addons/policy_engine.py` read it. The Python task API registers a task in memory; a separately configured task file is a reader input. | `proxy/src/approvals.rs` and policy expiry update the locked baseline policy file; `proxy/src/policy_runtime.rs` and `proxy/src/policy/{source,watch}.rs` publish it. Native task APIs update a process-local registry and overlay, not that file. | TOML is canonical for baseline mutations; JSON/YAML are accepted inputs where configured. Preserve comments, order, exact integers, timestamps, invalid-candidate retention, and file mode. A restart clears process-local task registrations. | `proxy/tests/policy.rs`, `proxy/tests/state_policy_transition.rs`, `policy_expiry_source.json`, `policy_watch_source.json`, `tests/proxy_migration/test_native_network_policy.py`, `test_agent_api_policy*.py`. The #638 installed transition checks the operator-selected process-local task lifetime across Rust, Python, and fresh Rust. |
 | Approvals (durable policy mutation) | `cli/src/safeyolo/policy/engine.py` approval mutation helpers write the policy TOML; policy loader and network consumers read the result. | `proxy/src/approvals.rs::save_policy` writes atomically under the existing policy lock; `policy_runtime.rs` and `policy.rs` read the accepted candidate. | Preserve scoped agent/host/port/action, expiry and rate values; failed activation leaves the previous bytes and decision active. | `proxy/tests/approvals.rs`, `proxy/tests/state_policy_transition.rs`, policy reload tests, `tests/proxy_migration/test_native_network_policy.py`. Approval writer owner supplies final consumer transition. |
 | Service definitions/catalog (durable files, watched) | `cli/src/safeyolo/services/*.yaml`, `core/service_loader.py` and service commands write/read ordered YAML definitions. | `proxy/src/services/catalog.rs` reads builtin and user directories; `proxy/src/lib.rs` publishes the accepted catalog with policy/routes/tokens. No second service writer is introduced in this issue. | YAML source order, merge/override precedence, timestamps, malformed-file retention, and empty/removal semantics remain visible. | `proxy/src/services/catalog_tests.rs`, `proxy/tests/service_catalog_source.py/.json`, gateway workflow tests. The bounded current-head `selected_python_native_python_service_catalog_roundtrip` proves Python-written synthetic definitions → native Rust catalog publication → Python readback across user override, removal and empty-directory stages, with exact YAML hashes and `0600` modes. #624 remains the native catalog/gateway writer owner; no Rust catalog writer is claimed. |
 | Service authorization, contracts, grants and bindings (durable policy records; session leases ephemeral) | `cli/src/safeyolo/mitm_addons/service_gateway.py`, `commands/services.py`, and `commands/agent.py` author and consume policy records. | `proxy/src/grants.rs`, `contracts.rs`, `admin_api/gateway.rs` and existing policy transaction helpers write/read the same policy file; process-local once reservations are intentionally ephemeral. | Keep stable grant/binding IDs, scope, revocation and consumption state; preserve unrelated TOML; do not resurrect removed access or claim exactly-once across restart. | `proxy/tests/grants.rs`, `contracts.rs`, `gateway_snapshot.rs`, `gateway_workflow.rs`, `gateway_contract_workflow.rs`. The opt-in `selected_python_native_python_native_grants_bindings_transition` uses the real Python `ServiceGateway` writer/reader and native `Store` consumers across one policy file, including legacy default normalization and rollback. The bounded `selected_python_native_python_service_authorization_rollback` drives a native injected request, restart and a Python `ServiceGateway` grant/binding rollback on the same policy. #624/#625 owners supply remaining live writers and gateway path. |
@@ -58,14 +58,20 @@ Use one disposable `SAFEYOLO_CONFIG_DIR` for the transition. The procedure is:
    candidate CLI. Read old state through native consumers. Write an approval,
    service authorization, contract binding, grant, refreshed credential,
    circuit state, flow, audit event, coordination message, and collaboration
-   state. Stop it without restoring a state backup.
+   state. Register and activate a task policy; verify that the active overlay
+   denies a scoped request without origin contact. Clear it so the remaining
+   durable controls can run. Register and activate it again before stopping
+   the process. Stop without restoring a state backup.
 3. Select `proxy.backend: python` again and start the selected old CLI. Read and
-   use the native writes. Revoke the approval, service authorization, binding,
-   and grant; refresh the credential; reset the circuit; tag the flow; and
-   reply through coordination and collaboration. Stop it cleanly.
+   use the native writes. Verify that the native task registration and overlay
+   are absent. Register a task through the old admin API. Revoke the approval,
+   service authorization, binding, and grant; refresh the credential; reset
+   the circuit; tag the flow; and reply through coordination and collaboration.
+   Stop it cleanly.
 4. Select `proxy.backend: rust` and start the same candidate wheel again.
-   Verify the old revocations, refreshed credential, recovered circuit, flow
-   tag, retained messages, CA and key continuity, and an unrelated permitted
+   Verify that the old process task registration and overlay are absent. Verify
+   the old revocations, refreshed credential, recovered circuit, flow tag,
+   retained messages, CA and key continuity, and an unrelated permitted
    control. Close the collaboration and stop the final native process.
 
 `tests/blackbox/installed_state_transition.py` runs these steps against a new
@@ -94,11 +100,16 @@ existing component controls below cover malformed state, failed transactions,
 large grant values, and service-catalog empty semantics; the installed run
 exercises their supported cross-version path once.
 
-The task-policy API still has a process-local registry in both implementations.
-Its durable-versus-process-local requirement awaits the operator's #638 choice;
-the installed run does not assert a durable task-policy round trip. The macOS
-installed return remains dependent on #637's host prerequisite. Provider lease
-observations remain provider-owned: the old reader sees its unchanged snapshot,
+The operator selected process-local task policy for #638 W2. The installed run
+checks that native registration and activation affect only the current Rust
+process. The selected Python checkpoint has an in-memory admin `PUT` and `GET`
+for task registration. Its admin API has no task activation route, and its
+installed network sensor does not supply a task ID to policy evaluation. The
+run checks Python registration and the absence of native overlay effects; it
+does not claim a shared task activation operation. Fresh Rust starts with no
+registration from either prior process. The macOS installed return remains
+dependent on #637's host prerequisite. Provider lease observations remain
+provider-owned: the old reader sees its unchanged snapshot,
 while native preserves the resource advertisement and reports lease state
 `unknown`. Neither process persists an active wait or claims its transient
 state survives replacement. Trace and metrics counters also reset with their

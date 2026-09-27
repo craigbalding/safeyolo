@@ -37,6 +37,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 OLD_REVISION = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
+TASK_ID = "r638-process-local"
+TASK_POLICY = {"permissions": [{"action": "network:request", "resource": "127.0.0.2/*",
+                                 "effect": "deny", "condition": {"agent": "alice"}}]}
 
 
 def check(value: bool, message: str) -> None:
@@ -685,6 +688,44 @@ print(json.dumps(asyncio.run(exercise())))
         wrong_port_status, _ = request(alice, "GET",
                                        f"http://127.0.0.2:{origin.server_port + 1}/wrong-port")
         check(wrong_port_status in (403, 428), "scoped approval leaked to another port")
+        task_target = f"http://127.0.0.2:{origin.server_port}/task-lifetime"
+        task_headers = {"X-SafeYolo-Test-Context": "run=owned;agent=alice;test=R638"}
+        policy_before_task = sha(root / "policy.toml")
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 404, "native task registry was not initially empty")
+        task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                        {"policy": TASK_POLICY})
+        check(task_status == 200 and registered.get("permission_count") == 1,
+              f"native task registration failed: {task_status} {registered}")
+        task_status, saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 200 and saved_task.get("policy") == TASK_POLICY,
+              "native task registry did not retain the registered document")
+        registered_status, registered_body = request(alice, "GET", task_target,
+                                                     headers=task_headers)
+        check(registered_status == 200 and registered_body == BODY,
+              f"native task registration changed enforcement before activation: "
+              f"{registered_status} {registered_body[:180]!r}")
+        task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(task_status == 200 and activated.get("permission_count") == 1,
+              f"native task activation failed: {task_status} {activated}")
+        before = len(origin.seen)
+        active_task_status, active_task_body = request(alice, "GET", task_target,
+                                                       headers=task_headers)
+        check(active_task_status == 403 and len(origin.seen) == before,
+              f"native active task overlay did not deny before origin contact: "
+              f"{active_task_status} {active_task_body[:180]!r}, "
+              f"origin_delta={len(origin.seen) - before}")
+        task_status, cleared = admin(root, "DELETE", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 200 and cleared.get("status") == "cleared",
+              f"native task clear failed: {task_status} {cleared}")
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 404, "native task clear retained its registration")
+        cleared_task_status, cleared_task_body = request(alice, "GET", task_target,
+                                                         headers=task_headers)
+        check(cleared_task_status == 200 and cleared_task_body == BODY,
+              "native task clear did not restore scoped host approval")
+        check(sha(root / "policy.toml") == policy_before_task,
+              "native task registration, activation, or clear changed durable policy")
         old_python(args.old_cli, env, """
 import json,sys
 from pathlib import Path
@@ -698,7 +739,10 @@ print(json.dumps({'test_context':'removed_after_flow'}))
                           "approval": approved, "allowed_status": allowed_status,
                           "allowed_body": summary_value(allowed_bytes),
                           "bob_status": bob_status, "wrong_port_status": wrong_port_status,
-                          "origin_count": len(origin.seen)}), flush=True)
+                          "origin_count": len(origin.seen),
+                          "task_registered_status": registered_status,
+                          "task_active_status": active_task_status,
+                          "task_cleared_status": cleared_task_status}), flush=True)
         status, authorization = admin(root, "POST", "/admin/agents/alice/services",
                                       {"service": "contract", "capability": "writer",
                                        "credential": "contract-secret"})
@@ -795,6 +839,17 @@ print(json.dumps({'test_context':'removed_after_flow'}))
             alice, "GET", f"http://127.0.0.2:{origin.server_port}/circuit-blocked")
         check(blocked_status == 503 and len(origin.seen) == before,
               "native open circuit reached origin")
+        # Leave an active registration in the native process at replacement.
+        policy_before_task = sha(root / "policy.toml")
+        task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                        {"policy": TASK_POLICY})
+        check(task_status == 200 and registered.get("permission_count") == 1,
+              f"native task re-registration failed: {task_status} {registered}")
+        task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(task_status == 200 and activated.get("permission_count") == 1,
+              f"native task reactivation failed: {task_status} {activated}")
+        check(sha(root / "policy.toml") == policy_before_task,
+              "native task reactivation changed durable policy")
         stop(active, root, env)
         check((root / "data/circuit_breaker_state.json").is_file(),
               "native open circuit was not persisted on close")
@@ -821,6 +876,29 @@ print(json.dumps({'test_context':'removed_after_flow'}))
             alice, "GET", f"http://127.0.0.2:{origin.server_port}/old-after-reset")
         check(old_recovered_status == 200 and old_recovered == BODY,
               "old Python circuit reset did not restore origin use")
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
+                               backend="python")
+        check(task_status == 404, "old Python inherited the native task registration")
+        old_task_status, old_task_body = request(alice, "GET", task_target)
+        check(old_task_status == 200 and old_task_body == BODY,
+              "old Python inherited the native active task overlay")
+        policy_before_old_task = sha(root / "policy.toml")
+        task_status, old_registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                            {"policy": TASK_POLICY}, backend="python")
+        check(task_status == 200 and old_registered.get("permission_count") == 1,
+              f"old Python task registration failed: {task_status} {old_registered}")
+        task_status, old_saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
+                                            backend="python")
+        check(task_status == 200 and old_saved_task.get("policy") == TASK_POLICY,
+              "old Python did not retain its own task registration")
+        task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate",
+                               backend="python")
+        check(task_status == 404, "old Python unexpectedly exposed native task activation")
+        old_task_status, old_task_body = request(alice, "GET", task_target)
+        check(old_task_status == 200 and old_task_body == BODY,
+              "old Python registration changed a request without task context")
+        check(sha(root / "policy.toml") == policy_before_old_task,
+              "old Python task registration changed durable policy")
         rollback_tls = trusted_tls_request(alice, tls_origin.server_port, root)
         old_catalog_status, old_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
         check(old_catalog_status == 200 and old_catalog.get("authorized", {}).get("contract"),
@@ -922,6 +1000,8 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         check(f"127.0.0.2:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
               "old Python writer did not revoke scoped host approval")
         print(json.dumps({"python_rollback": stages[-1], "gateway_status": old_gateway_status,
+                          "task_reset_status": old_task_status,
+                          "task_registered_without_activation": True,
                           "gateway_response": summary_value(old_gateway_bytes),
                           "old_consumer": old_read, "oauth_provider_calls": len(oauth.seen),
                           "coord": old_coord_read, "plumb_read_count": len(plumb_old["messages"]),
@@ -935,6 +1015,10 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         active = args.rust_cli
         stages.append(start(active, root, env, "rust", args.rust_revision))
         check(stages[-1]["pid"] != stages[1]["pid"], "return reused the first Rust process")
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 404, "fresh Rust inherited the old process task registration")
+        task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(task_status == 404, "fresh Rust activated a task from a prior process")
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "return Rust changed CA/HMAC identity")
@@ -993,6 +1077,9 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         return_circuit_status, return_circuit_body = eventually(
             returned_circuit_request, "return Rust did not use Python reset circuit")
         check(return_circuit_body == BODY, "return Rust changed recovered response body")
+        return_task_status, return_task_body = request(alice, "GET", task_target)
+        check(return_task_status == 200 and return_task_body == BODY,
+              "fresh Rust retained a previous process task overlay")
         status, _ = admin(root, "POST", "/admin/agents/alice/services",
                           {"service": "contract", "capability": "writer",
                            "credential": "contract-secret"})
@@ -1034,6 +1121,7 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
                           "plumb_messages": len(returned_plumb["messages"]),
                           "plumb_closed_status": closed_status,
                           "circuit_reset_status": return_circuit_status,
+                          "task_reset_status": return_task_status,
                           "oauth_provider_calls": len(oauth.seen),
                           "ca_hmac_unchanged": True,
                           "provider_owned_lease": lease["state"],
@@ -1051,7 +1139,7 @@ print(json.dumps({'nats':'stopped'}))
         nats_started = False
         print(json.dumps({"result": "linux_installed_transition_passed",
                           "stages": [stage["backend"] for stage in stages],
-                          "state": str(root), "task_policy": "operator decision pending",
+                          "state": str(root), "task_policy": "process-local reset observed",
                           "macos": "blocked by #637 host prerequisite"}), flush=True)
     finally:
         if active is not None:
