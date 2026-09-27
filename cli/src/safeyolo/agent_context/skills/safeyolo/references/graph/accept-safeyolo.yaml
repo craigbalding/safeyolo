@@ -242,9 +242,9 @@ nodes:
         - path: install.sh
           sha256: f4891e8f8b40ff59dd0bdcd744d8c700b7013dd3d5eb14875b888c35321a46e5
         - path: tests/blackbox/run-lane.sh
-          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
+          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
         - path: tests/blackbox/run-tests.sh
-          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
+          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
         - path: uv.lock
           sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
       setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
@@ -274,9 +274,9 @@ nodes:
       obtain_from: "runsc from gVisor's official signed apt repository, or its official tarball plus published SHA-512, through trusted-base safeyolo setup"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
+          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
         - path: tests/blackbox/run-tests.sh
-          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
+          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
@@ -312,7 +312,7 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: f69b82e9b9f3f9d5c3408687378ba090168f372354e66c58c72020166ef6adcc
+          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
@@ -470,7 +470,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and focused pytest sources; Python tools hash-locked in uv.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 3dbda28c374c578ba58a5745088fd58c4b332a051e38fd94587116a1af985e61
+          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: cli/tests/test_sockets.py

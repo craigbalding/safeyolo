@@ -19,6 +19,7 @@
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl python|rust|both
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
+#   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
 #   ./run-tests.sh --proxy -- --collect-only
@@ -79,6 +80,7 @@ PROXY_IMPL="python"
 PROXY_IMPL_SELECTED=false
 PYTHON_SOURCE=""
 RUST_BIN=""
+KVM_P1=false
 PYTEST_FORWARD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -142,6 +144,10 @@ while [[ $# -gt 0 ]]; do
             RUST_BIN="$2"
             shift 2
             ;;
+        --kvm-p1)
+            KVM_P1=true
+            shift
+            ;;
         --)
             shift
             PYTEST_FORWARD_ARGS=("$@")
@@ -154,6 +160,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ "$KVM_P1" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --kvm-p1 requires --expect-platform kvm --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
 
 # Command-line paths are interpreted relative to the caller's directory even
 # though the legacy runner changes into tests/blackbox for its setup.
@@ -344,6 +357,13 @@ if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
     safeyolo init --no-interactive
     echo ""
+fi
+
+if [ "$KVM_P1" = true ]; then
+    # This rule belongs only to the disposable instance and is loaded before
+    # the native process starts. The owned parent maps evil.com to the same
+    # sinkhole, so its absence there is a meaningful denial observation.
+    safeyolo policy host deny evil.com
 fi
 
 # Restore a parent selected by an interrupted native run before reading or
@@ -825,6 +845,14 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
         echo "ERROR: installed Rust runtime identity was not verified" >&2
         exit 2
     fi
+fi
+
+if [ "$KVM_P1" = true ]; then
+    python3 "$SCRIPT_DIR/kvm_p1_ingress.py" \
+        --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
+        --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+        --output "$ARTIFACTS_DIR/kvm-p1.json"
+    exit $?
 fi
 
 echo ""

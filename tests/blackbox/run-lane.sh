@@ -23,6 +23,20 @@ if [ -z "$LANE" ]; then
 fi
 shift
 
+# A frozen pilot may install a pinned source checkout while exercising the
+# current blackbox harness. The packaged CLI and native binary still come
+# from the same install.sh invocation.
+INSTALL_ROOT="$REPO_ROOT"
+if [ "${1:-}" = "--install-checkout" ]; then
+    if [ "$#" -lt 2 ] || [ ! -f "$2/install.sh" ]; then
+        echo "ERROR: --install-checkout requires a SafeYolo source checkout" >&2
+        exit 2
+    fi
+    INSTALL_ROOT="$(cd "$2" && pwd -P)"
+    shift 2
+fi
+export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$INSTALL_ROOT"
+
 case "$LANE" in
     systrap|kvm)
         if [ "$(uname -s)" != "Linux" ]; then
@@ -64,9 +78,9 @@ fi
 # `reinstall` is safe on persistent hosts and equivalent to a first install on
 # an ephemeral host after uv reports that no prior tool environment exists.
 if uv tool list | grep -q '^safeyolo '; then
-    "$REPO_ROOT/install.sh" reinstall
+    "$INSTALL_ROOT/install.sh" reinstall
 else
-    "$REPO_ROOT/install.sh" install
+    "$INSTALL_ROOT/install.sh" install
 fi
 
 # Host-side blackbox pytest uses the development dependency group.  The
