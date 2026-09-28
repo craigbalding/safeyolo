@@ -271,7 +271,9 @@ fi
 # pytest arguments before embedding them in that string.  Host-side pytest
 # calls below continue to use the original array directly.
 PYTEST_FORWARD_SHELL=""
-for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]}"; do
+# macOS /bin/bash 3.2 treats an empty array expansion as unbound under -u.
+# The + form expands to zero arguments for an empty array on both host shells.
+for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}"; do
     printf -v quoted_arg '%q' "$forwarded_arg"
     PYTEST_FORWARD_SHELL+=" $quoted_arg"
 done
@@ -801,8 +803,8 @@ else
             --extra-cert "self-signed.test:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
             --extra-cert "aia-only.test:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
             --extra-cert "future-leaf.test:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key" \
-            "${P2_SINKHOLE_ARGS[@]}" \
-            "${VZ_PARENT_ARGS[@]}" &
+            "${P2_SINKHOLE_ARGS[@]+"${P2_SINKHOLE_ARGS[@]}"}" \
+            "${VZ_PARENT_ARGS[@]+"${VZ_PARENT_ARGS[@]}"}" &
     else
     PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SINKHOLE_SCRIPT" \
         --http-port "$SINKHOLE_HTTP_PORT" \
@@ -818,8 +820,8 @@ else
         --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
         --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
         --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
-        "${P4_CERT_ARGS[@]}" \
-        "${P2_SINKHOLE_ARGS[@]}" \
+        "${P4_CERT_ARGS[@]+"${P4_CERT_ARGS[@]}"}" \
+        "${P2_SINKHOLE_ARGS[@]+"${P2_SINKHOLE_ARGS[@]}"}" \
         &
     fi
     SINKHOLE_PID=$!
@@ -1035,7 +1037,7 @@ if [ "$P3" = true ]; then
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
         --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p3.json" \
-        "${INSTALL_COMMIT_ARGS[@]}"
+        "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 if [ "$P4" = true ]; then
@@ -1044,7 +1046,7 @@ if [ "$P4" = true ]; then
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
         --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p4.json" \
-        "${INSTALL_COMMIT_ARGS[@]}"
+        "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 
@@ -1070,9 +1072,9 @@ if [ "$RUN_PROXY" = true ]; then
     # Keep the retained Python host suite and installed native host checks
     # tied to their selected runtime. Each directory runs in full.
     if [ "$PROXY_IMPL" = "rust" ]; then
-        pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 native/
+        pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
     else
-        pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 proxy/
+        pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 proxy/
     fi
     PROXY_RESULT=$?
 
@@ -1080,7 +1082,7 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=60 security/
+    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1095,7 +1097,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE --tb=short --timeout=30 identity/
+    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1129,7 +1131,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
+    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
     LIFECYCLE_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"

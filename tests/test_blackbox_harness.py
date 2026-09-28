@@ -287,8 +287,9 @@ def test_runner_cleanup_process_identity_behaves_as_owned_only(tmp_path, mode):
         assert "Escalating owned process" not in output
 
 
-def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path):
-    """Forwarded VM arguments survive shell embedding byte-for-byte."""
+@pytest.mark.parametrize("forwarded", [False, True])
+def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path, forwarded):
+    """Empty and supplied VM arguments work with the host's /bin/bash."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
     start = runner.index('PYTEST_FORWARD_SHELL=""')
     end = runner.index("\n\n# The focused", start)
@@ -316,9 +317,9 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
         "*",
         "quote\"single'",
         "line1\nline2",
-    ]
+    ] if forwarded else []
     result = subprocess.run(
-        [str(probe), str(output), *arguments],
+        ["/bin/bash", str(probe), str(output), *arguments],
         text=True,
         capture_output=True,
         check=False,
