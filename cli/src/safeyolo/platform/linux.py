@@ -1604,7 +1604,7 @@ class LinuxPlatform(AgentPlatform):
         ]
 
         # Mount the private per-agent directory, not the socket inode.
-        # Mitmproxy can replace proxy.sock across restarts and a running
+        # The Rust proxy can replace proxy.sock across restarts and a running
         # sandbox resolves the new inode through this stable mount.
         from ..sockets import directory_for as _proxy_dir_for  # noqa: PLC0415
         proxy_dir = _proxy_dir_for(name, fw_alloc.get("attribution_ip", ""))
