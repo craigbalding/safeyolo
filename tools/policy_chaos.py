@@ -1,4 +1,4 @@
-"""Run and replay the bounded native host-policy chaos family.
+"""Run and replay bounded native policy state histories.
 
 Other policy-chaos families and guarded VM cuts remain separate #831 work.
 """
@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -17,25 +18,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST = "tests/proxy_migration/test_native_policy_host_chaos.py"
+HOST_TEST = "tests/proxy_migration/test_native_policy_host_chaos.py"
+STATE_TEST = "tests/proxy_migration/test_native_policy_state_chaos.py"
 SEEDS = (26082601, 26082602, 26082603)
 GROUPS = {
-    "host-properties": f"{TEST}::test_host_permission_properties",
-    "host-histories": f"{TEST}::test_host_mutation_histories",
-    "host-boundary": f"{TEST}::test_written_wildcard_has_dns_label_boundary",
-    "host-budget": f"{TEST}::test_unrated_allow_stays_under_aggregate_budget",
-    "host-rate": f"{TEST}::test_rate_change_limits_live_and_fresh_requests",
+    "host-properties": f"{HOST_TEST}::test_host_permission_properties",
+    "host-histories": f"{HOST_TEST}::test_host_mutation_histories",
+    "host-boundary": f"{HOST_TEST}::test_written_wildcard_has_dns_label_boundary",
+    "host-budget": f"{HOST_TEST}::test_unrated_allow_stays_under_aggregate_budget",
+    "host-rate": f"{HOST_TEST}::test_rate_change_limits_live_and_fresh_requests",
+    "credential-histories": f"{STATE_TEST}::test_credential_approval_histories",
+    "service-histories": f"{STATE_TEST}::test_agent_service_binding_histories",
 }
-GENERATED = {"host-properties", "host-histories"}
-EXAMPLES = {"host-properties": 40, "host-histories": 8}
+GENERATED = {"host-properties", "host-histories", "credential-histories", "service-histories"}
+EXAMPLES = {"host-properties": 40, "host-histories": 8,
+            "credential-histories": 8, "service-histories": 8}
 
 
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("run", help="run selected hermetic host groups")
+    run = commands.add_parser("run", help="run selected hermetic policy groups")
     run.add_argument("--group", action="append", choices=GROUPS,
-                     help="select a host group (default: all host groups)")
+                     help="select a group (default: all implemented groups)")
     run.add_argument("--seed", type=int, help="one generated seed (default: three published seeds)")
     run.add_argument("--binary", type=Path,
                      default=ROOT / "proxy/target/debug/safeyolo-proxy")
@@ -53,6 +58,11 @@ def _binary(path: Path) -> Path:
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise ValueError(f"Selected native proxy is not executable: {binary}")
     return binary
+
+
+def _replay_command(trace: Path, binary: Path) -> str:
+    return (f"{shlex.quote(sys.executable)} -m tools.policy_chaos replay "
+            f"{shlex.quote(str(trace))} --binary {shlex.quote(str(binary))}")
 
 
 def _pytest(command: list[str], environment: dict[str, str]) -> tuple[int | None, str, str]:
@@ -107,13 +117,13 @@ def _run(args: argparse.Namespace) -> int:
                 "command": command,
                 "stdout": stdout, "stderr": stderr,
                 "traces": [str(path) for path in traces],
-                "replay": [f"{sys.executable} -m tools.policy_chaos replay {path}" for path in traces],
+                "replay": [_replay_command(path, binary) for path in traces],
             })
             print(f"{status:10} {group} seed={seed}")
             if status != "PASS":
                 print(stdout[-2500:] + stderr[-1000:])
     report = {
-        "family": "native-host-policy", "source_commit": commit, "source_dirty": dirty,
+        "family": "native-policy-chaos", "source_commit": commit, "source_dirty": dirty,
         "binary": str(binary), "created_at": datetime.now(UTC).isoformat(),
         "selected_groups": selected, "executed_runs": len(results), "results": results,
     }
@@ -125,12 +135,22 @@ def _run(args: argparse.Namespace) -> int:
 def _replay(args: argparse.Namespace) -> int:
     binary = _binary(args.binary)
     trace = json.loads(args.trace.read_text())
-    from tests.proxy_migration.test_native_policy_host_chaos import execute_trace
+    family = trace.get("family")
+    if family in {"properties", "history", "wildcard", "budget", "rate"}:
+        from tests.proxy_migration.test_native_policy_host_chaos import execute_trace
+    elif family in {"credential", "gateway"}:
+        from tests.proxy_migration.test_native_policy_state_chaos import (
+            execute_credential_trace,
+            execute_gateway_trace,
+        )
+        execute_trace = execute_credential_trace if family == "credential" else execute_gateway_trace
+    else:
+        raise ValueError(f"Unsupported trace family: {family!r}")
 
     previous_binary = os.environ.get("SAFEYOLO_RUST_PROXY")
     os.environ["SAFEYOLO_RUST_PROXY"] = str(binary)
     try:
-        with tempfile.TemporaryDirectory(prefix="safeyolo-host-replay-", dir=Path.home()) as temporary:
+        with tempfile.TemporaryDirectory(prefix="safeyolo-chaos-replay-", dir=Path.home()) as temporary:
             result = execute_trace(Path(temporary) / "case", trace)
     finally:
         if previous_binary is None:
@@ -145,7 +165,7 @@ def _replay(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    """Run selected native host groups or replay one saved host trace."""
+    """Run selected native policy groups or replay one saved trace."""
     args = _args()
     try:
         return _run(args) if args.command == "run" else _replay(args)

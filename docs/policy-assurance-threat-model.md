@@ -204,20 +204,27 @@ The historical full `uv run python -m tools.policy_chaos` runner is available
 from the pinned pre-cutover checkout
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Its temporary-policy and
 guarded disposable-VM fault results describe the Python implementation.
-The current checkout has a host-only native runner. From the repository root,
-with the project development environment installed and the Rust proxy built,
-run the bounded host groups with the three published seeds:
+The current checkout has bounded native host and state-history groups. From the
+repository root, with the project development environment installed and the
+Rust proxy built, run the implemented groups with the three published seeds:
 
 ```bash
-uv run python -m tools.policy_chaos run --output "$HOME/host-chaos.json"
+uv run python -m tools.policy_chaos run --output "$HOME/policy-chaos.json"
 ```
 
 The report names each group, seed, selected binary, result, and replay command
-for a failure. `--group host-histories` selects one group; `--seed 26082601`
-selects one generated seed. `python -m tools.policy_chaos replay TRACE.json`
-reruns a saved host operation trace. The native runner does not yet select the
-other mutation, fault, or disposable-VM families. Those C3–C8 obligations
-remain open until separately reviewed.
+for a failure. `--group credential-histories` or `--group service-histories`
+selects one state-history group; `--seed 26082601` selects one generated seed.
+The report's replay command includes the selected `--binary` and reruns the
+saved operation trace. The credential group composes operator approvals,
+denial, host-rule removal, and reload. The service group composes the retained
+agent-store writer with native service, contract-binding, and risky-grant Admin
+writers. Both groups check running and fresh Rust decisions through controlled
+origin requests. The existing fixed credential and session-grant tests remain
+the separate scope and revocation controls. The native runner does not yet
+select writer contention, injected failure, crash recovery, or disposable-VM
+families. C1's finite test-selection binding and C4–C8 remain open; independent
+review decides the C3 state-history result.
 
 ## Native chaos selection for #831
 
