@@ -5,8 +5,11 @@ Date: 2026-08-26
 Historical Python-policy record: the commands and recurring-workflow descriptions
 below apply to the pinned pre-cutover checkout
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`. The Rust cutover retired
-the `tools.policy_chaos` wrapper and its scheduled workflow. These results do
-not establish current native policy assurance.
+that Python implementation and workflow. The current tree has a native
+`tools.policy_chaos` runner and a separate nightly/manual workflow. These
+historical measurements do not establish current native policy assurance;
+see the [native selection](../../docs/policy-assurance-threat-model.md#native-chaos-selection-for-831)
+for accepted native results and remaining limits.
 
 These are ground-truth measurements from the initial experiment implementation,
 not claims that every policy defect class is solved. Commands ran in the project
@@ -295,7 +298,8 @@ cannot observe.
 The recurring control is split by cost and threat. Focused semantic and
 transaction regressions run in normal pull-request pytest discovery. The
 bounded generated, real-ingress, writer, staged-failure, and process-death
-groups run nightly and manually through `.github/workflows/policy-chaos.yml`.
+groups ran nightly and manually through that checkout's
+`.github/workflows/policy-chaos.yml`.
 The guarded prepare/recover protocol is the guest-side component for abrupt
 power-off in a disposable KVM VPS; no KVM VPS power cycle was performed in this
 development container, and the process-death evidence above is not presented

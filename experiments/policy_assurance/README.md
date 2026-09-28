@@ -2,8 +2,9 @@
 
 These sources describe the pre-cutover Python policy engine. Use the pinned
 checkout `2ca598ce11d7c375a024b38eb3e7b4104a795d84` and its locked
-environment to run the commands below. The current Rust cutover tree does not
-run these experiments or its retired `tools.policy_chaos` wrapper.
+environment to run the historical commands below. The current Rust tree keeps
+these results as history and runs native assurance through a new
+`tools.policy_chaos` implementation.
 
 These experiments evaluate which testing techniques genuinely detect policy
 security failures under SafeYolo's documented threat model. They are not part of
@@ -97,10 +98,9 @@ never performance requirements. The published seeds are replay and stability
 evidence, not a statistical confidence statement. Generic state-machine
 shrinking remains disabled; accepted findings receive focused regressions.
 
-## Production chaos runner
+## Historical production chaos runner
 
-The experiment techniques promoted for recurring use are composed by the
-repository engineering command:
+In the pinned Python checkout, the promoted techniques ran through:
 
 ```bash
 uv run python -m tools.policy_chaos run \
@@ -113,6 +113,39 @@ disposable KVM VPS. They require `SAFEYOLO_CHAOS_DISPOSABLE_VM=1`,
 `--confirm-disposable-vm`, and a `.safeyolo-chaos-disposable` sentinel in the
 target config directory. The prepare command emits `READY_FOR_POWER_CUT`; the
 outer KVM VPS harness owns VM power and invokes recovery after reboot.
+
+## Current native runner
+
+In the current Rust checkout on Linux, start at the repository root with a
+writable checkout and the pinned Rust toolchain available. These commands
+install the Python development environment and build the debug Rust proxy in
+`proxy/target`:
+
+```bash
+uv python install 3.12
+uv sync --frozen --group dev --python 3.12
+cd proxy
+CARGO_BUILD_JOBS=1 ../scripts/cargo_with_space.sh build --locked
+cd ..
+```
+
+From the repository root, run the incremental hermetic profile. The report is
+written outside the checkout:
+
+```bash
+uv run --frozen python -m tools.policy_chaos run --output "$HOME/policy-chaos.json"
+```
+
+The runner starts its own proxy and controlled origins. It does not require a
+running SafeYolo proxy or target sandbox. It reports `PASS` (exit 0), a product
+`FINDING` (exit 1), or `INCOMPLETE` (exit 2) when a required case did not run.
+The report records the exact selected binary hash, source commit, cases,
+observations, and replayable failure traces. The current nightly/manual
+workflow is `.github/workflows/policy-chaos.yml`; it does not run a VM cut or
+source mutants. Use `--group` to select a focused control and `replay` with a
+saved trace for separate calibration. The [native selection and VM protocol](../../docs/policy-assurance-threat-model.md#native-chaos-selection-for-831)
+give the maintained scope and opt-in requirements. The [historical results](RESULTS.md)
+remain measurements of the Python engine only.
 
 ## Ground truth and holdout discipline
 
