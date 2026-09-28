@@ -183,35 +183,32 @@ host. The wrapper installs or reinstalls this checkout in the caller's `uv`
 tool environment, prepares guest artifacts, and creates an isolated test
 instance. Select the command for the host's actual guest mechanism:
 
+Install uv and select Rust 1.94.0 from `proxy/rust-toolchain.toml` first; the
+installer needs `cargo` on `PATH`. The physical Mac needs the Swift helper
+build prerequisites described in the [installation reference](../../cli/README.md#installation).
+
 ```bash
 # GitHub/other Linux VM without KVM
-./tests/blackbox/run-lane.sh systrap --verbose
+./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
 
 # Fresh nested-KVM guest on the KVM VPS
-./tests/blackbox/run-lane.sh kvm --verbose
+./tests/blackbox/run-lane.sh kvm --proxy-impl rust --verbose
 
 # Physical Apple Silicon Mac mini
-./tests/blackbox/run-lane.sh vz --verbose
+./tests/blackbox/run-lane.sh vz --proxy-impl rust --verbose
 
 # Proxy-only smoke (no sandbox boot)
-./tests/blackbox/run-lane.sh proxy --verbose
+./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose
 ```
 
 `run-lane.sh` is idempotent on persistent hosts. It calls `install.sh`, uses the
 product bootstrap plan for prerequisites, and then delegates to
 `run-tests.sh`.
 
-For the installed native proxy on the same disposable host, add
-`--proxy-impl rust` to the platform command. For example, the Ubuntu systrap
-host runs:
-
-```bash
-./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
-```
-
 The native lane uses the Rust executable inside the installed CLI package.
-Its host selection is a focused ingress check; the retained Python lane runs
-the broader `host/proxy` tests.
+Its host selection is a focused ingress check. The historical Python host
+suite requires an explicitly selected prior package and environment; it is
+not part of the normal installed native command.
 It verifies the live process, authenticated operator identity, and guest
 listener before host and guest tests run. A missing package binary or a
 different running process stops the lane. The native host check sends an
@@ -228,8 +225,9 @@ does not replace the separate finite consumer pilot for issue #637.
 
 ## Running an already-prepared checkout
 
-Use `run-tests.sh` directly when the host is already installed and bootstrapped
-and the live installation must remain untouched. It creates a separate
+Use `run-tests.sh` directly from the repository root when the host is already
+installed and bootstrapped and the live installation must remain untouched.
+It creates a separate
 `~/.safeyolo-test` instance, generates test certificates beneath that instance,
 uses distinct proxy, admin, and web ports, and borrows the live `share/` and
 `bin/` artifacts without rebuilding them. The harness refuses to proceed if
@@ -237,22 +235,22 @@ the test and source config paths resolve to the same directory.
 
 ```bash
 # All suites
-./run-tests.sh
+./tests/blackbox/run-tests.sh --proxy-impl rust
 
 # Proxy functional tests only (host-side)
-./run-tests.sh --proxy
+./tests/blackbox/run-tests.sh --proxy --proxy-impl rust
 
 # VM isolation tests only (in-VM)
-./run-tests.sh --isolation
+./tests/blackbox/run-tests.sh --isolation --proxy-impl rust
 
 # Verbose
-./run-tests.sh --verbose
+./tests/blackbox/run-tests.sh --proxy-impl rust --verbose
 
 # Fail unless the requested isolation mechanism is selected
-./run-tests.sh --expect-platform kvm --verbose
+./tests/blackbox/run-tests.sh --expect-platform kvm --proxy-impl rust --verbose
 
 # Full physical Apple Silicon Mac run without reinstall/bootstrap
-./run-tests.sh --expect-platform vz --verbose
+./tests/blackbox/run-tests.sh --expect-platform vz --proxy-impl rust --verbose
 ```
 
 Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
@@ -260,7 +258,8 @@ Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
 
 ### Selecting a proxy backend
 
-The prepared-host runner keeps Python as its default.  Explicit proxy runs use
+The prepared-host runner still defaults to Python for historical comparison,
+so name `--proxy-impl rust` for a current-package run. Explicit proxy runs use
 the existing `tests/proxy_migration` process harness, which starts a fresh
 selected process and its owned UDS/origin fixtures for every test.  Assertions
 stay shared between implementations. From `tests/blackbox` in the test-suite
@@ -307,10 +306,11 @@ the executable packaged with the selected installed CLI.
 The inexpensive runner self-tests cover invalid selectors, missing or wrong
 executables, readiness markers and stale listeners, independent second-backend
 execution after a failure, byte-preserving argument forwarding, and owned
-cleanup. Run them with:
+cleanup. From the repository root with the native uv development group
+installed, run:
 
 ```bash
-pytest -q tests/test_blackbox_harness.py tests/proxy_migration/test_readiness.py
+uv run --frozen pytest -q tests/test_blackbox_harness.py tests/proxy_migration/test_readiness.py
 ```
 
 These tests use temporary fake processes and do not install SafeYolo, boot a

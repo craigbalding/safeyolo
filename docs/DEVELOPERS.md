@@ -43,7 +43,9 @@ for the contract and the per-sink obligations (terminal, web, log export).
 
 ### Option 1: Consume JSONL Events
 
-The simplest integration is tailing the JSONL log file. Every security decision is logged with structured data.
+The simplest integration is tailing the JSONL log file. The proxy emits
+structured events for reached decisions; a write failure can leave an event
+unavailable, so do not infer a complete history from a successful request.
 
 **Event format:**
 ```json
@@ -194,6 +196,23 @@ For host installation and retrying an individual bootstrap phase, use the
 For historical Python comparison, use the pinned separate checkout and
 environment in the [migration contract](../tests/proxy_migration/CONTRACT.md).
 
+For native contract development, run these commands from the repository root
+on Linux or macOS with uv and Rust 1.94.0 selected. The tests
+start isolated native processes and local fixtures; they do not use the
+operator's configured instance or require mitmproxy:
+
+```sh
+uv sync --frozen --group dev
+cargo build --locked --manifest-path proxy/Cargo.toml
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+  uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+```
+
+The historical Python selection requires its own pinned checkout and locked
+environment. [The migration contract](../tests/proxy_migration/CONTRACT.md)
+gives that separate command. The focused pull-request workflow also separates
+native checks from explicitly selected historical oracle and comparison jobs.
+
 ### Native proxy development
 
 The CLI uses Rust and generates a native JSON configuration under
@@ -205,7 +224,7 @@ supplied JSON entries and the CLI's agent-map sockets. See
 [proxy parity](proxy-parity.md) for current scope.
 
 `./install.sh` builds `proxy/target/release/safeyolo-proxy` with Cargo and
-installs a wheel containing that exact native executable. The installer does
+installs a wheel containing that native executable. The installer does
 not impose the factory host's disk-space reserve. The wheel keeps the Python
 CLI; the historical comparator has its own locked environment.
 
@@ -366,8 +385,9 @@ persist an agent's service binding through `POST /admin/agents/{agent}/services`
 It validates the accepted service and capability, requires an existing agent,
 and saves the selected vault credential name. It does not read the vault.
 The existing policy watcher activates accepted changes after the save; the
-response does not promise immediate service access. Gateway forwarding and
-credential injection remain unfinished.
+response does not promise immediate service access.
+
+### Live traffic inspection
 
 For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector
@@ -559,10 +579,10 @@ the result is unconfirmed; the requested JSON remains for the next reload or
 start. It does not imply that the live configuration was rolled back. Processes
 launched before configuration-path recording need one restart to use live sync.
 
-To return to Python, stop the native proxy and install the pinned prior Python
-package using the ordinary package rollback procedure. Stop that process
-before returning to the native package. Changing `proxy.backend` in the current
-package does not switch implementations. Native stop waits for process exit;
+For an explicit return to Python and then Rust, follow the
+[package rollback procedure](../cli/README.md#return-to-the-prior-python-package).
+The current package does not switch implementations through `proxy.backend`.
+Native stop waits for process exit;
 an interrupted stop retains ownership state so it can be retried. The exited
 console remains in the private tmux session for diagnostics, and the next
 start reaps that dead pane.
