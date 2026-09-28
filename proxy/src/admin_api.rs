@@ -692,6 +692,27 @@ fn policy_error(error: impl std::fmt::Display) -> Outcome {
     response(StatusCode::BAD_REQUEST, json!({"error":"invalid policy"}))
 }
 
+fn approval_error(error: crate::approvals::ApprovalError) -> Outcome {
+    use crate::approvals::ErrorKind;
+
+    let (status, message) = match error.kind {
+        ErrorKind::Invalid | ErrorKind::Unsupported => (StatusCode::BAD_REQUEST, "invalid policy"),
+        ErrorKind::Io => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "policy persistence failed",
+        ),
+        ErrorKind::Activation => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "policy activation failed",
+        ),
+        ErrorKind::Rollback => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "policy rollback failed; inspect policy state",
+        ),
+    };
+    response(status, json!({"error":message}))
+}
+
 async fn get_baseline(policy: Option<&Policy>, path: Option<&Path>) -> Outcome {
     let Some(policy) = policy else {
         return response(
@@ -1897,7 +1918,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             |_| Ok(()),
         ) {
             Ok(count) => count,
-            Err(error) => return Ok(policy_error(error)),
+            Err(error) => return Ok(approval_error(error)),
         };
         let mut outcome = response(
             StatusCode::OK,
@@ -2010,7 +2031,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             |_| Ok(()),
         );
         if let Err(error) = saved {
-            return Ok(policy_error(error));
+            return Ok(approval_error(error));
         }
         let mut outcome = response(
             StatusCode::OK,
@@ -2073,7 +2094,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         let agent = fields.get("agent").and_then(Value::as_str);
         let scope = match crate::approvals::NetworkScope::new(host, agent, port) {
             Ok(scope) => scope,
-            Err(error) => return Ok(policy_error(error)),
+            Err(error) => return Ok(approval_error(error)),
         };
         let policy_file = match require_policy_path(policy_path) {
             Ok(path) => path,
@@ -2091,7 +2112,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         "admin.host_allowed",
                         json!({"client_ip":client_ip,"host":result.host,"rate":result.rate,"agent":result.agent,"port":result.port}),
                     ),
-                    Err(error) => return Ok(policy_error(error)),
+                    Err(error) => return Ok(approval_error(error)),
                 }
             }
             "/admin/policy/host/deny" => {
@@ -2105,7 +2126,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         "admin.host_denied",
                         json!({"client_ip":client_ip,"host":result.host,"expires":result.expires,"agent":result.agent,"port":result.port}),
                     ),
-                    Err(error) => return Ok(policy_error(error)),
+                    Err(error) => return Ok(approval_error(error)),
                 }
             }
             "/admin/policy/host/rate" => {
@@ -2128,7 +2149,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         "admin.host_rate_updated",
                         json!({"client_ip":client_ip,"host":host,"old_rate":old,"new_rate":rate}),
                     ),
-                    Err(error) => return Ok(policy_error(error)),
+                    Err(error) => return Ok(approval_error(error)),
                 }
             }
             _ => {
@@ -2151,7 +2172,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                         "admin.host_bypass_added",
                         json!({"client_ip":client_ip,"host":host,"addon":addon,"bypass":bypass}),
                     ),
-                    Err(error) => return Ok(policy_error(error)),
+                    Err(error) => return Ok(approval_error(error)),
                 }
             }
         };

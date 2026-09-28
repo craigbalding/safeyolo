@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOST_TEST = "tests/proxy_migration/test_native_policy_host_chaos.py"
 STATE_TEST = "tests/proxy_migration/test_native_policy_state_chaos.py"
 CONTENTION_TEST = "tests/proxy_migration/test_native_policy_contention.py"
+FAILURE_TEST = "tests/proxy_migration/test_native_policy_failure_stages.py"
 SEEDS = (26082601, 26082602, 26082603)
 GROUPS = {
     "host-properties": f"{HOST_TEST}::test_host_permission_properties",
@@ -31,6 +32,7 @@ GROUPS = {
     "credential-histories": f"{STATE_TEST}::test_credential_approval_histories",
     "service-histories": f"{STATE_TEST}::test_agent_service_binding_histories",
     "writer-contention": CONTENTION_TEST,
+    "failure-stages": FAILURE_TEST,
 }
 GENERATED = {"host-properties", "host-histories", "credential-histories", "service-histories"}
 EXAMPLES = {"host-properties": 40, "host-histories": 8,

@@ -84,9 +84,13 @@ TOML, or leave enforcement inconsistent with the final file.
 
 ### Persistence failure and split-brain state
 
-A parse error, mutation exception, write error, crash, or rename failure must
-leave the prior file and effective policy intact. A successful response must
-not be returned before the durable policy state represents the action.
+Before rename, a handled parse, validation, write, or rename failure must
+leave the prior file and effective policy intact. After rename, the native
+Admin writer attempts rollback on a directory-sync or activation failure.
+If rollback also fails, the error must identify that failure; the new file
+may remain visible. The retained Python CLI writer does not roll back a
+directory-sync failure after replacement. A successful response must not be
+returned before the durable policy state represents the action.
 
 ### Unrelated-data corruption
 
@@ -152,8 +156,10 @@ and fuzz tests should enforce these properties:
 - **Round trip:** save and reload preserve effective decisions.
 - **Metamorphic equivalence:** comments, key order, valid quoting, and equivalent
   formatting do not change decisions.
-- **Failure atomicity:** a failed mutation leaves original bytes and effective
-  decisions unchanged.
+- **Failure handling:** a handled pre-rename failure leaves original bytes and
+  decisions unchanged. A handled native post-rename failure restores them when
+  rollback succeeds. A failed rollback reports its failure and the test checks
+  the actual remaining file and decisions.
 - **Reload integrity:** the active policy is always either the complete previous
   valid policy or the complete new valid policy, never a partial combination.
 - **Narrow persistence:** unrelated document sections and operator-authored
@@ -215,7 +221,8 @@ uv run python -m tools.policy_chaos run --output "$HOME/policy-chaos.json"
 
 The report names each group, seed, selected binary, result, and replay command
 for a saved generated failure. `--group writer-contention` selects the fixed
-contention cases. `--seed 26082601` selects one generated seed.
+contention cases. `--group failure-stages` selects the staged native and
+retained Python writer cases. `--seed 26082601` selects one generated seed.
 The report's replay command includes the selected `--binary` and reruns the
 saved operation trace. The credential group composes operator approvals,
 denial, host-rule removal, and reload. The service group composes the retained
@@ -225,13 +232,17 @@ origin requests. The contention group holds the policy lock at actual read or
 acquisition boundaries, then checks persisted edits and live Rust decisions.
 Its native barrier exists only in debug builds. The existing fixed credential
 and session-grant tests remain separate scope and revocation controls. The
-native runner does not yet select C5 staged faults, C6 crash recovery, or
-disposable-VM families. C1's finite test-selection binding, remaining C2, and
-C5–C8 remain open. Independent review decides the C4 result.
+native runner does not yet select C6 crash recovery or disposable-VM families.
+C1's finite test-selection binding, remaining C2, and C5–C8 remain open.
+The C4 technical result was accepted at
+`ca224d39697bed1a8ba59ec23299ac859f840b1a`; the C5 candidate still needs
+independent review.
 
 The C4 candidate maps the historical writer rows as follows. Each listed row
-uses the historical order unless both orders are named. Two native Admin
-instances use the same policy file and lock in separate processes.
+uses the historical order unless both orders are named. The two Rust
+publication histories use one proxy/Admin instance receiving concurrent
+requests. Applicable matrix rows use separate Python writer processes with
+the same policy file and lock.
 
 | Historical row | Current writers and selected order |
 |---|---|
@@ -252,6 +263,28 @@ save while an unrelated writer waits. The tests check controlled origin effects
 at the active Rust boundary and check that a rejected candidate cannot be read
 before rollback. The existing native expiry watermark test retains its narrower
 claim about a write during compilation.
+
+### C5 staged writer paths
+
+The debug-only checkpoint channel in `proxy/src/approvals.rs` reports a run ID,
+transaction ID, transaction kind, phase, and named stage. The test controller
+binds one transaction ID from its begin event before it chooses a stage reply.
+The controller can pause the writer, return an I/O error, or request a partial
+temporary write followed by an I/O error. A default release build does not
+compile the socket or environment lookup. The release negative control arms an
+error, requires the Admin mutation to work, and checks that no checkpoint
+connection occurs.
+
+| Historical stage | Current path and C5 observation |
+|---|---|
+| Existing-file read and parse | Native Admin reads and parses under the shared lock. A read fault keeps the old bytes; malformed TOML rejects the Admin edit and fresh startup. The running proxy retains its last known good policy. |
+| Normalization and validation | `NetworkScope::new` normalizes the destination before the transaction. `validate_rate` and the edit functions validate the locked document. Invalid endpoint and rate operations leave bytes and decisions unchanged. The old Python engine's separate normalization call has no native writer counterpart. |
+| Serialization | `DocumentMut::to_string` and large-integer restoration return a `String`; this path has no fallible serialization operation to inject. The baseline Admin replacement parses its candidate before saving. |
+| Temporary creation, write, file sync, and rename | Native `save_policy_in_transaction` executes these stages. The C5 test injects each error once and checks the original bytes, old live and fresh decisions, the unrelated allowed control, absence of a success audit, and temporary cleanup. The partial-write case leaves no published partial policy. |
+| Directory sync and activation | Both follow rename. A handled native failure saves the original text and calls its activation callback under the same lock. A separate case fails the rollback temporary creation after an activation fault; Admin reports rollback failure and live and fresh Rust observe the remaining complete new policy. Native Admin currently passes a no-op activation callback; policy watcher reload is separate. The accepted #621 invalid-reload tests cover that loader boundary. |
+| Expiry persistence | Expiry shares the native save function but logs a write failure and continues with its in-memory expired-host pruning. Its C5 case injects a file-sync error through the real startup path. It checks old bytes, no temporary residue, the warning, effective denial, and fresh startup pruning. Expiry does not use the Admin rollback path. |
+| Retained Python callers | Policy-host CLI and agent-store mutations share `save_roundtrip`. The CLI catches a post-rename directory-sync error even though the complete new file is visible; agent-store propagates a pre-rename file-sync error and preserves old bytes. The C5 case checks both callers, temporary cleanup, and live and fresh Rust decisions. The unused `locked_policy_transaction` helper is not a current public writer. |
+| Mutation-related audit | The native Admin listener test poisons the real audit writer. The host mutation commits and changes active and fresh decisions, while the listener closes the request without a success response or `admin.host_allowed` event. The accepted #635 audit visibility results remain separate. This path does not promise global policy and audit atomicity. |
 
 ## Native chaos selection for #831
 

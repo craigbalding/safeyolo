@@ -23,6 +23,13 @@ pub(super) fn persist_expired_hosts(
             return Ok(None);
         }
     };
+    let mut fault = match crate::approvals::PolicyFault::new("expiry") {
+        Ok(fault) => fault,
+        Err(error) => {
+            warning(&error);
+            return Ok(None);
+        }
+    };
     let source = match fs::read(path) {
         Ok(source) => Zeroizing::new(source),
         Err(error) => {
@@ -71,7 +78,7 @@ pub(super) fn persist_expired_hosts(
     }
     if changed {
         let changed = Zeroizing::new(document.to_string());
-        match crate::approvals::save_policy_with_metadata(path, &changed) {
+        match crate::approvals::save_policy_in_transaction(path, &changed, &mut fault, "commit") {
             Ok(written) if same_source => return Ok(Some(super::watch::mtime(&written))),
             Ok(_) => {}
             Err(error) => warning(&error.error),

@@ -82,10 +82,10 @@ def save_roundtrip(path: Path, doc: tomlkit.TOMLDocument) -> None:
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".toml", dir=path.parent, delete=False
         ) as tmp:
+            tmp_path = tmp.name
             tmp.write(content)
             tmp.flush()
             os.fsync(tmp.fileno())
-            tmp_path = tmp.name
 
         shutil.move(tmp_path, path)
         tmp_path = None  # moved successfully, no cleanup needed

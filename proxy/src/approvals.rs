@@ -5,7 +5,7 @@
 use std::{
     fmt,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{self, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
@@ -579,15 +579,18 @@ pub(crate) struct SaveError {
     committed: bool,
 }
 
+#[cfg(test)]
 pub(crate) fn save_policy(path: &Path, source: &str) -> std::result::Result<(), SaveError> {
-    save_policy_with_metadata(path, source).map(|_| ())
+    save_policy_in_transaction(path, source, &mut PolicyFault::disabled(), "commit").map(|_| ())
 }
 
-/// Return the written file's metadata before rename, so a caller can identify
-/// its own replacement even if another writer replaces the path immediately.
-pub(crate) fn save_policy_with_metadata(
+/// Return the written file's metadata before rename, so expiry can identify
+/// its own replacement even if another writer immediately replaces the path.
+pub(crate) fn save_policy_in_transaction(
     path: &Path,
     source: &str,
+    fault: &mut PolicyFault,
+    phase: &str,
 ) -> std::result::Result<std::fs::Metadata, SaveError> {
     let parent = path
         .parent()
@@ -597,21 +600,129 @@ pub(crate) fn save_policy_with_metadata(
         TemporaryPolicy(parent.join(format!(".policy-{}.toml", uuid::Uuid::new_v4().simple())));
     let mut committed = false;
     let result = (|| -> std::io::Result<std::fs::Metadata> {
+        fault.stage(phase, "temp_create")?;
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
             .mode(0o600)
             .open(&temporary.0)?;
-        file.write_all(source.as_bytes())?;
+        match fault.stage(phase, "temp_write")? {
+            FaultAction::Continue => file.write_all(source.as_bytes())?,
+            #[cfg(debug_assertions)]
+            FaultAction::PartialWrite => {
+                file.write_all(&source.as_bytes()[..source.len().div_ceil(2)])?;
+                return Err(io::Error::other(
+                    "injected I/O failure after partial policy write",
+                ));
+            }
+        }
+        fault.stage(phase, "file_sync")?;
         file.sync_all()?;
         let written = file.metadata()?;
         drop(file);
+        fault.stage(phase, "rename")?;
         std::fs::rename(&temporary.0, path)?;
         committed = true;
+        fault.stage(phase, "directory_sync")?;
         File::open(parent)?.sync_all()?;
         Ok(written)
     })();
     result.map_err(|error| SaveError { error, committed })
+}
+
+pub(crate) enum FaultAction {
+    Continue,
+    #[cfg(debug_assertions)]
+    PartialWrite,
+}
+
+/// The test controller receives a new transaction ID and then authorizes each
+/// named checkpoint. There is no process-wide syscall counter or production
+/// control surface. A release build has no socket or environment lookup.
+pub(crate) struct PolicyFault {
+    #[cfg(debug_assertions)]
+    stream: Option<std::os::unix::net::UnixStream>,
+    #[cfg(debug_assertions)]
+    run: String,
+    #[cfg(debug_assertions)]
+    transaction: String,
+    #[cfg(debug_assertions)]
+    kind: &'static str,
+}
+
+impl PolicyFault {
+    fn disabled() -> Self {
+        Self {
+            #[cfg(debug_assertions)]
+            stream: None,
+            #[cfg(debug_assertions)]
+            run: String::new(),
+            #[cfg(debug_assertions)]
+            transaction: String::new(),
+            #[cfg(debug_assertions)]
+            kind: "",
+        }
+    }
+
+    pub(crate) fn new(kind: &'static str) -> io::Result<Self> {
+        #[cfg(debug_assertions)]
+        {
+            use std::os::unix::net::UnixStream;
+            use std::time::Duration;
+
+            let Some(socket) = std::env::var_os("SAFEYOLO_TEST_POLICY_STAGE_SOCKET") else {
+                return Ok(Self::disabled());
+            };
+            let run = std::env::var("SAFEYOLO_TEST_POLICY_RUN_ID").map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "missing policy test run ID")
+            })?;
+            let stream = UnixStream::connect(socket)?;
+            stream.set_read_timeout(Some(Duration::from_secs(120)))?;
+            let mut fault = Self {
+                stream: Some(stream),
+                run,
+                transaction: uuid::Uuid::new_v4().to_string(),
+                kind,
+            };
+            fault.stage("transaction", "begin")?;
+            Ok(fault)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = kind;
+            Ok(Self::disabled())
+        }
+    }
+
+    pub(crate) fn stage(&mut self, phase: &str, stage: &str) -> io::Result<FaultAction> {
+        #[cfg(debug_assertions)]
+        if let Some(stream) = &mut self.stream {
+            use std::io::Read;
+
+            let message = serde_json::json!({
+                "run": self.run, "transaction": self.transaction,
+                "kind": self.kind, "phase": phase, "stage": stage,
+            });
+            stream.write_all(message.to_string().as_bytes())?;
+            stream.write_all(b"\n")?;
+            let mut reply = [0];
+            stream.read_exact(&mut reply)?;
+            return match reply[0] {
+                b'c' => Ok(FaultAction::Continue),
+                b'e' => Err(io::Error::other(format!(
+                    "injected policy {phase}.{stage} failure"
+                ))),
+                b'p' if stage == "temp_write" => Ok(FaultAction::PartialWrite),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid policy test checkpoint reply",
+                )),
+            };
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = (phase, stage);
+        Ok(FaultAction::Continue)
+    }
 }
 
 /// Share the policy.toml mutation lock among native admin, grant, and expiry
@@ -706,6 +817,8 @@ pub(crate) fn update_policy<T>(
         .unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent)?;
     let lock = lock_policy(path)?;
+    let mut fault = PolicyFault::new("mutation")?;
+    fault.stage("mutation", "original_read")?;
     let original = std::fs::read_to_string(path)?;
     let (mut document, mut context) = crate::policy::parse_toml_for_edit(&original)
         .map_err(|error| invalid(error.to_string()))?;
@@ -714,14 +827,29 @@ pub(crate) fn update_policy<T>(
     if skip_unchanged && changed == original {
         return Ok(result);
     }
-    if let Err(error) = save_policy(path, &changed) {
+    if let Err(error) = save_policy_in_transaction(path, &changed, &mut fault, "commit") {
         if error.committed {
-            restore_policy(path, &original, &mut activate)?;
+            if let Err(rollback) = restore_policy(path, &original, &mut activate, &mut fault) {
+                return Err(ApprovalError {
+                    kind: ErrorKind::Rollback,
+                    message: format!("policy save failed: {}; {rollback}", error.error),
+                });
+            }
         }
         return Err(error.error.into());
     }
-    if let Err(error) = activate(&changed) {
-        restore_policy(path, &original, &mut activate)?;
+    let activation = fault
+        .stage("commit", "activation")
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+        .and_then(|()| activate(&changed));
+    if let Err(error) = activation {
+        if let Err(rollback) = restore_policy(path, &original, &mut activate, &mut fault) {
+            return Err(ApprovalError {
+                kind: ErrorKind::Rollback,
+                message: format!("policy activation failed: {error}; {rollback}"),
+            });
+        }
         return Err(ApprovalError {
             kind: ErrorKind::Activation,
             message: format!("policy activation failed: {error}"),
@@ -736,11 +864,20 @@ fn restore_policy(
     path: &Path,
     original: &str,
     activate: &mut impl FnMut(&str) -> std::result::Result<(), String>,
+    fault: &mut PolicyFault,
 ) -> Result<()> {
-    save_policy(path, original).map_err(|error| ApprovalError {
-        kind: ErrorKind::Rollback,
-        message: format!("failed to restore original policy: {}", error.error),
+    save_policy_in_transaction(path, original, fault, "rollback").map_err(|error| {
+        ApprovalError {
+            kind: ErrorKind::Rollback,
+            message: format!("failed to restore original policy: {}", error.error),
+        }
     })?;
+    fault
+        .stage("rollback", "activation")
+        .map_err(|error| ApprovalError {
+            kind: ErrorKind::Rollback,
+            message: format!("failed to reactivate restored policy: {error}"),
+        })?;
     activate(original).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to reactivate restored policy: {error}"),
