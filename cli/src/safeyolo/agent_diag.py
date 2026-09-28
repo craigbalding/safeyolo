@@ -216,10 +216,10 @@ def _check_proxy_socket(name: str, entry: dict) -> Check:
 def _check_proxy_process() -> Check:
     if not is_proxy_running():
         return Check("Proxy process", "FAIL",
-                     "mitmdump not running",
+                     "Rust proxy not running",
                      "safeyolo start")
     return Check("Proxy process", "PASS",
-                 "mitmdump running (owns per-agent UnixInstance listeners)")
+                 "Rust proxy running")
 
 
 def _check_sandbox_running(name: str) -> Check:

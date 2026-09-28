@@ -290,15 +290,14 @@ def get_agent_command_supervisor_state_path(name: str) -> Path:
 def get_bridge_sockets_dir() -> Path:
     """Per-agent UDS directories (`<ip>_<agent>/proxy.sock`) live here.
 
-    Owned by mitmproxy's `UnixInstance` (one per agent). Kept as
-    `get_bridge_sockets_dir` rather than renamed to preserve the
-    existing layout for agents carried across the refactor.
+    The native Rust proxy owns the bound sockets. The helper name keeps
+    the existing directory layout for agents carried across the cutover.
     """
     return get_data_dir() / "sockets"
 
 
 def get_proxy_pid_path() -> Path:
-    """Get path to the mitmproxy PID file."""
+    """Get the native proxy PID record path."""
     return get_data_dir() / "proxy.pid"
 
 
