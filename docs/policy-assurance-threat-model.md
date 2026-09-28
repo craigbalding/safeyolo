@@ -248,8 +248,8 @@ and session-grant tests remain separate scope and revocation controls. The
 runner does not execute a VM power cut. Use `--group` for an individual clean
 control and `replay` with a saved trace to calibrate it separately against a
 disposable mutant binary; no mutants run in the nightly profile. The restored
-nightly/manual workflow uses only this hermetic profile. C6 final acceptance
-still awaits independent review of the corrected on-guest recovery report. The C4
+nightly/manual workflow uses only this hermetic profile. Lens accepted C6 after
+review of the corrected on-guest recovery report. The C4
 technical result was accepted at `ca224d39697bed1a8ba59ec23299ac859f840b1a`.
 The C5 technical result was accepted at
 `b445ee5736005c173bc3189d55cf57e317f635ff`.
@@ -394,13 +394,16 @@ The native disposable-VM protocol is `tools.policy_chaos fault`:
    observations before any optional cleanup or restoration. A missing cut
    record returns `INCOMPLETE`; an invalid surviving policy returns `FINDING`.
 
-The three actual disposable-KVM cuts have been executed. Final C6 acceptance
-waits for independent review of the corrected on-guest report from the retained
-second-cut state; this C8 slice requests no additional cut. The guard-only
-tests do not stop a VM and do not count as VM recovery evidence. The recovery
-command checks a declared outside-VM cut record; it cannot verify the
-hypervisor action by itself. Independent acceptance must inspect the
-controller's actual abrupt-stop result and corrected report.
+The three actual disposable-KVM cuts have been executed. Lens
+[accepted C6](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5873175078)
+after independent review of the corrected report from the retained second-cut
+state; all four C6 boxes are checked. This C8 slice requests no additional cut.
+The hypervisor stop remains controller-attested. The corrected run reused the
+retained state, and audit-log persistence across the cut was not independently
+proved. The result makes no physical-power-loss or in-flight exactly-once
+claim. Guard-only tests do not stop a VM and do not count as VM recovery
+evidence. The recovery command checks a declared outside-VM cut record; it
+cannot verify the hypervisor action by itself.
 
 ## Native chaos selection for #831
 
@@ -426,7 +429,7 @@ column is not satisfied by a historical Python pass.
 | `host-canonicalization`: case and DNS-label wildcard boundary; trailing dot, Internationalized Domain Names in Applications (IDNA), unusual dot, IP text and conflicting authority | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), `test_native_network_policy.py::test_native_policy_homoglyph_authority_forms`, and `test_native_network_policy.py::test_native_policy_raw_decodable_mixed_script_ace` cover selected real ingress, but not a suffix-sharing sibling of a wildcard host. | C3 selects `--group host-boundary` and `host-properties`: after a supported writer adds `*.scope.invalid`, a proper child can gain access but `evilscope.invalid` must not. Canonical-host interactions also alter a mutation's scope. The old mitmproxy `HTTPFlow` ingress is removed, so replaying that object path is inapplicable. The historical non-normative observations do not become new policy guarantees. |
 | `writer-matrix`: `cli-same`, `engine-same`, `agents-same`, `admin-same`, `gateway-same`, `cli-locked`, `engine-agents`, `admin-gateway`; lock controls, lock-before-read and revocation versus unrelated approval | The [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) establishes serial cross-version reuse. `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` establishes one native watermark edge. Neither proves the matrix's concurrent writes. | [#831 C4 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868912512) covers selected `--group writer-contention` and the two native publication histories in `service_catalog_tests::contention`. C7 calibrates lost update and stale publication separately. |
 | `failure-stages`: parse, normalization, serialization, temporary creation/write, file sync, rename, directory sync, activation/reload and audit | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) and `test_native_network_policy.py::test_native_policy_failed_reload_retains_scoped_decisions` cover startup refusal and last-known-good reload. | [#831 C5 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5870453777) covers selected `--group failure-stages`: actual native writer stages, partial write, failed rollback and audit interaction. The debug profile filters out `test_default_release_build_cannot_activate_stage_control`, which requires a separate release binary and is covered by the cited C5 result. The selected cases check response, file, active and fresh state at each commit boundary. C7 calibrates false success separately. |
-| `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | C6 selects `--group crash-recovery` (`test_native_policy_crash_recovery.py`) for all three process deaths and the guarded VM protocol. Three actual disposable-KVM stops were executed; final corrected-report review is pending. Fresh Rust must read the surviving file without a fixture rewrite. |
+| `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | C6 selects `--group crash-recovery` (`test_native_policy_crash_recovery.py`) for all three process deaths and the guarded VM protocol. The three actual disposable-KVM stops and corrected-report review are [accepted for C6](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5873175078). Fresh Rust reads the surviving file without a fixture rewrite. |
 | `known-no-rate`: an unrated allow disappeared or bypassed the aggregate budget | `test_operator_consumer_approval.py::test_retained_operator_client_approves_exact_native_network_scope` checks the native 600-rate approval and real origin effect; `test_native_network_policy.py::test_native_policy_budget_is_shared_and_survives_reload` checks budget reuse. | C3 selects `--group host-budget` and `host-histories` for an unrated host allowance, where disappearance or budget escape changes a later decision. |
 | `known-persistence-failure`: save error reported success and broadened live access | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) covers malformed reload, but not a writer save failure. | C5 selects `--group failure-stages` to inject a real native writer failure and require a truthful result, preserved pre-commit bytes and decisions, and no premature success. |
 | `known-public-concurrency`: policy-host lost update | `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` covers the native watcher watermark, not competing public writers. | [#831 C4 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868912512) covers selected `--group writer-contention` for two-writer lock order and publication histories. C7 tests the lost-update assertion against a stale-read mutant separately. |
@@ -504,8 +507,8 @@ The historical `fault prepare-power-cut` / `fault recover` protocol is also
 separate. It paused the Python writer and used that engine for recovery; no
 native VM-death result is inherited. The C6 candidate adds the guarded native
 protocol described above. Actual disposable-KVM stops at all three named
-checkpoints were executed; final corrected-report review remains open. C8
-restores the recurring incremental profile. The old Python-engine recovery
+checkpoints were executed and [accepted for C6](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5873175078).
+C8 restores the recurring incremental profile. The old Python-engine recovery
 oracle is inapplicable because that engine was removed;
 the fresh Rust proxy and controlled origin supply the required recovery effects.
 
