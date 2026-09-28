@@ -1,9 +1,8 @@
 """macOS platform: Virtualization.framework microVM + vsock UDS bridge.
 
 Guest has no external network interface. Egress goes guest → vsock:1080 →
-safeyolo-vm's VSockProxyRelay → per-agent host UDS → mitmproxy's
-per-agent UnixInstance. Identity comes from the socket directory
-(`<ip>_<agent>/proxy.sock`), parsed at UnixInstance bind.
+safeyolo-vm's VSockProxyRelay → per-agent host UDS → Rust proxy listener.
+The configured listener fixes agent identity when it accepts the connection.
 
 Shell access (`safeyolo agent shell`) goes via a second per-agent UDS →
 VSockShellBridge → vsock:2220 → guest-shell-bridge → sshd. No host firewall
@@ -28,8 +27,8 @@ from . import AgentPlatform
 def _shell_socket_path(name: str) -> Path:
     """Per-agent UDS the host-side shell bridge listens on. Kept under
     `shell-sockets/<name>.sock` — a separate subdir from the per-agent
-    proxy sockets (which use `sockets/<ip>_<agent>/proxy.sock`, owned by
-    mitmproxy's UnixInstance)."""
+    proxy sockets (which use `sockets/<ip>_<agent>/proxy.sock`, bound by
+    the Rust proxy)."""
     return get_data_dir() / "shell-sockets" / f"{name}.sock"
 
 
@@ -98,7 +97,7 @@ class DarwinPlatform(AgentPlatform):
 
     def setup_networking(self, agent_index: int) -> dict:
         # Per-agent IP from the 10.200.0.0/16 range. Configured on the
-        # guest's loopback and used as the attribution IP in mitmproxy
+        # guest's loopback and used as the attribution IP in the Rust proxy
         # — one consistent identity visible inside and outside the
         # sandbox.
         offset = agent_index + 1  # 0 → 10.200.0.1
@@ -155,8 +154,8 @@ class DarwinPlatform(AgentPlatform):
     ) -> int:
         # Thread the per-agent proxy socket through to safeyolo-vm so
         # VSockProxyRelay can connect() to it on each guest-initiated
-        # flow. The socket file is owned by mitmproxy's UnixInstance
-        # (one per agent); its directory is `<ip>_<agent>`.
+        # flow. The Rust proxy binds one listener per configured agent;
+        # its socket directory is `<ip>_<agent>`.
         # Also allocate a shell-bridge UDS so `safeyolo agent shell`
         # can reach the VM's sshd over vsock.
         from ..sockets import path_for as _sock_for  # noqa: PLC0415

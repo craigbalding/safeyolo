@@ -1102,7 +1102,7 @@ def prepare_config_share(
     # Proxy environment variables. proxy_port is 8080 -- the fixed port
     # where guest-proxy-forwarder listens inside the sandbox. The host
     # bridge (UDS on Linux, vsock on macOS) decouples it from whatever
-    # port mitmproxy is on. gateway_ip is the guest-side loopback.
+    # port the host Rust proxy uses. gateway_ip is the guest-side loopback.
     proxy_url = f"http://{gateway_ip}:{proxy_port}"
     proxy_env = (
         f'export HTTP_PROXY="{proxy_url}"\n'
@@ -1561,7 +1561,7 @@ def is_vm_running(name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Agent map (for service_discovery addon)
+# Agent map for native listeners and discovery metadata
 # ---------------------------------------------------------------------------
 
 def _update_agent_map(
@@ -1572,13 +1572,11 @@ def _update_agent_map(
 ) -> None:
     """Update the agent-IP map file.
 
-    Read by two consumers:
-      - addons/service_discovery.py (in mitmproxy) -- uses `ip` to map
-        request source IPs back to agent names for audit/policy/rate-limit.
-      - cli/src/safeyolo/proxy.py (_initial_mode_specs) -- enumerates
-        agents at proxy startup to build the initial `options.mode` list.
-    `socket` is retained for diagnostics/legacy compatibility; the
-    authoritative path is derived via `sockets.path_for(name, ip)`.
+    The CLI derives native listener entries from the map at proxy start and
+    listener reload. Rust also reads it for discovery reports and to reconcile
+    a listener identity with host metadata when a request has a client IP.
+    Diagnostics use `socket`; the managed listener path is derived with
+    `sockets.path_for(name, ip)`.
     """
     map_path = get_agent_map_path()
     map_path.parent.mkdir(parents=True, exist_ok=True)

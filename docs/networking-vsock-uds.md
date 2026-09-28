@@ -35,10 +35,13 @@ socket.
 
 The host command-line interface (CLI) assigns each running agent an
 attribution Internet Protocol (IP) address from
-`10.200.0.0/16`. For sorted agent index `N`, the address is
-`10.200.{(N+1) / 256}.{(N+1) % 256}`, using integer division. For example,
-index 0 has `10.200.0.1`. The CLI records the agent name, IP, and socket path
-in `~/.safeyolo/data/agent_map.json` and creates a listener entry with
+`10.200.0.0/16`. The CLI reserves a stable `network_slot` in the agent's
+configuration. It uses the lowest free slot for a new agent and preserves a
+running legacy agent's address when possible. For network slot `N`, the
+address is `10.200.{(N+1) / 256}.{(N+1) % 256}`, using integer division.
+Slot 0 has `10.200.0.1`. The live `~/.safeyolo/data/agent_map.json` entry is
+authoritative for an agent's assigned IP and socket path. The CLI creates a
+listener entry with
 `agent_id`, `source_id`, and `socket_path` in the native configuration.
 
 The Rust proxy binds each configured path with `tokio::net::UnixListener`.

@@ -150,7 +150,7 @@ intact. The current package has no `PUT /admin/proxy/mode` route.
 | `safeyolo-vm` | Swift | VM lifecycle, proxy and shell vsock relays |
 | `vsock-term` | C | Guest terminal daemon and PTY bridge |
 | `guest-proxy-forwarder` | Shell and socat | Guest loopback proxy port to vsock:1080 |
-| `guest-shell-bridge` | Python | vsock:2220 to guest `sshd` |
+| `guest-shell-bridge` | Shell and socat | vsock:2220 to guest `sshd` |
 | `proxy/src/lib.rs` | Rust | Per-agent UDS listeners and fixed accept identity |
 | `rust_proxy.py` | Python | Native process launch, listener reconciliation, reload acknowledgement |
 | `sockets.py` | Python | Private socket paths under `<ip>_<agent>/proxy.sock` |
