@@ -350,6 +350,7 @@ def test_written_wildcard_has_dns_label_boundary() -> None:
     """The supported writer's *.scope.invalid rule reaches a child, not its sibling."""
     _generated_run({
         "family": "wildcard", "root": "scope.invalid",
+        "initial_wildcard": "*.separate.invalid",
         "operations": [{"action": "allow", "host": "*.scope.invalid"}],
     })
 
