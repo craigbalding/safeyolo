@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run #637 P3 with frozen installed source and disposable real guests.
+# Run #637 P3 at frozen R by default, or at an explicitly selected commit.
 # The selected host must support its named guest mechanism and loopback TCP.
 
 set -euo pipefail
@@ -7,6 +7,21 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 FROZEN_R=2faba3306de7c099e2913e0eebc8907ff3eba148
 PLATFORM="${1:-}"
+INSTALL_COMMIT="$FROZEN_R"
+INSTALL_CHECKOUT=""
+if { [ "$#" -eq 3 ] || [ "$#" -eq 5 ]; } && \
+   [ "$2" = "--install-commit" ] && [[ "$3" =~ ^[0-9a-f]{40}$ ]]; then
+    INSTALL_COMMIT="$3"
+    if [ "$#" -eq 5 ] && [ "$4" = "--install-checkout" ]; then
+        INSTALL_CHECKOUT="$5"
+    elif [ "$#" -eq 5 ]; then
+        echo "Usage: $0 {systrap|vz} [--install-commit FULL_SHA [--install-checkout PATH]]" >&2
+        exit 2
+    fi
+elif [ "$#" -ne 1 ]; then
+    echo "Usage: $0 {systrap|vz} [--install-commit FULL_SHA [--install-checkout PATH]]" >&2
+    exit 2
+fi
 
 case "$PLATFORM" in
     systrap)
@@ -43,8 +58,12 @@ if [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; 
     echo "ERROR: P3 harness checkout must be clean" >&2
     exit 2
 fi
-if ! git -C "$REPO_ROOT" cat-file -e "$FROZEN_R^{commit}" 2>/dev/null; then
-    git -C "$REPO_ROOT" fetch origin feat/rust-proxy-620
+if ! git -C "$REPO_ROOT" cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
+    if [ "$INSTALL_COMMIT" = "$FROZEN_R" ]; then
+        git -C "$REPO_ROOT" fetch origin feat/rust-proxy-620
+    else
+        git -C "$REPO_ROOT" fetch origin "$INSTALL_COMMIT"
+    fi
 fi
 if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$FROZEN_R" HEAD; then
     echo "ERROR: P3 harness checkout does not contain frozen R" >&2
@@ -123,12 +142,26 @@ PY
 }
 trap cleanup EXIT
 
-git -C "$REPO_ROOT" worktree add --detach "$PILOT_DIR/source-R" "$FROZEN_R"
-if [ "$(git -C "$PILOT_DIR/source-R" rev-parse HEAD)" != "$FROZEN_R" ]; then
-    echo "ERROR: detached P3 install source is not frozen R" >&2
+if [ -n "$INSTALL_CHECKOUT" ]; then
+    SOURCE_DIR="$(cd "$INSTALL_CHECKOUT" && pwd -P)"
+    if [ "$(git -C "$SOURCE_DIR" rev-parse --show-toplevel)" != "$SOURCE_DIR" ] || \
+       [ "$SOURCE_DIR" = "$REPO_ROOT" ] || [ ! -f "$SOURCE_DIR/install.sh" ]; then
+        echo "ERROR: selected P3 source must be a separate SafeYolo checkout" >&2
+        exit 2
+    fi
+    if [ -n "$(git -C "$SOURCE_DIR" status --porcelain=v1 --untracked-files=all)" ]; then
+        echo "ERROR: selected P3 install checkout must be clean" >&2
+        exit 2
+    fi
+else
+    SOURCE_DIR="$PILOT_DIR/source-selected"
+    git -C "$REPO_ROOT" worktree add --detach "$SOURCE_DIR" "$INSTALL_COMMIT"
+fi
+if [ "$(git -C "$SOURCE_DIR" rev-parse HEAD)" != "$INSTALL_COMMIT" ]; then
+    echo "ERROR: detached P3 install source is not selected commit $INSTALL_COMMIT" >&2
     exit 2
 fi
 
 cd "$REPO_ROOT"
 "$REPO_ROOT/tests/blackbox/run-lane.sh" "$PLATFORM" \
-    --install-checkout "$PILOT_DIR/source-R" --proxy-impl rust --p3
+    --install-checkout "$SOURCE_DIR" --proxy-impl rust --p3 --install-commit "$INSTALL_COMMIT"

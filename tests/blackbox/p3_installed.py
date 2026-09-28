@@ -285,13 +285,14 @@ def main() -> None:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--platform", choices=("systrap", "vz"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--install-commit", default=FROZEN_R)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == FROZEN_R, f"pilot installed {revision}, expected frozen R"
+    assert revision == args.install_commit, f"pilot installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
-    identity = installed_identity(runtime, install_checkout, frozen_revision=FROZEN_R)
+    identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     native = json.loads((config_dir / "data/native.json").read_text())
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
@@ -369,7 +370,7 @@ def main() -> None:
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
         report = {
             "status": "journeys_passed",
-            "frozen_revision": FROZEN_R,
+            "source_revision": args.install_commit,
             "platform": args.platform,
             "host": runtime["host"],
             "installed": identity,
@@ -396,6 +397,8 @@ def main() -> None:
             "origin": origin,
             "inspector": inspector,
         }
+        if args.install_commit == FROZEN_R:
+            report["frozen_revision"] = FROZEN_R
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"{args.platform} P3: six installed guest journeys and operator effects verified ({args.output})")
     finally:

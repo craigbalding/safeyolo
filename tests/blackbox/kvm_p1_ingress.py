@@ -41,9 +41,7 @@ def runsc_identity(
     return {"pid": pid, "platform": platform, "bundle": str(agent_dir), "proxy_mount": mount}
 
 
-def installed_identity(
-    runtime: dict, install_checkout: Path, *, frozen_revision: str = FROZEN_R
-) -> dict:
+def installed_identity(runtime: dict, install_checkout: Path, *, expected_revision: str = FROZEN_R) -> dict:
     assert runtime["status"] == "attached_ready", "installed runtime was not attached and ready"
     cli = runtime["cli"]
     candidate = runtime["candidate"]
@@ -52,8 +50,8 @@ def installed_identity(
     assert running["authenticated_runtime_identity"]["status"] == "authenticated"
     package = Path(cli["package_location"]).resolve().parent
     stamp = json.loads((package / "_build_identity.json").read_text())
-    assert stamp["source_revision"] == frozen_revision and stamp["state"] == "known", (
-        "installed CLI wheel does not carry the frozen R build identity"
+    assert stamp["source_revision"] == expected_revision and stamp["state"] == "known", (
+        "installed CLI wheel does not carry the selected source build identity"
     )
     packaged = (package / "bin" / "safeyolo-proxy").resolve()
     assert Path(candidate["path"]).resolve() == packaged
@@ -61,16 +59,16 @@ def installed_identity(
     assert candidate["sha256"] == _sha256(packaged)
     built = install_checkout / "proxy" / "target" / "release" / "safeyolo-proxy"
     assert built.is_file() and _sha256(built) == candidate["sha256"], (
-        "installed native binary differs from the locked R release build"
+        "installed native binary differs from the selected source release build"
     )
     assert Path(install_checkout).resolve() != Path.cwd().resolve(), (
-        "frozen install checkout must be separate from the pilot harness"
+        "selected install checkout must be separate from the pilot harness"
     )
     status = subprocess.run([cli["path"], "status"], capture_output=True, text=True, check=False, timeout=15)
     assert status.returncode == 0 and "running" in status.stdout and str(running["pid"]) in status.stdout, (
         "installed CLI status did not identify the running native process"
     )
-    return {
+    identity = {
         "cli": cli,
         "candidate": candidate,
         "build_identity": stamp,
@@ -78,6 +76,20 @@ def installed_identity(
         "native": runtime["native"],
         "cli_status": status.stdout.strip(),
     }
+    if expected_revision != FROZEN_R:
+        doctor = subprocess.run(
+            [cli["path"], "doctor", "--json"], capture_output=True, text=True, check=False, timeout=45
+        )
+        checks = json.loads(doctor.stdout)["checks"]
+        runtime_checks = [row for row in checks if row["name"] == "Runtime identity"]
+        assert len(runtime_checks) == 1 and runtime_checks[0]["status"] == "pass", (
+            "installed CLI diagnostics did not identify the native process"
+        )
+        check = runtime_checks[0]
+        assert Path(check["message"].removeprefix("Running ")).resolve() == packaged
+        assert check["detail"] == f"PID {running['pid']}"
+        identity["cli_diagnostics"] = check
+    return identity
 
 
 def guest_observation(cli: str, agent: str, marker: str) -> dict:
