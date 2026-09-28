@@ -82,6 +82,43 @@ class DriftControls(unittest.TestCase):
         self.assertEqual(report["status"], "drift")
         self.assertTrue(any(item["rule"] == "rust-network" and item["symbol"] == "helper" for item in report["operations_added"]))
 
+    def test_qualified_rust_operations_in_new_helpers(self) -> None:
+        calls = {
+            "plain_tcp": ("rust-network", 'TcpStream::connect("example.test:443")'),
+            "std_tcp": ("rust-network", 'std::net::TcpStream::connect("example.test:443")'),
+            "tokio_tcp": ("rust-network", 'tokio::net::TcpStream::connect("example.test:443")'),
+            "std_unix": ("rust-network", 'std::os::unix::net::UnixStream::connect("/tmp/example.sock")'),
+            "tokio_unix": ("rust-network", 'tokio::net::UnixStream::connect("/tmp/example.sock")'),
+            "std_tcp_listener": ("rust-network", 'std::net::TcpListener::bind("127.0.0.1:0")'),
+            "tokio_tcp_listener": ("rust-network", 'tokio::net::TcpListener::bind("127.0.0.1:0")'),
+            "std_unix_listener": ("rust-network", 'std::os::unix::net::UnixListener::bind("/tmp/example.sock")'),
+            "tokio_unix_listener": ("rust-network", 'tokio::net::UnixListener::bind("/tmp/example.sock")'),
+            "tokio_dns": ("rust-network", 'tokio::net::lookup_host("example.test:443")'),
+            "std_create": ("rust-file", 'std::fs::File::create("/tmp/example")'),
+            "tokio_create": ("rust-file", 'tokio::fs::File::create("/tmp/example")'),
+            "std_open": ("rust-file", 'std::fs::File::open("/tmp/example")'),
+            "tokio_open": ("rust-file", 'tokio::fs::File::open("/tmp/example")'),
+            "std_options": ("rust-file", "std::fs::OpenOptions::new()"),
+            "tokio_options": ("rust-file", "tokio::fs::OpenOptions::new()"),
+            "tokio_read": ("rust-file", 'tokio::fs::read("/tmp/example")'),
+            "std_command": ("rust-process-ffi", 'std::process::Command::new("example")'),
+            "tokio_command": ("rust-process-ffi", 'tokio::process::Command::new("example")'),
+        }
+        helpers = "\n".join(f"fn {name}() {{ {call}; }}" for name, (_, call) in calls.items())
+        self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST + "\n" + helpers + "\n")
+        result = Path(self.temp.name) / "qualified.json"
+        command = ["python3", "-I", str(ROOT / "tools/assurance/check.py"), "check",
+                   "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
+                   "--json", str(result)]
+        run = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        report = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "drift")
+        self.assertEqual(
+            {(rule, name) for name, (rule, _) in calls.items()},
+            {(item["rule"], item["symbol"]) for item in report["operations_added"]},
+        )
+
     def test_changed_authorization_with_existing_sink(self) -> None:
         self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST.replace("if allowed", "if !allowed"))
         report = self.report()

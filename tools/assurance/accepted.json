@@ -3063,6 +3063,13 @@
       "text": "std::fs::write(&policy, \"[agents.alice]\\n\")"
     },
     {
+      "digest": "eccf79b4a72cc9065ec0830dac5022a197303c0fc72a86abc7bd9206b1fc756d",
+      "path": "proxy/src/admin_api/gateway.rs",
+      "rule": "rust-file",
+      "symbol": "canceled_mutation_is_drained_and_audited_after_lock_release",
+      "text": "std::fs::OpenOptions::new()"
+    },
+    {
       "digest": "ba0bc70b7bc3222a00e49f193553bfca0ec587e62d9ae42b353782d2f0340a27",
       "path": "proxy/src/admin_api/gateway.rs",
       "rule": "rust-file",
@@ -3098,11 +3105,25 @@
       "text": "std::fs::write(&path, b\"{\\\"event\\\":\\\"admin.denial\\\",\\\"details\\\":{}}\\n\")"
     },
     {
+      "digest": "eccf79b4a72cc9065ec0830dac5022a197303c0fc72a86abc7bd9206b1fc756d",
+      "path": "proxy/src/admin_listener.rs",
+      "rule": "rust-file",
+      "symbol": "captured_audit_offset_excludes_old_lines_and_includes_following_lines",
+      "text": "std::fs::OpenOptions::new()"
+    },
+    {
       "digest": "c01ea87b76e546cc939560ccc39f48bf7ae038beb876444de687112c063dfc6c",
       "path": "proxy/src/admin_listener.rs",
       "rule": "rust-file",
       "symbol": "complete_lines_survive_the_bounded_batch_when_their_total_exceeds_one_mib",
       "text": "std::fs::write(&path, source)"
+    },
+    {
+      "digest": "a4b177058b04a898744d2430e088b61032341a6ec03c5f59c8260e2f1f94090f",
+      "path": "proxy/src/admin_listener.rs",
+      "rule": "rust-file",
+      "symbol": "read_event_lines",
+      "text": "tokio::fs::File::open(path)"
     },
     {
       "digest": "bce6bc0cd36d9fb08fb4d85c0dbcf43572faeef528139324fe878ba977860210",
@@ -3294,6 +3315,13 @@
       "text": "std::fs::write(\n                &ca_path,\n                format!(\"{}{}\", key.serialize_pem(), certificate.pem()),\n            )"
     },
     {
+      "digest": "c6a71a0772a5c59a6be8da4b7df271fbbdad7da15f95806242863f15a26cc294",
+      "path": "proxy/src/http.rs",
+      "rule": "rust-file",
+      "symbol": "parent_tls",
+      "text": "std::fs::File::open(path)"
+    },
+    {
       "digest": "367b61cf77baadec8f9110c7b83e6bfa220801a05dc7804ff4849db907644ae7",
       "path": "proxy/src/http.rs",
       "rule": "rust-file",
@@ -3355,6 +3383,13 @@
       "rule": "rust-file",
       "symbol": "reload_threshold",
       "text": "std::fs::write(\n                config.policy_file.as_ref().unwrap(),\n                json!({\"addons\":{\"circuit_breaker\":{\"failure_threshold\":threshold,\"jitter_"
+    },
+    {
+      "digest": "0829a90475490e45ef83d2b64fab7d471d10e222c96143d20e705b02614059e2",
+      "path": "proxy/src/http/test_context.rs",
+      "rule": "rust-file",
+      "symbol": "new",
+      "text": "std::fs::File::open(event_log)"
     },
     {
       "digest": "1fe2178e32a2d62c9567a5e131bd277f7d8d0904979a4772003f4b90ccea4829",
@@ -3616,6 +3651,13 @@
       "text": "TcpStream::connect(address)"
     },
     {
+      "digest": "dbb299da27d1995659baa8c18a8e9d1de89b5d105d5806129cecb2ce1f782260",
+      "path": "proxy/src/http.rs",
+      "rule": "rust-network",
+      "symbol": "open_egress_for_flow",
+      "text": "tokio::net::lookup_host((host, port))"
+    },
+    {
       "digest": "bcfa29bfaad8ef806645408c7e1cd7fd0d4436843d4f89aedb636da9bd4d3a07",
       "path": "proxy/src/http.rs",
       "rule": "rust-network",
@@ -3670,6 +3712,13 @@
       "rule": "rust-network",
       "symbol": "race_connect",
       "text": "UnixStream::connect(socket)"
+    },
+    {
+      "digest": "30d25ac7ae6fd259c3264a498779b4a4f8e93bfaac3f532b55270caf24aa0a50",
+      "path": "proxy/src/lib.rs",
+      "rule": "rust-network",
+      "symbol": "bind",
+      "text": "std::os::unix::net::UnixStream::connect(path)"
     },
     {
       "digest": "f099f1cab2d511e868c6d7c37c63899918f32f0bb9fb6cbd83abbb1c868e2937",
@@ -7172,6 +7221,13 @@
       "text": "file.write_all(&buffer[..len])"
     },
     {
+      "digest": "f23c94ee9e1a20de40b98b526f93042bacfc42ce72d566bfd313c5eeb0df64fd",
+      "path": "proxy/src/agent_api.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "scalar_upper_decimal_and_repr_match_every_python_scalar",
+      "text": "std::process::Command::new(std::env::var(\"SAFEYOLO_POLICY_PYTHON\").expect(\"set SAFEYOLO_POLICY_PYTHON\"))"
+    },
+    {
       "digest": "8900760923538483d27ed43948707e94e32f6b5d1523c584663ade241bd062ac",
       "path": "proxy/src/agent_discovery.rs",
       "rule": "rust-process-ffi",
@@ -7212,6 +7268,13 @@
       "rule": "rust-process-ffi",
       "symbol": "close_snapshot",
       "text": "libc::close(descriptor)"
+    },
+    {
+      "digest": "63aef9db7c675393a6250b8c8b675bdc171439417936455cacf1ae7018a1b36e",
+      "path": "proxy/src/circuits/config.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "live_source_config_application_oracle",
+      "text": "std::process::Command::new(python)"
     },
     {
       "digest": "e1d1e28f5e9b60646c37c62f6c9d2146fa2890e38d0ba64a56922871319106eb",
@@ -7270,6 +7333,13 @@
       "text": "Command::new(python)"
     },
     {
+      "digest": "63aef9db7c675393a6250b8c8b675bdc171439417936455cacf1ae7018a1b36e",
+      "path": "proxy/src/http/traffic_url.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "live_source_oracle",
+      "text": "std::process::Command::new(python)"
+    },
+    {
       "digest": "1869d11d434dda7416824bb5b145c5ebe8e7d97d4f65d99ac60028a597f25d25",
       "path": "proxy/src/lib.rs",
       "rule": "rust-process-ffi",
@@ -7326,6 +7396,13 @@
       "text": "unsafe { libc::poll(&mut descriptor_poll, 1, 100) }"
     },
     {
+      "digest": "63aef9db7c675393a6250b8c8b675bdc171439417936455cacf1ae7018a1b36e",
+      "path": "proxy/src/network_guard.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "unicode_tables_match_every_python_scalar",
+      "text": "std::process::Command::new(python)"
+    },
+    {
       "digest": "399da81f1a3b2f1e7c38804990f7177fed9aae1ef2b92081b08510142cb81cc1",
       "path": "proxy/src/policy.rs",
       "rule": "rust-process-ffi",
@@ -7361,7 +7438,7 @@
       "text": "unsafe { memmap2::MmapOptions::new().map(&file)? }"
     }
   ],
-  "rules_sha256": "45c7782b292472d890d87f4211bd446876cb9cda7bfee9a5a2bc2f80e7e6138f",
+  "rules_sha256": "d6df8adb6921913d0fd922ea39615f3442f00d333a9101e6ef1926009357a144",
   "schema": 1,
   "semgrep_version": "1.176.0",
   "source_files": [

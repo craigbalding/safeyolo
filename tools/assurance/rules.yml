@@ -22,10 +22,19 @@ rules:
     message: Network operation
     pattern-either:
       - pattern: TcpStream::connect(...)
+      - pattern: std::net::TcpStream::connect(...)
+      - pattern: tokio::net::TcpStream::connect(...)
       - pattern: UnixStream::connect(...)
+      - pattern: std::os::unix::net::UnixStream::connect(...)
+      - pattern: tokio::net::UnixStream::connect(...)
       - pattern: TcpListener::bind(...)
+      - pattern: std::net::TcpListener::bind(...)
+      - pattern: tokio::net::TcpListener::bind(...)
       - pattern: UnixListener::bind(...)
+      - pattern: std::os::unix::net::UnixListener::bind(...)
+      - pattern: tokio::net::UnixListener::bind(...)
       - pattern: lookup_host(...)
+      - pattern: tokio::net::lookup_host(...)
       - pattern: $X.open_outbound(...)
   - id: rust-file
     languages: [rust]
@@ -33,11 +42,18 @@ rules:
     message: File operation
     pattern-either:
       - pattern: File::create(...)
+      - pattern: std::fs::File::create(...)
+      - pattern: tokio::fs::File::create(...)
       - pattern: File::open(...)
+      - pattern: std::fs::File::open(...)
+      - pattern: tokio::fs::File::open(...)
       - pattern: OpenOptions::new(...)
+      - pattern: std::fs::OpenOptions::new(...)
+      - pattern: tokio::fs::OpenOptions::new(...)
       - pattern: std::fs::write(...)
       - pattern: std::fs::read(...)
       - pattern: tokio::fs::write(...)
+      - pattern: tokio::fs::read(...)
       - pattern: $X.persist(...)
   - id: rust-output
     languages: [rust]
@@ -54,6 +70,8 @@ rules:
     message: Process or foreign operation
     pattern-either:
       - pattern: Command::new(...)
+      - pattern: std::process::Command::new(...)
+      - pattern: tokio::process::Command::new(...)
       - pattern: unsafe { ... }
       - pattern: libc::$F(...)
   - id: python-network
