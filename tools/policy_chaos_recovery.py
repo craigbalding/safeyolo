@@ -528,10 +528,11 @@ def assess_surviving_policy(manifest: dict, config: Path,
     for path in residue:
         if path.read_bytes() != new:
             problems.append(f"unexpected temporary policy residue: {path}")
-    if manifest["checkpoint"] == "before-rename" and len(residue) > 1:
-        problems.append("more than one temporary policy remains before rename")
-    if manifest["checkpoint"] != "before-rename" and residue:
-        problems.append("temporary policy remains after rename")
+    if len(residue) > 1:
+        problems.append("more than one temporary policy remains")
+    if residue and (version != "old" or manifest["checkpoint"] not in (
+            "before-rename", "after-rename-before-directory-sync")):
+        problems.append("temporary policy remains outside old pre-durability state")
     return version, residue, problems
 
 
