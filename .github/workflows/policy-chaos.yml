@@ -1,0 +1,73 @@
+name: Native policy chaos
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "Optional single hermetic group; blank runs the incremental profile"
+        required: false
+        type: string
+      seed:
+        description: "Optional single generated seed; blank uses the three published seeds"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: policy-chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hermetic-policy-chaos:
+    name: Hermetic native policy chaos
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_BUILD_JOBS: "1"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Install the pinned test environment
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group dev --python 3.12
+
+      - name: Build the native debug proxy
+        working-directory: proxy
+        run: ../scripts/cargo_with_space.sh build --locked
+
+      - name: Run the incremental hermetic profile
+        env:
+          REQUESTED_GROUP: ${{ inputs.group }}
+          REQUESTED_SEED: ${{ inputs.seed }}
+        run: |
+          args=(run --binary proxy/target/debug/safeyolo-proxy --output "$RUNNER_TEMP/policy-chaos.json")
+          if [ -n "$REQUESTED_GROUP" ]; then
+            args+=(--group "$REQUESTED_GROUP")
+          fi
+          if [ -n "$REQUESTED_SEED" ]; then
+            args+=(--seed "$REQUESTED_SEED")
+          fi
+          uv run --frozen python -m tools.policy_chaos "${args[@]}"
+
+      - name: Upload the compact report and any replay traces
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-policy-chaos-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/policy-chaos.json
+            ${{ runner.temp }}/policy-chaos-traces-*/*/*.json
+          retention-days: 14
+          if-no-files-found: error

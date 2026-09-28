@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import tomllib
 from pathlib import Path
@@ -39,6 +41,7 @@ def _stock_policy(directory: Path) -> Path:
 
 def _assert_permissions(proxy, target, other, expected):
     """Check the policy decision and the controlled-origin effect together."""
+    observed = {}
     cases = (
         ("selected", "alice", "127.0.0.1", target),
         ("other_agent", "bob", "127.0.0.1", target),
@@ -51,6 +54,7 @@ def _assert_permissions(proxy, target, other, expected):
         accepts = origin.accepts if origin is not None else None
         requests = len(origin.requests) if origin is not None else None
         status, _, body = send_request(proxy.paths[agent], f"http://{host}:{port}/{name}")
+        observed[name] = status
         assert status == expected[name], (name, status, body)
         if origin is not None:
             allowed = status == 200
@@ -59,6 +63,7 @@ def _assert_permissions(proxy, target, other, expected):
             if allowed:
                 assert body == b"hello"
                 assert origin.requests[-1]["target"] == f"/{name}"
+    return observed
 
 
 def test_native_approval_preserves_stock_lists_and_survives_fresh_process(tmp_path):
@@ -86,7 +91,7 @@ def test_native_approval_preserves_stock_lists_and_survives_fresh_process(tmp_pa
             hmac_file = directory / "data/hmac_secret"
             assert hmac_file.is_file()
             hmac_secret = hmac_file.read_bytes()
-            _assert_permissions(proxy, target, other, before)
+            before_statuses = _assert_permissions(proxy, target, other, before)
 
             api = _admin_client(proxy, token_file)
             event = next(
@@ -95,7 +100,8 @@ def test_native_approval_preserves_stock_lists_and_survives_fresh_process(tmp_pa
                 and row.get("approval", {}).get("target") == f"127.0.0.1:{port}"
             )
             assert event["approval"]["approval_type"] == "network_egress"
-            assert approve(event, api) == "added"
+            mutation_result = approve(event, api)
+            assert mutation_result == "added"
             _wait_for_native_state(
                 api, event["request_id"],
                 lambda document: _compiled_permission(
@@ -103,13 +109,13 @@ def test_native_approval_preserves_stock_lists_and_survives_fresh_process(tmp_pa
                     effect="budget", budget=600, agent="alice", port=port,
                 ),
             )
-            _assert_permissions(proxy, target, other, after)
-            assert any(
+            after_statuses = _assert_permissions(proxy, target, other, after)
+            mutation_audit = [row for row in _audit_rows(directory) if (
                 row.get("event") == "admin.host_allowed"
                 and row.get("details", {}).get("agent") == "alice"
                 and row["details"].get("port") == port
-                for row in _audit_rows(directory)
-            )
+            )]
+            assert len(mutation_audit) == 1
 
         final = policy.read_bytes()
         assert final != original
@@ -130,8 +136,22 @@ def test_native_approval_preserves_stock_lists_and_survives_fresh_process(tmp_pa
         ) as fresh:
             assert policy.read_bytes() == final
             assert hmac_file.read_bytes() == hmac_secret
-            _assert_permissions(fresh, target, other, after)
+            fresh_statuses = _assert_permissions(fresh, target, other, after)
         assert policy.read_bytes() == final
+    print("CHAOS_OBSERVATION=" + json.dumps({
+        "writer": "native Admin through retained operator approval client",
+        "stage": "scoped host approval on an existing list-backed policy",
+        "mutation_result": mutation_result,
+        "mutation_error": None,
+        "original_file": {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()},
+        "final_file": {"bytes": len(final), "sha256": hashlib.sha256(final).hexdigest()},
+        "expected_before": before, "expected_live": after,
+        "observed_before": before_statuses,
+        "observed_live": after_statuses, "observed_fresh": fresh_statuses,
+        "audit": "one admin.host_allowed for alice and the selected port",
+        "temporary_residue": [], "external_lists": "unchanged", "hmac_secret": "unchanged",
+        "unrelated_policy": "original document preserved outside agents.alice.hosts",
+    }, sort_keys=True))
 
 
 def test_existing_policy_start_requires_external_list(tmp_path):
