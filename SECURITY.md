@@ -31,7 +31,9 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ```
 
 - **Host** is the trust root. You run the CLI, own config, and control the sandbox runtime (Apple Virtualization.framework on macOS, gVisor on Linux).
-- **SafeYolo** enforces your policy — a host mitmproxy process, no privileged runtime, no host filesystem access beyond your explicit mounts, runs as your uid.
+- **SafeYolo** enforces your policy through an unprivileged host Rust proxy
+  process that runs as your user ID. Agent sandboxes cannot read arbitrary host
+  files; they see only the host paths mounted into them.
 - **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
 - **External services** are reachable only if policy explicitly permits the destination.
 
@@ -40,23 +42,27 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ### Minimize trust
 
 Grant the minimum access required. Agents run in isolated sandboxes with no
-external network interface. SafeYolo runs mitmproxy as an unprivileged host
-process. The Admin API binds directly to `127.0.0.1` and does not perform
-hostname or reverse-DNS resolution. The host-local boundary and proxy readiness
-therefore do not depend on the host resolver. The Admin API also requires a
-bearer token and compares it with `secrets.compare_digest`. Host processes run
-as the operator's user ID. On Linux, `safeyolo agent run` does not use host
-`sudo`.
+external network interface. SafeYolo runs the packaged Rust proxy as an
+unprivileged host process. The Admin API binds directly to `127.0.0.1` and
+does not perform hostname or reverse-DNS resolution. The host-local boundary
+and proxy readiness therefore do not depend on the host resolver. Protected
+Admin API routes require a bearer token and check it with Rust's
+`subtle::ConstantTimeEq`.
+Host processes run as the operator's user ID. On Linux, `safeyolo agent run`
+does not use host `sudo`.
 
 ### Fail closed
 
-When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Credential requests that require approval return HTTP 428; explicit denials return HTTP 403. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
+When uncertain, block. Unknown credentials trigger an approval workflow, not
+silent passthrough. Credential requests that require approval return HTTP 428;
+explicit denials return HTTP 403. The Rust proxy loads and validates policy
+before it binds agent listeners or publishes readiness.
 The Agent API virtual hostname is also contained independently of its handler.
-An adjacent request guard runs before policy, credential, and observability
-addons, so a missing, disabled, import-failed, or uncaught handler receives a
-local diagnostic 5xx without exposing its bearer token or query downstream. A
-separate final transport guard refuses the reserved destination before DNS or
-an upstream connection.
+The native request path dispatches that hostname to the local handler before
+network and credential checks. If the handler is disabled or returns an error,
+the proxy returns a local diagnostic 5xx. The bearer token and query stay local.
+A separate final transport guard refuses the reserved destination
+before DNS or an upstream connection.
 
 ### Human-governed access
 
@@ -101,11 +107,13 @@ interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYolo. No host firewall rule participates in this
 boundary.
 
-The host owns the socket directory named `<ip>_<agent>`. At bind time,
-mitmproxy's `UnixMode` listener derives the agent identity from that path and
-stamps the accepted connection. The agent cannot choose another agent's socket
-path. On Linux, a synthetic loopback address supplies the `<ip>` attribution
-value. It is not an external interface or a direct egress path.
+The host owns the socket directory named `<ip>_<agent>`. The CLI uses the agent
+map to configure each managed Rust listener with its socket path, agent
+identity, and source address. When the listener accepts a connection, it
+assigns the configured agent identity to that connection. The agent cannot
+choose another agent's socket path. On Linux, a synthetic loopback address
+supplies the `<ip>` attribution value. It is not an external interface or a
+direct egress path.
 
 For a resolved service-gateway token, SafeYolo rejects a path spelling if
 service route normalization changes it. This includes dot segments, encoded
