@@ -1,0 +1,96 @@
+rules:
+  # Definitions supply AST-bounded decision bodies. The checker reads their
+  # source spans and compares them with the operator-accepted snapshot.
+  - id: rust-function
+    languages: [rust]
+    severity: INFO
+    message: Rust function
+    pattern: |
+      fn $NAME(...) { ... }
+  - id: python-function
+    languages: [python]
+    severity: INFO
+    message: Python function
+    pattern: |
+      def $NAME(...): ...
+
+  # These are operation discovery rules, not vulnerability assertions. Keep
+  # them broad enough to see a new helper outside the named decision map.
+  - id: rust-network
+    languages: [rust]
+    severity: INFO
+    message: Network operation
+    pattern-either:
+      - pattern: TcpStream::connect(...)
+      - pattern: UnixStream::connect(...)
+      - pattern: TcpListener::bind(...)
+      - pattern: UnixListener::bind(...)
+      - pattern: lookup_host(...)
+      - pattern: $X.open_outbound(...)
+  - id: rust-file
+    languages: [rust]
+    severity: INFO
+    message: File operation
+    pattern-either:
+      - pattern: File::create(...)
+      - pattern: File::open(...)
+      - pattern: OpenOptions::new(...)
+      - pattern: std::fs::write(...)
+      - pattern: std::fs::read(...)
+      - pattern: tokio::fs::write(...)
+      - pattern: $X.persist(...)
+  - id: rust-output
+    languages: [rust]
+    severity: INFO
+    message: Output or publication operation
+    pattern-either:
+      - pattern: $X.write_all(...)
+      - pattern: $X.emit(...)
+      - pattern: $X.insert(...)
+      - pattern: $X.send(...)
+  - id: rust-process-ffi
+    languages: [rust]
+    severity: INFO
+    message: Process or foreign operation
+    pattern-either:
+      - pattern: Command::new(...)
+      - pattern: unsafe { ... }
+      - pattern: libc::$F(...)
+  - id: python-network
+    languages: [python]
+    severity: INFO
+    message: Network operation
+    pattern-either:
+      - pattern: socket.create_connection(...)
+      - pattern: asyncio.open_connection(...)
+      - pattern: $X.connect(...)
+      - pattern: $X.bind(...)
+  - id: python-file
+    languages: [python]
+    severity: INFO
+    message: File operation
+    pattern-either:
+      - pattern: open(...)
+      - pattern: $X.open(...)
+      - pattern: $X.write_text(...)
+      - pattern: $X.write_bytes(...)
+      - pattern: os.replace(...)
+      - pattern: os.remove(...)
+  - id: python-output
+    languages: [python]
+    severity: INFO
+    message: Output or publication operation
+    pattern-either:
+      - pattern: $X.send(...)
+      - pattern: $X.write(...)
+      - pattern: $X.emit(...)
+      - pattern: $X.export(...)
+  - id: python-process
+    languages: [python]
+    severity: INFO
+    message: Process operation
+    pattern-either:
+      - pattern: subprocess.$METHOD(...)
+      - pattern: os.execv(...)
+      - pattern: os.execve(...)
+      - pattern: os.system(...)

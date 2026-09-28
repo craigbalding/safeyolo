@@ -1,0 +1,193 @@
+# One maintained source map for the first Rust proxy release. The source
+# identifiers below are checked against parsed definitions on every run.
+# Paths are relative to the repository root; symbol names follow "::".
+baseline = "2ca598ce11d7c375a024b38eb3e7b4104a795d84"
+initial_review = "https://github.com/craigbalding/safeyolo/issues/838#issuecomment-5876216643"
+native_inventory = "https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5801132524"
+patch_review = "https://github.com/craigbalding/safeyolo/issues/636#issuecomment-5736479281"
+
+# Cargo.toml and Cargo.lock are hashed by the checker. These are the library
+# handoffs that materially affect the mapped decisions at this baseline.
+[[libraries]]
+name = "hyper"
+version = "1.11"
+features = ["client", "server", "http1", "http2"]
+handoff = "Agent/admin HTTP parsing, origin client and CONNECT framing; local patch in proxy/vendor/hyper."
+
+[[libraries]]
+name = "h2"
+version = "0.4.19"
+features = []
+handoff = "HTTP/2 flow control and cancellation; local patch in proxy/vendor/h2."
+
+[[libraries]]
+name = "rustls"
+version = "0.23.45"
+features = ["ring", "std", "tls12"]
+handoff = "Origin and interception TLS verification and handshakes."
+
+[[libraries]]
+name = "rusqlite"
+version = "0.40.2"
+features = ["bundled"]
+handoff = "Stored flow bodies and indexed evidence reads."
+
+[[libraries]]
+name = "fancy-regex"
+version = "0.19.2"
+features = []
+handoff = "Credential and content pattern inspection; local patch in proxy/vendor/fancy-regex."
+
+[[libraries]]
+name = "async-nats"
+version = "0.42"
+features = []
+handoff = "Loopback coordination client and JetStream persistence."
+
+[[decisions]]
+id = "identity"
+inputs = "Operator listener configuration supplies agent_id, socket_path and source_id. Accepted HTTP bytes and declaration fields are untrusted."
+authority = "The host CLI creates and mounts the per-agent UDS path. The Rust listener fixes identity at accept; source_id and request context reconcile it."
+checks = "A conflicting identity is rejected by reconciliation, network guard and credential guard. The proxy does not use SO_PEERCRED; socket provisioning is the ingress boundary."
+effects = "UDS accept, attributed request routing and per-agent evidence ownership."
+failure = "Missing or conflicting identity is rejected locally; readiness is withheld on invalid startup configuration."
+tests = ["proxy/tests/transport.rs", "tests/proxy_migration/test_agent_api_test_context.py", "cli/tests/test_rust_proxy.py"]
+symbols = [
+  "cli/src/safeyolo/sockets.py::directory_for",
+  "cli/src/safeyolo/rust_proxy.py::_agent_listeners",
+  "cli/src/safeyolo/rust_proxy.py::_sync_running_listeners",
+  "proxy/src/lib.rs::accept_agents",
+  "proxy/src/agent_discovery.rs::reconcile",
+  "proxy/src/http.rs::serve_request",
+]
+
+[[decisions]]
+id = "authorization"
+inputs = "Untrusted destination, method, path and headers meet operator baseline/task policy, runtime modes and declared test context."
+authority = "The compiled native policy and operator mode snapshot decide on the release path. A temporary UDS policy adapter remains an explicit development configuration; the release CLI requires policy_file."
+checks = "Destination authority and admin/reserved host checks precede the PDP. Agent-specific rules, rate budgets, explicit bypasses and warn modes are evaluated before egress. The temporary adapter serializes decisions through its UDS."
+effects = "Allow, deny or approval response; rate charge; DNS and outbound socket only after applicable admission."
+failure = "Malformed authority, identity conflict, policy load failure, adapter failure and denied requests do not open an origin socket. Configured warning/disabled modes are explicit exceptions."
+tests = ["proxy/tests/network_guard.rs", "proxy/tests/policy.rs", "tests/proxy_migration/test_native_network_policy.py"]
+symbols = [
+  "proxy/src/policy.rs::evaluate",
+  "proxy/src/config.rs::validate",
+  "proxy/src/network_guard.rs::enforce_with_audit_and_trace",
+  "proxy/src/network_guard.rs::evaluate_policy",
+  "proxy/src/admin_shield.rs::blocks_host",
+  "proxy/src/admin_shield.rs::blocks_address",
+  "proxy/src/http.rs::decide",
+  "proxy/src/http.rs::open_egress_for_flow",
+  "proxy/src/http.rs::resolve_and_connect_egress",
+  "proxy/src/test_context.rs::select_context",
+]
+
+[[decisions]]
+id = "credentials"
+inputs = "Agent headers and gateway token are untrusted. The operator vault, service catalogue, policy and grant store supply credential authority."
+authority = "Gateway token binding and route/contract/risk checks select a vaulted credential; the agent cannot select an arbitrary vault entry."
+checks = "The guard fingerprints detected incoming credentials. Gateway injection replaces one authorized header and the outbound header is checked again. OAuth refresh uses its stored endpoint and a separate guarded outbound path."
+effects = "Vault file reads/writes, authorized header injection, OAuth refresh POST and origin request delivery."
+failure = "Missing binding, denied risk grant, failed injection or unavailable vault stops delivery. Routine audit uses fingerprints; stored raw HTTP flow bodies and headers remain operator-accessible evidence."
+tests = ["proxy/tests/credential_guard.rs", "proxy/tests/gateway_workflow.rs", "tests/proxy_migration/test_gateway_scope.py"]
+symbols = [
+  "proxy/src/credentials.rs::unlock",
+  "proxy/src/credentials.rs::expose_secret",
+  "proxy/src/credential_injection.rs::prepare",
+  "proxy/src/credential_injection.rs::apply",
+  "proxy/src/credential_guard.rs::enforce_ordered",
+  "proxy/src/credential_guard.rs::evaluate",
+  "proxy/src/services.rs::select",
+  "proxy/src/grants.rs::check_grant",
+  "proxy/src/http.rs::execute_refresh",
+]
+
+[[decisions]]
+id = "management_evidence"
+inputs = "Host-local Admin API bearer and UDS Agent API bearer, route parameters, flow IDs and evidence-owner identity."
+authority = "Operator token controls Admin routes. Agent token plus trusted listener identity controls Agent routes and owner-scoped flow access."
+checks = "Admin binds 127.0.0.1 and compares bearer bytes in constant time. Agent API remains local for the reserved host; direct flow reads enforce evidence owner."
+effects = "Policy and mode mutation, audit JSONL, SQLite flow storage, authorized raw body reads, terminal export and event stream."
+failure = "Failed authentication and cross-owner flow access return local errors. Raw flow evidence can contain credentials; it is intentionally distinct from routine redacted audit events."
+tests = ["proxy/tests/operator_controls.rs", "proxy/tests/agent_api_flows.rs", "proxy/tests/flow_store_details.rs"]
+symbols = [
+  "proxy/src/admin_api.rs::authenticate",
+  "proxy/src/admin_api.rs::respond_with_context",
+  "proxy/src/agent_api.rs::authenticate",
+  "proxy/src/http.rs::local_agent_api",
+  "proxy/src/flow_store.rs::record",
+  "proxy/src/agent_api/flows.rs::execute",
+  "proxy/src/agent_api/flows.rs::owned",
+  "proxy/src/traffic_view.rs::export",
+  "proxy/src/admin_listener.rs::serve_events",
+]
+
+[[decisions]]
+id = "policy_publication"
+inputs = "Operator policy TOML, addon/catalogue files, granted approvals and process-local task registration."
+authority = "Only host Admin mutations write the durable policy/grant state. A task registration changes process state only after explicit activation."
+checks = "Compile and observe a candidate before atomic snapshot publication; locked read-modify-write protects durable edits. Once grants reserve before use and consume after a successful response."
+effects = "Policy and grant file writes, runtime snapshot swap, audit events and task overlay publication."
+failure = "Rejected load retains the prior accepted snapshot. A persistence failure prevents a successful grant completion. Process replacement clears task registration."
+tests = ["proxy/tests/policy.rs", "proxy/tests/state_policy_transition.rs", "tests/proxy_migration/test_agent_api_policy.py"]
+symbols = [
+  "proxy/src/policy_runtime.rs::load",
+  "proxy/src/lib.rs::reload_policy_if_changed",
+  "proxy/src/approvals.rs::update_policy",
+  "proxy/src/approvals.rs::save_policy",
+  "proxy/src/grants.rs::finish_response",
+  "proxy/src/lib.rs::register_task",
+  "proxy/src/lib.rs::activate_registered_task",
+]
+
+[[decisions]]
+id = "external_effects"
+inputs = "Admitted HTTP/CONNECT request, selected parent proxy, tunnel bytes and response content."
+authority = "Destination and policy admission in forward/open_egress_for_flow control origin DNS and socket creation. A configured parent CONNECT is an operator route."
+checks = "Reserved/admin targets and resolved addresses are filtered before dial. Inner HTTP and CONNECT require separate admission. Response inspection precedes applicable downstream delivery."
+effects = "DNS lookup, direct or parent TCP connection, TLS, HTTP/WebSocket send, tunnel relay and response streaming."
+failure = "No direct fallback from a failed parent; opaque tunnels and passthrough have explicit inspection limits but retain network admission."
+tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_migration/test_tunnel_contract.py"]
+symbols = [
+  "proxy/src/http.rs::forward",
+  "proxy/src/http.rs::open_outbound",
+  "proxy/src/http.rs::enforce_response_decision",
+  "proxy/src/http.rs::serve_tunnel_http",
+  "proxy/src/tunnels.rs::classify",
+  "proxy/src/tunnels.rs::relay",
+]
+
+[[decisions]]
+id = "other_sinks_and_launch"
+inputs = "Host CLI proxy configuration, packaged binary path, readiness marker, desktop presentation request and internal coordination credentials."
+authority = "CLI selects the native binary and verifies its process/instance readiness. Desktop presenter uses a host-selected interpreter; NATS credentials stay in host data."
+checks = "Startup has no silent Python fallback. Listener reload requires acknowledgement. Presenter validates agent identity and interpreter path."
+effects = "Proxy process spawn, NATS client connection, desktop presenter spawn and readiness publication."
+failure = "A missing binary or readiness mismatch fails startup; unavailable NATS or presenter fails its own request without becoming arbitrary proxy egress."
+tests = ["cli/tests/test_rust_proxy.py", "proxy/tests/desktop_present_workflow.rs", "proxy/tests/coord_fixture.py"]
+symbols = [
+  "cli/src/safeyolo/rust_proxy.py::_binary",
+  "cli/src/safeyolo/rust_proxy.py::prepare",
+  "cli/src/safeyolo/rust_proxy.py::_wait_ready",
+  "cli/src/safeyolo/proxy.py::selected_backend",
+  "proxy/src/lib.rs::load_gateway_vault",
+]
+
+[[decisions]]
+id = "foreign_and_embedded"
+inputs = "Host-owned file descriptors, mapped WebSocket buffers and generated proxy/data tables."
+authority = "Rust owns these descriptors and buffers; the tables are checked-in build inputs. External proc-macro and transitive crate code comes from Cargo.lock."
+checks = "Unsafe libc close/dup/poll/recv and memmap2 calls are bounded by their local ownership contracts; a changed mapped body or selected unsafe operation triggers review."
+effects = "Descriptor close and peer observation, memory-mapped inspection, compiled credential/Unicode lookup tables."
+failure = "Descriptor errors propagate or cause a documented local warning. A missing embedded table or changed dependency/build input fails the build or appears in drift."
+tests = ["proxy/tests/credential_guard.rs", "proxy/tests/websocket.rs", "proxy/tests/transport.rs"]
+symbols = [
+  "proxy/src/lib.rs::peer_closed_after_readable_event",
+  "proxy/src/lib.rs::poll_agent_disconnect",
+  "proxy/src/lib.rs::monitor_agent_disconnect",
+  "proxy/src/credential_hmac.rs::close",
+  "proxy/src/audit/writer.rs::close",
+  "proxy/src/circuits.rs::close_snapshot",
+  "proxy/src/agent_discovery.rs::read_map",
+  "proxy/src/websocket.rs::with_text",
+]
