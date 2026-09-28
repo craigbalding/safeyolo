@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import sys
 import tempfile
@@ -296,7 +297,11 @@ def _generated_run(trace: dict) -> None:
         trace_dir.mkdir(parents=True, exist_ok=True)
         trace_file = trace_dir / f"failing-host-{uuid.uuid4().hex}.json"
         trace_file.write_text(json.dumps(trace, ensure_ascii=False, indent=2) + "\n")
-        print(f"Replay: {sys.executable} -m tools.policy_chaos replay {trace_file}")
+        binary = Path(os.environ.get(
+            "SAFEYOLO_RUST_PROXY", "proxy/target/debug/safeyolo-proxy"
+        )).resolve()
+        print(f"Replay: {shlex.quote(sys.executable)} -m tools.policy_chaos replay "
+              f"{shlex.quote(str(trace_file))} --binary {shlex.quote(str(binary))}")
         raise
 
 
