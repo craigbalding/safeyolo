@@ -291,7 +291,7 @@ Maps client IPs to projects for per-project credential policy isolation.
 - CLI manages services.yaml when adding agents (`safeyolo agent add`)
 - Pro teams provide their own services.yaml with IP ranges
 
-**Setup:** See [SERVICE_DISCOVERY.md](SERVICE_DISCOVERY.md) for configuration.
+**Historical setup:** See [the former Python service-discovery guide](SERVICE_DISCOVERY.md).
 
 **Options:**
 ```bash

@@ -7,7 +7,7 @@
 #   UDS (Linux / gVisor): /safeyolo/proxy/proxy.sock — resolved through
 #     a stable, private per-agent directory mount.
 #   vsock (macOS / VZ):   port 1080 on the host CID — safeyolo-vm's
-#     VSockProxyRelay accepts and forwards to mitmproxy.
+#     VSockProxyRelay accepts and forwards to the agent's Rust proxy socket.
 #
 # Transport auto-selection: UDS is preferred when the mounted proxy socket
 # exists; otherwise fall back to vsock. Same contract as the previous
@@ -24,9 +24,9 @@ VSOCK_HOST_CID=2
 VSOCK_HOST_PORT=1080
 listen_options="bind=127.0.0.1,reuseaddr,fork,su=agent"
 
-# retry=20,interval=0.25 absorbs brief mitmproxy restart windows
-# (~5s total): socat retries the upstream connect while mitmproxy is
-# rebinding its per-agent UnixInstance, so the agent's HTTP request
+# retry=20,interval=0.25 absorbs brief Rust proxy restart windows
+# (~5s total): socat retries the upstream connect while the proxy
+# rebinds its per-agent Unix socket, so the agent's HTTP request
 # sees a delayed connect rather than ECONNREFUSED.
 if [ -S "$UDS_PATH" ]; then
     upstream="UNIX-CONNECT:$UDS_PATH,retry=20,interval=0.25"

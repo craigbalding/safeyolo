@@ -13,9 +13,9 @@ No daemon required. Only needs:
 
 Network isolation is structural: each agent runs in its own user
 namespace with a loopback-only network namespace. The only egress
-path is a bind-mounted UDS on which mitmproxy's per-agent
-`UnixInstance` is listening — no bridge process, identity comes
-from the socket directory name.
+path uses the private, bind-mounted UDS and its Rust proxy listener.
+The guest forwarder connects to that UDS. The listener fixes the
+agent identity when it accepts the connection.
 """
 
 import json
