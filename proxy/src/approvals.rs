@@ -627,6 +627,8 @@ pub(crate) fn lock_policy(path: &Path) -> std::io::Result<File> {
         .read(true)
         .write(true)
         .open(parent.join(".policy.toml.lock"))?;
+    #[cfg(debug_assertions)]
+    let test_barrier = policy_lock_test_barrier()?;
     #[cfg(test)]
     {
         let callback = {
@@ -645,7 +647,32 @@ pub(crate) fn lock_policy(path: &Path) -> std::io::Result<File> {
         }
     }
     lock.lock()?;
+    #[cfg(debug_assertions)]
+    if let Some(mut barrier) = test_barrier {
+        barrier.write_all(b"locked")?;
+        let mut release = [0];
+        std::io::Read::read_exact(&mut barrier, &mut release)?;
+    }
     Ok(lock)
+}
+
+/// The external contention test arms its socket after the proxy is ready. A
+/// connection records lock attempt, then pauses after acquisition. Release
+/// builds contain no socket or environment-driven pause path.
+#[cfg(debug_assertions)]
+fn policy_lock_test_barrier() -> std::io::Result<Option<std::os::unix::net::UnixStream>> {
+    use std::os::unix::net::UnixStream;
+
+    let Some(socket) = std::env::var_os("SAFEYOLO_TEST_POLICY_LOCK_SOCKET") else {
+        return Ok(None);
+    };
+    let socket = PathBuf::from(socket);
+    if !socket.with_extension("arm").exists() {
+        return Ok(None);
+    }
+    let mut stream = UnixStream::connect(socket)?;
+    stream.write_all(b"attempt")?;
+    Ok(Some(stream))
 }
 
 #[cfg(test)]

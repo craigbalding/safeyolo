@@ -123,7 +123,25 @@ fn evidence_failure(outcome: &str) {
 mod tests {
     use super::*;
     use serde_json::Value;
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn runtime_toml_load_still_accepts_a_read_only_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("read-only");
+        std::fs::create_dir(&source).unwrap();
+        let path = source.join("policy.toml");
+        std::fs::write(&path, "version='2.0'\n[hosts]\n'*'={egress='deny'}\n").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let writer = Writer::new(directory.path().join("audit.jsonl"), Default::default());
+        let result = load(&path, None, None, &writer);
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.is_ok(), "read-only policy: {:?}", result.err());
+        assert!(writer.shutdown(Duration::from_secs(5)).unwrap());
+    }
 
     #[test]
     fn expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark() {
