@@ -1,5 +1,6 @@
 //! Owned Runtime publication and authenticated H1 catalog reads. No injection.
 
+mod contention;
 mod diagnostics;
 mod metadata;
 mod policy_events;

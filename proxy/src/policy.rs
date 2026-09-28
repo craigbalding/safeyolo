@@ -687,6 +687,25 @@ impl Policy {
         persist_expired_hosts: bool,
         times: Option<&mut watch::PolicyFileTimes>,
     ) -> std::result::Result<Self, PolicyLoadError> {
+        // A native or retained Python writer may have renamed its candidate
+        // but still be validating activation under the shared lock. Runtime
+        // must not publish that uncommitted text before a possible rollback.
+        // Release before expiry pruning, which takes the same lock to write.
+        let read_lock =
+            if persist_expired_hosts && path.extension().is_some_and(|ext| ext == "toml") {
+                match crate::approvals::lock_policy(path) {
+                    Ok(lock) => Some(lock),
+                    Err(error) => {
+                        // If this directory cannot create the lock, a policy
+                        // writer cannot commit there either. Keep read-only
+                        // policy files loadable as before.
+                        eprintln!("Policy read lock unavailable: {error}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
         let source = std::fs::read_to_string(path).map_err(|error| {
             load_error(
                 PolicyLoadStage::Read,
@@ -696,6 +715,7 @@ impl Policy {
                 },
             )
         })?;
+        drop(read_lock);
         #[cfg(test)]
         AFTER_BASELINE_READ.with(|pending| {
             if let Some(callback) = pending.borrow_mut().take() {
