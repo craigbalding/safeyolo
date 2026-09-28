@@ -724,13 +724,10 @@ def _run_agent_impl(
     gateway_ip = fw_alloc["host_ip"]
     guest_ip = fw_alloc["guest_ip"]
 
-    # Identity attribution: `attribution_ip` is the source IP mitmproxy
-    # sees, which service_discovery maps back to the agent name.
-    # Per-agent UDS lives at `<sockets_dir>/<ip>_<agent>/proxy.sock` —
-    # mitmproxy's UnixInstance binds it and parses identity from the
-    # directory name. agent_map.json is written before start_sandbox so
-    # service_discovery is ready when the first request arrives, and
-    # the admin-API call below triggers mitmproxy to bind the socket.
+    # The host assigns the attribution IP and private socket path.
+    # agent_map.json supplies the native listener's agent_id, source_id,
+    # and socket_path. Rust fixes that identity when it accepts a connection.
+    # Write the map before starting the sandbox so its listener can bind.
     attribution_ip = fw_alloc.get("attribution_ip", guest_ip)
     from ..sockets import path_for as _sock_path_for
     try:
@@ -743,17 +740,14 @@ def _run_agent_impl(
     _update_agent_map(name, ip=attribution_ip, socket=sock_path)
 
     if fw_alloc.get("needs_bridge_socket"):
-        # Push the updated mode list to mitmproxy so it spawns the
-        # UnixInstance and creates the per-agent socket file. Best
-        # effort: if the admin call fails (mitmproxy not running),
-        # the socket will be bound on next proxy start via
-        # `_initial_mode_specs`.
+        # Reconcile managed native listeners through the config reload.
+        # If the proxy is stopped, its next start reads this agent map.
         from ..proxy import sync_proxy_modes
-        _t("synchronize proxy listener modes")
+        _t("synchronize native proxy listeners")
         sync_proxy_modes(admin_port=admin_port)
 
-        # Wait up to 5s for mitmproxy's UnixInstance to bind the
-        # socket. Without this, the OCI bind-mount source path doesn't
+        # Wait up to 5s for Rust to bind the socket. Without this,
+        # the OCI bind-mount source path doesn't
         # exist and gVisor's gofer caches a ghost inode (same gotcha
         # as the earlier restart-cycle bug).
         import time as _time_wait
@@ -814,9 +808,8 @@ def _run_agent_impl(
     # us to send SIGUSR1. Restore and passthrough pre-write -- on restore
     # the snapshotted guest wakes up on the gate and sees it immediately.
     _debug_mode = os.environ.get("SAFEYOLO_DEBUG") == "1"
-    # Guest's HTTP_PROXY port. Both platforms use the in-guest forwarder
-    # on a fixed port (8080); the host bridge decouples it from whatever
-    # port mitmproxy is actually on.
+    # Both platforms use the in-guest forwarder on a fixed port (8080);
+    # the host bridge routes it to the agent's native Unix socket.
     def _do_prepare_config_share(for_mode: str) -> None:
         prepare_config_share(
             name=name,
@@ -1681,7 +1674,7 @@ def remove(
     # plain shutil.rmtree can't clean up.
     plat.remove_agent_dir(name)
     _store_remove_agent(name)
-    # Drop the per-agent UnixInstance if mitmproxy is running.
+    # Remove the CLI-managed native listener if the proxy is running.
     config = load_config()
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
     from ..proxy import sync_proxy_modes
@@ -2282,10 +2275,10 @@ def diag(
 ) -> None:
     """Probe agent egress and, on macOS, the shell and VM helper control paths.
 
-    Runs through the hops from the agent out to mitmproxy and back,
+    Runs through the hops from the agent out to the Rust proxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → command supervisor → proxy transport →
+        Rust proxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
     On macOS, also require a bounded SSH banner and inspect the running helper's

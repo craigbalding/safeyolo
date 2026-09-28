@@ -15,6 +15,18 @@ from safeyolo import agent_diag
 from safeyolo.agent_diag import Check, _check_agent_api, _check_proxy_transport
 
 
+def test_proxy_process_reports_the_native_runtime(monkeypatch):
+    monkeypatch.setattr(agent_diag, "is_proxy_running", lambda: True)
+    assert agent_diag._check_proxy_process() == Check(
+        "Proxy process", "PASS", "Rust proxy running"
+    )
+
+    monkeypatch.setattr(agent_diag, "is_proxy_running", lambda: False)
+    assert agent_diag._check_proxy_process() == Check(
+        "Proxy process", "FAIL", "Rust proxy not running", "safeyolo start"
+    )
+
+
 @dataclass(frozen=True)
 class _Exchange:
     chunks: tuple[bytes, ...] = ()
