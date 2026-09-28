@@ -146,12 +146,16 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
                  agents=("alice", "bob"), services_dir=None, python_config_dir=None,
                  connect_trace_path=None, python_fixture=None):
-    """Start one explicitly selected implementation in isolated fixture state."""
+    """Start one selected proxy; ``None`` reuses the existing policy file."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
     directory.mkdir(parents=True, exist_ok=True)
     policy = directory / f"policy.{policy_format}"
-    policy.write_text(policy_text)
+    if policy_text is None:
+        if not policy.is_file():
+            raise FileNotFoundError(f"Existing fixture policy is missing: {policy}")
+    else:
+        policy.write_text(policy_text)
     # Darwin's default temp root leaves too little sun_path for reloaded listeners.
     socket_root = "/tmp" if sys.platform == "darwin" else None
     with tempfile.TemporaryDirectory(prefix="sy-migration-", dir=socket_root) as sockets, ExitStack() as stack:

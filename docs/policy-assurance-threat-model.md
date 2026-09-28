@@ -207,6 +207,51 @@ guarded disposable-VM fault results describe the Python implementation.
 The current native release still needs generated policy transaction and
 failure-stage checks before those assurance claims can be accepted.
 
+## Native chaos selection for #831
+
+The ten historical `tools/policy_chaos.py` default groups are the finite
+selection below. The [historical results](../experiments/policy_assurance/RESULTS.md)
+describe the Python engine only. Existing native results used here are the
+[#621 scope and precedence review](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413),
+[#621 revoke and reload review](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848982779),
+[#621 invalid-policy review](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272),
+and [#638 installed state transition review](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040).
+The named tests establish only the assertions they run. An open obligation in
+the last column is not satisfied by a historical Python pass.
+
+| Historical default group and defect family | Existing proof reused | Incremental native chaos obligation or removed path |
+|---|---|---|
+| `catalogue`: agent allow leaking to baseline, lost agent catchall deny, wrong-agent edit, and deleted peer agent | [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), `test_agent_egress_scope.py::test_agent_and_destination_precedence_on_concurrent_reused_connections` and `test_shared_operator_approval.py::test_shared_operator_approval_is_scoped_and_retried` cover effective agent and destination scope. | C3 retains composed real-writer edits and peer preservation. C7 calibrates transaction oracles; pure matcher corruptions add no chaos run when these existing assertions detect the same effective change. |
+| `catalogue`: broadened credential, deny becoming prompt, wildcard default becoming prompt, exact allow becoming wildcard budget | `test_operator_consumer_approval.py::test_retained_operator_client_approves_and_denies_native_credentials`, the [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), and `test_native_network_policy.py::test_native_policy_runtime_guard_modes` cover credential and network effects. | C3 retains generated combinations of precedence, wildcard, credential and writer histories that can expose an unintended increase in the allow set. |
+| `properties`: semantic TOML round trip, selected-agent approval, denial monotonicity and unrelated-agent preservation | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413) checks a fixed real-proxy matrix; the [#621 reload result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848982779) checks live decisions after reload. | C3 generates policy edits, quoting and precedence combinations, then compares intended permission deltas with active and fresh Rust effects. A serialized TOML comparison alone cannot close this row. |
+| `sequences-clean`: host allow, deny, rate, bypass, remove and reload; credential approval/reload; agent metadata and service edits; gateway grant and binding add/remove; transaction observation | `test_shared_operator_approval.py`, `test_operator_consumer_approval.py`, `test_gateway_risk_approval.py`, the [#621 reload result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848982779), and the [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) cover fixed effects and durable service/grant reuse. | C2 supplies the existing-state/observation seam. C3 retains bounded mixed histories through supported writers and checks each completed change plus the final fresh process. The removed Python `PolicyEngine` writer is inapplicable as a caller; its permission-integrity obligation transfers to the native writer. |
+| `host-canonicalization`: case and DNS-label wildcard boundary; trailing dot, Internationalized Domain Names in Applications (IDNA), unusual dot, IP text and conflicting authority | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), `test_native_network_policy.py::test_native_policy_homoglyph_authority_forms`, and `test_native_network_policy.py::test_native_policy_raw_decodable_mixed_script_ace` cover selected real ingress, but not a suffix-sharing sibling of a wildcard host. | C3 retains an effective boundary probe: after a supported writer adds `*.scope.invalid`, a proper child can gain access but `evilscope.invalid` must not. This detects loss of the DNS-label boundary. C3 also retains canonical-host interactions that alter a mutation's scope. The old mitmproxy `HTTPFlow` ingress is removed, so replaying that object path is inapplicable. The historical non-normative observations do not become new policy guarantees. |
+| `writer-matrix`: `cli-same`, `engine-same`, `agents-same`, `admin-same`, `gateway-same`, `cli-locked`, `engine-agents`, `admin-gateway`; lock controls, lock-before-read and revocation versus unrelated approval | The [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) establishes serial cross-version reuse. `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` establishes one native watermark edge. Neither proves the matrix's concurrent writes. | C4 maps retained CLI, agent-store, Admin and gateway writers to both serialized orders where a native/Python pair remains; it retains explicit barriers, lock-before-read and both completed edits. Historical `engine-*` calls into the removed Python engine are inapplicable, while their native writer/publication equivalents remain C4. |
+| `failure-stages`: parse, normalization, serialization, temporary creation/write, file sync, rename, directory sync, activation/reload and audit | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) and `test_native_network_policy.py::test_native_policy_failed_reload_retains_scoped_decisions` cover startup refusal and last-known-good reload. | C5 retains applicable actual-writer stages, including native validation, partial write, failed rollback and audit interaction. It checks response, file, active and fresh state at the stage's correct commit boundary. An absent native stage is recorded only after inspection, not manufactured. |
+| `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | C6 retains pre-rename, post-rename/pre-directory-sync and acknowledged-success process deaths, plus the same three actual disposable-KVM stops. Fresh Rust must read the surviving file without a fixture rewrite. |
+| `known-no-rate`: an unrated allow disappeared or bypassed the aggregate budget | `test_operator_consumer_approval.py::test_retained_operator_client_approves_exact_native_network_scope` checks the native 600-rate approval and real origin effect; `test_native_network_policy.py::test_native_policy_budget_is_shared_and_survives_reload` checks budget reuse. | C3 retains an unrated host allowance in a composed host history, where disappearance or budget escape would change a later decision. |
+| `known-persistence-failure`: save error reported success and broadened live access | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) covers malformed reload, but not a writer save failure. | C5 injects a real native writer failure and requires a truthful result, preserved pre-commit bytes and decisions, and no premature success. |
+| `known-public-concurrency`: policy-host lost update | `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` covers the native watcher watermark, not competing public writers. | C4 retains the two-writer lock-order and publication histories; both completed disjoint edits must remain effective. |
+
+The five source holdouts are separate from the ten defaults. The case-sensitive
+wildcard holdout was effective in the old matcher but invisible after mitmproxy
+canonicalized ingress case; direct matching coverage remains necessary. The
+agent-condition holdout is reused through the #621 scope tests above. The
+wildcard-without-label-boundary holdout remains open for C3's suffix-sharing
+sibling probe; the cited #621 cases exercise proper wildcard subdomains only.
+The lock-before-read and swallowed-save holdouts remain C4 and C5 transaction
+calibrations; C7 adds stale publication after a newer change or rollback. A
+holdout counts only when a disposable mutation changes effective behavior and
+the selected assertion catches it.
+
+The historical `fault prepare-power-cut` / `fault recover` protocol is also
+separate. It paused the Python writer and used that engine for recovery; no
+native VM-death result is inherited. C6 restores a guarded native protocol
+and requires an actual disposable-KVM stop at each named checkpoint. C8
+restores the hermetic runner and recurring incremental profile. The old
+Python-engine recovery oracle is inapplicable because that engine was removed;
+the fresh Rust proxy and controlled origin supply the required recovery effects.
+
 ## Review trigger
 
 Review this decision whenever any of the following changes:
