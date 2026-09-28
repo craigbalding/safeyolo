@@ -200,12 +200,24 @@ do not claim current native coverage.
 | A source mutation may be behaviorally inert | Holdouts receive credit only after an independent probe proves an effective change |
 | Runtime guesses are poor enrollment criteria | Reports retain measured distributions; timeouts are deadlock guards only |
 
-The historical engineering entrypoint `uv run python -m tools.policy_chaos`
-is available only from the pinned pre-cutover checkout
+The historical full `uv run python -m tools.policy_chaos` runner is available
+from the pinned pre-cutover checkout
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Its temporary-policy and
 guarded disposable-VM fault results describe the Python implementation.
-The current native release still needs generated policy transaction and
-failure-stage checks before those assurance claims can be accepted.
+The current checkout has a host-only native runner. From the repository root,
+with the project development environment installed and the Rust proxy built,
+run the bounded host groups with the three published seeds:
+
+```bash
+uv run python -m tools.policy_chaos run --output "$HOME/host-chaos.json"
+```
+
+The report names each group, seed, selected binary, result, and replay command
+for a failure. `--group host-histories` selects one group; `--seed 26082601`
+selects one generated seed. `python -m tools.policy_chaos replay TRACE.json`
+reruns a saved host operation trace. The native runner does not yet select the
+other mutation, fault, or disposable-VM families. Those C3–C8 obligations
+remain open until separately reviewed.
 
 ## Native chaos selection for #831
 
