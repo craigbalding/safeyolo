@@ -448,8 +448,9 @@ The negatives require an explicit startup failure for a missing list or policy
 file. C3's [accepted generated histories](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868301471)
 and C4/C5's accepted tests above provide the additional retained writers,
 compositions and error-stage relationships; the [#638 installed result](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040)
-provides the installed cross-version state path. C2 remains for independent
-review of this binding and the new per-step observation.
+provides the installed cross-version state path. Lens
+[accepted C2](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5873742693)
+after reviewing this binding and the new per-step observation.
 
 The five source holdouts are separate from the ten defaults:
 
