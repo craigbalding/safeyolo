@@ -1,7 +1,4 @@
-"""Run and replay bounded native policy state histories.
-
-Other policy-chaos families and guarded VM cuts remain separate #831 work.
-"""
+"""Run native policy histories and guarded disposable-VM recovery cuts."""
 
 from __future__ import annotations
 
@@ -22,6 +19,7 @@ HOST_TEST = "tests/proxy_migration/test_native_policy_host_chaos.py"
 STATE_TEST = "tests/proxy_migration/test_native_policy_state_chaos.py"
 CONTENTION_TEST = "tests/proxy_migration/test_native_policy_contention.py"
 FAILURE_TEST = "tests/proxy_migration/test_native_policy_failure_stages.py"
+CRASH_TEST = "tests/proxy_migration/test_native_policy_crash_recovery.py"
 SEEDS = (26082601, 26082602, 26082603)
 GROUPS = {
     "host-properties": f"{HOST_TEST}::test_host_permission_properties",
@@ -33,6 +31,7 @@ GROUPS = {
     "service-histories": f"{STATE_TEST}::test_agent_service_binding_histories",
     "writer-contention": CONTENTION_TEST,
     "failure-stages": FAILURE_TEST,
+    "crash-recovery": CRASH_TEST,
 }
 GENERATED = {"host-properties", "host-histories", "credential-histories", "service-histories"}
 EXAMPLES = {"host-properties": 40, "host-histories": 8,
@@ -54,6 +53,30 @@ def _args() -> argparse.Namespace:
     replay.add_argument("trace", type=Path)
     replay.add_argument("--binary", type=Path,
                         default=ROOT / "proxy/target/debug/safeyolo-proxy")
+    fault = commands.add_parser("fault", help="guarded native disposable-VM recovery protocol")
+    fault_commands = fault.add_subparsers(dest="fault_command", required=True)
+    prepare = fault_commands.add_parser("prepare-power-cut")
+    prepare.add_argument("--checkpoint", choices=(
+        "before-rename", "after-rename-before-directory-sync", "after-acknowledged-response",
+    ), required=True)
+    prepare.add_argument("--config-dir", type=Path, required=True)
+    prepare.add_argument("--state-dir", type=Path, required=True)
+    prepare.add_argument("--binary", type=Path, default=ROOT / "proxy/target/debug/safeyolo-proxy")
+    prepare.add_argument("--runtime-dir", type=Path, default=Path("/tmp"))
+    prepare.add_argument("--run-id")
+    prepare.add_argument("--confirm-disposable-vm", action="store_true")
+    ready = fault_commands.add_parser("ready", help="validate outside-VM checkpoint observation")
+    ready.add_argument("--manifest", type=Path, required=True)
+    ready.add_argument("--observation", type=Path, required=True)
+    recover = fault_commands.add_parser("recover")
+    recover.add_argument("--run-id", required=True)
+    recover.add_argument("--config-dir", type=Path, required=True)
+    recover.add_argument("--state-dir", type=Path, required=True)
+    recover.add_argument("--observation", type=Path, required=True)
+    recover.add_argument("--cut-record", type=Path, required=True)
+    recover.add_argument("--runtime-dir", type=Path, default=Path("/tmp"))
+    recover.add_argument("--output", type=Path, required=True)
+    recover.add_argument("--confirm-disposable-vm", action="store_true")
     return parser.parse_args()
 
 
@@ -172,8 +195,18 @@ def main() -> int:
     """Run selected native policy groups or replay one saved trace."""
     args = _args()
     try:
-        return _run(args) if args.command == "run" else _replay(args)
-    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        if args.command == "run":
+            return _run(args)
+        if args.command == "replay":
+            return _replay(args)
+        from tools import policy_chaos_recovery
+
+        return {
+            "prepare-power-cut": policy_chaos_recovery.prepare_vm_cut,
+            "ready": policy_chaos_recovery.ready_vm_cut,
+            "recover": policy_chaos_recovery.recover_vm_cut,
+        }[args.fault_command](args)
+    except (OSError, ValueError, AssertionError, subprocess.TimeoutExpired) as error:
         print(f"INCOMPLETE: {error}", file=sys.stderr)
         return 2
 

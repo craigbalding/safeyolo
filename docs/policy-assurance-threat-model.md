@@ -210,9 +210,10 @@ The historical full `uv run python -m tools.policy_chaos` runner is available
 from the pinned pre-cutover checkout
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`. Its temporary-policy and
 guarded disposable-VM fault results describe the Python implementation.
-The current checkout has bounded native host, state-history, and writer-contention
-groups. From the repository root, with the project development environment
-installed and the debug Rust proxy built, run the implemented groups. Generated
+The current checkout has bounded native host, state-history, writer-contention,
+failure-stage, and process-death groups. From the repository root, with the
+project development environment installed and the debug Rust proxy built, run
+the implemented groups. Generated
 groups use the three published seeds; the contention group runs once:
 
 ```bash
@@ -222,7 +223,9 @@ uv run python -m tools.policy_chaos run --output "$HOME/policy-chaos.json"
 The report names each group, seed, selected binary, result, and replay command
 for a saved generated failure. `--group writer-contention` selects the fixed
 contention cases. `--group failure-stages` selects the staged native and
-retained Python writer cases. `--seed 26082601` selects one generated seed.
+retained Python writer cases. `--group crash-recovery` selects the three
+process deaths and the guarded VM protocol checks. `--seed 26082601` selects
+one generated seed.
 The report's replay command includes the selected `--binary` and reruns the
 saved operation trace. The credential group composes operator approvals,
 denial, host-rule removal, and reload. The service group composes the retained
@@ -232,11 +235,11 @@ origin requests. The contention group holds the policy lock at actual read or
 acquisition boundaries, then checks persisted edits and live Rust decisions.
 Its native barrier exists only in debug builds. The existing fixed credential
 and session-grant tests remain separate scope and revocation controls. The
-native runner does not yet select C6 crash recovery or disposable-VM families.
-C1's finite test-selection binding, remaining C2, and C5–C8 remain open.
-The C4 technical result was accepted at
-`ca224d39697bed1a8ba59ec23299ac859f840b1a`; the C5 candidate still needs
-independent review.
+runner does not execute a VM power cut. C1's finite test-selection binding,
+remaining C2, C6's three actual VM cuts, and C7–C8 remain open. The C4
+technical result was accepted at `ca224d39697bed1a8ba59ec23299ac859f840b1a`.
+The C5 technical result was accepted at
+`b445ee5736005c173bc3189d55cf57e317f635ff`.
 
 The C4 candidate maps the historical writer rows as follows. Each listed row
 uses the historical order unless both orders are named. The two Rust
@@ -286,6 +289,93 @@ connection occurs.
 | Retained Python callers | Policy-host CLI and agent-store mutations share `save_roundtrip`. The CLI catches a post-rename directory-sync error even though the complete new file is visible; agent-store propagates a pre-rename file-sync error and preserves old bytes. The C5 case checks both callers, temporary cleanup, and live and fresh Rust decisions. The unused `locked_policy_transaction` helper is not a current public writer. |
 | Mutation-related audit | The native Admin listener test poisons the real audit writer. The host mutation commits and changes active and fresh decisions, while the listener closes the request without a success response or `admin.host_allowed` event. The accepted #635 audit visibility results remain separate. This path does not promise global policy and audit atomicity. |
 
+### C6 process death and guarded VM recovery
+
+`tests/proxy_migration/test_native_policy_crash_recovery.py` sends one native
+Admin denial for Alice at `revoked.invalid`. Before the denial, Alice reaches a
+controlled origin, Bob cannot reach that host, an unrelated allowed host
+reaches the origin, and an unrelated denied host does not. The three cases kill
+the actual debug Rust proxy at the native writer checkpoint or after Admin
+returns success. The test reads the visible policy before death and starts
+fresh Rust against that same file. The native transaction holds the policy
+read lock while paused, so a new traffic request cannot report an active
+decision at the two in-flight checkpoints. The test checks live effects before
+the operation, and again after the acknowledged operation. It checks fresh
+effects after each death.
+
+| Checkpoint | Process-death expectation | Disposable-VM expectation |
+|---|---|---|
+| Before rename | The old complete policy remains. One fully written temporary file remains after process death. Fresh Rust still permits Alice's target access. | The old complete policy remains. The temporary file may survive or disappear according to the recorded storage configuration. |
+| After rename, before directory sync | The complete new policy is visible on the still-running operating system. Fresh Rust denies Alice's target access. | The complete old or new policy may survive. Record the filesystem and virtual-disk configuration to interpret which version survived. |
+| After the successful durable Admin response | The complete new policy remains; live and fresh Rust deny Alice's target access. | The complete new policy must survive. |
+
+The unrelated allow and denies must remain effective in each recovered version.
+A torn, invalid, or unexpected policy is a finding even if a proxy denies
+traffic. The process-death tests require no success audit before an Admin
+response. The acknowledged case records a success audit before process death.
+VM runtime logs are kept off the policy filesystem. The VM recovery report
+records the pre-cut audit count but does not claim that an unsynced audit log
+survived VM death. Neither mode claims exactly-once external effects or
+physical hardware power-loss durability.
+
+The native disposable-VM protocol is `tools.policy_chaos fault`:
+
+1. On a dedicated, already-supported KVM guest, create a new disk-backed
+   `config-dir` with the exact `POLICY` fixture from
+   `tools/policy_chaos_recovery.py` and a regular
+   `.safeyolo-chaos-disposable` sentinel file. Create a separate disk-backed
+   `state-dir`. Keep both outside the source checkout. The guard rejects
+   symbolic links for the policy, sentinel, recovery run, and manifest. Build
+   the debug Rust proxy from the candidate and install the Python development
+   environment.
+   Record the guest filesystem type and mount options, virtual-disk format,
+   cache mode, backing store, and the outer controller's abrupt VM-stop command.
+   The runner requires a writable `tmpfs` or `ramfs` runtime directory on a
+   filesystem separate from the policy disk. `/tmp` is the default; pass
+   `--runtime-dir` for a different volatile mount when necessary.
+2. Inside the guest, set `SAFEYOLO_CHAOS_DISPOSABLE_VM=1` and run
+   `uv run python -m tools.policy_chaos fault prepare-power-cut` with
+   `--checkpoint`, `--config-dir`, `--state-dir`, `--binary`, and
+   `--confirm-disposable-vm`. Use one fresh run ID and fixture directory per
+   checkpoint. The accepted checkpoint names are `before-rename`,
+   `after-rename-before-directory-sync`, and
+   `after-acknowledged-response`. The command prints `PREPARED` only after it
+   has synced a recovery manifest. The outer controller copies that manifest
+   to its own disk before sending the exact printed
+   `ARM <run-id> <checkpoint> <manifest-sha256>` line to the guest command's
+   standard input. The guest prints `READY_FOR_POWER_CUT` only after the
+   selected native stage or successful durable Admin response is observed.
+   The readiness path writes to standard output and volatile runtime storage;
+   it does not write or sync the policy filesystem. The controller has 300
+   seconds to arm and 120 seconds after readiness to cut the VM. An expired
+   window is unexecuted.
+3. The outer controller captures both JSON lines outside the VM. In a checkout
+   with the same candidate source, run
+   `uv run python -m tools.policy_chaos fault ready` with `--manifest` set to
+   the copied manifest and `--observation` set to the captured JSON Lines file.
+   Cut the disposable VM only if that command confirms the exact run,
+   manifest hash, transaction, and checkpoint. A missing, stale, or repeated
+   checkpoint is unexecuted. The controller records the actual abrupt VM-stop
+   mechanism, VM ID, filesystem, storage configuration, stop time, and restart
+   time in a JSON cut record. The record must also copy `run_id`, `checkpoint`,
+   `manifest_sha256`, `transaction`, `target: "vm"`, and
+   `abrupt_vm_stop: true` from the confirmed run.
+4. After VM restart, copy the outside observation and cut record into the
+   guest. Set the opt-in variable again. Run
+   `uv run python -m tools.policy_chaos fault recover` with `--run-id`, `--config-dir`,
+   `--state-dir`, `--observation`, `--cut-record`, `--output`, and
+   `--confirm-disposable-vm`. Recovery checks complete file versions, fresh
+   Rust effects, unrelated controls, audit claims, and temporary residue
+   before writing its report. Preserve that report and the original policy
+   observations before any optional cleanup or restoration. A missing cut
+   record returns `INCOMPLETE`; an invalid surviving policy returns `FINDING`.
+
+The three VM cuts are pending while the #640 disposable guest lease remains
+active. The guard-only tests do not stop a VM and do not count as VM recovery
+evidence. The recovery command checks a declared outside-VM cut record; it
+cannot verify the hypervisor action by itself. Independent acceptance must
+inspect the controller's actual abrupt-stop result.
+
 ## Native chaos selection for #831
 
 The ten historical `tools/policy_chaos.py` default groups are the finite
@@ -307,7 +397,7 @@ the last column is not satisfied by a historical Python pass.
 | `host-canonicalization`: case and DNS-label wildcard boundary; trailing dot, Internationalized Domain Names in Applications (IDNA), unusual dot, IP text and conflicting authority | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), `test_native_network_policy.py::test_native_policy_homoglyph_authority_forms`, and `test_native_network_policy.py::test_native_policy_raw_decodable_mixed_script_ace` cover selected real ingress, but not a suffix-sharing sibling of a wildcard host. | C3 retains an effective boundary probe: after a supported writer adds `*.scope.invalid`, a proper child can gain access but `evilscope.invalid` must not. This detects loss of the DNS-label boundary. C3 also retains canonical-host interactions that alter a mutation's scope. The old mitmproxy `HTTPFlow` ingress is removed, so replaying that object path is inapplicable. The historical non-normative observations do not become new policy guarantees. |
 | `writer-matrix`: `cli-same`, `engine-same`, `agents-same`, `admin-same`, `gateway-same`, `cli-locked`, `engine-agents`, `admin-gateway`; lock controls, lock-before-read and revocation versus unrelated approval | The [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) establishes serial cross-version reuse. `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` establishes one native watermark edge. Neither proves the matrix's concurrent writes. | The C4 candidate maps each row in the table above. The writer-contention group pauses both actual lock boundaries and checks both completed edits, context, restrictions, conflicting outcomes, revocation, and live Rust effects. The two focused Rust tests check publication after a later scoped revoke and after a failed mutation with an unrelated waiter. Lens decides acceptance. |
 | `failure-stages`: parse, normalization, serialization, temporary creation/write, file sync, rename, directory sync, activation/reload and audit | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) and `test_native_network_policy.py::test_native_policy_failed_reload_retains_scoped_decisions` cover startup refusal and last-known-good reload. | C5 retains applicable actual-writer stages, including native validation, partial write, failed rollback and audit interaction. It checks response, file, active and fresh state at the stage's correct commit boundary. An absent native stage is recorded only after inspection, not manufactured. |
-| `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | C6 retains pre-rename, post-rename/pre-directory-sync and acknowledged-success process deaths, plus the same three actual disposable-KVM stops. Fresh Rust must read the surviving file without a fixture rewrite. |
+| `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | The C6 candidate selects `test_native_policy_crash_recovery.py` for all three process deaths and the guarded VM protocol. The three actual disposable-KVM stops remain pending. Fresh Rust must read the surviving file without a fixture rewrite. |
 | `known-no-rate`: an unrated allow disappeared or bypassed the aggregate budget | `test_operator_consumer_approval.py::test_retained_operator_client_approves_exact_native_network_scope` checks the native 600-rate approval and real origin effect; `test_native_network_policy.py::test_native_policy_budget_is_shared_and_survives_reload` checks budget reuse. | C3 retains an unrated host allowance in a composed host history, where disappearance or budget escape would change a later decision. |
 | `known-persistence-failure`: save error reported success and broadened live access | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) covers malformed reload, but not a writer save failure. | C5 injects a real native writer failure and requires a truthful result, preserved pre-commit bytes and decisions, and no premature success. |
 | `known-public-concurrency`: policy-host lost update | `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` covers the native watcher watermark, not competing public writers. | The C4 candidate checks the two-writer lock order and publication histories through the selected current writers; Lens decides acceptance. |
@@ -325,9 +415,9 @@ the selected assertion catches it.
 
 The historical `fault prepare-power-cut` / `fault recover` protocol is also
 separate. It paused the Python writer and used that engine for recovery; no
-native VM-death result is inherited. C6 restores a guarded native protocol
-and requires an actual disposable-KVM stop at each named checkpoint. C8
-restores the hermetic runner and recurring incremental profile. The old
+native VM-death result is inherited. The C6 candidate adds the guarded native
+protocol described above. Actual disposable-KVM stops at all three named
+checkpoints remain pending. C8 restores the recurring incremental profile. The old
 Python-engine recovery oracle is inapplicable because that engine was removed;
 the fresh Rust proxy and controlled origin supply the required recovery effects.
 
