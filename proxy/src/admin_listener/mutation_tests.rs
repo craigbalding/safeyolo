@@ -18,6 +18,7 @@ action = "network:request"
 resource = "*"
 effect = "allow"
 "#;
+const HOST_POLICY: &str = "budget = 10\n[hosts]\n'*' = {egress = 'deny'}\n";
 const SERVICE_POLICY: &str = "version = '2.0'\n[agents.alice]\nimage = 'owned-image'\n";
 const CONTROL_BODY: &[u8] =
     br#"{"service":"mail","capability":"read","credential":"control-entry"}"#;
@@ -29,7 +30,10 @@ async fn synchronous_audit_submission_failure_commits_mutations_then_closes_conn
     for mutation in ["baseline", "mode", "host"] {
         let directory = TempDir::new().unwrap();
         let config = config(directory.path());
-        let proxy = Proxy::start(config.clone()).await.unwrap();
+        if mutation == "host" {
+            fs::write(config.policy_file.as_ref().unwrap(), HOST_POLICY).unwrap();
+        }
+        let mut proxy = Proxy::start(config.clone()).await.unwrap();
         let port = proxy.admin.as_ref().unwrap().address().port();
 
         // The runtime owns this writer. Poisoning its mutex makes the real
@@ -92,12 +96,46 @@ async fn synchronous_audit_submission_failure_commits_mutations_then_closes_conn
                 !proxy.runtime.read().unwrap().operator_modes.network_block(),
                 "mode mutation was rolled back"
             ),
-            "host" => assert!(
-                std::fs::read_to_string(policy_path)
-                    .unwrap()
-                    .contains("sync-failure.example"),
-                "host write was rolled back"
-            ),
+            "host" => {
+                assert!(
+                    std::fs::read_to_string(policy_path)
+                        .unwrap()
+                        .contains("sync-failure.example"),
+                    "host write was rolled back"
+                );
+                // This is a committed policy mutation with a failed canonical
+                // audit submission. It must not claim an HTTP success or an
+                // audit event, but the live and fresh policy see the commit.
+                assert!(proxy.reload_policy_if_changed().await.unwrap());
+                let active = proxy.runtime.read().unwrap().policy.clone().unwrap();
+                let fresh = crate::policy::Policy::from_path(policy_path).unwrap();
+                for policy in [&active, &fresh] {
+                    for (host, expected) in [
+                        ("sync-failure.example", crate::policy::Effect::Allow),
+                        ("unrelated.example", crate::policy::Effect::Deny),
+                    ] {
+                        let decision = policy
+                            .evaluate(
+                                crate::policy::NetworkRequest {
+                                    agent: Some("alice"),
+                                    host,
+                                    port: Some(443),
+                                    method: "GET",
+                                    path: "/",
+                                },
+                                crate::policy::current_time_ms(),
+                                false,
+                            )
+                            .unwrap();
+                        assert_eq!(decision.effect, expected, "{host}");
+                    }
+                }
+                assert!(
+                    !fs::read_to_string(directory.path().join("audit.jsonl"))
+                        .unwrap()
+                        .contains("admin.host_allowed")
+                );
+            }
             _ => unreachable!(),
         }
         proxy.shutdown().await;

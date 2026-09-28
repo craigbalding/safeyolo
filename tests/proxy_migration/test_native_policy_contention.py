@@ -67,8 +67,8 @@ def _python_write(kind: str, key: str, directory: str, control) -> None:
         return document
 
     try:
-        with patch.object(toml_roundtrip.fcntl, "flock", side_effect=observed_flock), \
-             patch.object(toml_roundtrip, "load_roundtrip", side_effect=observed_load):
+        with patch.object(toml_roundtrip.fcntl, "flock", autospec=True, side_effect=observed_flock), \
+             patch.object(toml_roundtrip, "load_roundtrip", autospec=True, side_effect=observed_load):
             control.send(("ready", key))
             if not control.poll(LIMIT) or control.recv() != "start":
                 raise TimeoutError("policy writer start barrier timed out")
