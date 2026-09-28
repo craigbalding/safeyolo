@@ -114,9 +114,15 @@ by a deliberate return to the new package. Existing CA, HMAC, credential,
 policy, service, audit, and flow files are not converted by this source change.
 
 The pre-deletion installed Linux/import results referenced in [#640](https://github.com/craigbalding/safeyolo/issues/640)
-retain their original scope. [B2 Linux pilot PR #827](https://github.com/craigbalding/safeyolo/pull/827)
-and [B4 Linux package-return PR #828](https://github.com/craigbalding/safeyolo/pull/828)
-are preparatory candidates, not final-F acceptance. The physical macOS/VZ
-pilot, the exact-F systrap/KVM/VZ lanes, and final package return remain #640
-gates.
+retain their original scope. The [B2 Linux systrap pilot at PR #827 commit
+`c98ef602`](https://github.com/craigbalding/safeyolo/pull/827/commits/c98ef60252037d37cce2596778f73fd8bf5e750b)
+passed the P3 consumer and P4 lifecycle runs on a fresh supported Ubuntu
+24.04 x86_64 host. Independent inspection checked the packaged Rust runtime,
+final launcher, required guest headers, P3 credential, approval, Agent API,
+coordination, event, and inspector paths, and P4 controls, Transport Layer
+Security (TLS), drain, and restart across three stopped proxy/guest cycles.
+This is a preparatory Linux result, not B2 or final-F acceptance.
+[B4 Linux package-return PR #828](https://github.com/craigbalding/safeyolo/pull/828)
+is also preparatory. The physical macOS/VZ pilot, the exact-F systrap/KVM/VZ
+lanes, and final package return remain #640 gates.
 No acceptance state is inferred from this map.
