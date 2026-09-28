@@ -828,13 +828,13 @@ pub(crate) fn update_policy<T>(
         return Ok(result);
     }
     if let Err(error) = save_policy_in_transaction(path, &changed, &mut fault, "commit") {
-        if error.committed {
-            if let Err(rollback) = restore_policy(path, &original, &mut activate, &mut fault) {
-                return Err(ApprovalError {
-                    kind: ErrorKind::Rollback,
-                    message: format!("policy save failed: {}; {rollback}", error.error),
-                });
-            }
+        if error.committed
+            && let Err(rollback) = restore_policy(path, &original, &mut activate, &mut fault)
+        {
+            return Err(ApprovalError {
+                kind: ErrorKind::Rollback,
+                message: format!("policy save failed: {}; {rollback}", error.error),
+            });
         }
         return Err(error.error.into());
     }
