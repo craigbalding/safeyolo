@@ -1,15 +1,18 @@
 """Regression tests for blackbox harness isolation and backend selection."""
 
+import http.client
 import json
 import os
 import stat
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.blackbox.harness.vz_fixture import Parent, VZRequest
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
 from tests.proxy_migration import harness as migration_harness
 from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
@@ -84,7 +87,7 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert "killall" not in runner
     assert 'SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"' in runner
     assert (
-        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"'
+        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SINKHOLE_SCRIPT" "$SINKHOLE_ARGV_FILE"'
         in runner
     )
     assert 'SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"' in runner
@@ -92,6 +95,46 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert 'kill "$HOST_LISTENER_PID"' in runner
     assert "printf -v quoted_arg '%q' \"$forwarded_arg\"" in runner
     assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
+
+
+def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture():
+    """The fixed HTTP listener serves each path and rejects an unknown direct host."""
+    from server import clear_requests, get_requests
+
+    with Parent(None, None, host="127.0.0.1", request_handler=VZRequest) as server:
+        server.https_port = 1
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            clear_requests()
+
+            def get(target, host, **headers):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                try:
+                    connection.request("GET", target, headers={"Host": host, **headers})
+                    response = connection.getresponse()
+                    return response.status, response.read()
+                finally:
+                    connection.close()
+
+            assert get("/health", "127.0.0.1")[0] == 200
+            assert get("/direct", "httpbin.org")[0] == 200
+            assert get("http://httpbin.org/absolute?x=1", "httpbin.org",
+                       **{"Proxy-Authorization": "Basic fixture"})[0] == 200
+            assert get("/unknown", "unknown.test")[0] == 400
+            assert get(f"http://127.0.0.1:{server.server_port}/health", "127.0.0.1")[0] == 502
+            assert get("http://httpbin.org:bad/path", "httpbin.org")[0] == 400
+            assert get("/requests", "127.0.0.1")[0] == 200
+            captured = get_requests(host="httpbin.org")
+            assert [(item.path, item.raw_target) for item in captured] == [
+                ("/direct", "/direct"),
+                ("/absolute", "/absolute?x=1"),
+            ]
+            assert "Proxy-Authorization" not in captured[1].headers
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            clear_requests()
 
 
 def _runner_cleanup_helpers():

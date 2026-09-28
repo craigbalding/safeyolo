@@ -416,17 +416,20 @@ class TestHostAdjacentReachability:
             sock.close()
 
     def test_admin_api_unreachable(self):
-        """SafeYolo admin API ports (9090, 9190) are unreachable.
+        """The host admin API listeners are unreachable from the sandbox.
 
-        What: TCP connect to host:9090 and host:9190 from inside the
-        sandbox; assert both fail.
+        What: TCP connect to the admin ports named by the harness. The
+        default Linux lane checks both production 9090 and test 9190;
+        the physical VZ lane checks its assigned live test port.
         Why: The admin API can change policy modes (block → warn),
         add allowlist entries, or approve credentials. Agent access
         to it would defeat every other control SafeYolo enforces —
         a single-request sandbox escape.
         """
         host = self._host_ip_from_proxy()
-        for port in (9090, 9190):
+        marker = "/safeyolo/blackbox-admin-ports"
+        ports = [int(port) for port in open(marker).read().split()] if os.path.exists(marker) else [9090, 9190]
+        for port in ports:
             self._assert_tcp_unreachable(host, port, f"admin API port {port}")
 
     def test_host_ssh_unreachable(self):
@@ -534,18 +537,24 @@ class TestHostAdjacentReachability:
                     )
 
     def test_sinkhole_direct_unreachable(self):
-        """Sinkhole ports 18080/18443/19999 unreachable direct from sandbox.
+        """The live sinkhole HTTP, HTTPS, and control paths are unreachable.
 
-        What: TCP connect to host:18080, :18443, :19999 (sinkhole
-        HTTP, HTTPS, control API); assert all fail.
+        What: TCP connect to each harness origin and control path. On VZ,
+        HTTP and control share one listener; both probes use that port.
         Why: Sinkhole ports bind 0.0.0.0 during test runs, so they
         ARE listening — unlike the 44444 test. A direct sandbox →
         sinkhole connect succeeding here would mean the isolation
         boundary has a real hole, not just absence of services.
         """
         host = self._host_ip_from_proxy()
-        for port in (18080, 18443, 19999):
-            self._assert_tcp_unreachable(host, port, f"sinkhole port {port}")
+        marker = "/safeyolo/blackbox-sinkhole-ports"
+        if os.path.exists(marker):
+            entries = [line.split() for line in open(marker).read().splitlines()]
+            assert len(entries) == 3 and all(len(entry) == 2 for entry in entries)
+        else:
+            entries = [["HTTP", "18080"], ["HTTPS", "18443"], ["control", "19999"]]
+        for name, port in entries:
+            self._assert_tcp_unreachable(host, int(port), f"sinkhole {name} port {port}")
 
 
 class TestGuestPrivilegeBoundary:

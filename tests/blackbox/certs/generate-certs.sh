@@ -33,6 +33,11 @@ SCRIPT_CERT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEFAULT_CONFIG_DIR="${SAFEYOLO_CONFIG_DIR:-$HOME/.safeyolo}"
 CERT_DIR="${SAFEYOLO_TEST_CERT_DIR:-$SCRIPT_CERT_DIR}"
 KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$DEFAULT_CONFIG_DIR/test-certs}"
+AIA_HTTP_PORT="${SAFEYOLO_SINKHOLE_HTTP_PORT:-18080}"
+if ! [[ "$AIA_HTTP_PORT" =~ ^[0-9]+$ ]] || [ "$AIA_HTTP_PORT" -lt 1 ] || [ "$AIA_HTTP_PORT" -gt 65535 ]; then
+    echo "ERROR: invalid sinkhole HTTP port for AIA certificate: $AIA_HTTP_PORT" >&2
+    exit 2
+fi
 mkdir -p "$CERT_DIR" "$KEY_DIR"
 
 cd "$CERT_DIR"
@@ -753,7 +758,7 @@ EOF
     #      bytes would not parse as a cert. The URL exists so the cert
     #      structurally mirrors real-world AIA-only leaves.
     openssl genrsa -out "$KEY_DIR/aia_chain.key" 2048
-    cat > aia_leaf.cnf << 'EOF'
+    cat > aia_leaf.cnf << EOF
 [req]
 distinguished_name = dn
 req_extensions = v3_leaf
@@ -767,7 +772,7 @@ basicConstraints = CA:FALSE
 keyUsage = digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = @sans
-authorityInfoAccess = caIssuers;URI:http://127.0.0.1:18080/aia/aia-int.crt
+authorityInfoAccess = caIssuers;URI:http://127.0.0.1:$AIA_HTTP_PORT/aia/aia-int.crt
 [sans]
 DNS.1 = aia-only.test
 DNS.2 = *.aia-only.test

@@ -218,6 +218,13 @@ The runner selects a local sinkhole parent for synthetic hosts and chains all
 other destinations through the test instance's configured parent, if present.
 It adds the owned test CA to the disposable instance's upstream trust, retains
 any configured CA, and restores the original route and trust after the run.
+For the full native VZ lane, the parent, HTTP origin, and sinkhole control API
+share port 46373. The HTTPS origin and its certificate variants share port
+46374 through server name indication (SNI). The test proxy, admin API, and web
+listener use ports 46370, 46371, and 46372. Port 46375 remains available for
+the separate OAuth fixture. The runner refuses an occupied VZ fixture port and
+stops only the fixture process it started. The guest still probes the live
+admin, origin, and control paths for direct reachability.
 The retained Python host proxy suite still uses its sinkhole
 router. The lane records its installed runtime in
 `tests/blackbox/artifacts/installed-rust-runtime.json`. An installed lane

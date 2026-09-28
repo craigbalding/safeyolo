@@ -7,7 +7,7 @@
 #
 # Runs as an ISOLATED INSTANCE alongside production SafeYolo:
 #   - Separate config dir (~/.safeyolo-test)
-#   - Separate ports (proxy 8180, admin 9190)
+#   - Separate ports (proxy 8180, admin 9190 on Linux)
 #   - Separate netns slot on Linux (SAFEYOLO_SUBNET_BASE=75 shifts the
 #     namespace name so it doesn't collide with production)
 #   - Production agents are unaffected
@@ -69,10 +69,10 @@ export SAFEYOLO_TEST_KEY_DIR="${SAFEYOLO_TEST_KEY_DIR:-$SAFEYOLO_CONFIG_DIR/test
 TEST_PROXY_PORT=8180
 TEST_ADMIN_PORT=9190
 TEST_WEB_PORT=8181
-
-# Export for host-side pytest (conftest.py reads these)
-export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
-export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
+SINKHOLE_HTTP_PORT=18080
+SINKHOLE_HTTPS_PORT=18443
+SINKHOLE_CONTROL_PORT=19999
+SINKHOLE_SCRIPT="$SCRIPT_DIR/sinkhole/server.py"
 
 # Parse arguments
 RUN_PROXY=true
@@ -232,6 +232,28 @@ if [ "$P4" = true ] && { [ "$KVM_P1" = true ] || \
     echo "ERROR: --p4 requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
     exit 2
 fi
+
+# The physical VZ test account has six assigned localhost TCP ports. The
+# full native lane uses one HTTP fixture listener for its parent, origin,
+# and control API; the HTTPS fixture selects certificate chains by SNI.
+VZ_FIXED_PORTS=false
+if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ] && \
+   [ "$P3" = false ] && [ "$P4" = false ]; then
+    VZ_FIXED_PORTS=true
+    TEST_PROXY_PORT=46370
+    TEST_ADMIN_PORT=46371
+    TEST_WEB_PORT=46372
+    SINKHOLE_HTTP_PORT=46373
+    SINKHOLE_HTTPS_PORT=46374
+    SINKHOLE_CONTROL_PORT=46373
+    SINKHOLE_SCRIPT="$SCRIPT_DIR/harness/vz_fixture.py"
+fi
+export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
+export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
+export SINKHOLE_API="http://127.0.0.1:${SINKHOLE_CONTROL_PORT}"
+export SINKHOLE_RECEIVER="http://127.0.0.1:${SINKHOLE_HTTP_PORT}"
+export SAFEYOLO_SINKHOLE_HTTP_PORT="$SINKHOLE_HTTP_PORT"
+export SAFEYOLO_SINKHOLE_HTTPS_PORT="$SINKHOLE_HTTPS_PORT"
 
 # Command-line paths are interpreted relative to the caller's directory even
 # though the legacy runner changes into tests/blackbox for its setup.
@@ -730,7 +752,7 @@ rm -f "$SAFEYOLO_CONFIG_DIR/logs/flows.sqlite3"
 # Recover only a sinkhole process owned by a previous run.  The PID file and
 # command-path check prevent an unrelated process or another test instance
 # from being stopped.
-stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"
+stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SINKHOLE_SCRIPT" "$SINKHOLE_ARGV_FILE"
 stop_owned_pid_file "$PARENT_PID_FILE" "$SCRIPT_DIR/harness/sinkhole_parent.py" "$PARENT_ARGV_FILE"
 rm -f "$PARENT_PORT_FILE"
 safeyolo stop 2>/dev/null || true
@@ -738,11 +760,12 @@ safeyolo stop 2>/dev/null || true
 # --- Phase 1: Start infrastructure (idempotent) ---
 
 # Sinkhole (shared — not instance-specific)
-if { [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ]; } && curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
-    echo "ERROR: selected pilot requires its own owned sinkhole; control port 19999 is already in use" >&2
+if { [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ] || [ "$VZ_FIXED_PORTS" = true ]; } && \
+   curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
+    echo "ERROR: selected lane requires its own owned sinkhole; control port $SINKHOLE_CONTROL_PORT is already in use" >&2
     exit 2
 fi
-if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+if curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
     echo "Sinkhole already running"
 else
     echo "Starting sinkhole..."
@@ -756,10 +779,30 @@ else
     if [ "$P4" = true ]; then
         P4_CERT_ARGS=(--extra-cert "future:18452:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key")
     fi
-    PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SCRIPT_DIR/sinkhole/server.py" \
-        --http-port 18080 \
-        --https-port 18443 \
-        --control-port 19999 \
+    if [ "$VZ_FIXED_PORTS" = true ]; then
+        ORIGINAL_PARENT="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current "$SAFEYOLO_CONFIG_DIR")"
+        ORIGINAL_PARENT_CA="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current-ca "$SAFEYOLO_CONFIG_DIR")"
+        VZ_PARENT_ARGS=()
+        [ -z "$ORIGINAL_PARENT" ] || VZ_PARENT_ARGS+=(--parent "$ORIGINAL_PARENT")
+        [ -z "$ORIGINAL_PARENT_CA" ] || VZ_PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
+        PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SINKHOLE_SCRIPT" \
+            --http-port "$SINKHOLE_HTTP_PORT" --https-port "$SINKHOLE_HTTPS_PORT" \
+            --cert "$SAFEYOLO_TEST_CERT_DIR/sinkhole.crt" \
+            --key "$SAFEYOLO_TEST_KEY_DIR/sinkhole.key" \
+            --extra-cert "example-chain-test.test:$SAFEYOLO_TEST_CERT_DIR/ecc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/ecc_chain.key" \
+            --extra-cert "rsa-deep-chain.test:$SAFEYOLO_TEST_CERT_DIR/rsa_deep_chain.pem:$SAFEYOLO_TEST_KEY_DIR/rsa_deep_chain.key" \
+            --extra-cert "nc-constrained.test:$SAFEYOLO_TEST_CERT_DIR/nc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/nc_chain.key" \
+            --extra-cert "extra-intermediates.test:$SAFEYOLO_TEST_CERT_DIR/extra_chain.pem:$SAFEYOLO_TEST_KEY_DIR/extra_chain.key" \
+            --extra-cert "expired-leaf.test:$SAFEYOLO_TEST_CERT_DIR/expired_chain.pem:$SAFEYOLO_TEST_KEY_DIR/expired_chain.key" \
+            --extra-cert "wrong-san.test:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
+            --extra-cert "self-signed.test:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
+            --extra-cert "aia-only.test:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
+            "${VZ_PARENT_ARGS[@]}" &
+    else
+    PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SINKHOLE_SCRIPT" \
+        --http-port "$SINKHOLE_HTTP_PORT" \
+        --https-port "$SINKHOLE_HTTPS_PORT" \
+        --control-port "$SINKHOLE_CONTROL_PORT" \
         --cert "$SAFEYOLO_TEST_CERT_DIR/sinkhole.crt" \
         --key "$SAFEYOLO_TEST_KEY_DIR/sinkhole.key" \
         --extra-cert "ecc-chain:18444:$SAFEYOLO_TEST_CERT_DIR/ecc_chain.pem:$SAFEYOLO_TEST_KEY_DIR/ecc_chain.key" \
@@ -773,21 +816,22 @@ else
         "${P4_CERT_ARGS[@]}" \
         "${P2_SINKHOLE_ARGS[@]}" \
         &
+    fi
     SINKHOLE_PID=$!
     STARTED_SINKHOLE=true
 
     for i in $(seq 1 30); do
-        if curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+        if curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
             echo "  Sinkhole ready"
             break
         fi
         sleep 0.5
     done
-    if ! curl -sf "http://127.0.0.1:19999/health" >/dev/null 2>&1; then
+    if ! curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
         echo "ERROR: Sinkhole failed to start"
         exit 2
     fi
-    if ! process_script_matches "$SINKHOLE_PID" "$SCRIPT_DIR/sinkhole/server.py" || \
+    if ! process_script_matches "$SINKHOLE_PID" "$SINKHOLE_SCRIPT" || \
        ! capture_process_argv "$SINKHOLE_PID" "$SINKHOLE_ARGV_FILE"; then
         echo "ERROR: Sinkhole process identity could not be recorded"
         exit 2
@@ -804,42 +848,46 @@ fi
 # an owned HTTP parent for synthetic hosts, while chaining all other requests
 # through the instance's previous parent when one was configured.
 if [ "$PROXY_IMPL" = "rust" ]; then
-    ORIGINAL_PARENT="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current "$SAFEYOLO_CONFIG_DIR")"
-    ORIGINAL_PARENT_CA="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current-ca "$SAFEYOLO_CONFIG_DIR")"
-    echo "Starting native fixture parent..."
-    PARENT_ARGS=(--port-file "$PARENT_PORT_FILE")
-    if [ -n "$ORIGINAL_PARENT" ]; then
-        PARENT_ARGS+=(--parent "$ORIGINAL_PARENT")
+    if [ "$VZ_FIXED_PORTS" = true ]; then
+        SELECTED_PARENT="http://127.0.0.1:$SINKHOLE_HTTP_PORT"
+    else
+        ORIGINAL_PARENT="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current "$SAFEYOLO_CONFIG_DIR")"
+        ORIGINAL_PARENT_CA="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current-ca "$SAFEYOLO_CONFIG_DIR")"
+        echo "Starting native fixture parent..."
+        PARENT_ARGS=(--port-file "$PARENT_PORT_FILE")
+        if [ -n "$ORIGINAL_PARENT" ]; then
+            PARENT_ARGS+=(--parent "$ORIGINAL_PARENT")
+        fi
+        if [ -n "$ORIGINAL_PARENT_CA" ]; then
+            PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
+        fi
+        if [ "$P2" = true ]; then
+            PARENT_ARGS+=(--p2-ssh-port-file "$SAFEYOLO_CONFIG_DIR/p2-fixture/ssh.port")
+        fi
+        python3 "$SCRIPT_DIR/harness/sinkhole_parent.py" "${PARENT_ARGS[@]}" &
+        PARENT_PID=$!
+        STARTED_PARENT=true
+        for i in $(seq 1 30); do
+            [ -s "$PARENT_PORT_FILE" ] && kill -0 "$PARENT_PID" 2>/dev/null && break
+            sleep 0.1
+        done
+        if [ ! -s "$PARENT_PORT_FILE" ] || ! kill -0 "$PARENT_PID" 2>/dev/null; then
+            echo "ERROR: native fixture parent did not start" >&2
+            exit 2
+        fi
+        if ! process_script_matches "$PARENT_PID" "$SCRIPT_DIR/harness/sinkhole_parent.py" || \
+           ! capture_process_argv "$PARENT_PID" "$PARENT_ARGV_FILE"; then
+            echo "ERROR: native fixture parent identity could not be recorded" >&2
+            exit 2
+        fi
+        PARENT_START_ID="$(process_start_identity "$PARENT_PID" 2>/dev/null || true)"
+        if [ -z "$PARENT_START_ID" ]; then
+            echo "ERROR: native fixture parent start identity could not be recorded" >&2
+            exit 2
+        fi
+        printf '%s\n%s\n' "$PARENT_PID" "$PARENT_START_ID" > "$PARENT_PID_FILE"
+        SELECTED_PARENT="http://127.0.0.1:$(cat "$PARENT_PORT_FILE")"
     fi
-    if [ -n "$ORIGINAL_PARENT_CA" ]; then
-        PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
-    fi
-    if [ "$P2" = true ]; then
-        PARENT_ARGS+=(--p2-ssh-port-file "$SAFEYOLO_CONFIG_DIR/p2-fixture/ssh.port")
-    fi
-    python3 "$SCRIPT_DIR/harness/sinkhole_parent.py" "${PARENT_ARGS[@]}" &
-    PARENT_PID=$!
-    STARTED_PARENT=true
-    for i in $(seq 1 30); do
-        [ -s "$PARENT_PORT_FILE" ] && kill -0 "$PARENT_PID" 2>/dev/null && break
-        sleep 0.1
-    done
-    if [ ! -s "$PARENT_PORT_FILE" ] || ! kill -0 "$PARENT_PID" 2>/dev/null; then
-        echo "ERROR: native fixture parent did not start" >&2
-        exit 2
-    fi
-    if ! process_script_matches "$PARENT_PID" "$SCRIPT_DIR/harness/sinkhole_parent.py" || \
-       ! capture_process_argv "$PARENT_PID" "$PARENT_ARGV_FILE"; then
-        echo "ERROR: native fixture parent identity could not be recorded" >&2
-        exit 2
-    fi
-    PARENT_START_ID="$(process_start_identity "$PARENT_PID" 2>/dev/null || true)"
-    if [ -z "$PARENT_START_ID" ]; then
-        echo "ERROR: native fixture parent start identity could not be recorded" >&2
-        exit 2
-    fi
-    printf '%s\n%s\n' "$PARENT_PID" "$PARENT_START_ID" > "$PARENT_PID_FILE"
-    SELECTED_PARENT="http://127.0.0.1:$(cat "$PARENT_PORT_FILE")"
     python3 "$SCRIPT_DIR/harness/native_parent_config.py" select "$SAFEYOLO_CONFIG_DIR" "$SELECTED_PARENT" \
         --test-ca "$SAFEYOLO_TEST_CERT_DIR/ca.crt"
     export SAFEYOLO_UPSTREAM_PROXY="$SELECTED_PARENT"
@@ -897,16 +945,29 @@ if [ "$RUN_ISOLATION" = true ]; then
     install -m 0444 \
         "$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem" \
         "$CONFIG_SHARE/guest-only-trust-anchor.crt"
-    python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
-    HOST_LISTENER_PID=$!
-    # Wait for the port to be written (listener prints it on bind).
-    for i in $(seq 1 20); do
-        if [ -s "$CONFIG_SHARE/host-listener-port" ]; then
-            echo "  Listener on port $(cat "$CONFIG_SHARE/host-listener-port")"
-            break
-        fi
-        sleep 0.1
-    done
+    if [ "$VZ_FIXED_PORTS" = true ]; then
+        printf '%s\n' "$TEST_ADMIN_PORT" > "$CONFIG_SHARE/blackbox-admin-ports"
+    else
+        printf '9090\n%s\n' "$TEST_ADMIN_PORT" > "$CONFIG_SHARE/blackbox-admin-ports"
+    fi
+    printf 'HTTP %s\nHTTPS %s\ncontrol %s\n' \
+        "$SINKHOLE_HTTP_PORT" "$SINKHOLE_HTTPS_PORT" "$SINKHOLE_CONTROL_PORT" \
+        > "$CONFIG_SHARE/blackbox-sinkhole-ports"
+    if [ "$VZ_FIXED_PORTS" = true ]; then
+        # The origin is already known-live and binds on all host interfaces.
+        printf '%s\n' "$SINKHOLE_HTTP_PORT" > "$CONFIG_SHARE/host-listener-port"
+    else
+        python3 "$SCRIPT_DIR/harness/host_listener.py" > "$CONFIG_SHARE/host-listener-port" &
+        HOST_LISTENER_PID=$!
+        # Wait for the port to be written (listener prints it on bind).
+        for i in $(seq 1 20); do
+            if [ -s "$CONFIG_SHARE/host-listener-port" ]; then
+                echo "  Listener on port $(cat "$CONFIG_SHARE/host-listener-port")"
+                break
+            fi
+            sleep 0.1
+        done
+    fi
     if [ ! -s "$CONFIG_SHARE/host-listener-port" ]; then
         echo "ERROR: Host listener didn't start"
         exit 2
