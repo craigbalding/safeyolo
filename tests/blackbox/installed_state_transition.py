@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the #638 Linux installed Python -> Rust -> Python -> Rust transition.
+"""Run the installed Python -> Rust -> Python -> Rust package transition.
 
 Run this with the selected old Python wheel's interpreter. The two CLI paths
 must be independently installed wheels. Set SAFEYOLO_PDP_DIR to the pdp/
@@ -74,6 +74,14 @@ def eventually(predicate, message: str, seconds: float = 8):
             return result
         time.sleep(0.1)
     raise AssertionError(message() if callable(message) else message)
+
+
+def _process_running(pid: int) -> bool:
+    try:
+        status = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1][0]
+    except FileNotFoundError:
+        return False
+    return status not in ("Z", "X")
 
 
 class Origin(http.server.ThreadingHTTPServer):
@@ -181,18 +189,28 @@ def installed_identity(cli: Path, revision: str) -> dict:
     launcher = cli.read_text().splitlines()[0]
     check(launcher.startswith("#!"), f"no interpreter in {cli}")
     python = Path(launcher[2:])
-    code = "import json,safeyolo,pathlib,importlib.metadata as m; p=pathlib.Path(safeyolo.__file__).parent; print(json.dumps({'package':str(p),'identity':json.loads((p/'_build_identity.json').read_text()),'version':m.version('safeyolo')}))"
+    code = "import json,safeyolo,pathlib,importlib.metadata as m,sys; p=pathlib.Path(safeyolo.__file__).parent; print(json.dumps({'package':str(p),'identity':json.loads((p/'_build_identity.json').read_text()),'version':m.version('safeyolo'),'python_version':sys.version.split()[0]}))"
     result = json.loads(run([str(python), "-I", "-c", code], os.environ.copy()))
     check("site-packages" in result["package"], "CLI is not an installed wheel")
     check(result["identity"]["source_revision"] == revision, "wheel revision mismatch")
+    if revision == OLD_REVISION:
+        check(result["version"] == "0.1.0", "old package version mismatch")
+        check(result["python_version"] == "3.12.14", "old Python version mismatch")
+        check(run([str(python), "-I", "-c",
+                   "import importlib.metadata as m; print(m.version('mitmproxy'))"],
+                  os.environ.copy()).strip() == "12.2.3", "old mitmproxy version mismatch")
     return {"interpreter": str(python), "package": result["package"],
-            "version": result["version"], "source_revision": revision}
+            "version": result["version"], "python_version": result["python_version"],
+            "source_revision": revision}
 
 
 def env_for(root: Path) -> dict:
     env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
     env.pop("SAFEYOLO_RUST_PROXY", None)
     env.pop("SAFEYOLO_PYTHON_SOURCE", None)
+    env.pop("SAFEYOLO_PDP_DIR", None)
     env["SAFEYOLO_CONFIG_DIR"] = str(root)
     env["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     env["SAFEYOLO_COORD_DATA_DIR"] = str(root / "data" / "coord")
@@ -206,20 +224,16 @@ def unused_port() -> int:
         return listener.getsockname()[1]
 
 
-def select_backend(root: Path, backend: str) -> None:
-    path = root / "config.yaml"
-    config = yaml.safe_load(path.read_text())
-    config["proxy"]["backend"] = backend
-    path.write_text(yaml.safe_dump(config, sort_keys=False))
-
-
 def socket_for(root: Path, agent: str) -> Path:
     ip = "10.4.0.2" if agent == "alice" else "10.4.0.3"
     return root / "data" / "sockets" / f"{ip}_{agent}" / "proxy.sock"
 
 
 def start(cli: Path, root: Path, env: dict, backend: str, rust_revision: str) -> dict:
-    select_backend(root, backend)
+    config = yaml.safe_load((root / "config.yaml").read_text())
+    check("backend" not in config["proxy"], "package selection used proxy.backend")
+    revision = OLD_REVISION if backend == "python" else rust_revision
+    package = installed_identity(cli, revision)
     run([str(cli), "start", "--wait"], env, timeout=45)
     path = socket_for(root, "alice")
     check(path.is_socket(), f"{backend} did not publish Alice's listener")
@@ -231,13 +245,14 @@ def start(cli: Path, root: Path, env: dict, backend: str, rust_revision: str) ->
     executable = os.readlink(f"/proc/{pid}/exe")
     command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
     if backend == "rust":
-        expected = Path(installed_identity(cli, rust_revision)["package"]) / "bin" / "safeyolo-proxy"
+        expected = Path(package["package"]) / "bin" / "safeyolo-proxy"
         check(Path(executable) == expected, "Rust process did not execute installed wheel binary")
     else:
-        check(str(Path(cli).parent / "python") in command and "safeyolo.traffic_master" in command,
+        check(package["interpreter"] in command and "safeyolo.traffic_master" in command,
               "old Python process did not use selected wheel interpreter")
     identity = {"backend": backend, "pid": pid, "executable": executable,
-                "command": command[:220], "health_status": status}
+                "command": command[:220], "health_status": status,
+                "cli": str(cli), "package": package}
     if backend == "rust":
         identity["binary_sha256"] = sha(Path(executable))
         identity["binary_version"] = run([executable, "--version"], env).strip()
@@ -370,18 +385,407 @@ def trusted_tls_request(socket_path: Path, origin_port: int, root: Path) -> dict
                     "peer_certificate_sha256": hashlib.sha256(peer).hexdigest()}
 
 
+def post_deletion_transition(args, old_id: dict, rust_id: dict, pdp_dir: Path) -> None:
+    """Exercise the installed package return without repeating the #638 inventory."""
+    root = Path(tempfile.mkdtemp(prefix="r640-package-return-", dir=args.state_parent))
+    env = env_for(root)
+    old_env = dict(env, SAFEYOLO_PDP_DIR=str(pdp_dir.resolve()))
+    active: Path | None = None
+    nats_started = False
+    stages: list[dict] = []
+    origin = Origin(("127.0.0.2", 0))
+    oauth = Origin(("127.0.0.1", 0), oauth=True)
+    tls_origin, tls_cert_path = https_origin(root)
+    servers = (origin, oauth, tls_origin)
+    for server in servers:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        run([str(args.old_cli), "init", "--no-interactive"], old_env)
+        (root / ".safeyolo-platform-smoke").touch()
+        config_path = root / "config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+        config["proxy"].update({"port": unused_port(), "admin_port": unused_port(),
+                                "web_port": unused_port(),
+                                "rust_config": str(root / "data/native.json"),
+                                "upstream_ca_cert": str(tls_cert_path)})
+        config["proxy"].pop("backend", None)
+        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+        (root / "data/agent_map.json").write_text(json.dumps({
+            "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
+        old_python(args.old_cli, old_env, """
+import json
+from safeyolo.agents_store import save_agent
+save_agent('alice',{'agent_id':'ag-r640-alice'})
+save_agent('bob',{'agent_id':'ag-r640-bob'})
+print(json.dumps({'agents':'registered'}))
+""")
+        service_dir = root / "services"
+        service_dir.mkdir(exist_ok=True)
+        (service_dir / "contract.yaml").write_text("""schema_version: 1
+name: contract
+default_host: 127.0.0.2
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+  allow_http: true
+  refresh_on_401: true
+risky_routes:
+  - path: /v1/write
+    methods: [POST]
+    tactics: [exfiltration]
+capabilities:
+  writer:
+    routes:
+      - methods: [POST]
+        path: /v1/write
+    contract:
+      template: contract.write.v1
+      bindings:
+        project:
+          source: operator
+          type: enum
+          options: [alpha]
+        ticket:
+          source: operator
+          type: string
+      operations:
+        - name: write
+          request:
+            method: POST
+            path: /v1/write
+            query:
+              allow:
+                ticket:
+                  equals_var: ticket
+            body:
+              allow:
+                project:
+                  equals_var: project
+      enforcement:
+        request_shape: enforced
+        transport_hygiene: enforced
+        state_capture: declared
+        state_enforcement: declared
+""")
+        old_python(args.old_cli, old_env, """
+import json,sys,tomlkit
+from pathlib import Path
+from safeyolo.policy.toml_roundtrip import locked_policy_mutate
+def update(doc):
+    host=tomlkit.inline_table(); host['service']='contract'
+    doc['hosts']['127.0.0.2']=host
+    doc['agents']=tomlkit.table()
+    for name in ('alice','bob'):
+        doc['agents'][name]=tomlkit.table()
+        doc['agents'][name]['agent_id']='ag-r640-'+name
+    doc['agents']['alice']['hosts']=tomlkit.table()
+    tls=tomlkit.inline_table(); tls['egress']='allow'; tls['rate']=600
+    doc['agents']['alice']['hosts']['127.0.0.2:'+sys.argv[2]]=tls
+    doc['addons']=tomlkit.table()
+    doc['addons']['credential_guard']=tomlkit.table()
+    doc['addons']['credential_guard']['enabled']=True
+    doc['addons']['credential_guard']['detection_level']='none'
+    doc['addons']['credential_guard']['settings']=tomlkit.table()
+    doc['addons']['credential_guard']['settings']['use_default_credential_rules']=False
+    doc['addons']['credential_guard']['settings']['entropy']=tomlkit.table()
+    doc['addons']['credential_guard']['settings']['entropy']['min_length']=1000
+locked_policy_mutate(Path(sys.argv[1]),update)
+print(json.dumps({'policy':'created'}))
+""", str(root / "policy.toml"), str(tls_origin.server_port))
+        run([str(args.old_cli), "policy", "egress", "set", "deny"], old_env)
+        old_python(args.old_cli, old_env, """
+import json,sys
+from pathlib import Path
+from safeyolo.core.vault import Vault,VaultCredential
+p=Path(sys.argv[1]); v=Vault(p/'vault.yaml.enc'); v.unlock(sys.argv[2])
+v.store(VaultCredential('contract-secret','oauth2','synthetic-r638-expired',
+    refresh_token='synthetic-r638-refresh-v0',token_url=sys.argv[3],
+    client_id='r640',client_secret='synthetic-client',expires_at='2020-01-01T00:00:00+00:00'))
+(p/'vault.key').write_text(sys.argv[2]); (p/'vault.key').chmod(0o600)
+print(json.dumps({'names':v.list_names()}))
+""", str(root / "data"), PASS,
+                   f"http://127.0.0.1:{oauth.server_port}/oauth/token")
+        print(json.dumps({"state": str(root), "old": old_id, "rust": rust_id}), flush=True)
+        active = args.old_cli
+        stages.append(start(active, root, old_env, "python", args.rust_revision))
+        alice, bob = socket_for(root, "alice"), socket_for(root, "bob")
+        agent_token = (root / "data/agent_token").read_text().strip()
+        ca, hmac = root / "certs/mitmproxy-ca.pem", root / "data/hmac_secret"
+        ca_snapshot = ca_files(root)
+        hmac_hash = sha(hmac)
+        old_vault_hash = sha(root / "data/vault.yaml.enc")
+        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+            private_file(path)
+        old_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        initial_denied, _ = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/before")
+        check(initial_denied in (403, 428) and not origin.seen,
+              f"old package did not enforce initial denial: {initial_denied}")
+        stop(active, root, old_env)
+        active = None
+        nats_identity = ensure_nats(args.old_cli, old_env)
+        nats_started = True
+
+        active = args.rust_cli
+        stages.append(start(active, root, env, "rust", args.rust_revision))
+        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
+              "post-deletion Rust changed old CA/HMAC state")
+        rust_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        approval_status, _ = admin(root, "POST", "/admin/policy/host/allow",
+                                   {"host": "127.0.0.2", "port": origin.server_port,
+                                    "agent": "alice", "rate": 600})
+        check(approval_status == 200, "post-deletion Rust could not write scoped approval")
+        def allowed():
+            status, body = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/allow")
+            return (status, body) if status == 200 else None
+        allowed_status, allowed_body = eventually(allowed, "Rust approval did not take effect")
+        check(allowed_body == BODY, "Rust approval changed origin body")
+        before = len(origin.seen)
+        rust_denied, _ = request(bob, "GET", f"http://127.0.0.2:{origin.server_port}/deny")
+        check(rust_denied in (403, 428) and len(origin.seen) == before,
+              "Rust scoped approval leaked to Bob")
+        status, _ = admin(root, "POST", "/admin/agents/alice/services",
+                          {"service": "contract", "capability": "writer",
+                           "credential": "contract-secret"})
+        check(status == 200, "Rust service authorization failed")
+        def gateway_token():
+            status, catalog = json_request(alice, "GET", "/gateway/services", agent_token)
+            return catalog.get("authorized", {}).get("contract", {}).get("token") if status == 200 else None
+        before = len(origin.seen)
+        status, _ = request(
+            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+            token=eventually(gateway_token, "Rust service token did not become active"),
+            body=b'{"project":"alpha"}')
+        check(status in (403, 428) and len(origin.seen) == before,
+              "Rust risky route crossed without a binding and grant")
+        status, binding = admin(root, "POST", "/admin/gateway/contract-binding", {
+            "agent": "alice", "service": "contract", "capability": "writer",
+            "template": "contract.write.v1", "bindings": {"project": "alpha", "ticket": "T-1"},
+            "grantable_operations": ["write"]})
+        check(status == 200 and binding.get("binding_id"), "Rust binding write failed")
+        status, grant = admin(root, "POST", "/admin/gateway/grant", {
+            "agent": "alice", "service": "contract", "method": "POST",
+            "path": "/v1/write", "lifetime": "remembered"})
+        check(status == 200 and grant.get("grant_id"), "Rust grant write failed")
+        def granted():
+            token = gateway_token()
+            if token is None:
+                return None
+            status, body = request(alice, "POST",
+                                   f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+                                   token=token, body=b'{"project":"alpha"}')
+            return (status, body) if status == 200 else None
+        rust_granted, body = eventually(granted, "Rust service/grant did not reach origin")
+        check(body == BODY and origin.seen[-1]["authorization"] ==
+              "Bearer synthetic-r638-access-v1", "Rust did not use old vault credential")
+        native_vault_hash = sha(root / "data/vault.yaml.enc")
+        check(native_vault_hash != old_vault_hash,
+              "Rust did not durably refresh the old vault credential")
+        old_python(args.old_cli, old_env, """
+import json,sys,tomlkit
+from pathlib import Path
+from safeyolo.policy.toml_roundtrip import locked_policy_mutate
+def add(doc):
+    context=tomlkit.table()
+    context['target_hosts']=['127.0.0.2']
+    context['inject_declared']=True
+    doc['addons']['test_context']=context
+locked_policy_mutate(Path(sys.argv[1]),add)
+print(json.dumps({'test_context':'enabled_for_task_check'}))
+""", str(root / "policy.toml"))
+        task_policy_hash = sha(root / "policy.toml")
+        def context_active():
+            status, _ = request(
+                alice, "GET", f"http://127.0.0.2:{origin.server_port}/context-ready")
+            return status == 428
+        eventually(context_active, "Rust did not publish the task test context")
+        status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                   {"policy": TASK_POLICY})
+        check(status == 200 and registered.get("permission_count") == 1,
+              "Rust task registration failed")
+        status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(status == 200 and activated.get("permission_count") == 1,
+              "Rust task activation failed")
+        before = len(origin.seen)
+        def task_denied():
+            status, _ = request(
+                alice, "GET", f"http://127.0.0.2:{origin.server_port}/task",
+                headers={"X-SafeYolo-Test-Context":
+                         "run=owned;agent=alice;test=R638"})
+            return status if status == 403 else None
+        native_task_denied = eventually(task_denied, "Rust task overlay did not deny")
+        check(native_task_denied == 403 and len(origin.seen) == before,
+              "Rust task overlay did not deny before origin contact")
+        check(sha(root / "policy.toml") == task_policy_hash,
+              "Rust task registration changed durable policy")
+        old_python(args.old_cli, old_env, """
+import json,sys
+from pathlib import Path
+from safeyolo.policy.toml_roundtrip import locked_policy_mutate
+def remove(doc): del doc['addons']['test_context']
+locked_policy_mutate(Path(sys.argv[1]),remove)
+print(json.dumps({'test_context':'removed_after_task_check'}))
+""", str(root / "policy.toml"))
+        policy_hash = sha(root / "policy.toml")
+        stop(active, root, env)
+        active = None
+
+        active = args.old_cli
+        stages.append(start(active, root, old_env, "python", args.rust_revision))
+        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
+              "old package changed CA/HMAC on rollback")
+        rollback_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}", backend="python")
+        check(task_status == 404, "old process inherited Rust task registration")
+        old_allowed, old_body = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/old")
+        check(old_allowed == 200 and old_body == BODY,
+              "old package did not use Rust scoped approval")
+        before = len(origin.seen)
+        old_denied, _ = request(bob, "GET", f"http://127.0.0.2:{origin.server_port}/old-deny")
+        check(old_denied in (403, 428) and len(origin.seen) == before,
+              "old package allowed Bob through Alice's approval")
+        status, old_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
+        check(status == 200 and old_catalog.get("authorized", {}).get("contract"),
+              "old package did not read Rust service authorization")
+        old_grant_status, old_grant_body = request(
+            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+            token=old_catalog["authorized"]["contract"]["token"],
+            body=b'{"project":"alpha"}')
+        check(old_grant_status == 200 and old_grant_body == BODY and
+              origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
+              "old package did not use Rust grant and vault credential")
+        old_python(args.old_cli, old_env, """
+import json,sys
+from pathlib import Path
+from safeyolo.mitm_addons.service_gateway import ServiceGateway
+gateway=ServiceGateway(); gateway._get_policy_path=lambda:Path(sys.argv[1])
+gateway._load_grants_from_policy(); gateway._load_contract_bindings_from_policy()
+assert gateway._check_grant('alice','contract','POST','/v1/write').grant_id==sys.argv[2]
+assert gateway.get_contract_binding('alice','contract','writer').binding_id==sys.argv[3]
+print(json.dumps({'old_grant_and_binding_read':True}))
+""", str(root / "policy.toml"), grant["grant_id"], binding["binding_id"])
+        check(sha(root / "data/vault.yaml.enc") == native_vault_hash,
+              "old package changed the native-refreshed vault")
+        status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                   {"policy": TASK_POLICY}, backend="python")
+        check(status == 200 and registered.get("permission_count") == 1,
+              "old task registration failed")
+        status, saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
+                                   backend="python")
+        check(status == 200 and saved_task.get("policy") == TASK_POLICY,
+              "old process did not retain its task registration")
+        check(sha(root / "policy.toml") == policy_hash,
+              "old task registration changed durable policy")
+        stop(active, root, old_env)
+        active = None
+
+        active = args.rust_cli
+        stages.append(start(active, root, env, "rust", args.rust_revision))
+        check(stages[-1]["pid"] != stages[1]["pid"], "Rust return reused prior process")
+        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
+              "return Rust changed CA/HMAC identity")
+        returned_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        returned_task_get, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(returned_task_get == 404, "fresh Rust inherited prior task registration")
+        returned_task_activate, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(returned_task_activate == 404, "fresh Rust activated a prior task")
+        return_allowed, return_body = request(
+            alice, "GET", f"http://127.0.0.2:{origin.server_port}/returned")
+        check(return_allowed == 200 and return_body == BODY,
+              "return Rust did not use retained scoped approval")
+        before = len(origin.seen)
+        return_denied, _ = request(
+            bob, "GET", f"http://127.0.0.2:{origin.server_port}/returned-deny")
+        check(return_denied in (403, 428) and len(origin.seen) == before,
+              "return Rust allowed Bob through Alice's approval")
+        return_granted, return_grant_body = eventually(
+            granted, "return Rust did not use retained service/grant")
+        check(return_grant_body == BODY and origin.seen[-1]["authorization"] ==
+              "Bearer synthetic-r638-access-v1", "return Rust lost vault credential")
+        check(sha(root / "data/vault.yaml.enc") == native_vault_hash,
+              "return Rust changed the retained credential")
+        check(sha(root / "policy.toml") == policy_hash,
+              "package rollback changed durable policy")
+        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+            private_file(path)
+        stop(active, root, env)
+        active = None
+        old_python(args.old_cli, old_env, """
+import json
+from safeyolo.coord import nats_runtime
+nats_runtime.stop_server()
+print(json.dumps({'nats':'stopped'}))
+""")
+        nats_started = False
+        eventually(lambda: not _process_running(nats_identity["pid"]),
+                   "transition left its NATS server running")
+        run(["tmux", "-S", str(root / "data/traffic-tmux.sock"), "kill-server"], env)
+        eventually(lambda: all(not _process_running(stage["pid"]) for stage in stages),
+                   "transition left an old or new proxy process running")
+        print(json.dumps({"result": "linux_post_deletion_package_return_passed",
+                          "state": str(root), "stages": stages,
+                          "statuses": {"initial_denied": initial_denied,
+                                       "rust_allowed": allowed_status, "rust_denied": rust_denied,
+                                       "old_allowed": old_allowed, "old_denied": old_denied,
+                                       "return_allowed": return_allowed,
+                                       "return_denied": return_denied,
+                                       "grants": [rust_granted, old_grant_status, return_granted],
+                                       "task_active": native_task_denied,
+                                       "task_reset": [returned_task_get, returned_task_activate]},
+                          "ca_hmac_unchanged": True,
+                          "trusted_tls_statuses": [old_tls["status"], rust_tls["status"],
+                                                   rollback_tls["status"], returned_tls["status"]],
+                          "durable_policy_service_grant": "used across all package switches",
+                          "task_policy": "registrations reset on process replacement",
+                          "processes_stopped": True, "agents_started": 0}), flush=True)
+    finally:
+        if active is not None:
+            try:
+                stop(active, root, old_env if active == args.old_cli else env)
+            except Exception as exc:
+                print(f"cleanup failed: {type(exc).__name__}: {exc}", flush=True)
+        if nats_started:
+            try:
+                old_python(args.old_cli, old_env, """
+import json
+from safeyolo.coord import nats_runtime
+nats_runtime.stop_server()
+print(json.dumps({'nats':'stopped'}))
+""")
+            except Exception as exc:
+                print(f"NATS cleanup failed: {type(exc).__name__}: {exc}", flush=True)
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        # A failed start may not have created the private tmux server.
+        subprocess.run(["tmux", "-S", str(root / "data/traffic-tmux.sock"), "kill-server"],
+                       capture_output=True, check=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--old-cli", required=True, type=Path)
     parser.add_argument("--rust-cli", required=True, type=Path)
     parser.add_argument("--rust-revision", required=True)
     parser.add_argument("--state-parent", required=True, type=Path)
+    parser.add_argument("--post-deletion", action="store_true",
+                        help="Run the focused package return without the full #638 inventory")
     args = parser.parse_args()
     old_id = installed_identity(args.old_cli, OLD_REVISION)
     rust_id = installed_identity(args.rust_cli, args.rust_revision)
+    pdp_dir = Path(os.environ.get("SAFEYOLO_PDP_DIR", ""))
+    check(pdp_dir.is_dir() and (pdp_dir / "__init__.py").is_file(),
+          "SAFEYOLO_PDP_DIR must name the selected old source's pdp directory")
+    source_revision = run(["git", "-C", str(pdp_dir.parent), "rev-parse", "HEAD"],
+                          os.environ.copy()).strip()
+    check(source_revision == OLD_REVISION, "old pdp source revision mismatch")
     args.state_parent.mkdir(parents=True, exist_ok=True)
+    if args.post_deletion:
+        post_deletion_transition(args, old_id, rust_id, pdp_dir)
+        return
     root = Path(tempfile.mkdtemp(prefix="r638-installed-", dir=args.state_parent))
     env = env_for(root)
+    old_env = dict(env, SAFEYOLO_PDP_DIR=str(pdp_dir.resolve()))
     stages: list[dict] = []
     active: Path | None = None
     nats_started = False
@@ -393,17 +797,18 @@ def main() -> None:
     for thread in threads:
         thread.start()
     try:
-        run([str(args.old_cli), "init", "--no-interactive"], env)
+        run([str(args.old_cli), "init", "--no-interactive"], old_env)
         (root / ".safeyolo-platform-smoke").touch()
         config = yaml.safe_load((root / "config.yaml").read_text())
         config["proxy"].update({"port": unused_port(), "admin_port": unused_port(),
                                 "web_port": unused_port(),
-                                "backend": "python", "rust_config": str(root / "data/native.json"),
+                                "rust_config": str(root / "data/native.json"),
                                 "upstream_ca_cert": str(tls_cert_path)})
+        config["proxy"].pop("backend", None)
         (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         (root / "data/agent_map.json").write_text(json.dumps({
             "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
-        old_python(args.old_cli, env, """
+        old_python(args.old_cli, old_env, """
 import json
 from safeyolo.agents_store import save_agent
 save_agent('alice',{'agent_id':'ag-r638-alice'})
@@ -411,7 +816,7 @@ save_agent('bob',{'agent_id':'ag-r638-bob'})
 print(json.dumps({'agents':'registered'}))
 """)
         # The old writer creates the canonical encrypted file and its key.
-        old_python(args.old_cli, env, """
+        old_python(args.old_cli, old_env, """
 import json,sys
 from pathlib import Path
 from safeyolo.core.vault import Vault,VaultCredential
@@ -488,7 +893,7 @@ capabilities:
       - methods: [GET]
         path: /v1/catalog
 """)
-        old_python(args.old_cli, env, """
+        old_python(args.old_cli, old_env, """
 import json,sys,tomlkit
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
@@ -523,7 +928,7 @@ def update(doc):
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
 """, str(root / "policy.toml"), str(tls_origin.server_port))
-        run([str(args.old_cli), "policy", "egress", "set", "deny"], env)
+        run([str(args.old_cli), "policy", "egress", "set", "deny"], old_env)
         check(tomllib.loads((root / "policy.toml").read_text())["hosts"]["*"]["egress"] == "deny",
               "old policy writer did not set wildcard egress deny")
         provider_dir = root / "coord-providers"
@@ -537,10 +942,10 @@ print(json.dumps({'policy':'created'}))
         provider_hash = sha(provider_snapshot)
         print(json.dumps({"state": str(root), "old": old_id, "rust": rust_id}), flush=True)
         active = args.old_cli
-        stages.append(start(active, root, env, "python", args.rust_revision))
+        stages.append(start(active, root, old_env, "python", args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
-        old_coord = old_python(args.old_cli, env, """
+        old_coord = old_python(args.old_cli, old_env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -584,13 +989,13 @@ print(json.dumps(asyncio.run(exercise())))
                          "hmac_fingerprint": key_fingerprint(hmac),
                          "vault_sha256": sha(root / "data/vault.yaml.enc"),
                          "policy_sha256": sha(root / "policy.toml")}
-        stop(active, root, env)
+        stop(active, root, old_env)
         active = None
         print(json.dumps({"old_initial": stages[-1], "state": initial_state,
                           "denied_status": status, "coord": old_coord,
                           "plumb_request_id": plumb_request_id, "trusted_tls": old_tls}),
               flush=True)
-        nats_identity = ensure_nats(args.old_cli, env)
+        nats_identity = ensure_nats(args.old_cli, old_env)
         nats_started = True
         print(json.dumps({"nats": nats_identity}), flush=True)
         active = args.rust_cli
@@ -726,7 +1131,7 @@ print(json.dumps(asyncio.run(exercise())))
               "native task clear did not restore scoped host approval")
         check(sha(root / "policy.toml") == policy_before_task,
               "native task registration, activation, or clear changed durable policy")
-        old_python(args.old_cli, env, """
+        old_python(args.old_cli, old_env, """
 import json,sys
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
@@ -854,7 +1259,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         check((root / "data/circuit_breaker_state.json").is_file(),
               "native open circuit was not persisted on close")
         active = args.old_cli
-        stages.append(start(active, root, env, "python", args.rust_revision))
+        stages.append(start(active, root, old_env, "python", args.rust_revision))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "Python rollback changed CA/HMAC identity")
@@ -915,7 +1320,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               f"old Python did not use native grant/binding: {old_gateway_status}")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
               "old Python did not inject native-refreshed vault credential")
-        old_coord_read = old_python(args.old_cli, env, """
+        old_coord_read = old_python(args.old_cli, old_env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -943,7 +1348,7 @@ print(json.dumps(asyncio.run(exercise())))
             {"body": "python-rollback-plumb"})
         check(plumb_reply_status == 200 and plumb_reply.get("id"),
               f"old Python plumb write failed: {plumb_reply_status} {plumb_reply}")
-        old_read = old_python(args.old_cli, env, """
+        old_read = old_python(args.old_cli, old_env, """
 import json,sys
 from pathlib import Path
 from safeyolo.core.vault import Vault
@@ -1009,9 +1414,9 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
                           "circuit_reset_status": old_recovered_status,
                           "host_approval_revoked": True}),
               flush=True)
-        stop(active, root, env)
+        stop(active, root, old_env)
         active = None
-        ensure_nats(args.old_cli, env)
+        ensure_nats(args.old_cli, old_env)
         active = args.rust_cli
         stages.append(start(active, root, env, "rust", args.rust_revision))
         check(stages[-1]["pid"] != stages[1]["pid"], "return reused the first Rust process")
@@ -1130,7 +1535,7 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
               flush=True)
         stop(active, root, env)
         active = None
-        old_python(args.old_cli, env, """
+        old_python(args.old_cli, old_env, """
 import json
 from safeyolo.coord import nats_runtime
 nats_runtime.stop_server()
@@ -1144,12 +1549,12 @@ print(json.dumps({'nats':'stopped'}))
     finally:
         if active is not None:
             try:
-                stop(active, root, env)
+                stop(active, root, old_env if active == args.old_cli else env)
             except Exception as exc:
                 print(f"cleanup failed: {type(exc).__name__}: {exc}", flush=True)
         if nats_started:
             try:
-                old_python(args.old_cli, env, """
+                old_python(args.old_cli, old_env, """
 import json
 from safeyolo.coord import nats_runtime
 nats_runtime.stop_server()
