@@ -218,12 +218,13 @@ The runner selects a local sinkhole parent for synthetic hosts and chains all
 other destinations through the test instance's configured parent, if present.
 It adds the owned test CA to the disposable instance's upstream trust, retains
 any configured CA, and restores the original route and trust after the run.
-For the full native VZ lane, the parent, HTTP origin, and sinkhole control API
-share port 46373. The HTTPS origin and its certificate variants share port
-46374 through server name indication (SNI). The test proxy, admin API, and web
-listener use ports 46370, 46371, and 46372. Port 46375 remains available for
-the separate OAuth fixture. The runner refuses an occupied VZ fixture port and
-stops only the fixture process it started. The guest still probes the live
+For the native VZ lane and selected P3/P4 pilots, the parent, HTTP origin, and
+sinkhole control API share port 46373. The HTTPS origin and its certificate variants share port
+46374 through server name indication (SNI). The native proxy serves agents
+through Unix sockets. Its admin API uses 46371; the disposable Coord server
+uses 46370 and 46372. P4 uses 46375 for its separate owner admin API.
+The runner refuses an occupied VZ fixture port and stops only the fixture
+process it started. The guest still probes the live
 admin, origin, and control paths for direct reachability.
 The retained Python host proxy suite still uses its sinkhole
 router. The lane records its installed runtime in
@@ -462,8 +463,9 @@ Use a disposable Ubuntu systrap host or a physical Apple Silicon Mac with
 Virtualization.framework. The host needs `uv`, `git`, Python 3, the
 prerequisites for `run-lane.sh`, and working loopback TCP bind and connect.
 The Linux operator account needs noninteractive
-`sudo` for bootstrap. Local test ports 8180, 8181, 9190, 18080, 18443–18451,
-and 19999 must be free. No disposable proxy or guest needs to be running.
+`sudo` for bootstrap. On Linux, local test ports 8180, 8181, 9190, 18080,
+18443–18451, and 19999 must be free. On the physical Mac, assigned ports
+46370–46374 must be free. No disposable proxy or guest needs to be running.
 Consumer requests in the pilot use its owned fixture origin. Setup may
 download the pinned install dependencies. The lane preserves the configured
 parent proxy and certificate
@@ -504,10 +506,9 @@ sockets, and Coord NATS PID file are gone. The disposable directory remains
 available for diagnosis. A passed wrapper is a host observation; independent
 review decides P3 acceptance.
 
-The current Bristol seatbelt-mac route cannot bind and connect loopback TCP.
-It cannot execute the VZ pilot until that host capability is available. The
-wrapper checks loopback before installation, so this route can check out and
-inspect the procedure without starting the disposable instance.
+The Bristol physical Mac account permits loopback TCP only on 46370–46375.
+The wrapper checks an assigned port before installation. A passing bind check
+does not establish that the installed VZ pilot can run or that P3 is accepted.
 
 ### Finite installed P4/P6 lifecycle pilot for issue #637
 
@@ -517,8 +518,9 @@ checkout that contains frozen revision
 `2faba3306de7c099e2913e0eebc8907ff3eba148`. The host needs `uv`,
 `git`, Python 3, the `run-lane.sh` bootstrap prerequisites, and loopback TCP
 bind and connect. The Linux operator account needs noninteractive `sudo` for
-bootstrap. Local test ports 8180, 8181, 9190, 18080, 18443–18452, and
-19999 must be free. The disposable proxy and guests must be stopped before
+bootstrap. On Linux, local test ports 8180, 8181, 9190, 18080, 18443–18452,
+and 19999 must be free. On the physical Mac, assigned ports 46370–46375
+must be free. The disposable proxy and guests must be stopped before
 the command. Setup may download pinned install dependencies. The lane keeps
 the configured parent proxy and certificate authority for nonfixture traffic.
 The wrapper gives the installed CLI's owned Coord service a disposable data
@@ -566,10 +568,9 @@ that guest PID files, native proxy receipts, Coord NATS PID files, and agent
 sockets are gone before reusing the host. The disposable directory remains
 available for diagnosis.
 
-The approved Bristol physical Mac route currently cannot bind or connect
-loopback TCP. The wrapper checks that prerequisite before installation. A VZ
-execution and independent review remain necessary before claiming the macOS
-P4 result.
+The Bristol physical Mac account permits loopback TCP only on 46370–46375.
+The wrapper checks an assigned port before installation. A VZ execution and
+independent review remain necessary before claiming the macOS P4 result.
 
 ### Post-deletion Linux installed pilot for issue #640 B2
 

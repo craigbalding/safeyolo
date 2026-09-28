@@ -233,12 +233,11 @@ if [ "$P4" = true ] && { [ "$KVM_P1" = true ] || \
     exit 2
 fi
 
-# The physical VZ test account has six assigned localhost TCP ports. The
-# full native lane uses one HTTP fixture listener for its parent, origin,
-# and control API; the HTTPS fixture selects certificate chains by SNI.
+# The physical VZ test account has six assigned localhost TCP ports. All
+# native selections use one HTTP fixture listener for parent, origin, and
+# control requests; the HTTPS fixture selects certificate chains by SNI.
 VZ_FIXED_PORTS=false
-if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ] && \
-   [ "$P3" = false ] && [ "$P4" = false ]; then
+if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ]; then
     VZ_FIXED_PORTS=true
     TEST_PROXY_PORT=46370
     TEST_ADMIN_PORT=46371
@@ -247,6 +246,10 @@ if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ] && \
     SINKHOLE_HTTPS_PORT=46374
     SINKHOLE_CONTROL_PORT=46373
     SINKHOLE_SCRIPT="$SCRIPT_DIR/harness/vz_fixture.py"
+    # Rust uses agent UDS listeners; 46370 and 46372 are available for
+    # this disposable instance's NATS client and ownership monitor.
+    export SAFEYOLO_NATS_TEST_PORTS=46370,46372
+    export SAFEYOLO_P4_OWNER_ADMIN_PORT=46375
 fi
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
 export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
@@ -797,6 +800,8 @@ else
             --extra-cert "wrong-san.test:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
             --extra-cert "self-signed.test:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
             --extra-cert "aia-only.test:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
+            --extra-cert "future-leaf.test:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key" \
+            "${P2_SINKHOLE_ARGS[@]}" \
             "${VZ_PARENT_ARGS[@]}" &
     else
     PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SINKHOLE_SCRIPT" \

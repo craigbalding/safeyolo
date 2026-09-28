@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sinkhole"))
 
+from p2_fixture import P2Fixture  # noqa: E402
 from server import (  # noqa: E402
     ControlAPIHandler,
     SinkholeHandler,
@@ -119,6 +120,7 @@ def main() -> None:
     parser.add_argument("--parent")
     parser.add_argument("--ca-file", type=Path)
     parser.add_argument("--extra-cert", action="append", default=[], metavar="HOST:CERT:KEY")
+    parser.add_argument("--p2-dir", type=Path)
     args = parser.parse_args()
 
     if args.http_port == args.https_port:
@@ -152,6 +154,9 @@ def main() -> None:
     ) as http_server, SSLSafeThreadingHTTPServer(
         ("0.0.0.0", args.https_port), SinkholeHandler
     ) as https_server:
+        fixture = P2Fixture(args.p2_dir) if args.p2_dir is not None else None
+        http_server.p2_fixture = fixture
+        https_server.p2_fixture = fixture
         http_server.https_port = args.https_port
         https_server.socket = default_context.wrap_socket(https_server.socket, server_side=True)
         thread = threading.Thread(target=https_server.serve_forever, daemon=True)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.blackbox.harness.vz_fixture import Parent, VZRequest
+from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
 from tests.proxy_migration import harness as migration_harness
 from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
@@ -97,12 +97,13 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
 
 
-def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture():
+def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture(tmp_path):
     """The fixed HTTP listener serves each path and rejects an unknown direct host."""
     from server import clear_requests, get_requests
 
     with Parent(None, None, host="127.0.0.1", request_handler=VZRequest) as server:
         server.https_port = 1
+        server.p2_fixture = P2Fixture(tmp_path)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -118,6 +119,11 @@ def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture
                     connection.close()
 
             assert get("/health", "127.0.0.1")[0] == 200
+            assert get("/p2/health", "127.0.0.1")[0] == 200
+            assert get("/p4/echo/p4-" + "a" * 32, "failing.test") == (
+                200, b"echo:p4-" + b"a" * 32
+            )
+            assert get("/p4/echo/invalid", "failing.test")[0] == 400
             assert get("/direct", "httpbin.org")[0] == 200
             assert get("http://httpbin.org/absolute?x=1", "httpbin.org",
                        **{"Proxy-Authorization": "Basic fixture"})[0] == 200
