@@ -1,6 +1,6 @@
 {
-  "checker_sha256": "2dc2d172bf7a7d67f16bc37734fcdff91cd95c5c83983082ef3d0b3c7deb1ab2",
-  "checker_version": "1",
+  "checker_sha256": "0e29b2012d85109ecd724fdcdacd1863c5b205ec11fab41b5312cffc828aca8d",
+  "checker_version": "2",
   "codeowners_sha256": "0de1d0b02eb10c7a9fabf8e4f1d57890e6f79620fc768cd835293e9e6e530d76",
   "function_count": 5528,
   "inputs": {
@@ -233,11 +233,12 @@
     "vm/Sources/SafeYoloVM/VSockTerminal.swift": "88d9a6a365509301570c1d6cc0b62a3205c06c68c082a41a64ef5e59f668cd74",
     "vm/Sources/SafeYoloVM/main.swift": "2e6e47a3f4b9ecfb85e07959e739fc350509e68ce808910b4fb9d8b717f88e39"
   },
-  "map_sha256": "6cdc8d6d41f2dc8797b61b8e4f770d22a5baf8ab1845d801350638fa23027809",
+  "map_sha256": "1163a3b921dc430c70b7dbbcc78222c74f798e2c1f2b783cf3b1a1e02cb288e9",
   "mapped_functions": {
     "cli/src/safeyolo/proxy.py::selected_backend": "16b0f91c8ab1eb8d1436dcab5d1f00aace39bfeeb52fbdd0816e1f21678f1770",
     "cli/src/safeyolo/rust_proxy.py::_agent_listeners": "44a46466200b6e7c09f144b34c42fc0b3331baf4c7e69d0d490724a6ae67268f",
     "cli/src/safeyolo/rust_proxy.py::_binary": "b1ea8b57fc11f2c260fb889b442911a46bb8aa2d4a723955d83d2430c89c6c3a",
+    "cli/src/safeyolo/rust_proxy.py::_default_native_config": "a71830940182544b21a47a6a0cc596cca0c1ef6d39dcae460444436dfc7a5d0b",
     "cli/src/safeyolo/rust_proxy.py::_sync_running_listeners": "5f6490f78bf54713cd2308ea5d6613ef1706ab8aebd658b8ec1c2d5826837e04",
     "cli/src/safeyolo/rust_proxy.py::_wait_ready": "420c11621ae4f759dd771df9e6247f5b4f5239aec9c710d8daaf73602f2e44d5",
     "cli/src/safeyolo/rust_proxy.py::prepare": "04ffe2b13f74baa31fd3dd9d4bc485ca9319fae91dc4f973546ab32e9f8d819a",
@@ -277,6 +278,7 @@
     "proxy/src/http.rs::resolve_and_connect_egress": "04f7be2773581f25834153f4cec48142fe2792b26d684cbfbe2daf49a7a0b3dc",
     "proxy/src/http.rs::serve_request": "6d4010cff8ba221e79c5e7ce2d13fd03bfa0cfe46233508201faf2ee33367553",
     "proxy/src/http.rs::serve_tunnel_http": "c21b7f12230402ed4c30c665761f33bf833f29b2a32415cbbb6c44fe306bafef",
+    "proxy/src/lib.rs::Runtime::load": "55be1479aedbfa5194d6598db83b4a5c9be7f4cbed898e676a023d0aac2024f9",
     "proxy/src/lib.rs::accept_agents": "e0aad19f2f3b31faf532f5e83ed80063d63cec187df4c0cc886ded1f2de2f382",
     "proxy/src/lib.rs::activate_registered_task": "634cc34a5b9cd1e0080097fe96ca641b093f3e6203169046aca2139d13ece72a",
     "proxy/src/lib.rs::load_gateway_vault": "b1ec7c7e449d6cb1cc9e1cd6e93f296b2b1b332d138501dcc3c4c2b9e32a919b",
@@ -291,9 +293,17 @@
     "proxy/src/policy_runtime.rs::load": "f0d4c7cf7aea9c46869e40d003691b8dee2848909914569c211a573cd4d88806",
     "proxy/src/services.rs::select": "7c604c875058a559b5c4e5eec8b17fb8f473928552f3de7d05d9b1be95e838ad",
     "proxy/src/test_context.rs::select_context": "9197866d505c72cbd9d5d019c3bd9b50fc7524ca8e4e0b7fef621e059e8d4368",
+    "proxy/src/tls.rs::CertificateAuthority::from_pem": "3244cae621da7fe814d59da42658fdeedf246d9a6600e6f770252f63bd61fe6a",
+    "proxy/src/tls.rs::CertificateAuthority::issue": "2794ff11ed5ca9bf4cd6d45a3a5039d8c9ceb24d0da7a99a630def3e5f498f79",
+    "proxy/src/tls.rs::CertificateAuthority::load": "a77625077b0e153b60cd319a4089c9b3cff292c3978de91cb33cdf465a0a3742",
+    "proxy/src/tls.rs::CertificateAuthority::server_config": "247ee9bde86c271f5425035bfab1ea43403ac3ccd75bbb3930d1ccea2d734c40",
+    "proxy/src/tls.rs::resolve": "20429a30143d99a5c52caf16c6eb923265e7a268716f71179ccbc430aef39ec8",
     "proxy/src/traffic_view.rs::export": "091ee78bedc7a3d72e65bf52f7cead4f9fc7f4b14571e05980990d3fd28d7bf0",
+    "proxy/src/traffic_view/filter.rs::Predicate::matches": "0517151c1ef6033b1bc29a9e243aeb39a546243267ec71134e48be519d377706",
     "proxy/src/tunnels.rs::classify": "ce81f914a15413b1de2dc20c4033cff6c5ac31f5673b112f8685c9ee358395fc",
     "proxy/src/tunnels.rs::relay": "2307417cd53500906a6e550d3e68107b2cdc20c4be286b3c23d6776a457ca8e7",
+    "proxy/src/websocket.rs::MessageContent::with_bytes": "cfc81293fcf0f0daad9fb86de6558e3fbcff158633186007223d29f40a662f8e",
+    "proxy/src/websocket.rs::StoredBytes::with_bytes": "1f9abe6995c408c1a1d30685835f315be3dd465360b422cda123325cc127bb27",
     "proxy/src/websocket.rs::with_text": "be7849ea7d8970c029e9d65056c244012e6aa619d23cc9e727b87fcafd54eabe"
   },
   "operations": [
@@ -7529,7 +7539,7 @@
       "text": "unsafe { memmap2::MmapOptions::new().map(&file)? }"
     }
   ],
-  "rules_sha256": "340bed474c34bf6a807dde381ba9451f741f56bc7d100aa32fed3593f7f21f68",
+  "rules_sha256": "f2358a7f4b3330487e002da9fa386ae562785bb47d2f69f5dee1639afc9122ba",
   "schema": 1,
   "semgrep_version": "1.176.0",
   "source_files": [

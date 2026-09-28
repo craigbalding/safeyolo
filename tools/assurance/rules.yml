@@ -7,6 +7,12 @@ rules:
     message: Rust function
     pattern: |
       fn $NAME(...) { ... }
+  - id: rust-impl
+    languages: [rust]
+    severity: INFO
+    message: Rust implementation
+    pattern: |
+      impl $TYPE { ... }
   - id: python-function
     languages: [python]
     severity: INFO

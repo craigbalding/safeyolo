@@ -18,11 +18,12 @@ from collections import Counter
 from pathlib import Path
 
 SCHEMA = 1
-CHECKER_VERSION = "1"
+CHECKER_VERSION = "2"
 SEMGREP_VERSION = "1.176.0"
 ROOT = Path(__file__).resolve().parents[2]
 FUNCTION_RULES = {"rust-function", "python-function"}
 NAME_RE = re.compile(r"\b(?:async\s+)?(?:fn|def)\s+([A-Za-z_][A-Za-z_0-9]*)\b")
+IMPL_NAME_RE = re.compile(r"^impl\s+(?:<[^{}]*>\s+)?([A-Za-z_][A-Za-z_0-9]*)(?:<[^{}]*>)?\s*\{")
 MAP = "docs/assurance-map.toml"
 ACCEPTED = "tools/assurance/accepted.json"
 RULES = "tools/assurance/rules.yml"
@@ -186,9 +187,27 @@ def parse_source(trusted_root: Path, candidate_root: Path, paths: set[str]) -> d
         return scan
 
 
+def mapped_function_bodies(
+    sources: dict[str, bytes],
+    functions: dict[str, list[tuple[int, int, str]]],
+    implementations: dict[str, list[tuple[int, int, str]]],
+) -> dict[str, list[str]]:
+    mapped: dict[str, list[str]] = {}
+    for name, spans in functions.items():
+        for start, end, symbol in spans:
+            body_digest = digest(sources[name][start:end])
+            mapped.setdefault(f"{name}::{symbol}", []).append(body_digest)
+            owners = [span for span in implementations[name] if span[0] <= start and end <= span[1]]
+            if owners:
+                owner = min(owners, key=lambda span: span[1] - span[0])[2]
+                mapped.setdefault(f"{name}::{owner}::{symbol}", []).append(body_digest)
+    return mapped
+
+
 def extracted_source(root: Path, paths: set[str], scan: dict) -> tuple[dict, list[dict], int]:
     sources = {name: (root / name).read_bytes() for name in paths}
     functions: dict[str, list[tuple[int, int, str]]] = {name: [] for name in paths}
+    implementations: dict[str, list[tuple[int, int, str]]] = {name: [] for name in paths}
     operations: list[dict] = []
     for finding in scan["results"]:
         name = finding["path"].removeprefix("./")
@@ -204,14 +223,14 @@ def extracted_source(root: Path, paths: set[str], scan: dict) -> tuple[dict, lis
             if not match:
                 raise AnalysisError(f"function name missing from AST span: {name}:{start}")
             functions[name].append((start, end, match.group(1)))
+        elif rule == "rust-impl":
+            match = IMPL_NAME_RE.match(body.decode("utf-8"))
+            if match:
+                implementations[name].append((start, end, match.group(1)))
         else:
             operations.append({"rule": rule, "path": name, "offset": start, "end": end,
                                "digest": digest(body), "text": body.decode("utf-8").strip()[:160]})
-    mapped = {}
-    for name, spans in functions.items():
-        for start, end, symbol in spans:
-            key = f"{name}::{symbol}"
-            mapped.setdefault(key, []).append(digest(sources[name][start:end]))
+    mapped = mapped_function_bodies(sources, functions, implementations)
     for operation in operations:
         spans = [span for span in functions[operation["path"]]
                  if span[0] <= operation["offset"] < span[1]]

@@ -6,8 +6,8 @@ initial_review = "https://github.com/craigbalding/safeyolo/issues/838#issuecomme
 native_inventory = "https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5801132524"
 patch_review = "https://github.com/craigbalding/safeyolo/issues/636#issuecomment-5736479281"
 
-# Cargo.toml and Cargo.lock are hashed by the checker. These are the library
-# handoffs that materially affect the mapped decisions at this baseline.
+# Cargo.toml and Cargo.lock are hashed by the checker. These selected direct
+# library handoffs explain critical work delegated by the mapped decisions.
 [[libraries]]
 name = "hyper"
 version = "1.11"
@@ -25,6 +25,66 @@ name = "rustls"
 version = "0.23.45"
 features = ["ring", "std", "tls12"]
 handoff = "Origin and interception TLS verification and handshakes."
+
+[[libraries]]
+name = "rustls-pemfile"
+version = "2.2.0"
+features = []
+handoff = "PEM certificate and private-key item parsing for the existing interception CA."
+
+[[libraries]]
+name = "x509-parser"
+version = "0.18.1"
+features = []
+handoff = "Interception CA constraints, key-usage and validity parsing."
+
+[[libraries]]
+name = "rcgen"
+version = "0.14.10"
+features = ["ring", "pem", "x509-parser"]
+handoff = "Destination leaf key generation and certificate signing under the imported CA."
+
+[[libraries]]
+name = "pkcs8"
+version = "0.10.2"
+features = ["std"]
+handoff = "In-memory wrapping of an existing RSA PKCS#1 key for the CA signer."
+
+[[libraries]]
+name = "ring"
+version = "0.17.14"
+features = []
+handoff = "Credential HMAC, digest and random primitives used by the proxy and TLS signer."
+
+[[libraries]]
+name = "fernet"
+version = "0.2.2"
+features = ["rustcrypto", "fernet_danger_timestamps"]
+handoff = "Vault secret encryption and decryption using the existing Fernet format."
+
+[[libraries]]
+name = "subtle"
+version = "2.6.1"
+features = []
+handoff = "Constant-time equality for Admin API bearer authentication."
+
+[[libraries]]
+name = "zeroize"
+version = "1.9.0"
+features = []
+handoff = "Secret and retained WebSocket buffer clearing on drop."
+
+[[libraries]]
+name = "tungstenite"
+version = "0.30.0"
+features = ["handshake"]
+handoff = "WebSocket handshake validation and frame header parsing."
+
+[[libraries]]
+name = "memmap2"
+version = "0.9.11"
+features = []
+handoff = "Read-only mapping of completed WebSocket spill files for inspection."
 
 [[libraries]]
 name = "rusqlite"
@@ -80,6 +140,24 @@ symbols = [
   "proxy/src/http.rs::open_egress_for_flow",
   "proxy/src/http.rs::resolve_and_connect_egress",
   "proxy/src/test_context.rs::select_context",
+]
+
+[[decisions]]
+id = "interception_tls"
+inputs = "Host-selected combined CA PEM file, admitted CONNECT destination host, client SNI and current time."
+authority = "The host CLI selects the existing mitmproxy CA file. The admitted CONNECT destination fixes the leaf name; the external_effects row maps the caller in http.rs::forward."
+checks = "CA import checks certificate authority status, signing use and key match. Leaf issuance checks the destination and CA validity, bounds leaf validity, and rejects a different client SNI."
+effects = "Read existing CA material, sign a destination leaf, construct a rustls server configuration and accept an intercepted TLS connection."
+failure = "Missing or invalid CA fails startup. Invalid destination, expired CA or mismatched SNI fails the intercepted connection without creating a replacement root."
+tests = ["proxy/tests/tls.rs", "proxy/tests/transport.rs", "cli/tests/test_rust_proxy.py"]
+symbols = [
+  "cli/src/safeyolo/rust_proxy.py::_default_native_config",
+  "proxy/src/lib.rs::Runtime::load",
+  "proxy/src/tls.rs::CertificateAuthority::load",
+  "proxy/src/tls.rs::CertificateAuthority::from_pem",
+  "proxy/src/tls.rs::CertificateAuthority::server_config",
+  "proxy/src/tls.rs::CertificateAuthority::issue",
+  "proxy/src/tls.rs::resolve",
 ]
 
 [[decisions]]
@@ -175,11 +253,11 @@ symbols = [
 
 [[decisions]]
 id = "foreign_and_embedded"
-inputs = "Host-owned file descriptors, mapped WebSocket buffers and generated proxy/data tables."
-authority = "Rust owns these descriptors and buffers; the tables are checked-in build inputs. External proc-macro and transitive crate code comes from Cargo.lock."
-checks = "Unsafe libc close/dup/poll/recv and memmap2 calls are bounded by their local ownership contracts; a changed mapped body or selected unsafe operation triggers review."
-effects = "Descriptor close and peer observation, memory-mapped inspection, compiled credential/Unicode lookup tables."
-failure = "Descriptor errors propagate or cause a documented local warning. A missing embedded table or changed dependency/build input fails the build or appears in drift."
+inputs = "Host-owned file descriptors, completed WebSocket spill files and generated proxy/data tables."
+authority = "Rust owns these descriptors and message buffers; the tables are checked-in build inputs. External proc-macro and transitive crate code comes from Cargo.lock."
+checks = "Unsafe libc close/dup/poll/recv follows local descriptor ownership. StoredBytes maps only an immutable finished spill file and keeps the borrowed mapping inside inspection; the traffic-view filter calls through MessageContent. Changes to mapped bodies or selected unsafe operations trigger review."
+effects = "Descriptor close and peer observation, memory-mapped WebSocket inspection and filtering, compiled credential/Unicode lookup tables."
+failure = "Descriptor and mapping errors propagate to the local caller; traffic filtering reports a storage error. A missing embedded table or changed dependency/build input fails the build or appears in drift."
 tests = ["proxy/tests/credential_guard.rs", "proxy/tests/websocket.rs", "proxy/tests/transport.rs"]
 symbols = [
   "proxy/src/lib.rs::peer_closed_after_readable_event",
@@ -189,5 +267,8 @@ symbols = [
   "proxy/src/audit/writer.rs::close",
   "proxy/src/circuits.rs::close_snapshot",
   "proxy/src/agent_discovery.rs::read_map",
+  "proxy/src/websocket.rs::StoredBytes::with_bytes",
+  "proxy/src/websocket.rs::MessageContent::with_bytes",
   "proxy/src/websocket.rs::with_text",
+  "proxy/src/traffic_view/filter.rs::Predicate::matches",
 ]

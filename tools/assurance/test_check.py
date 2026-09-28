@@ -167,6 +167,46 @@ class DriftControls(unittest.TestCase):
         self.assertIn("proxy/src/lib.rs::authorize", report["mapped_decisions_changed"])
         self.assertEqual(report["operations_added"], [])
 
+    def test_same_named_rust_methods_have_distinct_mapped_bodies(self) -> None:
+        source = """struct Storage;
+impl Storage {
+    fn with_bytes(&self) -> u8 { 1 }
+}
+struct View;
+impl View {
+    fn with_bytes(&self) -> u8 { 1 }
+}
+"""
+        mapped = MAP.replace(
+            '"proxy/src/lib.rs::authorize"',
+            '"proxy/src/lib.rs::Storage::with_bytes", "proxy/src/lib.rs::View::with_bytes"',
+        )
+        for root in (self.trusted, self.candidate):
+            self.write(root, "proxy/src/lib.rs", source)
+            self.write(root, "docs/assurance-map.toml", mapped)
+        self.accepted = analyze(self.trusted, self.trusted)
+        self.write(self.trusted, "tools/assurance/accepted.json", json.dumps(self.accepted))
+        self.write(self.candidate, "tools/assurance/accepted.json", json.dumps(self.accepted))
+        self.assertEqual(self.report()["status"], "clean")
+
+        self.write(
+            self.candidate, "proxy/src/lib.rs",
+            source.replace("impl Storage {\n    fn with_bytes(&self) -> u8 { 1 }",
+                           "impl Storage {\n    fn with_bytes(&self) -> u8 { 2 }"),
+        )
+        report = self.report()
+        self.assertEqual(report["mapped_decisions_changed"], ["proxy/src/lib.rs::Storage::with_bytes"])
+        self.assertEqual(report["operations_added"], [])
+
+        self.write(
+            self.candidate, "proxy/src/lib.rs",
+            source.replace("impl View {\n    fn with_bytes(&self) -> u8 { 1 }",
+                           "impl View {\n    fn with_bytes(&self) -> u8 { 2 }"),
+        )
+        report = self.report()
+        self.assertEqual(report["mapped_decisions_changed"], ["proxy/src/lib.rs::View::with_bytes"])
+        self.assertEqual(report["operations_added"], [])
+
     def test_moved_and_deleted_mapped_code(self) -> None:
         self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST.replace("fn authorize(allowed: bool) -> bool {\n    if allowed { true } else { false }\n}\n\n", ""))
         self.write(self.candidate, "proxy/src/new_policy.rs", "fn authorize(allowed: bool) -> bool { allowed }\n")
