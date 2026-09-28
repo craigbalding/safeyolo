@@ -3224,6 +3224,13 @@
       "text": "OpenOptions::new()"
     },
     {
+      "digest": "62b46841af23dda22238e766e0bb1c4638faf210bef2f807aa5f2da864da2136",
+      "path": "proxy/src/circuits.rs",
+      "rule": "rust-file",
+      "symbol": "write_snapshot",
+      "text": "fs::File::open(parent)"
+    },
+    {
       "digest": "ee3b08bfaee4d4c287375f8a910b0dc5f48be181ccb73bd63b6a82d512332e28",
       "path": "proxy/src/circuits.rs",
       "rule": "rust-file",
@@ -3257,6 +3264,76 @@
       "rule": "rust-file",
       "symbol": "create",
       "text": "OpenOptions::new()"
+    },
+    {
+      "digest": "413bf53c944a24da7aa40bd5628b628da281c9e1165780d449ff79c55e7b2780",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "exclusive_creation_does_not_retry_or_replace_a_competing_file",
+      "text": "fs::write(&path, b\"synthetic-competitor\")"
+    },
+    {
+      "digest": "a4101e625eeaf7aca0544d4778157db8f0c8a2b71a134203adcccba334a6807c",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "existing_arbitrary_bytes_trim_six_whitespace_bytes_and_keep_mode",
+      "text": "fs::write(&path, b\"replacement\")"
+    },
+    {
+      "digest": "bce5bfe487ae51155996f7d2c5e584bbb6763b500c5fb7659084b011d61a969c",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "existing_arbitrary_bytes_trim_six_whitespace_bytes_and_keep_mode",
+      "text": "fs::write(&path, b\" \")"
+    },
+    {
+      "digest": "d4a65ec54bd51a17e0923d89aa1ec9196962228488a280def4139c79c9f9a0a4",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "existing_arbitrary_bytes_trim_six_whitespace_bytes_and_keep_mode",
+      "text": "fs::write(&path, input)"
+    },
+    {
+      "digest": "e951e700361359d7cc877230775801faca6b9297162b1cfa8a45599d52c9755a",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "existing_arbitrary_bytes_trim_six_whitespace_bytes_and_keep_mode",
+      "text": "fs::write(&path, &long)"
+    },
+    {
+      "digest": "39555bc0f8b139b37a9c7b638dd097be78f5c8cb2d330337c17b2461d7fe8a6b",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "existing_symlink_is_followed_but_missing_and_looping_links_are_not_replaced",
+      "text": "fs::write(&target, b\" \\tsynthetic-link\\r\\n\")"
+    },
+    {
+      "digest": "54d504decbaa6e17dee8231391b9aabadfc6e815f2e74ceec46aef99d2c94534",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "read",
+      "text": "fs::read(path)"
+    },
+    {
+      "digest": "21bd18e30a243040611a6e501e7f41b57228dfaa385ac0ab9c50304c8721ec32",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "selected_python_native_python_native_hmac_key_transition",
+      "text": "fs::write(\n            evidence.join(\"hmac-rust-python-rust.json\"),\n            serde_json::to_vec_pretty(&manifest[\"rust_python_rust\"]).unwrap(),\n        )"
+    },
+    {
+      "digest": "b140ed9bda0872a3b152a11548957cbfe36a41dda526ec5f638a68c1dae485a4",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "selected_python_native_python_native_hmac_key_transition",
+      "text": "fs::write(\n            evidence.join(\"hmac-transition-manifest.json\"),\n            serde_json::to_vec_pretty(&manifest).unwrap(),\n        )"
+    },
+    {
+      "digest": "b1c62cd48e0b24c3500b7aa3ca361a8c30eb6bf11b6d9d141f8a76dd239b24bf",
+      "path": "proxy/src/credential_hmac.rs",
+      "rule": "rust-file",
+      "symbol": "selected_python_native_python_native_hmac_key_transition",
+      "text": "fs::write(\n            evidence.join(\"hmac-python-rust-python-rust.json\"),\n            serde_json::to_vec_pretty(&manifest[\"python_rust_python_rust\"]).unwrap(),"
     },
     {
       "digest": "e992d4ea06cc35f19de3a3479698838056a9680dbd71dea682c2ccb693d284e2",
@@ -3565,6 +3642,20 @@
       "rule": "rust-file",
       "symbol": "task_projection_matches_current_core_and_separately_records_stale_source_cache",
       "text": "std::fs::write(&path, task.to_string())"
+    },
+    {
+      "digest": "2a61dc912bb13c9a960902f3a7f6bd8bcd4e21b327d00b2ee2fb15fabadd9c3d",
+      "path": "proxy/src/policy/watch/expiry_replay.rs",
+      "rule": "rust-file",
+      "symbol": "seven_source_workflows_match_disk_effects_loads_and_accepted_policy",
+      "text": "fs::write(&target, input[\"text\"].as_str().unwrap())"
+    },
+    {
+      "digest": "ee3dd4967f498adbf758dd287027238c74bd1ed46247880642f5c0039a3ddce2",
+      "path": "proxy/src/policy/watch/expiry_replay.rs",
+      "rule": "rust-file",
+      "symbol": "seven_source_workflows_match_disk_effects_loads_and_accepted_policy",
+      "text": "fs::write(&path, source)"
     },
     {
       "digest": "cc22706b2f138896f20c72a496444c3af0afd451a31dcb6ad8d91ec6157b300b",
@@ -7438,7 +7529,7 @@
       "text": "unsafe { memmap2::MmapOptions::new().map(&file)? }"
     }
   ],
-  "rules_sha256": "d6df8adb6921913d0fd922ea39615f3442f00d333a9101e6ef1926009357a144",
+  "rules_sha256": "340bed474c34bf6a807dde381ba9451f741f56bc7d100aa32fed3593f7f21f68",
   "schema": 1,
   "semgrep_version": "1.176.0",
   "source_files": [

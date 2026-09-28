@@ -55,10 +55,11 @@ counts; test-only files are excluded.
 
 The extraction is structural. It does not infer authorization semantics,
 prove full source-to-sink data flow, or build a complete Rust/Python/Swift call
-graph. The selected Rust type calls include unqualified names and the relevant
-explicit `std` or `tokio` paths; DNS lookup also includes its `tokio` path.
-Module aliases, re-exports, other APIs, and changes inside unmapped functions
-without a selected operation can still escape the automatic delta.
+graph. The selected Rust calls include unqualified names, `fs`, `net` and
+`process` module shorthand, and the relevant explicit `std` or `tokio` paths.
+Those spellings are matched even when imports are grouped. Renamed module
+aliases, re-exports, other APIs, and changes inside unmapped functions without
+a selected operation can still escape the automatic delta.
 Maintainers must read the candidate's affected path and use focused behavior
 checks for the claimed boundary. The separate [CodeQL, Kani, capability and Miri assurance
 issues](https://github.com/craigbalding/safeyolo/issues/837) can ask deeper

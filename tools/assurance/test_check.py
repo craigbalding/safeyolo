@@ -119,6 +119,47 @@ class DriftControls(unittest.TestCase):
             {(item["rule"], item["symbol"]) for item in report["operations_added"]},
         )
 
+    def test_module_shorthand_under_simple_and_grouped_imports(self) -> None:
+        calls = {
+            "read": ("rust-file", 'fs::read("/tmp/example")'),
+            "write": ("rust-file", 'fs::write("/tmp/example", b"example")'),
+            "open": ("rust-file", 'fs::File::open("/tmp/example")'),
+            "create": ("rust-file", 'fs::File::create("/tmp/example")'),
+            "options": ("rust-file", "fs::OpenOptions::new()"),
+            "tcp_connect": ("rust-network", 'net::TcpStream::connect("example.test:443")'),
+            "tcp_bind": ("rust-network", 'net::TcpListener::bind("127.0.0.1:0")'),
+            "command": ("rust-process-ffi", 'process::Command::new("example")'),
+        }
+        tokio_calls = {
+            **calls,
+            "unix_connect": ("rust-network", 'net::UnixStream::connect("/tmp/example.sock")'),
+            "unix_bind": ("rust-network", 'net::UnixListener::bind("/tmp/example.sock")'),
+            "lookup": ("rust-network", 'net::lookup_host("example.test:443")'),
+        }
+        cases = {
+            "simple_std": ("use std::fs;\nuse std::net;\nuse std::process;\n", calls),
+            "grouped_std": ("use std::{fs::{self, File, OpenOptions}, net, process};\n", calls),
+            "grouped_tokio": ("use tokio::{fs, net, process};\n", tokio_calls),
+        }
+        expected = set()
+        for name, (imports, operations) in cases.items():
+            path = f"proxy/src/{name}.rs"
+            helpers = "\n".join(f"fn {symbol}() {{ {call}; }}" for symbol, (_, call) in operations.items())
+            self.write(self.candidate, path, imports + "\n" + helpers + "\n")
+            expected.update((rule, path, symbol) for symbol, (rule, _) in operations.items())
+        result = Path(self.temp.name) / "shorthand.json"
+        command = ["python3", "-I", str(ROOT / "tools/assurance/check.py"), "check",
+                   "--trusted-root", str(self.trusted), "--candidate", str(self.candidate),
+                   "--json", str(result)]
+        run = subprocess.run(command, capture_output=True, text=True, check=False)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        report = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "drift")
+        self.assertEqual(
+            expected,
+            {(item["rule"], item["path"], item["symbol"]) for item in report["operations_added"]},
+        )
+
     def test_changed_authorization_with_existing_sink(self) -> None:
         self.write(self.candidate, "proxy/src/lib.rs", BASE_RUST.replace("if allowed", "if !allowed"))
         report = self.report()

@@ -22,18 +22,23 @@ rules:
     message: Network operation
     pattern-either:
       - pattern: TcpStream::connect(...)
+      - pattern: net::TcpStream::connect(...)
       - pattern: std::net::TcpStream::connect(...)
       - pattern: tokio::net::TcpStream::connect(...)
       - pattern: UnixStream::connect(...)
+      - pattern: net::UnixStream::connect(...)
       - pattern: std::os::unix::net::UnixStream::connect(...)
       - pattern: tokio::net::UnixStream::connect(...)
       - pattern: TcpListener::bind(...)
+      - pattern: net::TcpListener::bind(...)
       - pattern: std::net::TcpListener::bind(...)
       - pattern: tokio::net::TcpListener::bind(...)
       - pattern: UnixListener::bind(...)
+      - pattern: net::UnixListener::bind(...)
       - pattern: std::os::unix::net::UnixListener::bind(...)
       - pattern: tokio::net::UnixListener::bind(...)
       - pattern: lookup_host(...)
+      - pattern: net::lookup_host(...)
       - pattern: tokio::net::lookup_host(...)
       - pattern: $X.open_outbound(...)
   - id: rust-file
@@ -42,16 +47,21 @@ rules:
     message: File operation
     pattern-either:
       - pattern: File::create(...)
+      - pattern: fs::File::create(...)
       - pattern: std::fs::File::create(...)
       - pattern: tokio::fs::File::create(...)
       - pattern: File::open(...)
+      - pattern: fs::File::open(...)
       - pattern: std::fs::File::open(...)
       - pattern: tokio::fs::File::open(...)
       - pattern: OpenOptions::new(...)
+      - pattern: fs::OpenOptions::new(...)
       - pattern: std::fs::OpenOptions::new(...)
       - pattern: tokio::fs::OpenOptions::new(...)
       - pattern: std::fs::write(...)
       - pattern: std::fs::read(...)
+      - pattern: fs::write(...)
+      - pattern: fs::read(...)
       - pattern: tokio::fs::write(...)
       - pattern: tokio::fs::read(...)
       - pattern: $X.persist(...)
@@ -70,6 +80,7 @@ rules:
     message: Process or foreign operation
     pattern-either:
       - pattern: Command::new(...)
+      - pattern: process::Command::new(...)
       - pattern: std::process::Command::new(...)
       - pattern: tokio::process::Command::new(...)
       - pattern: unsafe { ... }
