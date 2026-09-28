@@ -564,6 +564,61 @@ loopback TCP. The wrapper checks that prerequisite before installation. A VZ
 execution and independent review remain necessary before claiming the macOS
 P4 result.
 
+### Post-deletion Linux installed pilot for issue #640 B2
+
+Run `run-b2-linux.sh` on an operator-owned disposable Ubuntu host with gVisor
+systrap. Use a clean checkout containing this harness and the reviewed B1
+commit `d680ef82e4cdd9f1b725a421bccf8496123fd55a`. Select one full,
+published commit SHA that contains B1's deletion. The host needs `uv`, `git`,
+Python 3, Cargo, noninteractive host `sudo` for guest bootstrap, the
+`run-lane.sh` bootstrap prerequisites, and working loopback TCP bind and
+connect. Ports 8180, 8181,
+9190, 18080, 18443–18452, and 19999 must be free. Allow disk space for one
+release Rust build and two isolated `uv` tool installs. The host's proxy and
+test guests do not need to be running: the script installs, starts, and stops
+its own disposable instances. It may download pinned dependencies. It keeps
+the configured parent proxy and certificate authority for other destinations.
+
+From the repository root on that host, replace `FULL_SHA` with the exact
+40-character PR head commit chosen for the installed candidate, then run:
+
+```bash
+./tests/blackbox/run-b2-linux.sh FULL_SHA
+```
+
+The script rejects a short SHA or a commit before B1 before installation. It
+builds one detached selected source checkout and runs the existing P3 and P4
+selections against the installed wheel and its packaged Rust executable. P3
+checks guest approval and retry, exact vaulted credential delivery, retained
+Agent API and coordination operations, an operator event, and read-only
+inspection and export. P4 checks guest allow/deny ingress and origin delivery,
+then restarts and stops the proxy and guests through its three-cycle lifecycle
+selection. Each selection uses a separate disposable instance.
+
+Expect a `B2 Linux pilot: P3 and P4 installed selections passed` line. The
+printed P3 and P4 observation directories contain `systrap-p3.json` and
+`systrap-p4.json`. Each report must name `FULL_SHA` as `source_revision`, show
+the same revision in `installed.build_identity.source_revision`, and end with
+`status: passed` and `cleanup: stopped`. Inspect the installed binary hash,
+authenticated running executable, CLI status, and CLI diagnostic identity in
+each report. P4 also records the three stopped proxy and guest cycles and the
+unaffected separate owner instance.
+
+Both wrappers stop their owned proxy, guests, fixture processes, sockets, and
+Coord service before reporting success. If cleanup fails, use the exact
+instance-scoped stop commands printed by the failing wrapper and verify that
+its guest PID files, native proxy receipt, agent sockets, and Coord PID file
+are gone. Keep the printed observation directories for review. The detached
+source checkout path is printed separately; after review, remove it with
+`git worktree remove PATH` from the harness checkout. A passing host report
+does not mark #640 B2 accepted.
+
+P3/P4 do not run P2's package fetch, repository clone, or SSH selection, P5's
+macOS presentation, or the complete B3 guest lane. They also do not collect
+the native test suite or check every CLI import without mitmproxy; those are
+separate B2/B3 checks. Reuse the accepted R component results where the
+R-to-selected-source change does not affect their assumptions.
+
 ## Adding Tests
 
 When adding a new test, ask: *"What would a malicious agent try?"*

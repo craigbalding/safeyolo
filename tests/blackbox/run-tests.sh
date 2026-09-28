@@ -89,6 +89,7 @@ P2=false
 P3=false
 P4=false
 P3_CONFIG_ONLY=false
+INSTALL_COMMIT=""
 PYTEST_FORWARD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -168,6 +169,14 @@ while [[ $# -gt 0 ]]; do
             P4=true
             shift
             ;;
+        --install-commit)
+            if [ "$#" -lt 2 ] || [[ ! "$2" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "ERROR: --install-commit requires a full lowercase commit SHA" >&2
+                exit 2
+            fi
+            INSTALL_COMMIT="$2"
+            shift 2
+            ;;
         --p3-config-only)
             P3=true
             P3_CONFIG_ONLY=true
@@ -185,6 +194,15 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$INSTALL_COMMIT" ] && [ "$P3" != true ] && [ "$P4" != true ]; then
+    echo "ERROR: --install-commit requires the P3 or P4 installed selection" >&2
+    exit 2
+fi
+INSTALL_COMMIT_ARGS=()
+if [ -n "$INSTALL_COMMIT" ]; then
+    INSTALL_COMMIT_ARGS=(--install-commit "$INSTALL_COMMIT")
+fi
 
 if [ "$KVM_P1" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
    [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
@@ -950,7 +968,8 @@ if [ "$P3" = true ]; then
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p3.json"
+        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p3.json" \
+        "${INSTALL_COMMIT_ARGS[@]}"
     exit $?
 fi
 if [ "$P4" = true ]; then
@@ -958,7 +977,8 @@ if [ "$P4" = true ]; then
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p4.json"
+        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p4.json" \
+        "${INSTALL_COMMIT_ARGS[@]}"
     exit $?
 fi
 
