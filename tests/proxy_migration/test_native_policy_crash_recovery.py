@@ -21,12 +21,14 @@ from tests.proxy_migration.harness import REPO
 from tests.proxy_migration.scenarios import origin_server
 from tests.proxy_migration.test_native_policy_host_chaos import _converge
 from tools.policy_chaos_recovery import (
+    ADMISSIBLE_VERSIONS,
     CHECKPOINTS,
     POLICY,
     TARGET,
     VM_INPUT_LIMIT,
     PolicyCheckpoint,
     assert_policy_document,
+    assess_surviving_policy,
     native_proxy,
     observe_effects,
     policy_residue,
@@ -37,6 +39,75 @@ from tools.policy_chaos_recovery import (
     vm_runtime_base,
     write_manifest,
 )
+
+
+@pytest.mark.parametrize("checkpoint", (
+    "before-rename", "after-rename-before-directory-sync",
+))
+def test_recovery_oracle_accepts_old_policy_with_complete_new_temp(
+    tmp_path: Path, checkpoint: str,
+):
+    old = POLICY.encode()
+    new = old.replace(b'"revoked.invalid" = { egress = "allow" }',
+                      b'"revoked.invalid" = { egress = "deny" }')
+    assert new != old
+    manifest = {
+        "checkpoint": checkpoint, "expected_versions": ADMISSIBLE_VERSIONS[checkpoint],
+        "old_b64": base64.b64encode(old).decode(),
+        "new_b64": base64.b64encode(new).decode(),
+    }
+    temp = tmp_path / ".policy-complete.toml"
+    temp.write_bytes(new)
+
+    assert assess_surviving_policy(manifest, tmp_path, old) == ("old", [temp], [])
+
+
+def test_recovery_oracle_rejects_bad_temp_and_new_policy_residue(tmp_path: Path):
+    old = POLICY.encode()
+    new = old.replace(b'"revoked.invalid" = { egress = "allow" }',
+                      b'"revoked.invalid" = { egress = "deny" }')
+    manifest = {
+        "checkpoint": "after-rename-before-directory-sync",
+        "expected_versions": ADMISSIBLE_VERSIONS["after-rename-before-directory-sync"],
+        "old_b64": base64.b64encode(old).decode(),
+        "new_b64": base64.b64encode(new).decode(),
+    }
+    temp = tmp_path / ".policy-first.toml"
+
+    temp.write_bytes(old)
+    assert any("unexpected temporary policy residue" in problem for problem in
+               assess_surviving_policy(manifest, tmp_path, old)[2])
+
+    temp.write_bytes(new[:-1])
+    assert any("unexpected temporary policy residue" in problem for problem in
+               assess_surviving_policy(manifest, tmp_path, old)[2])
+
+    temp.write_bytes(new)
+    second = tmp_path / ".policy-second.toml"
+    second.write_bytes(new)
+    assert "more than one temporary policy remains" in assess_surviving_policy(
+        manifest, tmp_path, old,
+    )[2]
+
+    second.unlink()
+    assert "temporary policy remains outside old pre-durability state" in assess_surviving_policy(
+        manifest, tmp_path, new,
+    )[2]
+
+    manifest["checkpoint"] = "after-acknowledged-response"
+    manifest["expected_versions"] = ADMISSIBLE_VERSIONS["after-acknowledged-response"]
+    assert "temporary policy remains outside old pre-durability state" in assess_surviving_policy(
+        manifest, tmp_path, new,
+    )[2]
+    temp.unlink()
+    assert "old policy is not admissible at after-acknowledged-response" in assess_surviving_policy(
+        manifest, tmp_path, old,
+    )[2]
+    manifest["checkpoint"] = "before-rename"
+    manifest["expected_versions"] = ADMISSIBLE_VERSIONS["before-rename"]
+    assert "new policy is not admissible at before-rename" in assess_surviving_policy(
+        manifest, tmp_path, new,
+    )[2]
 
 
 @pytest.mark.parametrize("checkpoint", CHECKPOINTS)
