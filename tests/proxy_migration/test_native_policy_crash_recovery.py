@@ -183,10 +183,26 @@ def disk_tmp():
         yield Path(directory)
 
 
+@pytest.fixture
+def vm_runtime_dir(disk_tmp: Path):
+    """Give the VM protocol a writable runtime on another, volatile mount."""
+    for candidate in (Path(tempfile.gettempdir()), Path("/dev/shm"), Path("/run")):
+        try:
+            root = vm_runtime_base(disk_tmp, candidate)
+        except (OSError, ValueError):
+            continue
+        if os.access(root, os.W_OK):
+            break
+    else:
+        pytest.skip("no separate writable tmpfs or ramfs for the VM protocol")
+    with tempfile.TemporaryDirectory(prefix="sy-vm-runtime-", dir=root) as directory:
+        yield Path(directory)
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="VM guard requires Linux mount information")
 @pytest.mark.parametrize("checkpoint", CHECKPOINTS)
 def test_vm_guard_requires_exact_external_ready_and_cut_record(
-    tmp_path: Path, disk_tmp: Path, checkpoint: str,
+    tmp_path: Path, disk_tmp: Path, vm_runtime_dir: Path, checkpoint: str,
 ):
     config = disk_tmp / "disposable"
     state = disk_tmp / "state"
@@ -198,7 +214,8 @@ def test_vm_guard_requires_exact_external_ready_and_cut_record(
     run_id = "guard-" + checkpoint.replace("-", "")
     command = [sys.executable, "-m", "tools.policy_chaos", "fault", "prepare-power-cut",
                "--checkpoint", checkpoint, "--config-dir", str(config),
-               "--state-dir", str(state), "--binary", str(binary), "--run-id", run_id,
+               "--state-dir", str(state), "--runtime-dir", str(vm_runtime_dir),
+               "--binary", str(binary), "--run-id", run_id,
                "--confirm-disposable-vm"]
     environment = {**os.environ, "SAFEYOLO_CHAOS_DISPOSABLE_VM": "1"}
     # The child runs in this Linux environment only to inspect its guarded
@@ -249,6 +266,7 @@ def test_vm_guard_requires_exact_external_ready_and_cut_record(
         recover = subprocess.run(
             [sys.executable, "-m", "tools.policy_chaos", "fault", "recover",
              "--run-id", run_id, "--config-dir", str(config), "--state-dir", str(state),
+             "--runtime-dir", str(vm_runtime_dir),
              "--observation", str(observation), "--cut-record", str(tmp_path / "missing-cut.json"),
              "--output", str(tmp_path / "report.json"), "--confirm-disposable-vm"],
             cwd=REPO, env=environment, text=True, capture_output=True, timeout=10,
@@ -373,7 +391,9 @@ def test_corrupt_survivor_is_finding_with_simulated_cut_record(tmp_path: Path, d
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="VM guard requires Linux mount information")
-def test_recover_reads_complete_survivor_with_simulated_cut_record(tmp_path: Path, disk_tmp: Path):
+def test_recover_reads_complete_survivor_with_simulated_cut_record(
+    tmp_path: Path, disk_tmp: Path, vm_runtime_dir: Path,
+):
     """Exercise recovery plumbing without claiming an actual VM stop."""
     config = disk_tmp / "disposable-complete"
     state = disk_tmp / "state-complete"
@@ -407,6 +427,7 @@ def test_recover_reads_complete_survivor_with_simulated_cut_record(tmp_path: Pat
     result = subprocess.run(
         [sys.executable, "-m", "tools.policy_chaos", "fault", "recover",
          "--run-id", run_id, "--config-dir", str(config), "--state-dir", str(state),
+         "--runtime-dir", str(vm_runtime_dir),
          "--observation", str(observation), "--cut-record", str(cut_record),
          "--output", str(report), "--confirm-disposable-vm"],
         cwd=REPO, env={**os.environ, "SAFEYOLO_CHAOS_DISPOSABLE_VM": "1"},
@@ -427,7 +448,8 @@ def test_recover_reads_complete_survivor_with_simulated_cut_record(tmp_path: Pat
     rejected_report = tmp_path / "rejected-report.json"
     recover_command = [sys.executable, "-m", "tools.policy_chaos", "fault", "recover",
                        "--run-id", run_id, "--config-dir", str(config),
-                       "--state-dir", str(state), "--observation", str(observation),
+                       "--state-dir", str(state), "--runtime-dir", str(vm_runtime_dir),
+                       "--observation", str(observation),
                        "--cut-record", str(cut_record), "--output", str(rejected_report),
                        "--confirm-disposable-vm"]
 
