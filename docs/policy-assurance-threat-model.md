@@ -353,6 +353,8 @@ The native disposable-VM protocol is `tools.policy_chaos fault`:
    with the same candidate source, run
    `uv run python -m tools.policy_chaos fault ready` with `--manifest` set to
    the copied manifest and `--observation` set to the captured JSON Lines file.
+   The manifest, observation, and later cut record must each be a regular file
+   of at most 1 MiB; symbolic links and special files are rejected as incomplete.
    Cut the disposable VM only if that command confirms the exact run,
    manifest hash, transaction, and checkpoint. A missing, stale, or repeated
    checkpoint is unexecuted. The controller records the actual abrupt VM-stop

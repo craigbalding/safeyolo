@@ -10,6 +10,7 @@ import os
 import re
 import select
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -48,6 +49,7 @@ ADMISSIBLE_VERSIONS = {
 }
 SENTINEL = ".safeyolo-chaos-disposable"
 MANIFEST = "recovery-manifest.json"
+VM_INPUT_LIMIT = 1024 * 1024  # Each outside-VM protocol input is at most 1 MiB.
 
 
 def checked_run_id(run_id: str) -> str:
@@ -277,12 +279,35 @@ def safe_vm_paths(config_dir: Path, state_dir: Path, confirmed: bool) -> tuple[P
     return policy, config, state
 
 
+def read_vm_input(path: Path) -> bytes:
+    """Read a bounded regular protocol file without following links or blocking on FIFOs."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        details = os.fstat(stream.fileno())
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f"VM protocol input is not a regular file: {path}")
+        if details.st_size > VM_INPUT_LIMIT:
+            raise ValueError(f"VM protocol input exceeds 1 MiB: {path}")
+        raw = stream.read(VM_INPUT_LIMIT + 1)
+    if len(raw) > VM_INPUT_LIMIT:
+        raise ValueError(f"VM protocol input exceeds 1 MiB: {path}")
+    return raw
+
+
+def parse_vm_json(raw: bytes | str):
+    try:
+        return json.loads(raw)
+    except RecursionError as error:
+        raise ValueError("VM protocol JSON is too deeply nested") from error
+
+
 def read_manifest(path: Path) -> tuple[dict, str]:
-    raw = path.read_bytes()
-    manifest = json.loads(raw)
+    raw = read_vm_input(path)
+    manifest = parse_vm_json(raw)
     if not isinstance(manifest, dict) or type(manifest.get("version")) is not int or \
             manifest["version"] != 1 or \
-            manifest.get("checkpoint") not in CHECKPOINTS:
+            type(manifest.get("checkpoint")) is not str or \
+            manifest["checkpoint"] not in CHECKPOINTS:
         raise ValueError("invalid native recovery manifest")
     for key in ("run_id", "config_dir", "policy_path", "binary", "binary_sha256",
                 "old_b64", "new_b64", "old_sha256", "new_sha256"):
@@ -303,7 +328,8 @@ def read_manifest(path: Path) -> tuple[dict, str]:
 
 
 def read_checkpoint_observation(observation: Path) -> tuple[dict, dict]:
-    lines = [json.loads(line) for line in observation.read_text().splitlines() if line.strip()]
+    lines = [parse_vm_json(line) for line in read_vm_input(observation).decode().splitlines()
+             if line.strip()]
     if not all(isinstance(line, dict) for line in lines):
         raise ValueError("checkpoint observation contains a non-object line")
     prepared = [line for line in lines if line.get("status") == "PREPARED"]
@@ -547,7 +573,7 @@ def recover_vm_cut(args) -> int:
             manifest["policy_path"] != str(policy):
         raise ValueError("recovery manifest does not name this run and policy")
     ready = validate_ready(manifest, manifest_hash, args.observation)
-    cut = json.loads(args.cut_record.read_text())
+    cut = parse_vm_json(read_vm_input(args.cut_record))
     if not isinstance(cut, dict):
         raise ValueError("outside-VM cut record must be a JSON object")
     if any(cut.get(key) != value for key, value in (

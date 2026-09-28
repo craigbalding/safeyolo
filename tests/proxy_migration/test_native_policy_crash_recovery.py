@@ -24,6 +24,7 @@ from tools.policy_chaos_recovery import (
     CHECKPOINTS,
     POLICY,
     TARGET,
+    VM_INPUT_LIMIT,
     PolicyCheckpoint,
     assert_policy_document,
     native_proxy,
@@ -347,3 +348,50 @@ def test_recover_reads_complete_survivor_with_simulated_cut_record(tmp_path: Pat
         "alice-target": 403, "bob-target": 403,
         "alice-control": 200, "alice-blocked": 403,
     }
+
+    environment = {**os.environ, "SAFEYOLO_CHAOS_DISPOSABLE_VM": "1"}
+    ready_command = [sys.executable, "-m", "tools.policy_chaos", "fault", "ready",
+                     "--manifest", str(run_dir / "recovery-manifest.json"),
+                     "--observation", str(observation)]
+    rejected_report = tmp_path / "rejected-report.json"
+    recover_command = [sys.executable, "-m", "tools.policy_chaos", "fault", "recover",
+                       "--run-id", run_id, "--config-dir", str(config),
+                       "--state-dir", str(state), "--observation", str(observation),
+                       "--cut-record", str(cut_record), "--output", str(rejected_report),
+                       "--confirm-disposable-vm"]
+
+    for checkpoint in ([], {}):
+        invalid_manifest = tmp_path / f"invalid-checkpoint-{type(checkpoint).__name__}.json"
+        invalid_manifest.write_text(json.dumps({"version": 1, "checkpoint": checkpoint}))
+        command = ready_command.copy()
+        command[command.index("--manifest") + 1] = str(invalid_manifest)
+        rejected = subprocess.run(command, cwd=REPO, env=environment,
+                                  text=True, capture_output=True, timeout=10)
+        assert rejected.returncode == 2 and "INCOMPLETE" in rejected.stderr, rejected.stderr
+
+    fifo = tmp_path / "unopened-fifo"
+    os.mkfifo(fifo)
+    oversized = tmp_path / "oversized-input"
+    oversized.write_bytes(b"x" * (VM_INPUT_LIMIT + 1))
+    deeply_nested = tmp_path / "deeply-nested-input"
+    deeply_nested.write_bytes(b"[" * 20000 + b"0" + b"]" * 20000)
+    linked = tmp_path / "linked-input"
+    linked.symlink_to(observation)
+    for unsafe, expected_error in ((Path("/dev/full"), "not a regular file"),
+                                   (fifo, "not a regular file"),
+                                   (oversized, "exceeds 1 MiB"),
+                                   (deeply_nested, "too deeply nested"),
+                                   (linked, "Too many levels of symbolic links")):
+        for command, flag in ((ready_command, "--manifest"),
+                              (ready_command, "--observation"),
+                              (recover_command, "--observation"),
+                              (recover_command, "--cut-record")):
+            attempt = command.copy()
+            attempt[attempt.index(flag) + 1] = str(unsafe)
+            rejected = subprocess.run(attempt, cwd=REPO, env=environment,
+                                      text=True, capture_output=True, timeout=10)
+            assert rejected.returncode == 2 and "INCOMPLETE" in rejected.stderr and \
+                   expected_error in rejected.stderr, (
+                flag, unsafe, rejected.stderr,
+            )
+            assert not rejected_report.exists()
