@@ -145,11 +145,13 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
                  agents=("alice", "bob"), services_dir=None, python_config_dir=None,
-                 connect_trace_path=None, python_fixture=None):
+                 connect_trace_path=None, python_fixture=None, runtime_directory=None):
     """Start one selected proxy; ``None`` reuses the existing policy file."""
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
     directory.mkdir(parents=True, exist_ok=True)
+    runtime = Path(runtime_directory).resolve() if runtime_directory is not None else directory
+    runtime.mkdir(parents=True, exist_ok=True)
     policy = directory / f"policy.{policy_format}"
     if policy_text is None:
         if not policy.is_file():
@@ -170,7 +172,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                 for name, ip in agent_map.items()
             ):
                 raise ValueError("agent_map must map agent names to IPv4 strings")
-            data_dir = directory / "data"
+            data_dir = runtime / "data"
             data_dir.mkdir(parents=True, exist_ok=True)
             (data_dir / "agent_map.json").write_text(
                 json.dumps({name: {"ip": ip} for name, ip in agent_map.items()})
@@ -182,18 +184,18 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             # file even when the gateway fixture is not enabled.  Keep that
             # state inside this run so the selected Rust process never falls
             # back to the host's /safeyolo/data path.
-            "readiness_file": str(directory / "ready"),
-            "audit_log_path": str(directory / "audit.jsonl"),
-            "event_log": str(directory / "events.jsonl"),
+            "readiness_file": str(runtime / "ready"),
+            "audit_log_path": str(runtime / "audit.jsonl"),
+            "event_log": str(runtime / "events.jsonl"),
             # Keep native policy/evidence state inside this fixture. The Rust
             # default (/safeyolo/data) is unavailable in ordinary runs.
-            "data_dir": str(directory / "data"),
+            "data_dir": str(runtime / "data"),
             "flow_store_enabled": flow_store_enabled,
-            "flow_store_db_path": str(directory / "flows.sqlite3"),
+            "flow_store_db_path": str(runtime / "flows.sqlite3"),
         }
         Path(config["data_dir"]).mkdir(parents=True, exist_ok=True)
         if agent_map is not None:
-            config["agent_map_file"] = str(directory / "data" / "agent_map.json")
+            config["agent_map_file"] = str(runtime / "data" / "agent_map.json")
         if inspection is not None:
             config["inspection"] = {"policy_file": str(policy), **inspection}
         for name, value in (("network_guard_enabled", network_guard_enabled),
@@ -219,17 +221,17 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["services_dir"] = str(services_dir)
         if circuit_breaker_enabled is not None or circuit_state_file is not None:
             config["circuit_breaker_enabled"] = True if circuit_breaker_enabled is None else circuit_breaker_enabled
-            config["circuit_state_file"] = str(directory / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
+            config["circuit_state_file"] = str(runtime / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
         # An explicit source checkout is part of backend identity.  Keep the
         # test modules from this checkout on the inherited path while making
         # the launched Python proxy import the caller-selected package.
         python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
         env = python_proxy_environment(python_source=python_source) if backend == "python" else os.environ.copy()
-        env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
+        env["SAFEYOLO_LOG_PATH"] = str(runtime / "audit.jsonl")
         if python_config_dir is not None:
             env["SAFEYOLO_CONFIG_DIR"] = str(python_config_dir)
         if agent_api:
-            api_data = directory / ("data" if backend == "python" and credential_head_decision else "api-data")
+            api_data = runtime / ("data" if backend == "python" and credential_head_decision else "api-data")
             api_data.mkdir(exist_ok=True)
             if agent_api_token is not None:
                 token_file = api_data / "agent_token"
@@ -266,7 +268,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["agent_api_enabled"] = agent_api
             # Every current Rust fixture uses the native policy file.
             config["policy_file"] = str(policy)
-            (directory / "native-policy-provenance.json").write_text(
+            (runtime / "native-policy-provenance.json").write_text(
                 json.dumps({
                     "backend": "rust", "policy_mode": "native",
                     "policy_file": str(policy), "temporary_policy_socket": None,
@@ -281,7 +283,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             command = [str(binary)]
         else:
             raise ValueError(f"Unknown proxy backend: {backend}")
-        config_path = directory / "proxy.json"
+        config_path = runtime / "proxy.json"
         config_path.write_text(json.dumps(config))
         if connect_trace_path is not None:
             tracer = shutil.which("strace")
@@ -293,12 +295,12 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             # visible even if its client does not call connect().
             command = [tracer, "-D", "-f", "-e", "trace=network", "-o",
                        str(connect_trace_path), *command]
-        process = stack.enter_context(child_process(command + ["--config", str(config_path)], directory, env))
+        process = stack.enter_context(child_process(command + ["--config", str(config_path)], runtime, env))
         readiness = Path(config["readiness_file"])
         wait_ready(
             process,
             [readiness, *map(Path, paths.values())],
-            directory / "process.log",
+            runtime / "process.log",
             readiness_file=readiness,
             expected_backend="python" if backend == "python" else "rust-m2",
         )
