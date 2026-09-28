@@ -136,14 +136,22 @@ def _compiled_permission(document: dict, *, action: str, resource: str, effect: 
 
 def _wait_for_native_state(api: AdminAPI, request_id: str, predicate) -> dict:
     """Wait until the watcher has published policy and resolved this prompt."""
-    deadline = time.monotonic() + 4
+    # The watcher checks every two seconds, then compiles the policy. The
+    # stock list-backed policy can take another check interval on a busy VM.
+    deadline = time.monotonic() + 12
+    still_pending = compiled = None
     while time.monotonic() < deadline:
         pending = api.pending_approvals()
         baseline = api.get_policy("baseline")
-        if not any(row.get("request_id") == request_id for row in pending) and predicate(baseline):
+        still_pending = any(row.get("request_id") == request_id for row in pending)
+        compiled = predicate(baseline)
+        if not still_pending and compiled:
             return baseline
         time.sleep(0.02)
-    raise AssertionError(f"native watcher did not publish/resolved request {request_id}")
+    raise AssertionError(
+        f"native watcher did not publish/resolved request {request_id}: "
+        f"pending={still_pending}, compiled={compiled}"
+    )
 
 
 def _audit_rows(directory):
