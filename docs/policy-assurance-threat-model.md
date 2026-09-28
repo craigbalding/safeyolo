@@ -397,23 +397,69 @@ the last column is not satisfied by a historical Python pass.
 | `properties`: semantic TOML round trip, selected-agent approval, denial monotonicity and unrelated-agent preservation | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413) checks a fixed real-proxy matrix; the [#621 reload result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848982779) checks live decisions after reload. | C3 generates policy edits, quoting and precedence combinations, then compares intended permission deltas with active and fresh Rust effects. A serialized TOML comparison alone cannot close this row. |
 | `sequences-clean`: host allow, deny, rate, bypass, remove and reload; credential approval/reload; agent metadata and service edits; gateway grant and binding add/remove; transaction observation | `test_shared_operator_approval.py`, `test_operator_consumer_approval.py`, `test_gateway_risk_approval.py`, the [#621 reload result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848982779), and the [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) cover fixed effects and durable service/grant reuse. | C2 supplies the existing-state/observation seam. C3 retains bounded mixed histories through supported writers and checks each completed change plus the final fresh process. The removed Python `PolicyEngine` writer is inapplicable as a caller; its permission-integrity obligation transfers to the native writer. |
 | `host-canonicalization`: case and DNS-label wildcard boundary; trailing dot, Internationalized Domain Names in Applications (IDNA), unusual dot, IP text and conflicting authority | The [#621 scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413), `test_native_network_policy.py::test_native_policy_homoglyph_authority_forms`, and `test_native_network_policy.py::test_native_policy_raw_decodable_mixed_script_ace` cover selected real ingress, but not a suffix-sharing sibling of a wildcard host. | C3 retains an effective boundary probe: after a supported writer adds `*.scope.invalid`, a proper child can gain access but `evilscope.invalid` must not. This detects loss of the DNS-label boundary. C3 also retains canonical-host interactions that alter a mutation's scope. The old mitmproxy `HTTPFlow` ingress is removed, so replaying that object path is inapplicable. The historical non-normative observations do not become new policy guarantees. |
-| `writer-matrix`: `cli-same`, `engine-same`, `agents-same`, `admin-same`, `gateway-same`, `cli-locked`, `engine-agents`, `admin-gateway`; lock controls, lock-before-read and revocation versus unrelated approval | The [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) establishes serial cross-version reuse. `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` establishes one native watermark edge. Neither proves the matrix's concurrent writes. | The C4 candidate maps each row in the table above. The writer-contention group pauses both actual lock boundaries and checks both completed edits, context, restrictions, conflicting outcomes, revocation, and live Rust effects. The two focused Rust tests check publication after a later scoped revoke and after a failed mutation with an unrelated waiter. Lens decides acceptance. |
-| `failure-stages`: parse, normalization, serialization, temporary creation/write, file sync, rename, directory sync, activation/reload and audit | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) and `test_native_network_policy.py::test_native_policy_failed_reload_retains_scoped_decisions` cover startup refusal and last-known-good reload. | C5 retains applicable actual-writer stages, including native validation, partial write, failed rollback and audit interaction. It checks response, file, active and fresh state at the stage's correct commit boundary. An absent native stage is recorded only after inspection, not manufactured. |
+| `writer-matrix`: `cli-same`, `engine-same`, `agents-same`, `admin-same`, `gateway-same`, `cli-locked`, `engine-agents`, `admin-gateway`; lock controls, lock-before-read and revocation versus unrelated approval | The [#638 installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) establishes serial cross-version reuse. `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` establishes one native watermark edge. Neither proves the matrix's concurrent writes. | [#831 C4 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868912512) covers the mapped writer-contention group and two native publication histories. C7 calibrates a lost update and stale publication below. |
+| `failure-stages`: parse, normalization, serialization, temporary creation/write, file sync, rename, directory sync, activation/reload and audit | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) and `test_native_network_policy.py::test_native_policy_failed_reload_retains_scoped_decisions` cover startup refusal and last-known-good reload. | [#831 C5 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5870453777) covers actual native writer stages, partial write, failed rollback and audit interaction. It checks response, file, active and fresh state at the stage's correct commit boundary. C7 calibrates false success below. |
 | `crash-recovery`: process death before/after rename and unrelated restriction preservation | [#638's clean installed transition](https://github.com/craigbalding/safeyolo/issues/638#issuecomment-5851990040) reuses durable state but does not cut a transaction. | The C6 candidate selects `test_native_policy_crash_recovery.py` for all three process deaths and the guarded VM protocol. The three actual disposable-KVM stops remain pending. Fresh Rust must read the surviving file without a fixture rewrite. |
 | `known-no-rate`: an unrated allow disappeared or bypassed the aggregate budget | `test_operator_consumer_approval.py::test_retained_operator_client_approves_exact_native_network_scope` checks the native 600-rate approval and real origin effect; `test_native_network_policy.py::test_native_policy_budget_is_shared_and_survives_reload` checks budget reuse. | C3 retains an unrated host allowance in a composed host history, where disappearance or budget escape would change a later decision. |
 | `known-persistence-failure`: save error reported success and broadened live access | The [#621 invalid-policy result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5819850272) covers malformed reload, but not a writer save failure. | C5 injects a real native writer failure and requires a truthful result, preserved pre-commit bytes and decisions, and no premature success. |
-| `known-public-concurrency`: policy-host lost update | `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` covers the native watcher watermark, not competing public writers. | The C4 candidate checks the two-writer lock order and publication histories through the selected current writers; Lens decides acceptance. |
+| `known-public-concurrency`: policy-host lost update | `policy_runtime.rs::expiry_write_after_a_concurrent_policy_change_keeps_the_earlier_watermark` covers the native watcher watermark, not competing public writers. | [#831 C4 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868912512) covers two-writer lock order and publication histories through the selected current writers. C7 tests the lost-update assertion against a stale-read mutant below. |
 
-The five source holdouts are separate from the ten defaults. The case-sensitive
-wildcard holdout was effective in the old matcher but invisible after mitmproxy
-canonicalized ingress case; direct matching coverage remains necessary. The
-agent-condition holdout is reused through the #621 scope tests above. The
-wildcard-without-label-boundary holdout remains open for C3's suffix-sharing
-sibling probe; the cited #621 cases exercise proper wildcard subdomains only.
-The lock-before-read and swallowed-save holdouts remain C4 and C5 transaction
-calibrations; C7 adds stale publication after a newer change or rollback. A
-holdout counts only when a disposable mutation changes effective behavior and
-the selected assertion catches it.
+The first two `catalogue` rows name all eight historical corruptions. They
+reuse the cited native scope and credential results; C3 adds composed real-writer
+histories. A new pure matcher or scope mutant would repeat those permission
+checks without testing a new transaction behavior.
+
+The five source holdouts are separate from the ten defaults:
+
+| Historical holdout | Native disposition |
+|---|---|
+| Case-sensitive wildcard matching | The old mutation changed direct Python matching but mitmproxy's ingress canonicalization concealed it. [#831 C3 acceptance](https://github.com/craigbalding/safeyolo/issues/831#issuecomment-5868301471) includes `test_host_permission_properties`, which writes an uppercase wildcard in generated cases and checks lower-case hosts through the real Rust proxy. Do not credit the historical missed ingress assertion. |
+| Agent-scoped mutation loses its condition | Reuse the [#621 native scope result](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5848762413) and C3's real writer/peer observations. A duplicate scope mutant adds no transaction coverage. |
+| Wildcard loses its DNS label boundary | The C7 mutation below is detected by `test_written_wildcard_has_dns_label_boundary` after the supported CLI writer adds `*.scope.invalid`. The cited #621 cases check proper children, not the suffix-sharing sibling. |
+| Locked mutation reads before its lock | C4's native `engine-same` contention assertion detects the C7 stale-read mutation below. The retained Python lock controls remain in the accepted C4 group. |
+| Shared mutation swallows a save failure | C5's retained Python CLI assertion detects the C7 source holdout below. The native Admin failure assertion independently detects the same false-success responsibility. |
+
+### C7 finite calibration
+
+The clean controls ran on Linux from integration commit
+`9d268155bc09314c6e94e977e5cad31d8b52670b`, with Python 3.13.15 and
+Rust 1.94.0. The wildcard control uses the one-line fixture change in this
+review candidate. Each source mutation ran in a disposable checkout outside
+the working tree. The debug Rust binaries were copied to distinct paths before
+the next build. No source mutation is committed or selected by the normal runner.
+
+| Responsibility and disposable implementation change | Frozen assertion: clean control, then mutant | Independent effect at the real boundary |
+|---|---|---|
+| Lost update: move `approvals.rs::update_policy`'s source read before `lock_policy` | `test_writer_matrix_has_real_lock_overlap_and_live_effect[engine-same]` passed clean; the mutant failed because `engine-one.invalid` was absent after both Admin writers completed. | The second host survived. A fresh Rust proxy denied the lost first host (`403`, zero origin accepts), allowed the second (`200`, one accept), and kept `blocked.invalid` denied. |
+| False native success: return `Ok` when `save_policy_in_transaction` fails | `test_native_staged_failure_restores_original_and_never_reports_success[file-sync]` passed clean; the mutant failed at the expected Admin error assertion. | The named file-sync checkpoint returned an error, but Admin replied `status=added`. The file stayed unchanged and live/fresh Rust still denied the target (`403`, zero origin accepts). |
+| Swallowed retained Python save failure: catch `OSError` from `save_roundtrip` in `locked_policy_mutate` | `test_retained_python_callers_share_save_but_report_distinct_errors` passed clean; the mutant failed at the expected CLI error assertion. | An injected directory-sync error occurred, but the CLI exited zero and printed `Added host`. The replacement file and live Rust allowed the target (`200`, one origin accept) without confirmed durability. |
+| Stale publication: omit `policy_runtime.rs::load`'s adoption of the earlier source watermark | `older_load_and_later_scoped_revoke_converge_without_resurrecting_access` passed clean; the mutant failed when the watcher reported no change. | The persisted policy contained Alice's newer scoped denial, but the published older snapshot still returned `200` after the watcher check. |
+| Wildcard label boundary: replace `*.` with `*` before `services.rs::resource_matches` evaluates a pattern | `test_written_wildcard_has_dns_label_boundary` passed clean; the mutant failed after the CLI write at step 1: `evilscope.invalid` returned `200` instead of `428`. | Before the write, the sibling returned `428` with no origin accept. Afterward, the proper child and sibling each returned `200` with one accept; a fresh Rust process also allowed the sibling. |
+
+The wildcard finding retained this actual one-operation trace:
+
+```json
+{
+  "family": "wildcard",
+  "root": "scope.invalid",
+  "initial_wildcard": "*.separate.invalid",
+  "operations": [{"action": "allow", "host": "*.scope.invalid"}]
+}
+```
+
+On Linux, save that JSON to `/tmp/c7-wildcard.json`. From the repository root,
+with the development Python environment installed, select a copied debug Rust
+binary at `/absolute/path/to/copied-binary` and run:
+
+```sh
+uv run --frozen python -m tools.policy_chaos replay /tmp/c7-wildcard.json \
+  --binary /absolute/path/to/copied-binary
+```
+
+The clean binary returned `PASS`. The wildcard mutant reproduced
+`(step=1, alice, evilscope.invalid, expected=428, actual=200)` and returned
+`FINDING` with exit 1. Invalid setup remains `INCOMPLETE`. These finite checks
+do not claim an exhaustive mutation score or a VM recovery result.
 
 The historical `fault prepare-power-cut` / `fault recover` protocol is also
 separate. It paused the Python writer and used that engine for recovery; no

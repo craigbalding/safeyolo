@@ -179,6 +179,9 @@ def _replay(args: argparse.Namespace) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="safeyolo-chaos-replay-", dir=Path.home()) as temporary:
             result = execute_trace(Path(temporary) / "case", trace)
+    except AssertionError as error:
+        print(f"FINDING: {error}", file=sys.stderr)
+        return 1
     finally:
         if previous_binary is None:
             os.environ.pop("SAFEYOLO_RUST_PROXY", None)
