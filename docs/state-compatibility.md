@@ -1,10 +1,13 @@
 # State compatibility and rollback inventory
 
-This inventory is the starting point for issue #638. It names every state
-family consumed by the proxy migration, its source and native writers and
-readers, the on-disk format, and the existing executable controls. A row is
-not a rollback claim until a disposable fixture has written the state through
-the named consumer and the selected prior release has read and used it.
+This existing inventory names the state families consumed by the proxy
+migration, their historical Python and native writers and readers, on-disk
+formats, and executable controls. The table preserves the original proof
+obligations and component observations. Use the accepted dispositions in
+[#638](https://github.com/craigbalding/safeyolo/issues/638) for their actual
+scope. The post-deletion package-return gate is separate under
+[#640 B4](https://github.com/craigbalding/safeyolo/issues/640); a component
+row alone does not prove that installed return.
 
 ## Comparator identity
 
@@ -42,7 +45,14 @@ private keys, and raw credential material from ordinary output.
 | Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/coord_state_cross_version.rs`, and the installed transition below. |
 | Readiness, runtime identity, listener registry and task registry (ephemeral) | Source startup/lifecycle writes readiness/PID markers and keeps listener/task state in process memory; restart intentionally creates a new process state. | `proxy/src/lib.rs` and `runtime.rs` own readiness/listeners and the process-local task registry; native admin/API writers do not persist these records. | Verify cleanup, identity attribution and restart reset. Do not treat an in-memory snapshot as durable rollback evidence. | `tests/proxy_migration/test_readiness.py`, `test_operator_task_api.py`, `test_agent_api_status.py`; #637 owns installed lifecycle and #627 owns retained operator controls. |
 
-## Installed Linux transition and recovery
+## Frozen R installed Linux transition and recovery
+
+This procedure records the pre-deletion R transition, whose installed
+candidate could select both backends. The current package rejects
+`proxy.backend: python`. For an operator package change to the selected prior
+checkpoint and back, use the [explicit rollback procedure](../cli/README.md#return-to-the-prior-python-package).
+The [Linux B4 candidate](https://github.com/craigbalding/safeyolo/pull/828)
+is preparatory; macOS package return and exact-F acceptance remain open.
 
 On an isolated Linux instance, install the exact Python comparator checkpoint
 and the current candidate as separate wheels in separate Python 3.12
@@ -217,10 +227,10 @@ status without secret values. That component fixture alone did not exercise
 the installed OAuth refresh or user catalog paths; the installed transition
 above exercises those selected paths.
 
-The installed-instance rollback command is now available in the disposable
-host smoke lane. Run `tests/blackbox/installed_host_smoke.py --mode smoke
---rollback-python` against an installed CLI and a caller-created disposable
-configuration. With that flag, the lane starts Rust, writes one allowed and
+The pre-deletion `tests/blackbox/installed_host_smoke.py --mode smoke
+--rollback-python` selection switched backends in one old package; it is not
+a package-return command for the current release. In that historical lane,
+the script starts Rust, writes one allowed and
 one denied host rule through the authenticated native admin writer, checks
 200/403 behavior through the real UDS, stops Rust, selects the retained
 Python comparator in the same installation, and checks the saved host rules
@@ -235,8 +245,8 @@ check, and stops both processes cleanly. The lane changes only
 `SAFEYOLO_RUST_PROXY` for the rollback start, records the durable policy hash,
 asserts the exact `host:port` key in both the persisted policy and
 `policy show --section hosts`, and restores the caller's original selector
-bytes. The report marks this
-rollback sequence `passed` while the overall smoke result remains partial
+bytes. Its report marked this
+rollback sequence `passed` while the overall smoke result remained partial
 because guest isolation and platform acceptance are separate requirements. It
 does not claim that the Python comparator, guest isolation, or a platform lane
 has passed as a full release gate.

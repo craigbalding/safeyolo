@@ -5,22 +5,18 @@ The source baseline is `4116c7ee3d44c623e9d89ae60c14ce671d0f295d` on
 `master`, inspected on 15 September 2026. Implementation starts on
 `feat/rust-proxy-620`. The baseline lockfile selects mitmproxy 12.2.3.
 
-**Status: M1 and the smallest M2 slice independently accepted at `c2afb9cf`; later policy, transport and state work continues.**
-A named test below means an existing executable check was located. It does not mean the test ran,
-passed, covered the production chain, or passed against Rust. Run manifests
-must identify the source commit, backend, platform, dependency versions, exact
-test selection and results. Future checks are marked **required**. No production
-deletion is authorized by the inventory alone. Acceptance applies only to the reviewed revision and scope.
-
-The Rust development slice covers trusted Unix domain socket (UDS) ingress,
-HTTP and explicitly selected native network policy. The temporary Python network
-policy adapter remains an explicit development option. An optional CA file enables
-a development HTTPS path. Approval and service-contract modules are tested
-separately and remain inactive in transport while their state contracts are implemented.
-Unsupported internal APIs return a local error. That response proves
-containment only; it does not establish API parity or a healthy inspection
-pipeline. The production Python proxy remains necessary until the retained
-contracts have replacement evidence.
+**Current status:** this is the original discrepancy and deletion inventory,
+not a release-acceptance checklist. The old source descriptions and historical
+test observations below retain their original dates and scope. The current
+package starts Rust and removes the Python proxy runtime; the 41 path owners
+are tracked in the [cutover deletion map](proxy-cutover-deletion-map.md).
+[Issue #640's A1/A2 disposition](https://github.com/craigbalding/safeyolo/issues/640#issuecomment-5859706461)
+accepts the finite ledger and selected Linux pre-cutover run at frozen R.
+[Issue #621's selected dual-backend disposition](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308)
+records the accepted comparison and its explicit differences. These results do
+not establish the final post-deletion release F: use the live #640 B-items for
+installed, rollback, macOS/VZ, and exact-F release gates. A test named in a
+historical row does not by itself mean it passed at F.
 
 The tables use these abbreviations: application programming interface (API),
 command-line interface (CLI), Transport Layer Security (TLS), certificate
@@ -66,7 +62,7 @@ policy and credentials, authorized evidence access and retention, platform
 validation, rollback and removal of the old proxy retain their requirements.
 Shared matching or decoding needed by those paths is not deferred by this scope.
 
-Local refs include proxy-related branches such as
+At the original inventory date, local refs included proxy-related branches such as
 `origin/feat/connect-policy-598` (`c19c0dc5`),
 `origin/feat/connect-trace-evidence-598-599` (`2a4dc17e`),
 `origin/agent/complete-flow-context` (`c0d384c1`),
@@ -74,13 +70,16 @@ Local refs include proxy-related branches such as
 `origin/forge/issue-49-websocket-inspection` (`5a8dadc1`). Their responsibilities
 are present in the inspected baseline. They are not ancestors of that baseline;
 squash integration means that fact alone cannot establish outstanding work.
-The integration owner's GitHub Connector search returned open pull requests
-#574 (aggregate host resource protection) and #484 (demo lab), with no open
-proxy, traffic or policy pull request returned. The local `gh` client lacked
-authentication. Recheck open work before cutover; do not merge historical refs
-solely because `git branch --no-merged` lists them.
+The original open-pull-request search was a planning snapshot, not current
+release status. Follow [#640](https://github.com/craigbalding/safeyolo/issues/640)
+and accepted child-issue dispositions for the remaining exact-F work.
 
 ## Production entry points and ordering
+
+The entry points and addon order in this section describe the original
+Python baseline. They are retained to explain the original observations and
+replacement responsibilities. The current CLI launches the packaged Rust
+executable; it does not import this addon chain.
 
 [proxy.py](../cli/src/safeyolo/proxy.py) starts the shared
 [traffic master](../cli/src/safeyolo/traffic_master.py), which imports the UDS
@@ -478,9 +477,9 @@ silently reduce accepted message sizes to a library default.
 | D69 | In the shared HTTP/2 cancellation case, a client resets one stream after partial response data while the origin holds a sibling response until it sees that reset. The Python comparator leaves the origin's `reset_seen` false and the sibling times out. | Native forwards the cancel reset and the sibling completes on a separate origin HTTP/2 connection. The [real-proxy test](../tests/proxy_migration/test_http2_contract.py) records both negotiated client and origin protocols and keeps Python's observed timeout as a strict expected failure. This finite case does not claim every reset timing or shared upstream connection shape. |
 | D70 | Before the Python repair, an absolute-form request to an allowed host with a forbidden Host field forwarded the allowed credential and forbidden Host to a controlled parent. The parent routed by Host, and the forbidden physical origin received the credential. Inside an allowed CONNECT, changed HTTP/1 Host or HTTP/2 `:authority` sent the credential to the allowed physical TLS origin under a forbidden virtual host. | Both backends now forward the admitted Host for the absolute-form case and reject changed inner authorities before application bytes. Python checks inner authority at the request head and uses its existing early-response path for streamed bodies. It compares IDNA A-labels with mitmproxy's decoded destination, preserves an ASCII A-label on the wire, and brackets rewritten IPv6 authorities. Native validates inner host, port and scheme against CONNECT; native policy reuses the admitted policy hostname for ASCII case-equivalent Host spellings, while other source spellings keep their own inspection input. Both proxies deliver valid ASCII case, IDNA and signed-style controls and reject a separate conflicting HTTP/2 Host field. The [paired real-proxy fixture](../tests/proxy_migration/test_authority_consistency.py) checks zero forbidden-origin accepts before its direct parent control, exact credential bytes only at the allowed origin, the parent CONNECT target, origin TLS Server Name Indication (SNI), wrong-name certificate rejection with zero application bytes, and exact path, query and body delivery. A direct trust control proves that the wrong-name certificate is valid for its own name. The parent can deliberately route an admitted CONNECT to another physical socket; SafeYolo verifies that socket's certificate against the admitted name before sending HTTP. Other route and authority combinations remain open under D4. |
 | D71 | At [PR #757 head `678ab150`](https://github.com/craigbalding/safeyolo/pull/757/commits/678ab15071a8f5d89e0abae987cda56fbb7f478e), both backends matched exact service route `/v1/read` for raw `/v1/read/` and forwarded the latter spelling with the vault credential. Rust also matched raw fullwidth letters that normalize to ASCII and forwarded their UTF-8 bytes; Python rejected those bytes at HTTP parsing with 400. | The [accepted correction at `0c730479`](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5838315697) denies a gateway token request when service-route normalization changes its path spelling. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks zero parent and origin contact for trailing slash on both backends and fullwidth letters on Rust, while canonical routes, repeated query parameters, exact body bytes, and ordinary signed paths remain usable. Python still returns parser 400 for raw fullwidth letters; Rust returns gateway 403. |
-| D72 | At `ac5a92c2`, the Python gateway checked duplicate query names on the wire but used the first decoded value for a bound contract constraint. For `account=alpha&%61ccount=beta`, the Python gateway injected the vault credential and forwarded both values to the origin. Native rejected the decoded-name collision. | The Python gateway now rejects duplicate decoded names before contract evaluation. The [running gateway scope fixture](../tests/proxy_migration/test_gateway_scope.py) requires 403 and zero origin contact for that collision on both backends. It also preserves a single encoded value that decodes to the approved value, the configured plain-HTTP exception, and an unrelated nonsecret request. Independent acceptance remains pending. |
-| D73 | Before this repair, the Python proxy forwarded an origin's WebSocket 101 that selected a subprotocol absent from the client's offer. The client saw the invalid selection, and the origin received an application message. Native rejected the same response before forwarding the 101. | The Python response hook now returns a correlated local 502 and disables the pending WebSocket relay for an unoffered selection. It still permits an origin to select the client's second offered protocol. The shared [WS/WSS fixture](../tests/proxy_migration/test_websocket_contract.py) checks the invalid response, zero forwarded application messages, a valid next handshake, and bidirectional inspected traffic on both backends. Independent acceptance remains pending. |
-| D74 | Both proxies folded repeated Authorization fields before checking for a reserved gateway token. When an ordinary value preceded a token, the gateway missed it and allowed the request to reach an owned origin with the token in its Authorization fields. A comma-separated ordinary value had the same effect. Both also forwarded a token after a tab instead of a space. At PR #795's first head, Python additionally forwarded a token after UTF-8 line or paragraph separator; Rust forwarded one after raw NEL (0x85) or NBSP (0xA0). Both selected a valid gateway Authorization while forwarding a second raw token in `X-Api-Key` to the origin. | The corrected gateway fallback checks original header bytes with one separator rule: comma, source-recognized single-byte whitespace, or UTF-8 Unicode whitespace before `sgw_`. Gateway selection also rejects more than one raw header field carrying a reserved token. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks both field orders, comma, tab, the four review-found byte forms, the second-token case, a plain duplicate-value control, and zero upstream accepts on denial. A valid gateway request still replaces its token with the vaulted credential; an ordinary signed target keeps its raw path, query order and body. Independent acceptance remains pending. |
+| D72 | At `ac5a92c2`, the Python gateway checked duplicate query names on the wire but used the first decoded value for a bound contract constraint. For `account=alpha&%61ccount=beta`, the Python gateway injected the vault credential and forwarded both values to the origin. Native rejected the decoded-name collision. | The Python gateway now rejects duplicate decoded names before contract evaluation. The [running gateway scope fixture](../tests/proxy_migration/test_gateway_scope.py) requires 403 and zero origin contact for that collision on both backends. It also preserves a single encoded value that decodes to the approved value, the configured plain-HTTP exception, and an unrelated nonsecret request. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
+| D73 | Before this repair, the Python proxy forwarded an origin's WebSocket 101 that selected a subprotocol absent from the client's offer. The client saw the invalid selection, and the origin received an application message. Native rejected the same response before forwarding the 101. | The Python response hook now returns a correlated local 502 and disables the pending WebSocket relay for an unoffered selection. It still permits an origin to select the client's second offered protocol. The shared [WS/WSS fixture](../tests/proxy_migration/test_websocket_contract.py) checks the invalid response, zero forwarded application messages, a valid next handshake, and bidirectional inspected traffic on both backends. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
+| D74 | Both proxies folded repeated Authorization fields before checking for a reserved gateway token. When an ordinary value preceded a token, the gateway missed it and allowed the request to reach an owned origin with the token in its Authorization fields. A comma-separated ordinary value had the same effect. Both also forwarded a token after a tab instead of a space. At PR #795's first head, Python additionally forwarded a token after UTF-8 line or paragraph separator; Rust forwarded one after raw NEL (0x85) or NBSP (0xA0). Both selected a valid gateway Authorization while forwarding a second raw token in `X-Api-Key` to the origin. | The corrected gateway fallback checks original header bytes with one separator rule: comma, source-recognized single-byte whitespace, or UTF-8 Unicode whitespace before `sgw_`. Gateway selection also rejects more than one raw header field carrying a reserved token. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks both field orders, comma, tab, the four review-found byte forms, the second-token case, a plain duplicate-value control, and zero upstream accepts on denial. A valid gateway request still replaces its token with the vaulted credential; an ordinary signed target keeps its raw path, query order and body. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
 
 ## Native CLI process ownership
 
@@ -772,9 +771,10 @@ ceiling.
 
 ## Run the native development slice
 
-These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain
-specified in [proxy/rust-toolchain.toml](../proxy/rust-toolchain.toml). Run from
-the repository root. The fixtures create isolated policy files, sockets and
+These commands require a Linux or macOS checkout, `uv`, and Rust 1.94.0
+selected as specified in
+[proxy/rust-toolchain.toml](../proxy/rust-toolchain.toml). Run from the
+repository root. The fixtures create isolated policy files, sockets and
 local upstream servers. They do not start an operator's configured instance.
 Set `SAFEYOLO_RUST_PROXY` to the executable built from this checkout.
 

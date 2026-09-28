@@ -1,11 +1,11 @@
 # Proxy cutover deletion map
 
-This existing ledger accounts for the 41 pre-cutover owners at the isolated
-#640 B1 draft. Its states describe source changes in this candidate, not
-independent B1 acceptance or the exact post-deletion release F. The original
-replacement gates and retained checks stay visible for Lens's review and later
-release checks. A removed row can still have a final installed, rollback, or
-platform gate outstanding under #640 B2–B7.
+This existing ledger accounts for the 41 pre-cutover owners in the
+[reviewed B1 candidate](https://github.com/craigbalding/safeyolo/pull/826/commits/d680ef82e4cdd9f1b725a421bccf8496123fd55a).
+Its states describe source changes at that commit, not acceptance of the
+exact post-deletion release F. The original replacement gates and retained
+checks remain visible. A removed row can still have an installed, rollback,
+or platform gate outstanding under [#640 B2–B7](https://github.com/craigbalding/safeyolo/issues/640).
 
 ## Responsibility groups
 
@@ -41,9 +41,10 @@ accounted for separately in the B1 review handoff.
 The Python policy-chaos runner, its pytest module, and its scheduled workflow
 are retired with the old policy engine. The acceptance graph no longer selects
 that runner. The pinned pre-cutover checkout retains the historical experiments.
-Native generated policy sequences, concurrency, failure stages, and abrupt
-disposable-VM recovery remain open release assurance checks; focused CLI and
-native Rust policy tests do not establish those broader claims.
+Accepted component and selected shared-run results retain their recorded scope
+under [#621](https://github.com/craigbalding/safeyolo/issues/621) and
+[#640 A1/A2](https://github.com/craigbalding/safeyolo/issues/640#issuecomment-5859706461).
+They do not replace the exact-F installed, guest, or platform gates.
 Engine-only policy, budget, loader, mutation, sensor, and Unix-mode pytest
 modules moved out of current collection with their removed owners. Tests for
 retained compiler, list loading, TOML round trips, CLI mutation, and endpoint
@@ -55,10 +56,11 @@ keys remain in this tree.
 `Current or historical checks` names the original check family. Checks marked
 `historical` remain in the pinned pre-cutover checkout at
 `2ca598ce11d7c375a024b38eb3e7b4104a795d84`; they are not collected from
-this branch. Unmarked checks remain in this branch. The B1 draft state records
-what this branch changes; it does not assert that later B2–B7 gates passed.
+this branch. Unmarked checks remain in this branch. The B1 candidate state
+records what the reviewed commit changes; it does not assert that later B2–B7
+gates passed.
 
-| ID | Original path | Former responsibility | Replacement gate | Current or historical checks | B1 draft state |
+| ID | Original path | Former responsibility | Replacement gate | Current or historical checks | B1 candidate state |
 |---|---|---|---|---|---|
 | M7-01 | `cli/src/safeyolo/proxy.py` | Backend selection, Python process lifecycle, readiness, status/stop, and explicit rollback | Installed Rust start/status/stop, failure cleanup, source identity, and Python rollback on Linux and macOS | `cli/tests/test_rust_proxy.py`<br>`cli/tests/test_lifecycle_rust.py`<br>`cli/tests/test_doctor.py` | retained: native CLI facade |
 | M7-02 | `cli/src/safeyolo/traffic_master.py` | Python production process owner and addon registration order | Native process owner publishes equivalent readiness, shutdown, event ordering, and listener lifecycle | historical: `cli/tests/test_traffic_master.py`<br>`tests/proxy_migration` | removed in B1 candidate |
@@ -104,14 +106,17 @@ what this branch changes; it does not assert that later B2–B7 gates passed.
 
 ## Current disposition
 
-This is a review candidate from integrated head `2ca598ce11d7c375a024b38eb3e7b4104a795d84`
+The B1 candidate was cut from integrated head `2ca598ce11d7c375a024b38eb3e7b4104a795d84`
 on an isolated branch. Normal installed launch selects Rust, and a missing or
 failing native executable reports an error without starting Python. Explicit
-rollback is a package change to the selected prior Python release, followed
+rollback is a package change to the selected prior Python checkpoint, followed
 by a deliberate return to the new package. Existing CA, HMAC, credential,
 policy, service, audit, and flow files are not converted by this source change.
 
 The pre-deletion installed Linux/import results referenced in [#640](https://github.com/craigbalding/safeyolo/issues/640)
-retain their original scope. B1 needs Lens review of this exact candidate;
-physical macOS/VZ, final systrap/KVM/VZ lanes, package rollback, and release F
-remain #640 gates. No acceptance state is inferred from this map.
+retain their original scope. [B2 Linux pilot PR #827](https://github.com/craigbalding/safeyolo/pull/827)
+and [B4 Linux package-return PR #828](https://github.com/craigbalding/safeyolo/pull/828)
+are preparatory candidates, not final-F acceptance. The physical macOS/VZ
+pilot, the exact-F systrap/KVM/VZ lanes, and final package return remain #640
+gates.
+No acceptance state is inferred from this map.
