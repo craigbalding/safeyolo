@@ -759,6 +759,12 @@ async fn connect_stalled_events(port: u16, token: &str) -> TcpStream {
         .unwrap();
     let handshake = read_headers(&mut events).await;
     assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    assert!(
+        handshake
+            .split(|byte| *byte == b'\n')
+            .any(|line| { line.eq_ignore_ascii_case(b"connection: upgrade\r") }),
+        "operator WebSocket upgrade must keep its connection"
+    );
     events
 }
 
@@ -833,6 +839,12 @@ async fn connect_events(port: u16, token: &str) -> TcpStream {
         .unwrap();
     let handshake = read_headers(&mut events).await;
     assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    assert!(
+        handshake
+            .split(|byte| *byte == b'\n')
+            .any(|line| { line.eq_ignore_ascii_case(b"connection: upgrade\r") }),
+        "operator WebSocket upgrade must keep its connection"
+    );
     events
 }
 

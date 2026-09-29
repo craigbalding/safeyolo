@@ -441,6 +441,13 @@ async fn serve_connection(
                 failed |= runtime.record(event).is_err();
             }
             let mut response = outcome.into_response();
+            // Ordinary operator replies retain the CLI's one-request
+            // connection lifetime. A WebSocket upgrade needs the connection
+            // to stay open, so do not apply this at the HTTP/1 builder level.
+            response.headers_mut().insert(
+                hyper::header::CONNECTION,
+                hyper::header::HeaderValue::from_static("close"),
+            );
             if failed {
                 eprintln!("Operator API evidence write failed");
                 response
@@ -450,9 +457,7 @@ async fn serve_connection(
             Ok::<_, admin_api::Error>(response)
         }
     });
-    let mut builder = hyper::server::conn::http1::Builder::new();
-    // The shipped BaseHTTPRequestHandler closes after its HTTP/1.0 response.
-    builder.keep_alive(false);
+    let builder = hyper::server::conn::http1::Builder::new();
     let connection = builder
         .serve_connection(TokioIo::new(socket), service)
         .with_upgrades();
@@ -478,9 +483,14 @@ async fn serve_events(
     if !admin_api::authenticate(request.headers(), token)
         .map_err(|_| admin_api::Error::AuthenticationEncoding)?
     {
-        return Ok(admin_api::unauthorized()
+        let mut response = admin_api::unauthorized()
             .submit_audit(&runtime.audit, &client_ip, &target)?
-            .into_response());
+            .into_response();
+        response.headers_mut().insert(
+            hyper::header::CONNECTION,
+            hyper::header::HeaderValue::from_static("close"),
+        );
+        return Ok(response);
     }
     let path = runtime.audit.path().to_owned();
     // Capture the source position after authentication, but before the 101 is
