@@ -3,6 +3,8 @@
 import asyncio
 import base64
 import gzip
+import io
+import re
 import threading
 import zlib
 from unittest.mock import create_autospec, patch
@@ -13,14 +15,22 @@ import zstandard
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from prompt_toolkit.application import Application, create_app_session
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.document import Document
 from prompt_toolkit.input import DummyInput, create_pipe_input
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import Layout
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.color_depth import ColorDepth
+from prompt_toolkit.output.vt100 import Vt100_Output
+from prompt_toolkit.styles import DummyStyle
+from prompt_toolkit.widgets import TextArea
 
 from safeyolo.api import AdminAPI, APIError
 from safeyolo.traffic_inspector import (
     BODY_PREVIEW_BYTES,
+    DetailSyntaxLexer,
     TrafficInspector,
     body_preview,
     bulk_export_filename,
@@ -509,6 +519,144 @@ def test_selected_compressed_responses_keep_source_mode_across_flows():
     asyncio.run(run())
     assert api.traffic_body.call_count == 6
     assert all(call.kwargs == {"preview_bytes": BODY_PREVIEW_BYTES} for call in api.traffic_body.call_args_list)
+
+
+def test_selected_body_colours_preserve_text_and_leave_other_sections_plain():
+    request = b'<section role="banner">Hello</section>'
+    response = b'{"count":2,"active":true,"message":"ok"}'
+    row = flow(request_headers=[["Content-Type", "text/html"]],
+               response_headers=[["Content-Type", "application/json"], ["Content-Encoding", "br"]])
+    view = TrafficInspector(client())
+    view.flows, view.selected, view.detail = [row], row["id"], row
+    view.body_values = {"request": preview(request), "response": preview(brotlicffi.compress(response))}
+    rows, detail = TextArea(), TextArea(lexer=view.detail_syntax)
+
+    def styled_characters():
+        view._show(rows, detail)
+        document = Document(detail.text)
+        lex_line = view.detail_syntax.lex_document(document)
+        styles = []
+        for line_number, line in enumerate(document.lines):
+            fragments = lex_line(line_number)
+            assert "".join(part for _, part in fragments) == line
+            styles.extend(style for style, part in fragments for _ in part)
+            if line_number < len(document.lines) - 1:
+                styles.append("")
+        assert len(styles) == len(detail.text)
+        assert "\x1b" not in detail.text
+        return styles
+
+    def style_of(styles, value):
+        return styles[detail.text.index(value)]
+
+    styles = styled_characters()
+    assert style_of(styles, "<section") == "ansicyan"
+    assert style_of(styles, "section") == "ansiblue bold"
+    assert style_of(styles, "role") == "ansicyan"
+    assert style_of(styles, '"banner"') == "ansigreen"
+    assert style_of(styles, '"count"') == "ansiblue bold"
+    assert style_of(styles, "2,") == "ansiyellow"
+    assert style_of(styles, "true") == "ansimagenta"
+    assert style_of(styles, '"ok"') == "ansigreen"
+    assert style_of(styles, "Content-Type:") == ""
+    assert style_of(styles, "SafeYolo metadata") == ""
+    assert DummyStyle().get_attrs_for_style_str("ansiblue bold").color == ""
+    assert not DummyStyle().get_attrs_for_style_str("ansiblue bold").bold
+
+    view.toggle_pretty()
+    styles = styled_characters()
+    assert response.decode() in detail.text
+    assert style_of(styles, '"count"') == "ansiblue bold"
+
+    row["response_headers"] = [["Content-Type", "application/octet-stream"]]
+    view.body_values["response"] = preview(b"\x00\xff")
+    styles = styled_characters()
+    binary = detail.text.index("application/octet-stream · binary or unknown body")
+    assert all(style == "" for style in styles[binary:binary + len("application/octet-stream")])
+    assert "x export raw_response" in detail.text
+
+
+@pytest.mark.parametrize(("media_type", "payload", "token", "style"), [
+    ("application/problem+json", b'{"message":"ok"}', '"message"', "ansiblue bold"),
+    ("application/x-ndjson", b'{"one":1}\n{"two":2}', '"two"', "ansiblue bold"),
+    ("application/xml", b'<node id="1">text</node>', "node", "ansiblue bold"),
+    ("text/javascript", b'const value = "hello";', "const", "ansimagenta"),
+    ("text/css", b'.card { color: red; }', "card", "ansiblue bold"),
+    ("application/x-www-form-urlencoded", b'name=one&flag=true', "name", "ansiblue bold"),
+    ("text/event-stream", b'event: ping\ndata: hello\n\n', "event", "ansiblue bold"),
+    ("text/plain", b'plain \x1b[2J text', r"\x1b", ""),
+])
+def test_selected_media_colours_keep_plain_text_fallback(media_type, payload, token, style):
+    row = flow(response_headers=[["Content-Type", media_type]])
+    view = TrafficInspector(client())
+    view.detail = row
+    view.body_values["response"] = preview(payload)
+    text, spans = view._detail_render()
+    view.detail_syntax.update(text, spans)
+    document = Document(text)
+    lex_line = view.detail_syntax.lex_document(document)
+    styles = []
+    for line_number, line in enumerate(document.lines):
+        fragments = lex_line(line_number)
+        assert "".join(part for _, part in fragments) == line
+        styles.extend(fragment_style for fragment_style, part in fragments for _ in part)
+        if line_number < len(document.lines) - 1:
+            styles.append("")
+    assert len(styles) == len(text)
+    assert styles[text.index(token, text.index("Body: ", text.index("HTTP response")))] == style
+    assert "\x1b" not in text
+    assert DummyStyle().get_attrs_for_style_str(style).color == ""
+
+
+def test_body_colours_leave_incomplete_stream_note_plain():
+    row = flow(response_headers=[["Content-Type", "application/json"], ["Content-Encoding", "gzip"]])
+    view = TrafficInspector(client())
+    view.detail = row
+    view.body_values["response"] = preview(gzip.compress(b'{"partial":1}')[:-4])
+    text, spans = view._detail_render()
+    view.detail_syntax.update(text, spans)
+    document = Document(text)
+    lex_line = view.detail_syntax.lex_document(document)
+    styles = []
+    for line_number, line in enumerate(document.lines):
+        styles.extend(style for style, part in lex_line(line_number) for _ in part)
+        if line_number < len(document.lines) - 1:
+            styles.append("")
+    assert styles[text.index('"partial"')] == "ansiblue bold"
+    note = text.index("[encoded stream incomplete (gzip)]")
+    assert all(style == "" for style in styles[note:note + len("[encoded stream incomplete (gzip)]")])
+
+
+def test_detail_lexer_renders_colour_and_monochrome_terminal_text():
+    payload = '{"count":2}'
+    lexer = DetailSyntaxLexer()
+    lexer.update(payload, [(0, len(payload), "application/json")])
+
+    async def render(depth):
+        stream = io.StringIO()
+        output = Vt100_Output(stream, get_size=lambda: Size(rows=8, columns=80),
+                              default_color_depth=depth, enable_cpr=False)
+        area = TextArea(text=payload, lexer=lexer, read_only=True)
+        with create_pipe_input() as keyboard:
+            app = Application(layout=Layout(area), input=keyboard, output=output, full_screen=True)
+
+            async def finish():
+                await asyncio.sleep(0.05)
+                app.exit()
+
+            app.pre_run_callables.append(lambda: app.create_background_task(finish()))
+            await asyncio.wait_for(app.run_async(), timeout=2)
+        return stream.getvalue()
+
+    colour = asyncio.run(render(ColorDepth.DEPTH_8_BIT))
+    monochrome = asyncio.run(render(ColorDepth.DEPTH_1_BIT))
+    for output in (colour, monochrome):
+        assert 'count' in output and '2' in output
+    colour_codes = re.findall(r"\x1b\[([\d;]*)m", colour)
+    monochrome_codes = re.findall(r"\x1b\[([\d;]*)m", monochrome)
+    assert any("34" in code.split(";") for code in colour_codes)
+    assert all(not any(str(value) in code.split(";") for value in range(30, 38))
+               for code in monochrome_codes)
 
 
 def test_refresh_fetches_both_previews_once_and_updates_shared_scope():

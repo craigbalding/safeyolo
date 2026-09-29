@@ -421,7 +421,9 @@ charset for readable media types. Source mode keeps spaces and line breaks;
 formatted mode indents JSON and newline-delimited JSON and separates URL form
 fields. Already-indented source JSON may look indented in both modes. HTML,
 XML, JavaScript, CSS, event streams, and other text stay readable without
-pressing `p`.
+pressing `p`. The selected body uses syntax colours for common structured
+content. The text remains legible in a monochrome terminal. Colour does not
+change the detail text or exports.
 
 The inspector decodes `identity`, `gzip`, `deflate`, `br`, and `zstd`, including
 stacked `Content-Encoding` values in reverse order. A preview may stop after
