@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import pwd
 import signal
 import stat
 import subprocess
@@ -21,6 +22,7 @@ from .agent_command_supervisor import _write_json, _write_text
 from .agent_token import ensure_agent_token
 from .config import (
     DEFAULT_NATIVE_CONFIG,
+    command_centre_tailnet_status_file,
     get_agent_map_path,
     get_bridge_sockets_dir,
     get_config_dir,
@@ -29,6 +31,7 @@ from .config import (
     get_native_config_path,
     get_policy_toml_path,
 )
+from .coord.identity import get_or_create_instance_id, instance_id_file
 from .core.service_paths import resolve_service_directories
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
@@ -40,6 +43,7 @@ from .traffic_session import (
 
 log = logging.getLogger("safeyolo.proxy")
 STARTUP_TIMEOUT = 10.0
+TAILNET_STARTUP_TIMEOUT = 75.0
 
 
 @contextmanager
@@ -566,8 +570,8 @@ def _signal_process(process: RustProcess, selected_signal: int) -> None:
         os.kill(process.pid, selected_signal)
 
 
-def _wait_ready(process: RustProcess, launch: RustLaunch) -> dict:
-    deadline = time.monotonic() + STARTUP_TIMEOUT
+def _wait_ready(process: RustProcess, launch: RustLaunch, timeout: float = STARTUP_TIMEOUT) -> dict:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not is_alive(process):
             raise RuntimeError("Rust proxy exited before readiness")
@@ -575,7 +579,32 @@ def _wait_ready(process: RustProcess, launch: RustLaunch) -> dict:
         if marker is not None:
             return marker
         time.sleep(0.05)
-    raise RuntimeError(f"Rust proxy did not signal ready within {STARTUP_TIMEOUT:g}s")
+    raise RuntimeError(f"Rust proxy did not signal ready within {timeout:g}s")
+
+
+def _command_centre_options(config: dict) -> dict:
+    """Validate the installed Command Centre setting before native launch."""
+    options = config.get("command_centre", {})
+    if not isinstance(options, dict) or type(options.get("enabled", False)) is not bool:
+        raise ValueError("command_centre must be a mapping with a Boolean enabled setting")
+    if not options.get("enabled", False):
+        return {"enabled": False}
+    events_port = options.get("events_port", 9091)
+    admin_port = options.get("tailnet_admin_port", 9443)
+    tailnet_events_port = options.get("tailnet_events_port", 9444)
+    if type(events_port) is not int or not 1 <= events_port <= 65535:
+        raise ValueError("Command Centre event port must be an integer from 1 to 65535")
+    share = options.get("share", "local")
+    if share not in {"local", "tailnet"}:
+        raise ValueError("command_centre.share must be local or tailnet")
+    if share == "tailnet":
+        if any(type(port) is not int or not 1 <= port <= 65535
+               for port in (admin_port, tailnet_events_port)):
+            raise ValueError("Command Centre Tailnet ports must be integers from 1 to 65535")
+        if admin_port == tailnet_events_port:
+            raise ValueError("Command Centre Tailnet Admin and event ports must differ")
+    return {"enabled": True, "events_port": events_port, "share": share,
+            "tailnet_admin_port": admin_port, "tailnet_events_port": tailnet_events_port}
 
 
 def _console() -> str:
@@ -599,9 +628,16 @@ def _cleanup_failed_start(process: RustProcess, failure: BaseException | None) -
 
 def start(config: dict) -> None:
     """Launch once in the private PTY; never select another backend on failure."""
+    command_centre = _command_centre_options(config)
     launch = prepare(config)
     if session_process_id() is not None:
         raise RuntimeError("The traffic session is still running; stop it before launching Rust")
+    try:
+        get_or_create_instance_id()
+    except (OSError, UnicodeError) as exc:
+        # Coord remains best-effort for the proxy. The identity endpoint will
+        # report 503 until the durable ID can be created or read.
+        log.warning("Could not prepare durable operator identity: %s", exc)
     # The CLI stages this same state file into every guest config share.
     # Bootstrap may have created an empty placeholder before first start.
     ensure_agent_token(get_data_dir())
@@ -613,6 +649,25 @@ def start(config: dict) -> None:
     # desktop approvals.  The interpreter is inherited from the trusted CLI
     # launcher; request data supplies a validated stable agent ID only.
     env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
+    env["SAFEYOLO_OPERATOR_HOST_PYTHON"] = sys.executable
+    try:
+        env["SAFEYOLO_OPERATOR_HOST_USER"] = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        env.pop("SAFEYOLO_OPERATOR_HOST_USER", None)
+    env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] = str(instance_id_file().absolute())
+    for name in (
+        "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
+    ):
+        env.pop(name, None)
+    if command_centre["enabled"]:
+        env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] = str(command_centre["events_port"])
+        if command_centre["share"] == "tailnet":
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre["tailnet_admin_port"])
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre["tailnet_events_port"])
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] = str(command_centre_tailnet_status_file().absolute())
     process = RustProcess(None, None, str(launch.readiness), launch.admin_port,
                           str(launch.admin_token) if launch.admin_token else None,
                           str(launch.config), str(Path.cwd()), str(launch.binary))
@@ -639,7 +694,9 @@ def start(config: dict) -> None:
     complete = False
     try:
         try:
-            marker = _wait_ready(process, launch)
+            marker = _wait_ready(process, launch, TAILNET_STARTUP_TIMEOUT
+                                 if command_centre["enabled"] and command_centre.get("share") == "tailnet"
+                                 else STARTUP_TIMEOUT)
         except RuntimeError as exc:
             raise RuntimeError(f"{exc}\nRust proxy console:\n{_console()}") from exc
         process.admin_port = marker.get("admin_port")

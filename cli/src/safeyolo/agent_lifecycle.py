@@ -90,6 +90,9 @@ def _resolve(agent_id: str) -> tuple[str, str]:
 def start_agent(agent_id: str, *, interactive: bool = False) -> AgentRuntime:
     """Start one configured agent using the ordinary fixed lifecycle path."""
     name, stable_id = _resolve(agent_id)
+    state = _runtime(name, stable_id).agent_state
+    if state not in {"stopped", "exited", "failed"}:
+        raise AgentLifecycleError(f"Agent cannot start while {state}", status_code=409)
     from .platform import get_platform
 
     platform = get_platform()

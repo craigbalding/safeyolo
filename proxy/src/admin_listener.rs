@@ -31,16 +31,26 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use crate::websocket::{Event as WebSocketEvent, Handshake, Reader, Writer};
-use crate::{Config, Error, RuntimeState, admin_api, policy::python_whitespace};
+use crate::{Config, Error, RuntimeState, admin_api, command_centre, policy::python_whitespace};
 use tungstenite::protocol::frame::coding::Control;
 
 pub(crate) struct Prepared {
     listener: TcpListener,
+    events_listener: Option<TcpListener>,
     token: Arc<Zeroizing<String>>,
     address: SocketAddr,
+    events_address: Option<SocketAddr>,
+    command_centre: Option<command_centre::Host>,
 }
 
 type EventTasks = Arc<AsyncMutex<JoinSet<()>>>;
+
+#[derive(Clone)]
+struct ConnectionAccess {
+    events_only: bool,
+    token: Arc<Zeroizing<String>>,
+    command_centre: Option<command_centre::Host>,
+}
 
 /// Keep blocking statistics work owned by the operator listener. The request
 /// only owns the result receiver; the listener joins the worker before proxy
@@ -103,21 +113,61 @@ impl StatsTasks {
 
 impl Prepared {
     pub(crate) async fn bind(config: &Config) -> Result<Option<Self>, Error> {
+        let command_centre = command_centre::Host::from_env()?;
         let Some(port) = config.admin_port else {
+            if command_centre
+                .as_ref()
+                .is_some_and(|host| host.events_port().is_some())
+            {
+                return Err("Command Centre events require a native Admin listener".into());
+            }
             return Ok(None);
         };
         let token = Arc::new(read_token(config.admin_api_token_file.as_deref())?);
+        if command_centre
+            .as_ref()
+            .is_some_and(|host| host.events_port().is_some())
+            && token.trim_matches(python_whitespace).is_empty()
+        {
+            return Err("Command Centre events require an Admin API token".into());
+        }
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
         let address = listener.local_addr()?;
+        let events_listener = if let Some(events_port) = command_centre
+            .as_ref()
+            .and_then(command_centre::Host::events_port)
+        {
+            if events_port == address.port() {
+                return Err("Command Centre event port must differ from the Admin port".into());
+            }
+            Some(TcpListener::bind((Ipv4Addr::LOCALHOST, events_port)).await?)
+        } else {
+            None
+        };
+        let events_address = events_listener
+            .as_ref()
+            .map(TcpListener::local_addr)
+            .transpose()?;
         Ok(Some(Self {
             listener,
+            events_listener,
             token,
             address,
+            events_address,
+            command_centre,
         }))
     }
 
     pub(crate) fn address(&self) -> SocketAddr {
         self.address
+    }
+
+    pub(crate) fn event_address(&self) -> Option<SocketAddr> {
+        self.events_address
+    }
+
+    pub(crate) fn command_centre(&self) -> Option<command_centre::Host> {
+        self.command_centre.clone()
     }
 
     pub(crate) fn start(self, state: RuntimeState) -> Running {
@@ -126,6 +176,7 @@ impl Prepared {
         let stats_tasks = StatsTasks::new();
         Running {
             address: self.address,
+            events_address: self.events_address,
             stop,
             _event_tasks: event_tasks.clone(),
             _stats_tasks: stats_tasks.clone(),
@@ -142,6 +193,7 @@ impl Prepared {
 
 pub(crate) struct Running {
     address: SocketAddr,
+    events_address: Option<SocketAddr>,
     stop: watch::Sender<bool>,
     _event_tasks: EventTasks,
     _stats_tasks: Arc<StatsTasks>,
@@ -151,6 +203,10 @@ pub(crate) struct Running {
 impl Running {
     pub(crate) fn address(&self) -> SocketAddr {
         self.address
+    }
+
+    pub(crate) fn event_address(&self) -> Option<SocketAddr> {
+        self.events_address
     }
 
     pub(crate) fn stop(mut self) -> JoinHandle<()> {
@@ -215,8 +271,12 @@ async fn accept(
                     connections.spawn(serve_connection(
                         socket,
                         peer,
+                        ConnectionAccess {
+                            events_only: false,
+                            token: prepared.token.clone(),
+                            command_centre: prepared.command_centre.clone(),
+                        },
                         state.clone(),
-                        prepared.token.clone(),
                         stop.clone(),
                         event_tasks.clone(),
                         stats_tasks.clone(),
@@ -230,10 +290,40 @@ async fn accept(
                     break;
                 }
             },
+            accepted = async {
+                match &prepared.events_listener {
+                    Some(listener) => listener.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => match accepted {
+                Ok((socket, peer)) => {
+                    connections.spawn(serve_connection(
+                        socket,
+                        peer,
+                        ConnectionAccess {
+                            events_only: true,
+                            token: prepared.token.clone(),
+                            command_centre: prepared.command_centre.clone(),
+                        },
+                        state.clone(),
+                        stop.clone(),
+                        event_tasks.clone(),
+                        stats_tasks.clone(),
+                    ));
+                }
+                Err(_) => {
+                    eprintln!("Command Centre event listener failed");
+                    if let Ok(runtime) = state.read() {
+                        crate::clear_readiness(&runtime.config.readiness_file, &runtime.instance_id);
+                    }
+                    break;
+                }
+            },
             Some(_) = connections.join_next(), if !connections.is_empty() => {},
         }
     }
     drop(prepared.listener);
+    drop(prepared.events_listener);
     if tokio::time::timeout(Duration::from_secs(10), async {
         while connections.join_next().await.is_some() {}
     })
@@ -283,8 +373,8 @@ where
 async fn serve_connection(
     socket: TcpStream,
     peer: SocketAddr,
+    access: ConnectionAccess,
     state: RuntimeState,
-    token: Arc<Zeroizing<String>>,
     mut stop: watch::Receiver<bool>,
     event_tasks: EventTasks,
     stats_tasks: Arc<StatsTasks>,
@@ -292,7 +382,7 @@ async fn serve_connection(
     let event_stop = stop.clone();
     let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
         let state = state.clone();
-        let token = token.clone();
+        let access = access.clone();
         let event_stop = event_stop.clone();
         let event_tasks = event_tasks.clone();
         let stats_tasks = stats_tasks.clone();
@@ -333,7 +423,7 @@ async fn serve_connection(
                 return serve_events(
                     request,
                     runtime,
-                    token.trim_matches(python_whitespace),
+                    access.token.trim_matches(python_whitespace),
                     event_stop,
                     client_ip,
                     path,
@@ -341,13 +431,16 @@ async fn serve_connection(
                 )
                 .await;
             }
+            if access.events_only {
+                return Ok::<_, admin_api::Error>(admin_api::event_not_found().into_response());
+            }
             let stats = || {
                 let runtime = runtime.clone();
                 stats_tasks.spawn(move || crate::operator_stats::document(&runtime))
             };
             let outcome = admin_api::respond_with_context(
                 request,
-                token.trim_matches(python_whitespace),
+                access.token.trim_matches(python_whitespace),
                 admin_api::OperatorContext {
                     tasks: &runtime.tasks,
                     policy: runtime.policy.as_ref(),
@@ -356,7 +449,7 @@ async fn serve_connection(
                     view: Some(&runtime.traffic_view),
                     policy_path: runtime.config.policy_file.as_deref(),
                     instance_id: Some(&runtime.instance_id),
-                    admin_address: runtime.admin_address,
+                    command_centre: access.command_centre.as_ref(),
                     operator_modes: Some(&runtime.operator_modes),
                     agent_discovery: Some(&runtime.agent_discovery),
                     listeners: &runtime.config.listeners,

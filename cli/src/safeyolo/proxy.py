@@ -19,10 +19,6 @@ def web_tailnet_status_file() -> Path:
     return get_data_dir() / "web-tailnet-status.json"
 
 
-def command_centre_tailnet_status_file() -> Path:
-    return get_data_dir() / "command-centre-tailnet-status.json"
-
-
 def prior_python_proxy_running() -> bool:
     """Recognize a prior package's live process without taking ownership of it."""
     marker = get_data_dir() / "proxy.pid"
