@@ -179,14 +179,27 @@ impl Body {
     }
 
     fn snapshot(&self) -> Value {
+        self.snapshot_with_limit(None)
+    }
+
+    fn snapshot_with_limit(&self, limit: Option<usize>) -> Value {
         let mut facts = self.facts();
-        facts.as_object_mut().expect("body facts").insert(
+        let preview = match self {
+            Self::Bytes(bytes) => Some(&bytes[..limit.unwrap_or(bytes.len()).min(bytes.len())]),
+            _ => None,
+        };
+        let object = facts.as_object_mut().expect("body facts");
+        object.insert(
             "data_base64".into(),
-            match self {
-                Self::Bytes(bytes) => Value::String(STANDARD.encode(bytes.as_slice())),
-                _ => Value::Null,
-            },
+            preview.map_or(Value::Null, |bytes| Value::String(STANDARD.encode(bytes))),
         );
+        if limit.is_some() {
+            object.insert("preview_size".into(), json!(preview.map_or(0, <[u8]>::len)));
+            object.insert(
+                "truncated".into(),
+                json!(preview.is_some_and(|bytes| bytes.len() < self.size())),
+            );
+        }
         facts
     }
 }
@@ -348,6 +361,13 @@ impl TrafficView {
         self.lock().rows.get(id).map(|row| match side {
             Side::Request => row.request_body.snapshot(),
             Side::Response => row.response_body.snapshot(),
+        })
+    }
+
+    pub fn body_preview(&self, id: &str, side: Side, limit: usize) -> Option<Value> {
+        self.lock().rows.get(id).map(|row| match side {
+            Side::Request => row.request_body.snapshot_with_limit(Some(limit)),
+            Side::Response => row.response_body.snapshot_with_limit(Some(limit)),
         })
     }
 

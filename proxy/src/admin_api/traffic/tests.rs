@@ -62,6 +62,11 @@ async fn authentication_precedes_scope_mutation_and_private_reads() {
         ("PUT", "/admin/traffic/filter", "malformed"),
         ("GET", "/admin/traffic/flows", ""),
         ("GET", "/admin/traffic/flows/owned/body?side=request", ""),
+        (
+            "GET",
+            "/admin/traffic/flows/owned/body?side=request&preview_bytes=4",
+            "",
+        ),
         ("GET", "/admin/traffic/flows/owned/websocket/messages", ""),
         (
             "GET",
@@ -82,6 +87,77 @@ async fn authentication_precedes_scope_mutation_and_private_reads() {
             .status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+}
+
+#[tokio::test]
+async fn body_preview_is_bounded_without_changing_full_body_reads() {
+    let view = Arc::new(TrafficView::new(5000, 1024));
+    let exchange = view.begin(RequestInfo {
+        id: "preview".into(),
+        connection_id: "connection".into(),
+        agent: Some("alice".into()),
+        method: "POST".into(),
+        url: "http://owned.invalid/".into(),
+        headers: vec![],
+        started: 1.,
+    });
+    exchange.request_body(Some(b"123456"));
+    exchange.response_body(Some(b""));
+    exchange.finish(None);
+
+    let preview = document(
+        call(
+            Some(&view),
+            "GET",
+            "/admin/traffic/flows/preview/body?side=request&preview_bytes=4",
+            "",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(preview["size"], 6);
+    assert_eq!(preview["preview_size"], 4);
+    assert_eq!(preview["truncated"], true);
+    assert_eq!(preview["data_base64"], STANDARD.encode(b"1234"));
+
+    let full = document(
+        call(
+            Some(&view),
+            "GET",
+            "/admin/traffic/flows/preview/body?side=request",
+            "",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(full["data_base64"], STANDARD.encode(b"123456"));
+    assert!(full.get("preview_size").is_none());
+
+    let empty = document(
+        call(
+            Some(&view),
+            "GET",
+            "/admin/traffic/flows/preview/body?side=response&preview_bytes=4",
+            "",
+            true,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(empty["preview_size"], 0);
+    assert_eq!(empty["truncated"], false);
+    assert_eq!(empty["data_base64"], "");
+
+    for limit in ["-1", "65537", "invalid", "4&preview_bytes=2"] {
+        let target =
+            format!("/admin/traffic/flows/preview/body?side=request&preview_bytes={limit}");
+        assert_eq!(
+            call(Some(&view), "GET", &target, "", true).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 }
 
 #[tokio::test]
