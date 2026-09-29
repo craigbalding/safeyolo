@@ -14,7 +14,9 @@ import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from safeyolo.api import AdminAPI
+import pytest
+
+from safeyolo.api import AdminAPI, APIError
 from safeyolo.operator_approvals import approve, deny
 from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.scenarios import origin_server
@@ -167,10 +169,11 @@ def test_retained_operator_client_approves_exact_native_network_scope(tmp_path):
         ) as proxy:
             api = _admin_client(proxy, token_file)
 
-            # These are the retained operator reads used before a decision.
-            instance = api.instance()
-            assert instance["safeyolo_instance_id"]
-            assert instance["capabilities"]["approvals"] is True
+            # This standalone proxy has no installed Command Centre host
+            # identity. Approval reads and decisions remain available here.
+            with pytest.raises(APIError) as error:
+                api.instance()
+            assert error.value.status_code == 503
             baseline = api.get_policy("baseline")
             assert isinstance(baseline["baseline"], dict)
 
