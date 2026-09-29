@@ -482,12 +482,27 @@ def _guest_src_dir() -> Path:
 
 
 def _native_guest_src_dir() -> Path:
-    """Use checkout sources in development and bundled sources from a wheel."""
+    """Require checkout or wheel guest files before replacing a Linux rootfs."""
     module = Path(__file__).resolve()
     checkout_guest = _guest_src_dir()
     if module == checkout_guest.parent / "cli" / "src" / "safeyolo" / "vm.py":
-        return checkout_guest
-    return module.parent / "guest"
+        guest_src = checkout_guest
+    else:
+        guest_src = module.parent / "guest"
+    if not guest_src.is_dir():
+        raise VMError(
+            f"guest/ directory not found at {guest_src}. "
+            "SafeYolo must be run from a repo checkout or installed image."
+        )
+    for relative in (
+        "install-guest-common.sh",
+        "rootfs/safeyolo-guest-init",
+        "rootfs/safeyolo-sudo",
+    ):
+        file = guest_src / relative
+        if not file.is_file() or not os.access(file, os.R_OK):
+            raise VMError(f"Required guest support file not readable at {file}")
+    return guest_src
 
 
 def _guest_sudo_source() -> Path:
@@ -534,6 +549,8 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
         out_path = agent_dir / "rootfs"
         out_key = "SAFEYOLO_ROOTFS_OUT_TREE"
         out_is_dir = True
+        # Check support before clearing an existing rootfs or cache-paths file.
+        guest_src = _native_guest_src_dir()
     else:
         raise VMError(f"Unsupported platform for --rootfs-script: {system}")
 
@@ -556,7 +573,7 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
 
     if system == "Linux":
         _run_rootfs_script_native(
-            name, script_path, out_key, out_path, cache_paths_file,
+            name, script_path, out_path, cache_paths_file, guest_src,
         )
     else:
         _run_rootfs_script_lima(
@@ -691,17 +708,10 @@ def clone_custom_rootfs(source_name: str, target_name: str) -> Path:
 
 
 def _run_rootfs_script_native(
-    name: str, script_path: Path, out_key: str, out_path: Path,
-    cache_paths_file: Path,
+    name: str, script_path: Path, out_path: Path,
+    cache_paths_file: Path, guest_src: Path,
 ) -> None:
     """Run a private staged copy of the rootfs-script on the Linux host."""
-    guest_src = _native_guest_src_dir()
-    if not guest_src.is_dir():
-        raise VMError(
-            f"guest/ directory not found at {guest_src}. "
-            f"SafeYolo must be run from a repo checkout or installed image."
-        )
-
     work_dir = Path(tempfile.mkdtemp(prefix="safeyolo-rootfs-"))
     try:
         # Do not exec the checkout inode directly. A live editor or a writable
@@ -716,7 +726,7 @@ def _run_rootfs_script_native(
         env = {
             **os.environ,
             "SAFEYOLO_AGENT_NAME": name,
-            out_key: str(out_path),
+            "SAFEYOLO_ROOTFS_OUT_TREE": str(out_path),
             "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(cache_paths_file),
             "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
             "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),

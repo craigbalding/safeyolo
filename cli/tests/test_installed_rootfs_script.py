@@ -90,7 +90,21 @@ def test_wheel_rootfs_script_uses_installed_guest_files(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert Path(result.stdout.splitlines()[0]).is_relative_to(installed_site)
-    assert (tmp_path / "config/agents/source-check/rootfs/etc/guest-source").read_text() == f"{installed_guest}\n"
+    guest_source = tmp_path / "config/agents/source-check/rootfs/etc/guest-source"
+    cache_paths = tmp_path / "config/agents/source-check/cache-paths.txt"
+    assert guest_source.read_text() == f"{installed_guest}\n"
+    cache_paths.write_text("/var/cache/apt\n")
+
+    # A retry with incomplete guest support must leave the old rootfs intact.
+    missing_file = installed_guest / "rootfs/safeyolo-guest-init"
+    missing_file.unlink()
+    incomplete = subprocess.run(
+        command, cwd=unrelated, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert incomplete.returncode != 0
+    assert f"Required guest support file not readable at {missing_file}" in incomplete.stderr
+    assert guest_source.read_text() == f"{installed_guest}\n"
+    assert cache_paths.read_text() == "/var/cache/apt\n"
 
     # A damaged wheel must not fall back to an unrelated guest/ in the CWD.
     shutil.rmtree(installed_guest)
@@ -99,6 +113,8 @@ def test_wheel_rootfs_script_uses_installed_guest_files(tmp_path):
     )
     assert missing.returncode != 0
     assert f"guest/ directory not found at {installed_guest}" in missing.stderr
+    assert guest_source.read_text() == f"{installed_guest}\n"
+    assert cache_paths.read_text() == "/var/cache/apt\n"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux rootfs-script boundary")
