@@ -414,13 +414,24 @@ do not change retained bytes or exports. The authenticated body route accepts
 `preview_bytes=0..65536` for a bounded response with `preview_size` and
 `truncated` fields; omitting that parameter keeps the full-body response.
 
-Pretty formatting is on when the inspector opens. Press `p` to toggle JSON
-indentation. The setting persists across selections and refreshes. The
-inspector uses the declared charset for text and JSON when Python supports it.
-It decodes `gzip` and `deflate` content encoding within the preview limit.
-Binary content, unsupported encoding, and undecodable text get a compact
-type, size, and first-byte summary. The inspector escapes terminal controls
-in displayed traffic.
+Formatted mode is on when the inspector opens. Press `p` to switch between
+formatted and source modes. The setting persists across selections and
+refreshes. Both modes decode supported content encodings and use the declared
+charset for readable media types. Source mode keeps spaces and line breaks;
+formatted mode indents JSON and newline-delimited JSON and separates URL form
+fields. Already-indented source JSON may look indented in both modes. HTML,
+XML, JavaScript, CSS, event streams, and other text stay readable without
+pressing `p`.
+
+The inspector decodes `identity`, `gzip`, `deflate`, `br`, and `zstd`, including
+stacked `Content-Encoding` values in reverse order. A preview may stop after
+64 KiB of decoded data, 16 encoding stages, or a 32 MiB Zstandard window.
+The view identifies unsupported encodings, malformed streams, and incomplete
+retained previews. It shows readable text recovered before a stream ends or
+fails. Binary and unknown content get a compact media type, retained size,
+safe byte sample, and the `x` export choice for the selected side. Raw exports
+keep the original bytes. The inspector escapes terminal controls, including
+tabs and carriage returns, in displayed traffic.
 
 All headers are shown when the inspector opens. Press `h` to hide or show only
 `Accept`, `Accept-Encoding`, `Accept-Language`, and `User-Agent`. The setting

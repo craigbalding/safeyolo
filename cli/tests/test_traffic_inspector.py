@@ -7,7 +7,9 @@ import threading
 import zlib
 from unittest.mock import create_autospec, patch
 
+import brotlicffi
 import pytest
+import zstandard
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from prompt_toolkit.application import Application, create_app_session
@@ -100,8 +102,8 @@ def test_http_body_preview_content_type_charset_encoding_and_availability():
     assert "encoded stream incomplete" in incomplete
     assert "decoded" in http_body_preview(preview(zlib.compress(b"decoded")),
         [["Content-Type", "text/plain"], ["Content-Encoding", "deflate"]], pretty=True)
-    assert "encoded br" in http_body_preview(preview(b"encoded"),
-        [["Content-Type", "text/plain"], ["Content-Encoding", "br"]], pretty=True)
+    assert '"ok": true' in http_body_preview(preview(brotlicffi.compress(b'{"ok":true}')),
+        [["Content-Type", "application/json"], ["Content-Encoding", "br"]], pretty=True)
     assert "binary" in http_body_preview(preview(b"\x00\xff"),
         [["Content-Type", "application/octet-stream"]], pretty=True)
     assert "preview truncated" in http_body_preview(preview(b"\x00\xff", total=20),
@@ -112,6 +114,174 @@ def test_http_body_preview_content_type_charset_encoding_and_availability():
         [["Content-Type", "text/plain; charset=no-such-charset"]], pretty=True)
     assert "retained preview truncated: 5 of 100 retained bytes" in http_body_preview(preview(b"short", total=100),
         [["Content-Type", "text/plain"]], pretty=True)
+
+
+def test_http_preview_decodes_supported_codings_and_stacked_fields():
+    payload = b'{"from":"Kali","ok":true}'
+    headers = [["Content-Type", "application/problem+json"]]
+    encoders = {
+        "identity": lambda body: body,
+        "gzip": gzip.compress,
+        "deflate": zlib.compress,
+        "br": brotlicffi.compress,
+        "zstd": lambda body: zstandard.ZstdCompressor().compress(body),
+    }
+    for coding, encode in encoders.items():
+        rendered = http_body_preview(preview(encode(payload)),
+            [*headers, ["Content-Encoding", coding]], pretty=True)
+        assert '"from": "Kali"' in rendered and '"ok": true' in rendered
+
+    stacked = encoders["zstd"](encoders["br"](encoders["gzip"](payload)))
+    rendered = http_body_preview(preview(stacked),
+        [*headers, ["Content-Encoding", "GZIP, br"], ["content-encoding", " zstd "]], pretty=True)
+    assert '"from": "Kali"' in rendered and '"ok": true' in rendered
+    assert "malformed" not in rendered and "incomplete" not in rendered
+    assert '"from":"Kali"' in http_body_preview(preview(stacked),
+        [*headers, ["Content-Encoding", "gzip, br, zstd"]], pretty=False)
+    partial_stack = gzip.compress(brotlicffi.compress(payload))
+    recovered = http_body_preview(preview(partial_stack[:-1], total=len(partial_stack)),
+        [*headers, ["Content-Encoding", "br, gzip"]], pretty=True)
+    assert '"from": "Kali"' in recovered and "encoded stream incomplete (gzip)" in recovered
+
+    for coding, encode in (("gzip", gzip.compress),
+                           ("zstd", lambda body: zstandard.ZstdCompressor().compress(body))):
+        members = encode(b"first ") + encode(b"second")
+        assert http_body_preview(preview(members),
+            [["Content-Type", "text/plain"], ["Content-Encoding", coding]], pretty=False) == "first second"
+
+
+def test_http_preview_reports_incomplete_malformed_and_unsupported_codings():
+    headers = [["Content-Type", "text/plain"]]
+    payload = b"readable content before trailer"
+    encoders = {
+        "gzip": gzip.compress,
+        "deflate": zlib.compress,
+        "br": brotlicffi.compress,
+        "zstd": lambda body: zstandard.ZstdCompressor().compress(body),
+    }
+    for coding, encode in encoders.items():
+        encoded = encode(payload)
+        rendered = http_body_preview(preview(encoded[:-1], total=len(encoded)),
+            [*headers, ["Content-Encoding", coding]], pretty=False)
+        assert "readable content" in rendered
+        assert f"encoded stream incomplete ({coding})" in rendered
+        assert "retained preview truncated" in rendered
+
+    gzip_body = gzip.compress(payload)
+    damaged_gzip = gzip_body[:-1] + bytes([gzip_body[-1] ^ 1])
+    rendered = http_body_preview(preview(damaged_gzip),
+        [*headers, ["Content-Encoding", "gzip"]], pretty=False)
+    assert "readable content" in rendered and "malformed gzip stream" in rendered
+
+    damaged_br = b"\x00" + brotlicffi.compress(payload)[1:]
+    rendered = http_body_preview(preview(damaged_br),
+        [*headers, ["Content-Encoding", "br"]], pretty=False, side="response")
+    assert "malformed br stream" in rendered and "x export raw_response" in rendered
+    assert "malformed br stream" in http_body_preview(preview(brotlicffi.compress(payload) + b"junk"),
+        [*headers, ["Content-Encoding", "br"]], pretty=False)
+
+    encoded_zstd = zstandard.ZstdCompressor(write_checksum=True).compress(payload)
+    damaged_zstd = encoded_zstd[:-1] + bytes([encoded_zstd[-1] ^ 1])
+    rendered = http_body_preview(preview(damaged_zstd),
+        [*headers, ["Content-Encoding", "zstd"]], pretty=False)
+    assert "malformed zstd stream" in rendered
+
+    unsupported = http_body_preview(preview(b"private\x1b[2J"),
+        [*headers, ["Content-Encoding", "rot13"]], pretty=True)
+    assert "unsupported content encoding rot13" in unsupported
+    assert "first retained bytes: 70 72" in unsupported and "\x1b" not in unsupported
+    assert "malformed Content-Encoding header" in http_body_preview(preview(b"x"),
+        [*headers, ["Content-Encoding", "gzip,,br"]], pretty=True)
+    long_coding = http_body_preview(preview(b"x"),
+        [*headers, ["Content-Encoding", "x" * 10_000]], pretty=True)
+    assert len(long_coding) < 320 and "x export" in long_coding
+
+
+def test_http_preview_bounds_expansion_for_each_coding():
+    payload = b"a" * (BODY_PREVIEW_BYTES * 4)
+    encoders = {
+        "gzip": gzip.compress,
+        "deflate": zlib.compress,
+        "br": brotlicffi.compress,
+        "zstd": lambda body: zstandard.ZstdCompressor().compress(body),
+    }
+    for coding, encode in encoders.items():
+        rendered = http_body_preview(preview(encode(payload)),
+            [["Content-Type", "text/plain"], ["Content-Encoding", coding]], pretty=False)
+        assert "decoded preview truncated at 65536 bytes" in rendered
+        assert "body preview truncated" in rendered
+        assert len(rendered) < 34_000
+
+    large_window = zstandard.ZstdCompressor(
+        compression_params=zstandard.ZstdCompressionParameters.from_level(3, window_log=26),
+    ).compressobj()
+    encoded = large_window.compress(b"small") + large_window.flush()
+    limited = http_body_preview(preview(encoded),
+        [["Content-Type", "text/plain"], ["Content-Encoding", "zstd"]], pretty=False)
+    assert "zstd window exceeds" in limited and "x export" in limited
+
+
+@pytest.mark.parametrize(("media_type", "body"), [
+    ("text/plain", b"plain text"),
+    ("application/soap+xml", b"<root><ok>true</ok></root>"),
+    ("text/html", b"<p>Hello</p>"),
+    ("application/javascript", b"const value = 1;"),
+    ("text/css", b"p { color: red; }"),
+    ("text/event-stream", b"event: update\ndata: ready\n\n"),
+])
+def test_http_preview_reads_common_text_media_without_format_key(media_type, body):
+    rendered = http_body_preview(preview(body), [["Content-Type", media_type]], pretty=False)
+    assert rendered == body.decode()
+    assert http_body_preview(preview(body), [["Content-Type", media_type]], pretty=True) == rendered
+
+
+def test_http_preview_formats_structured_text_and_source_keeps_whitespace():
+    compact = b'{"one":1,"two":[2,3]}'
+    indented = b'{\n    "one": 1,\n    "two": [2, 3]\n}'
+    json_headers = [["Content-Type", "application/json"]]
+    assert http_body_preview(preview(compact), json_headers, pretty=False) == compact.decode()
+    assert '\n  "one": 1,' in http_body_preview(preview(compact), json_headers, pretty=True)
+    assert http_body_preview(preview(indented), json_headers, pretty=False) == indented.decode()
+    assert '\n  "one": 1,' in http_body_preview(preview(indented), json_headers, pretty=True)
+
+    ndjson = b'{"one":1}\n{"two":2}\n'
+    ndjson_headers = [["Content-Type", "application/x-ndjson"]]
+    assert http_body_preview(preview(ndjson), ndjson_headers, pretty=False) == ndjson.decode()
+    formatted = http_body_preview(preview(ndjson), ndjson_headers, pretty=True)
+    assert '{\n  "one": 1\n}\n{\n  "two": 2\n}' in formatted
+
+    form = b"name=Alice+Lee&tag=one&tag=two&empty="
+    form_headers = [["Content-Type", "application/x-www-form-urlencoded"]]
+    assert http_body_preview(preview(form), form_headers, pretty=False) == form.decode()
+    assert http_body_preview(preview(form), form_headers, pretty=True) == (
+        "name = Alice Lee\ntag = one\ntag = two\nempty = "
+    )
+
+
+def test_http_preview_charset_binary_fallback_and_safe_export_hint():
+    latin1 = "<p>café</p>".encode("latin-1")
+    assert "café" in http_body_preview(preview(latin1),
+        [["Content-Type", 'text/html; charset="iso-8859-1"']], pretty=False)
+    utf16 = "<x>雪</x>".encode("utf-16-le")
+    assert "雪" in http_body_preview(preview(utf16),
+        [["Content-Type", "application/xml; charset=utf-16-le"]], pretty=True)
+    assert "city = Montréal" in http_body_preview(preview(b"city=Montr%E9al"),
+        [["Content-Type", "application/x-www-form-urlencoded; charset=iso-8859-1"]], pretty=True)
+
+    controls = http_body_preview(preview(brotlicffi.compress(b"line\x1b[2J\x9b31m\nnext")),
+        [["Content-Type", "text/plain; charset=latin-1"], ["Content-Encoding", "br"]], pretty=False)
+    assert r"\x1b[2J\x9b31m" in controls and "\x1b" not in controls and "\x9b" not in controls
+
+    binary = b"\x00\x1b[2J\xff"
+    rendered = http_body_preview(preview(gzip.compress(binary)),
+        [["Content-Type", "application/octet-stream"], ["Content-Encoding", "gzip"]],
+        pretty=True, side="response")
+    assert "application/octet-stream" in rendered and "retained bytes" in rendered
+    assert "first decoded bytes: 00 1b 5b 32 4a ff" in rendered
+    assert "x export raw_response" in rendered and "\x1b" not in rendered
+    unknown = http_body_preview(preview(b"arbitrary"),
+        [["Content-Type", "application/x-unknown"]], pretty=False, side="request")
+    assert "binary or unknown body" in unknown and "x export raw_request" in unknown
 
 
 def test_http_preview_keeps_text_when_a_character_crosses_the_preview_limit():
@@ -300,6 +470,45 @@ def test_detail_retains_duplicate_headers_metadata_and_body_facts():
     assert "SafeYolo metadata" in text
     assert '"test_agent": "declared"' in text
     assert r"\x1b[2J" in text and "\x1b" not in text
+
+
+def test_selected_compressed_responses_keep_source_mode_across_flows():
+    compact = b'{"flow":1}'
+    indented = b'{\n    "flow": 2\n}'
+    encoded = {"one": brotlicffi.compress(compact), "two": gzip.compress(indented)}
+    rows = {
+        name: flow(name, response_headers=[["Content-Type", "application/json"],
+                                           ["Content-Encoding", coding]],
+                   response_body={"available": True, "size": len(encoded[name]), "reason": None})
+        for name, coding in (("one", "br"), ("two", "gzip"))
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(rows.values()), "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: (
+        preview(encoded[flow_id]) if side == "response" else preview(b"")
+    )
+    view = TrafficInspector(api)
+
+    async def run():
+        await view.refresh()
+        assert '"flow": 1' in view.detail_text()
+        assert "p body formatted" in view.help_text()
+        view.toggle_pretty()
+        assert "Body: " + compact.decode() in view.detail_text()
+        assert "p body source" in view.help_text()
+        view.select(1)
+        await view.refresh()
+        assert "Body: " + indented.decode() in view.detail_text()
+        view.toggle_pretty()
+        assert '\n  "flow": 2\n' in view.detail_text()
+        view.select(-1)
+        await view.refresh()
+        assert '"flow": 1' in view.detail_text()
+
+    asyncio.run(run())
+    assert api.traffic_body.call_count == 6
+    assert all(call.kwargs == {"preview_bytes": BODY_PREVIEW_BYTES} for call in api.traffic_body.call_args_list)
 
 
 def test_refresh_fetches_both_previews_once_and_updates_shared_scope():
@@ -508,7 +717,7 @@ def test_headless_pretty_and_header_keys_stay_selected_across_flows():
                 keyboard.send_text("\x1b[B")
                 await until(lambda: view.selected == "two" and len(view.body_values) == 2)
                 assert "binary" in view.detail_text() and "café" in view.detail_text()
-                assert "p pretty off" in view.help_text() and "h routine headers hidden" in view.help_text()
+                assert "p body source" in view.help_text() and "h routine headers hidden" in view.help_text()
                 keyboard.send_text("h")
                 await until(lambda: not view.hide_routine_headers)
                 keyboard.send_text("\x1b[A")
@@ -516,7 +725,7 @@ def test_headless_pretty_and_header_keys_stay_selected_across_flows():
                 shown = view.detail_text()
                 assert "Accept: first-secret\nACCEPT: second-secret" in shown
                 assert "User-Agent: routine-value" in shown
-                assert "p pretty off" in view.help_text() and "h routine headers shown" in view.help_text()
+                assert "p body source" in view.help_text() and "h routine headers shown" in view.help_text()
                 keyboard.send_text("q")
 
             app.pre_run_callables.append(lambda: app.create_background_task(operator()))
