@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import codecs
 import hashlib
 import json
 import os
@@ -167,15 +168,17 @@ def _decode_text_preview(decoded: bytes, charset: str, *, incomplete: bool) -> s
     try:
         return decoded.decode(charset)
     except UnicodeDecodeError as exc:
-        # A bounded slice may end inside a valid multibyte character. Earlier
-        # invalid bytes and invalid trailing sequences still fail strictly.
-        if (not incomplete or exc.end != len(decoded) or exc.reason not in {
+        # A bounded slice may end inside a character or shift sequence. The
+        # full decode distinguishes incomplete tails from invalid UTF-8 ranges;
+        # the incremental decode checks all bytes before the pending tail.
+        if (not incomplete or exc.reason not in {
                 "unexpected end of data", "truncated data", "incomplete multibyte sequence",
+                "unterminated shift sequence",
         }):
             return None
         try:
-            return decoded[:exc.start].decode(charset)
-        except UnicodeError:
+            return codecs.getincrementaldecoder(charset)(errors="strict").decode(decoded, final=False)
+        except (LookupError, UnicodeError, TypeError):
             return None
     except (LookupError, UnicodeError, TypeError):
         return None

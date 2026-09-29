@@ -148,6 +148,44 @@ def test_http_preview_keeps_text_when_a_character_crosses_the_preview_limit():
     assert "retained preview truncated: 3 of 4 retained bytes" in utf16
 
 
+def test_http_preview_respects_utf8_bom_and_utf7_shift_boundaries():
+    bom = b"\xef\xbb\xbf"
+    utf8_sig_headers = [["Content-Type", "text/plain; charset=utf-8-sig"]]
+    small = http_body_preview(preview(bom + b"hello\xc3", total=10), utf8_sig_headers, pretty=False)
+    assert small.startswith("hello")
+    assert "retained preview truncated: 9 of 10 retained bytes" in small
+    assert "unsupported or undecodable charset" not in small
+
+    text = bom + b"a" * (BODY_PREVIEW_BYTES - 4) + "é".encode() + b"tail"
+    identity = http_body_preview(preview(text[:BODY_PREVIEW_BYTES], total=len(text)), utf8_sig_headers, pretty=False)
+    assert identity.startswith("a")
+    assert "retained preview truncated" in identity
+    assert "unsupported or undecodable charset" not in identity
+    compressed = http_body_preview(preview(gzip.compress(text)),
+        [*utf8_sig_headers, ["Content-Encoding", "gzip"]], pretty=False)
+    assert compressed.startswith("a")
+    assert "decoded preview truncated at 65536 bytes" in compressed
+    assert "retained preview truncated" not in compressed
+    assert "unsupported or undecodable charset" not in compressed
+
+    utf7_headers = [["Content-Type", "text/plain; charset=utf-7"]]
+    shifted = b"pre+AOk-post"
+    utf7 = http_body_preview(preview(shifted[:5], total=len(shifted)), utf7_headers, pretty=False)
+    assert utf7.startswith("pre")
+    assert "retained preview truncated: 5 of 12 retained bytes" in utf7
+    assert "unsupported or undecodable charset" not in utf7
+
+    for body, headers, total in (
+        (bom + b"hello\xc3", utf8_sig_headers, None),
+        (bom + b"hello\xed\xa0", utf8_sig_headers, 11),
+        (shifted[:5], utf7_headers, None),
+        (b"pre+!", utf7_headers, 6),
+    ):
+        assert "unsupported or undecodable charset" in http_body_preview(
+            preview(body, total=total), headers, pretty=False,
+        )
+
+
 @settings(max_examples=60, deadline=None)
 @given(st.binary(max_size=128), st.text(max_size=50))
 def test_generated_payload_and_header_controls_never_reach_terminal(raw, header):
