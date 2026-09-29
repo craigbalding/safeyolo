@@ -85,11 +85,15 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
                     other => panic!("unmapped source exception {other}"),
                 };
                 assert_eq!(error.kind(), expected, "{name}");
-                assert_eq!(
-                    error.validation_message(),
-                    case["validation"].as_str(),
-                    "{name}"
-                );
+                // #873 adds one exact filter beyond the pinned Python source.
+                // Keep every other source validation byte under comparison.
+                let expected = case["validation"].as_str().map(|message| {
+                    message.replace(
+                        "request_header_contains, response_header_contains",
+                        "request_header_contains, request_id, response_header_contains",
+                    )
+                });
+                assert_eq!(error.validation_message(), expected.as_deref(), "{name}");
                 assert_eq!(error.to_string(), "flow query failed");
             }
         }
@@ -148,6 +152,92 @@ fn strict_normalization_does_not_become_lax_query_policy() {
             .search_bodies(&CircuitValue::from(json!({"query":["truthy"]})))
             .unwrap(),
         json!([])
+    );
+}
+
+#[test]
+fn context_queries_keep_expect_and_ignore_search_only_request_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = FlowStore::open(&directory.path().join("flows.db"), Settings::default()).unwrap();
+    for (request_id, owner, expect) in [
+        ("req-11111111111111111111111111111111", "alice", "allow"),
+        ("req-22222222222222222222222222222222", "alice", "deny"),
+        ("req-33333333333333333333333333333333", "bob", "deny"),
+    ] {
+        let metadata = json!({
+            "request_id": request_id,
+            "ts_start": 1000,
+            "engagement_id": "owned-run",
+            "agent_id": owner,
+            "evidence_owner": owner,
+            "expect": expect,
+            "flow_state": "complete",
+            "host": "example.invalid",
+            "path": "/same",
+            "method": "GET",
+            "status_code": 200,
+            "request_content_type": "text/plain",
+            "response_content_type": "text/plain"
+        });
+        store
+            .record(
+                FlowRecord {
+                    metadata: metadata.as_object().unwrap(),
+                    request_body: Some(BodyInput::complete(b"needle request")),
+                    response_body: Some(BodyInput::complete(b"needle response")),
+                },
+                1000,
+            )
+            .unwrap();
+    }
+
+    let filters = CircuitValue::from(json!({
+        "engagement_id": "owned-run",
+        "evidence_owner": "alice",
+        "expect": "deny",
+        "query": "needle"
+    }));
+    let with_request_id = CircuitValue::from(json!({
+        "engagement_id": "owned-run",
+        "evidence_owner": "alice",
+        "expect": "deny",
+        "request_id": "req-11111111111111111111111111111111",
+        "query": "needle"
+    }));
+    for filters in [&filters, &with_request_id] {
+        let endpoints = store.get_endpoints(filters).unwrap();
+        assert_eq!(endpoints.as_array().unwrap().len(), 1);
+        assert_eq!(endpoints[0]["count"], 1);
+        for result in [
+            store.search_bodies(filters).unwrap(),
+            store.search_request_bodies(filters).unwrap(),
+        ] {
+            let rows = result.as_array().unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0]["request_id"],
+                "req-22222222222222222222222222222222"
+            );
+        }
+    }
+    assert_eq!(
+        store
+            .search_flows(&CircuitValue::from(json!({
+                "evidence_owner": "alice",
+                "expect": "deny",
+                "request_id": "req-11111111111111111111111111111111"
+            })))
+            .unwrap(),
+        json!([])
+    );
+    assert_eq!(
+        store
+            .get_facets(&CircuitValue::from(
+                json!({"request_id":"req-11111111111111111111111111111111"})
+            ))
+            .unwrap_err()
+            .validation_message(),
+        Some("unknown facet filter(s): request_id")
     );
 }
 

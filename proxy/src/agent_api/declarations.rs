@@ -119,9 +119,10 @@ pub(crate) async fn respond_with_body_and_audit_id_with_plumb<'p, B>(
 where
     B: Body<Data = Bytes> + Unpin,
 {
-    if let Err(outcome) = authorize(request, token_path).await {
-        return Ok(outcome);
-    }
+    let scope = match authorize(request, token_path).await {
+        Ok(scope) => scope,
+        Err(outcome) => return Ok(outcome),
+    };
     // Reconciliation is the single request-boundary owner decision. A true
     // source conflict rejects scoped routes before reading a body or invoking
     // a provider, so a stale legacy agent field cannot re-open ownership.
@@ -129,6 +130,7 @@ where
     // handlers parse caller bodies and IDs before their own 403/404 result.
     // Trace and explain likewise validate their request ID before ownership.
     if matches!(request.identity, Identity::Conflict)
+        && scope != AuthScope::FlowReadAll
         && (matches!(
             route(request),
             "/gateway/services"
@@ -211,7 +213,14 @@ where
         return Ok(discovery::respond(request, controls.discovery, controls.audit).await);
     }
     if let Some(route) = flows::recognize(request) {
-        return flows::respond(route, request, controls.flows, body).await;
+        return flows::respond(
+            route,
+            request,
+            controls.flows,
+            body,
+            scope == AuthScope::FlowReadAll,
+        )
+        .await;
     }
     if coord::is_route(request) {
         return coord::respond_with_body(request, controls.coord, body).await;

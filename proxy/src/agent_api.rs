@@ -11,7 +11,13 @@
 //! never lossy replacement. This is an incomplete development API slice.
 
 pub use coord::{CoordClient, CoordContext};
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::Path,
+};
 
 use serde_json::{Value, json};
 use subtle::ConstantTimeEq;
@@ -141,6 +147,7 @@ pub enum Failure {
 pub enum AuditKind {
     AuthenticationFailed,
     HandlerUnavailable,
+    FlowReadAll,
     TestContextDeclared,
     TestContextCleared,
     GatewayAccessRequested,
@@ -200,6 +207,13 @@ impl AuditIntent {
                 Severity::High,
                 "agent-api-request-guard",
                 Some(Decision::Deny),
+            ),
+            AuditKind::FlowReadAll => (
+                "security.flow_read_all_lookup",
+                Kind::Security,
+                Severity::High,
+                "agent-api",
+                Some(Decision::Log),
             ),
             AuditKind::TestContextDeclared => (
                 "security.test_context_declared",
@@ -422,7 +436,8 @@ impl Outcome<'_> {
                 AuditKind::GatewayAccessRequested
                 | AuditKind::GatewayBindingSubmitted
                 | AuditKind::DesktopPresentRequested
-                | AuditKind::PlumbRequested,
+                | AuditKind::PlumbRequested
+                | AuditKind::FlowReadAll,
             ) => {
                 let mut outcome = response(500, json!({"error":"Internal error: RuntimeError"}));
                 outcome.failure = Some(Failure::AuditWrite);
@@ -507,6 +522,48 @@ enum Authentication {
     Missing,
     Rejected,
     Failed(Failure),
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuthScope {
+    Agent,
+    FlowReadAll,
+}
+
+/// The read-all credential is an optional, host-only file alongside the agent
+/// token. It is never generated or staged into a guest by the proxy.
+async fn authenticate_flow_read(token_path: &Path, supplied: &[u8]) -> bool {
+    let path = token_path.with_file_name("flow_read_token");
+    let supplied = Zeroizing::new(supplied.to_vec());
+    tokio::task::spawn_blocking(move || {
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(_) => return false,
+        };
+        let metadata = match file.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => return false,
+        };
+        if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
+            return false;
+        }
+        let mut token = Zeroizing::new(Vec::new());
+        if file.take(66).read_to_end(&mut token).is_err() {
+            return false;
+        }
+        if token.last() == Some(&b'\n') {
+            token.pop();
+        }
+        if token.len() != 64 || !token.iter().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        bool::from(token.as_slice().ct_eq(&supplied))
+    })
+    .await
+    .unwrap_or(false)
 }
 async fn authenticate(path: &Path, supplied: &[u8]) -> Authentication {
     let path = path.to_owned();
@@ -608,7 +665,7 @@ fn valid_request_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcome<'static>> {
+async fn authorize(request: Request<'_>, token_path: &Path) -> Result<AuthScope, Outcome<'static>> {
     let path = route(request);
     if !matches!(request.method, "GET" | "POST" | "DELETE") {
         return Err(response(
@@ -638,12 +695,20 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcom
             json!({"error":"Authorization required", "hint":"Bearer <token>"}),
         ));
     };
-    match authenticate(token_path, supplied).await {
-        Authentication::Accepted => (),
+    let authentication = authenticate(token_path, supplied).await;
+    if request.method == "GET"
+        && flows::request_id_path(path).is_some()
+        && !matches!(authentication, Authentication::Accepted)
+        && authenticate_flow_read(token_path, supplied).await
+    {
+        return Ok(AuthScope::FlowReadAll);
+    }
+    match authentication {
+        Authentication::Accepted => Ok(AuthScope::Agent),
         Authentication::Missing => {
-            return Err(response(503, json!({"error":"Agent token not configured"})));
+            Err(response(503, json!({"error":"Agent token not configured"})))
         }
-        Authentication::Failed(failure) => return Err(unavailable(request, failure)),
+        Authentication::Failed(failure) => Err(unavailable(request, failure)),
         Authentication::Rejected => {
             let mut outcome = response(401, json!({"error":"Invalid agent token"}));
             outcome.audit = Some(AuditIntent {
@@ -661,10 +726,9 @@ async fn authorize(request: Request<'_>, token_path: &Path) -> Result<(), Outcom
                 details: json!({"client_ip":request.client_ip.unwrap_or("unknown"), "path":sanitize(path)}),
                 approval: None,
             });
-            return Err(outcome);
+            Err(outcome)
         }
     }
-    Ok(())
 }
 
 async fn authenticated_read<'p>(

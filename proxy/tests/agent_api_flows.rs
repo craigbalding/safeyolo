@@ -204,6 +204,16 @@ async fn actual_source_dispatch_and_body_projection() {
                     ))
                 );
             }
+            "search_unknown" => {
+                // #873 extends the valid-filter list without changing the
+                // historical source fixture or any other error bytes.
+                let expected = row["text"].as_str().unwrap().replace(
+                    "request_header_contains, response_header_contains",
+                    "request_header_contains, request_id, response_header_contains",
+                );
+                assert_eq!(outcome.response.status, 400);
+                assert_eq!(outcome.response.body_bytes().as_ref(), expected.as_bytes());
+            }
             _ => {
                 assert_eq!(
                     u64::from(outcome.response.status),

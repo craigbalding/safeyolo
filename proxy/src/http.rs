@@ -36,6 +36,8 @@ mod agent_audit_tests;
 #[cfg(test)]
 mod circuit_audit_tests;
 mod circuit_completion;
+#[cfg(test)]
+mod flow_lookup_tests;
 mod flow_recording;
 mod ignored_host;
 #[cfg(test)]
@@ -1546,10 +1548,11 @@ where
     if !outcome.audit_owned
         && let Some(audit) = &outcome.audit
     {
-        let submission = if audit
-            .approval
-            .as_ref()
-            .is_some_and(|approval| approval.required)
+        let submission = if audit.kind == agent_api::AuditKind::FlowReadAll
+            || audit
+                .approval
+                .as_ref()
+                .is_some_and(|approval| approval.required)
         {
             runtime.audit.emit_confirmed(audit.to_event()).await
         } else {

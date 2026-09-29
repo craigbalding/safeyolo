@@ -35,6 +35,7 @@ pub enum FlowFailure {
 #[derive(Clone, Copy)]
 pub(super) enum Route {
     NotFound,
+    ByRequestId,
     Search,
     Endpoints,
     Facets,
@@ -70,6 +71,15 @@ pub(super) fn recognize(request: Request<'_>) -> Option<Route> {
         | "/api/flows/body-search"
         | "/api/flows/request-body-search" => return Some(Route::NotFound),
         _ => {}
+    }
+    if path.starts_with("/api/flows/by-request-id/") {
+        return Some(
+            if request.method == "GET" && request_id_path(path).is_some() {
+                Route::ByRequestId
+            } else {
+                Route::NotFound
+            },
+        );
     }
     // Python's route uses Unicode decimal \d and $, which accepts one terminal
     // LF. Percent-escaped digits are not decoded at this routing boundary.
@@ -127,11 +137,17 @@ pub(super) fn recognize(request: Request<'_>) -> Option<Route> {
     })
 }
 
+pub(super) fn request_id_path(path: &str) -> Option<&str> {
+    path.strip_prefix("/api/flows/by-request-id/")
+        .filter(|id| !id.is_empty() && !id.contains('/'))
+}
+
 pub(super) async fn respond<B>(
     route: Route,
     request: Request<'_>,
     store: Option<&Arc<FlowStore>>,
     body: RequestBody<'_, B>,
+    read_all: bool,
 ) -> Result<Outcome<'static>, B::Error>
 where
     B: Body<Data = Bytes> + Unpin,
@@ -151,11 +167,46 @@ where
             Failure::FlowReporting(FlowFailure::DispatchInteger),
         ));
     }
+    let lookup_id = matches!(route, Route::ByRequestId).then(|| {
+        Zeroizing::new(
+            request_id_path(super::route(request))
+                .expect("recognized request ID route")
+                .to_owned(),
+        )
+    });
+    let audit = if read_all {
+        let caller = agent(request.identity);
+        Some(super::AuditIntent {
+            kind: super::AuditKind::FlowReadAll,
+            event: "security.flow_read_all_lookup",
+            severity: "high",
+            addon: "agent-api",
+            summary: "Privileged flow lookup by response request ID".into(),
+            agent: caller.map(str::to_owned),
+            request_id: Some(request.request_id.to_owned()),
+            host: None,
+            details: json!({
+                "lookup_request_id":lookup_id.as_deref().map(String::as_str),
+                "caller_agent":caller,
+                "client_ip":request.client_ip,
+                "caller_identity":match request.identity {
+                    crate::network_guard::Identity::Resolved(_) => "resolved",
+                    crate::network_guard::Identity::Unavailable => "unavailable",
+                    crate::network_guard::Identity::Conflict => "conflict",
+                },
+            }),
+            approval: None,
+        })
+    } else {
+        None
+    };
     let Some(store) = store else {
-        return Ok(response(503, json!({"error":"Flow store not available"})));
+        let mut outcome = response(503, json!({"error":"Flow store not available"}));
+        outcome.audit = audit;
+        return Ok(outcome);
     };
     let filters = match route {
-        Route::Detail(_) | Route::Body(..) => None,
+        Route::ByRequestId | Route::Detail(_) | Route::Body(..) => None,
         Route::TagDelete(_) => {
             let name = super::route(request)
                 .split_once("/tag/")
@@ -206,10 +257,17 @@ where
     let owner = agent(request.identity).map(|value| Zeroizing::new(value.to_owned()));
     let store = Arc::clone(store);
     let result = tokio::task::spawn_blocking(move || {
-        execute(&store, route, owner.as_deref().map(String::as_str), filters)
+        execute(
+            &store,
+            route,
+            owner.as_deref().map(String::as_str),
+            filters,
+            lookup_id.as_deref().map(String::as_str),
+            read_all,
+        )
     })
     .await;
-    Ok(match result {
+    let mut outcome = match result {
         Ok(Ok(reply)) => {
             let mut outcome = response(reply.status, Value::Null);
             outcome.response.body = reply.body;
@@ -217,7 +275,9 @@ where
         }
         Ok(Err(failure)) => failed(request, failure),
         Err(_) => failed(request, FlowFailure::Worker),
-    })
+    };
+    outcome.audit = audit;
+    Ok(outcome)
 }
 
 // The worker can outlive a canceled request. Its inputs and unclaimed result
@@ -314,8 +374,63 @@ fn execute(
     route: Route,
     owner: Option<&str>,
     mut filters: Option<Filters>,
+    lookup_id: Option<&str>,
+    read_all: bool,
 ) -> Result<Reply, FlowFailure> {
     match route {
+        Route::ByRequestId => {
+            let Some(metadata) = store
+                .get_flow_by_request_id(lookup_id.expect("recognized request ID"))
+                .map_err(store_error)?
+            else {
+                return Ok(Reply::missing());
+            };
+            let mut metadata = Json(Value::Object(metadata));
+            if !read_all
+                && (owner.is_none()
+                    || metadata.0.get("evidence_owner").and_then(Value::as_str) != owner)
+            {
+                return Ok(Reply::missing());
+            }
+            let id = metadata.0["id"].as_i64().expect("stored flow ID");
+            let Some(mut request_body) = body_value(store, id, Side::Request)? else {
+                return Ok(Reply::missing());
+            };
+            let Some(mut response_body) = body_value(store, id, Side::Response)? else {
+                return Ok(Reply::missing());
+            };
+            for (value, prefix) in [
+                (&mut request_body.0, "request"),
+                (&mut response_body.0, "response"),
+            ] {
+                let fields = value.as_object_mut().expect("body fields");
+                let state = if fields
+                    .get(&format!("{prefix}_body_stored"))
+                    .and_then(Value::as_i64)
+                    == Some(1)
+                {
+                    "captured"
+                } else if fields
+                    .get(&format!("{prefix}_body_size"))
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+                    > 0
+                {
+                    "uncaptured"
+                } else {
+                    "absent"
+                };
+                fields.insert("capture_state".into(), Value::String(state.into()));
+            }
+            Ok(Reply::new(
+                200,
+                json!({
+                    "flow":metadata.0.take(),
+                    "request_body":request_body.0.take(),
+                    "response_body":response_body.0.take(),
+                }),
+            ))
+        }
         Route::Diff => diff(
             store,
             owner,
@@ -345,30 +460,9 @@ fn execute(
             let Route::Body(_, side) = route else {
                 return Ok(Reply::new(200, metadata.0.take()));
             };
-            let Some(mut body) = store.body(id, side).map_err(store_error)? else {
+            let Some(mut result) = body_value(store, id, side)? else {
                 return Ok(Reply::missing());
             };
-            let mut result = Json(Value::Object(std::mem::take(&mut body.metadata)));
-            let fields = result.0.as_object_mut().unwrap();
-            fields.insert(
-                "body_base64".into(),
-                Value::String(STANDARD.encode(&body.body)),
-            );
-            fields.insert("body_length".into(), Value::from(body.body.len()));
-            let content_type = match side {
-                Side::Request => "request_content_type",
-                Side::Response => "response_content_type",
-            };
-            if flow_store::is_text_like_content_type(
-                fields.get(content_type).unwrap_or(&Value::Null),
-            )
-            .map_err(store_error)?
-            {
-                fields.insert(
-                    "body_text".into(),
-                    Value::String(String::from_utf8_lossy(&body.body).into_owned()),
-                );
-            }
             Ok(Reply::new(200, result.0.take()))
         }
         _ => {
@@ -439,6 +533,32 @@ fn execute(
             Ok(Reply::new(200, body))
         }
     }
+}
+
+fn body_value(store: &FlowStore, id: i64, side: Side) -> Result<Option<Json>, FlowFailure> {
+    let Some(mut body) = store.body(id, side).map_err(store_error)? else {
+        return Ok(None);
+    };
+    let mut result = Json(Value::Object(std::mem::take(&mut body.metadata)));
+    let fields = result.0.as_object_mut().expect("body metadata");
+    fields.insert(
+        "body_base64".into(),
+        Value::String(STANDARD.encode(&body.body)),
+    );
+    fields.insert("body_length".into(), Value::from(body.body.len()));
+    let content_type = match side {
+        Side::Request => "request_content_type",
+        Side::Response => "response_content_type",
+    };
+    if flow_store::is_text_like_content_type(fields.get(content_type).unwrap_or(&Value::Null))
+        .map_err(store_error)?
+    {
+        fields.insert(
+            "body_text".into(),
+            Value::String(String::from_utf8_lossy(&body.body).into_owned()),
+        );
+    }
+    Ok(Some(result))
 }
 // Body IDs use source int() before either ownership read. SQLite range is
 // checked only when that specific ID's read is reached.
@@ -589,4 +709,56 @@ fn failed(request: Request<'_>, failure: FlowFailure) -> Outcome<'static> {
     let mut result = response(500, json!({"error":format!("Internal error: {class}")}));
     result.failure = Some(Failure::FlowReporting(failure));
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flow_store::{BodyInput, FlowRecord, Settings};
+
+    #[test]
+    fn zero_capture_limit_marks_nonempty_sides_uncaptured() {
+        let directory = tempfile::tempdir().unwrap();
+        let settings = Settings {
+            max_request_body_bytes: 0.into(),
+            max_response_body_bytes: 0.into(),
+            ..Settings::default()
+        };
+        let store = FlowStore::open(&directory.path().join("flows.db"), settings).unwrap();
+        let metadata = json!({
+            "request_id":"req-44444444444444444444444444444444",
+            "ts_start":1,"engagement_id":"test","evidence_owner":"alice",
+            "host":"owned.invalid","flow_state":"complete",
+            "request_content_type":"text/plain","response_content_type":"application/octet-stream"
+        });
+        store
+            .record(
+                FlowRecord {
+                    metadata: metadata.as_object().unwrap(),
+                    request_body: Some(BodyInput::complete(b"text")),
+                    response_body: Some(BodyInput::complete(b"\xff\x00")),
+                },
+                1000,
+            )
+            .unwrap();
+        let reply = execute(
+            &store,
+            Route::ByRequestId,
+            Some("alice"),
+            None,
+            Some("req-44444444444444444444444444444444"),
+            false,
+        )
+        .unwrap();
+        let super::super::ResponseBody::Json(ref value) = reply.body else {
+            panic!("JSON flow response");
+        };
+        for side in ["request_body", "response_body"] {
+            assert_eq!(value[side]["capture_state"], "uncaptured");
+            assert_eq!(value[side]["body_base64"], "");
+            assert_eq!(value[side]["body_length"], 0);
+        }
+        assert_eq!(value["request_body"]["request_body_size"], 4);
+        assert_eq!(value["response_body"]["response_body_size"], 2);
+    }
 }

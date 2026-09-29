@@ -126,6 +126,67 @@ fn row_tags_bodies_and_fts_survive_reopen() {
 }
 
 #[test]
+fn request_id_lookup_and_exact_search_use_retained_owner() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = FlowStore::open(&directory.path().join("flows.db"), Settings::default()).unwrap();
+    let alice = metadata("req-11111111111111111111111111111111");
+    let mut bob = metadata("req-22222222222222222222222222222222");
+    bob.insert("agent_id".into(), json!("bob"));
+    bob.insert("evidence_owner".into(), json!("bob"));
+    let mut ownerless = metadata("req-33333333333333333333333333333333");
+    ownerless.remove("agent_id");
+    ownerless.remove("evidence_owner");
+    for row in [&alice, &bob, &ownerless] {
+        record(&store, row, b"request", b"response").unwrap();
+    }
+    assert_eq!(
+        store
+            .get_flow_by_request_id("req-11111111111111111111111111111111")
+            .unwrap()
+            .unwrap()["evidence_owner"],
+        "alice"
+    );
+    assert_eq!(
+        store
+            .get_flow_by_request_id("req-22222222222222222222222222222222")
+            .unwrap()
+            .unwrap()["evidence_owner"],
+        "bob"
+    );
+    assert!(
+        store
+            .get_flow_by_request_id("req-33333333333333333333333333333333")
+            .unwrap()
+            .unwrap()["evidence_owner"]
+            .is_null()
+    );
+    assert!(
+        store
+            .get_flow_by_request_id("req-00000000000000000000000000000000")
+            .unwrap()
+            .is_none()
+    );
+    let exact = CircuitValue::parse_json(
+        r#"{"request_id":"req-11111111111111111111111111111111","evidence_owner":"alice"}"#,
+    )
+    .unwrap();
+    let other_owner = CircuitValue::parse_json(
+        r#"{"request_id":"req-11111111111111111111111111111111","evidence_owner":"bob"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .search_flows(&exact)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(store.search_flows(&other_owner).unwrap(), json!([]));
+}
+
+#[test]
 fn failed_row_and_tags_never_publish_on_later_success() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("flows.db");

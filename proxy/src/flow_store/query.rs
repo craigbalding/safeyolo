@@ -62,7 +62,7 @@ impl From<rusqlite::Error> for QueryError {
 }
 type Result<T> = std::result::Result<T, QueryError>;
 
-const EXACT: &[&str] = &[
+const CONTEXT_EXACT: &[&str] = &[
     "engagement_id",
     "agent_id",
     "evidence_owner",
@@ -78,12 +78,9 @@ const EXACT: &[&str] = &[
     "step",
     "intent",
     "expect",
-    "host",
-    "method",
-    "status_code",
-    "flow_state",
-    "source_type",
 ];
+const FLOW_EXACT: &[&str] = &["host", "method", "status_code", "flow_state", "source_type"];
+const SEARCH_ONLY_EXACT: &[&str] = &["request_id"];
 const TEXT: &[&str] = &[
     "path_contains",
     "text_contains",
@@ -220,11 +217,20 @@ pub(crate) fn integer(value: &CircuitValue) -> Option<BigInt> {
 fn integer_json(value: BigInt) -> Value {
     Value::Number(value.to_string().parse().expect("BigInt is a JSON integer"))
 }
-fn normalize(filters: &CircuitValue) -> Result<Normalized> {
+fn normalize(filters: &CircuitValue, allow_request_id: bool) -> Result<Normalized> {
     let filters = filters
         .as_object()
         .ok_or_else(|| invalid("Search filters must be a JSON object"))?;
-    let mut valid: Vec<&str> = EXACT.iter().chain(TEXT).chain(INTEGER).copied().collect();
+    let mut valid: Vec<&str> = CONTEXT_EXACT
+        .iter()
+        .chain(FLOW_EXACT)
+        .chain(TEXT)
+        .chain(INTEGER)
+        .copied()
+        .collect();
+    if allow_request_id {
+        valid.extend_from_slice(SEARCH_ONLY_EXACT);
+    }
     valid.sort_unstable();
     valid.dedup();
     let mut unknown: Vec<&str> = filters
@@ -248,8 +254,9 @@ fn normalize(filters: &CircuitValue) -> Result<Normalized> {
             );
         }
     }
-    for &key in EXACT
+    for &key in CONTEXT_EXACT
         .iter()
+        .chain(FLOW_EXACT)
         .chain(TEXT)
         .filter(|&&key| key != "status_code")
     {
@@ -258,6 +265,14 @@ fn normalize(filters: &CircuitValue) -> Result<Normalized> {
         {
             return Err(invalid(format!("{key} must be a non-empty string")));
         }
+    }
+    if allow_request_id
+        && output
+            .0
+            .get("request_id")
+            .is_some_and(|value| text(value).is_none_or(str::is_empty))
+    {
+        return Err(invalid("request_id must be a non-empty string"));
     }
     if let Some(CircuitValue::Other(Value::String(method))) = output.0.get_mut("method") {
         *method = uppercase(method);
@@ -386,10 +401,12 @@ fn rows(connection: &Connection, sql: &str, params: &SqlParams) -> Result<Vec<Va
 
 impl FlowStore {
     pub fn search_flows(&self, filters: &CircuitValue) -> Result<Value> {
-        let filters = normalize(filters)?;
+        let filters = normalize(filters, true)?;
         let filters = &filters.0;
         let mut selection = Selection::default();
-        selection.exact(filters, EXACT, "");
+        selection.exact(filters, CONTEXT_EXACT, "");
+        selection.exact(filters, FLOW_EXACT, "");
+        selection.exact(filters, SEARCH_ONLY_EXACT, "");
         for (key, clause, count) in [
             ("path_contains", "path LIKE ?", 1),
             (
@@ -474,7 +491,7 @@ impl FlowStore {
             .as_object()
             .ok_or_else(|| failure(ErrorKind::Attribute))?;
         let mut selection = Selection::default();
-        selection.exact(filters, &EXACT[..15], "");
+        selection.exact(filters, CONTEXT_EXACT, "");
         selection.time(filters, "");
         selection.page(filters, 100)?;
         let sql = format!(
@@ -528,7 +545,9 @@ impl FlowStore {
         let mut unknown: Vec<String> = keys
             .into_iter()
             .filter(|key| {
-                !EXACT.contains(&key.as_str()) && !["from_ts", "to_ts"].contains(&key.as_str())
+                !CONTEXT_EXACT.contains(&key.as_str())
+                    && !FLOW_EXACT.contains(&key.as_str())
+                    && !["from_ts", "to_ts"].contains(&key.as_str())
             })
             .collect();
         unknown.sort_unstable();
@@ -539,9 +558,10 @@ impl FlowStore {
                 unknown.join(", ")
             )));
         }
-        let filters = normalize(filters)?;
+        let filters = normalize(filters, false)?;
         let mut selection = Selection::default();
-        selection.exact(&filters.0, EXACT, "");
+        selection.exact(&filters.0, CONTEXT_EXACT, "");
+        selection.exact(&filters.0, FLOW_EXACT, "");
         selection.time(&filters.0, "");
         let params = selection.params()?;
         let connection = self.lock()?;
@@ -592,7 +612,7 @@ impl FlowStore {
             tokens.join(" ")
         };
         let mut selection = Selection::default();
-        selection.exact(filters, &EXACT[..15], "f.");
+        selection.exact(filters, CONTEXT_EXACT, "f.");
         selection.time(filters, "f.");
         for key in ["host", "path"] {
             if let Some(value) = filters.get(key).filter(|value| value.truthy()) {
