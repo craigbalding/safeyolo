@@ -91,6 +91,13 @@ def test_http_body_preview_content_type_charset_encoding_and_availability():
     compressed = gzip.compress(b'{"ok":true}')
     assert '"ok": true' in http_body_preview(preview(compressed),
         [["Content-Type", "application/json"], ["Content-Encoding", "gzip"]], pretty=True)
+    gzip_headers = [["Content-Type", "text/plain"], ["Content-Encoding", "gzip"]]
+    assert http_body_preview(preview(gzip.compress(b"")), gzip_headers, pretty=True) == "(present, empty decoded body)"
+    decoded_limit = http_body_preview(preview(gzip.compress(b"a" * (BODY_PREVIEW_BYTES + 1))), gzip_headers, pretty=True)
+    assert "decoded preview truncated at 65536 bytes" in decoded_limit
+    assert "retained preview truncated" not in decoded_limit
+    incomplete = http_body_preview(preview(gzip.compress(b"text")[:-4]), gzip_headers, pretty=True)
+    assert "encoded stream incomplete" in incomplete
     assert "decoded" in http_body_preview(preview(zlib.compress(b"decoded")),
         [["Content-Type", "text/plain"], ["Content-Encoding", "deflate"]], pretty=True)
     assert "encoded br" in http_body_preview(preview(b"encoded"),
@@ -103,7 +110,7 @@ def test_http_body_preview_content_type_charset_encoding_and_availability():
         [["Content-Type", "invalid"]], pretty=True)
     assert "unsupported or undecodable charset" in http_body_preview(preview(b"hello"),
         [["Content-Type", "text/plain; charset=no-such-charset"]], pretty=True)
-    assert "preview truncated" in http_body_preview(preview(b"short", total=100),
+    assert "retained preview truncated: 5 of 100 retained bytes" in http_body_preview(preview(b"short", total=100),
         [["Content-Type", "text/plain"]], pretty=True)
 
 

@@ -105,18 +105,22 @@ def _binary_fallback(raw: bytes, media_type: str, total: int, reason: str) -> st
             f"{len(raw)} of {total} retained bytes{truncated} · first bytes: {sample}")
 
 
-def _decoded_content(raw: bytes, encoding: str) -> tuple[bytes | None, bool]:
+def _decoded_content(raw: bytes, encoding: str) -> tuple[bytes | None, str | None]:
     if encoding in {"", "identity"}:
-        return raw, False
+        return raw, None
     window = {"gzip": 16 + zlib.MAX_WBITS, "deflate": zlib.MAX_WBITS}.get(encoding)
     if window is None:
-        return None, False
+        return None, None
     try:
         decoder = zlib.decompressobj(window)
         decoded = decoder.decompress(raw, BODY_PREVIEW_BYTES + 1)
     except zlib.error:
-        return None, False
-    return decoded[:BODY_PREVIEW_BYTES], len(decoded) > BODY_PREVIEW_BYTES or not decoder.eof
+        return None, None
+    if len(decoded) > BODY_PREVIEW_BYTES or decoder.unconsumed_tail:
+        return decoded[:BODY_PREVIEW_BYTES], "display_limit"
+    if not decoder.eof:
+        return decoded, "stream_incomplete"
+    return decoded, None
 
 
 def _http_preview_bytes(value: dict) -> tuple[bytes, int, bool]:
@@ -148,6 +152,17 @@ def _pretty_json(content: str) -> str:
         return content  # Incomplete or invalid JSON remains readable as text.
 
 
+def _http_preview_notes(raw_size: int, total: int, truncated: bool, decode_state: str | None) -> str:
+    notes = []
+    if truncated:
+        notes.append(f"[retained preview truncated: {raw_size} of {total} retained bytes; export for full evidence]")
+    if decode_state == "display_limit":
+        notes.append(f"[decoded preview truncated at {BODY_PREVIEW_BYTES} bytes]")
+    elif decode_state == "stream_incomplete":
+        notes.append("[encoded stream incomplete in retained preview]")
+    return "\n" + "\n".join(notes) if notes else ""
+
+
 def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
     """Render one bounded HTTP preview without changing retained or exported bytes."""
     if not value.get("available"):
@@ -158,7 +173,7 @@ def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
         return "(present, empty body)"
     media_type, charset = _content_type(headers)
     encoding = _content_encoding(headers)
-    decoded, decoded_truncated = _decoded_content(raw, encoding)
+    decoded, decode_state = _decoded_content(raw, encoding)
     if decoded is None:
         return _binary_fallback(raw, media_type, total, f"encoded {encoding}; decoding unavailable")
     is_json = media_type == "application/json" or media_type.endswith("+json")
@@ -167,16 +182,17 @@ def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
     } or media_type.endswith("+xml")
     if not is_text:
         return _binary_fallback(raw, media_type, total, "binary")
-    try:
-        content = decoded.decode(charset)
-    except (LookupError, UnicodeError, TypeError):
-        return _binary_fallback(raw, media_type, total, f"unsupported or undecodable charset {charset}")
-    if pretty and is_json:
-        content = _pretty_json(content)
-    text = _limited_text(plain_text(content, multiline=True), BODY_PREVIEW_CHARS, "body")
-    if truncated or decoded_truncated:
-        text += f"\n[preview truncated: {len(raw)} of {total} retained bytes; export for full evidence]"
-    return text
+    if not decoded:
+        text = "(present, empty decoded body)" if not truncated and decode_state is None else "(no decoded bytes in retained preview)"
+    else:
+        try:
+            content = decoded.decode(charset)
+        except (LookupError, UnicodeError, TypeError):
+            return _binary_fallback(raw, media_type, total, f"unsupported or undecodable charset {charset}")
+        if pretty and is_json:
+            content = _pretty_json(content)
+        text = _limited_text(plain_text(content, multiline=True), BODY_PREVIEW_CHARS, "body")
+    return text + _http_preview_notes(len(raw), total, truncated, decode_state)
 
 
 def http_header_lines(headers: list, *, hide_routine: bool) -> list[str]:
