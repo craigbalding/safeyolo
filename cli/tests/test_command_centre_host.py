@@ -84,7 +84,7 @@ def test_tailnet_host_closes_both_mappings_when_parent_closes(tmp_path, monkeypa
                       side_effect=[admin, events]) as start:
         assert command_centre_tailnet_host.publish(9090, 9091, 9443, 9444, state) == 0
     start.assert_any_call(9090, 9443)
-    start.assert_any_call(9091, 9444)
+    start.assert_any_call(9091, 9444, tls_terminated_tcp=True)
     assert json.loads(capsys.readouterr().out)["state"] == "healthy"
     assert not state.exists()
     assert events.closed and admin.closed

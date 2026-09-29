@@ -18,7 +18,9 @@ def publish(admin_local: int, events_local: int, admin_https: int, events_https:
     failed = False
     try:
         admin = start_tailnet_serve(admin_local, admin_https)
-        events = start_tailnet_serve(events_local, events_https)
+        # Keep the WebSocket upgrade on one HTTP/1.1 connection. Tailscale's
+        # HTTPS reverse proxy can fail that upgrade while ordinary GET works.
+        events = start_tailnet_serve(events_local, events_https, tls_terminated_tcp=True)
         admin_url = admin.url("/")
         events_url = events.url("/admin/events").replace("https://", "wss://", 1)
         write_tailnet_state(state_path, {

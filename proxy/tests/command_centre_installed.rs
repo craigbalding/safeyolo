@@ -58,15 +58,28 @@ if args == ['status', '--json']:
     print(json.dumps({'BackendState': 'Running', 'Self': {'DNSName': 'host.test.ts.net.'}}))
 elif args == ['serve', 'status', '--json']:
     targets = {path.name: path.read_text() for path in root.glob('*.target')}
-    print(json.dumps({'TCP': {port[:-7]: {'HTTPS': True} for port in targets},
-                      'Web': {port: {'Handlers': {'/': {'Proxy': target}}}
-                              for port, target in targets.items()}}))
-elif len(args) == 4 and args[:2] == ['serve', '--yes'] and args[2].startswith('--https='):
+    tcp = {}
+    web = {}
+    for name, target in targets.items():
+        port = name[:-7]
+        if (root / (port + '.mode')).read_text() == 'tls-tcp':
+            tcp[port] = {'TCPForward': target.removeprefix('tcp://'),
+                         'TerminateTLS': 'host.test.ts.net'}
+        else:
+            tcp[port] = {'HTTPS': True}
+            web[port] = {'Handlers': {'/': {'Proxy': target}}}
+    print(json.dumps({'TCP': tcp, 'Web': web}))
+elif len(args) == 4 and args[:2] == ['serve', '--yes'] and (
+    args[2].startswith('--https=') or args[2].startswith('--tls-terminated-tcp=')
+):
     port = args[2].split('=', 1)[1]
     marker = root / (port + '.target')
     marker.write_text(args[3])
+    mode = root / (port + '.mode')
+    mode.write_text('tls-tcp' if args[2].startswith('--tls-terminated-tcp=') else 'https')
     def close(_signal, _frame):
         marker.unlink(missing_ok=True)
+        mode.unlink(missing_ok=True)
         sys.exit(0)
     signal.signal(signal.SIGTERM, close)
     while True:
@@ -291,7 +304,7 @@ else:
     );
     assert_eq!(
         std::fs::read_to_string(root.join("tailnet/10444.target")).unwrap(),
-        format!("http://127.0.0.1:{events_port}")
+        format!("tcp://127.0.0.1:{events_port}")
     );
     published.shutdown().await;
     assert!(!tailnet_state.exists());

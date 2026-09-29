@@ -100,6 +100,17 @@ def tailnet_mapping_ready(status: dict, port: int, target: str) -> bool:
     return False
 
 
+def tailnet_tls_tcp_mapping_ready(status: dict, port: int, target: str, dns_name: str) -> bool:
+    """Return whether TLS termination forwards this port to the exact loopback target."""
+    for config in node_serve_configs(status):
+        tcp = config.get("TCP", {})
+        handler = tcp.get(str(port)) if isinstance(tcp, dict) else None
+        if (isinstance(handler, dict) and handler.get("TCPForward") == target
+                and handler.get("TerminateTLS") == dns_name):
+            return True
+    return False
+
+
 def tailnet_identity() -> str:
     """Return the connected node's MagicDNS name."""
     if shutil.which("tailscale") is None:
@@ -182,15 +193,19 @@ class TailnetServeSession:
                 stream.close()
 
 
-def start_tailnet_serve(local_port: int, exposed_port: int) -> TailnetServeSession:
+def start_tailnet_serve(
+    local_port: int, exposed_port: int, *, tls_terminated_tcp: bool = False,
+) -> TailnetServeSession:
     """Publish one loopback service through foreground Tailscale Serve."""
     dns_name = preflight_tailnet_serve(exposed_port)
-    target = f"http://127.0.0.1:{local_port}"
+    local_target = f"127.0.0.1:{local_port}"
+    target = f"tcp://{local_target}" if tls_terminated_tcp else f"http://{local_target}"
+    serve_flag = "tls-terminated-tcp" if tls_terminated_tcp else "https"
     command = [
         "tailscale",
         "serve",
         "--yes",
-        f"--https={exposed_port}",
+        f"--{serve_flag}={exposed_port}",
         target,
     ]
     output = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
@@ -216,7 +231,9 @@ def start_tailnet_serve(local_port: int, exposed_port: int) -> TailnetServeSessi
                 suffix = f": {detail}" if detail else ""
                 raise TailnetServeError(f"Tailscale Serve exited with code {exit_code}{suffix}")
             status = run_tailscale_json("serve", "status", "--json")
-            if tailnet_mapping_ready(status, exposed_port, target):
+            ready = (tailnet_tls_tcp_mapping_ready(status, exposed_port, local_target, dns_name)
+                     if tls_terminated_tcp else tailnet_mapping_ready(status, exposed_port, target))
+            if ready:
                 return session
             time.sleep(0.25)
         raise TailnetServeError(
