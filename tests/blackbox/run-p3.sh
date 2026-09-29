@@ -46,7 +46,7 @@ import sys
 
 try:
     with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
+        listener.bind(("127.0.0.1", 46375 if sys.platform == "darwin" else 0))
         listener.listen(1)
         with socket.create_connection(listener.getsockname(), timeout=2):
             accepted, _ = listener.accept()

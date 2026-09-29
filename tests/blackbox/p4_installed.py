@@ -191,7 +191,7 @@ def prepare_owner(
     config_path = config_dir / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["proxy"]["backend"] = "rust"
-    config["proxy"]["admin_port"] = 0
+    config["proxy"]["admin_port"] = int(os.environ.get("SAFEYOLO_P4_OWNER_ADMIN_PORT", "0"))
     config["proxy"]["upstream_proxy"] = native["parent_proxy"]
     config["proxy"]["upstream_ca_cert"] = native["upstream_ca_file"]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -365,7 +365,7 @@ def main() -> None:
     cli = first_identity["cli"]["path"]
     binary = first_identity["candidate"]["path"]
     marker = "p4-" + uuid.uuid4().hex
-    sinkhole = SinkholeClient("http://127.0.0.1:19999")
+    sinkhole = SinkholeClient(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
     owner_dir = Path(os.environ["SAFEYOLO_P4_OWNER_CONFIG_DIR"]).resolve()
     source_dir = Path(os.environ["SAFEYOLO_P4_SOURCE_CONFIG_DIR"]).resolve()
     peer_added = False

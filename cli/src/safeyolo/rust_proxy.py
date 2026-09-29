@@ -37,6 +37,7 @@ from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
 from .traffic_session import (
     capture_session,
+    interrupt_session_process,
     session_process_id,
     start_session,
 )
@@ -103,24 +104,14 @@ def read_process() -> RustProcess | None:
     return process
 
 
-def is_alive(process: RustProcess, *, allow_unobservable_exit: bool = False) -> bool:
-    """Return whether the recorded process is alive and still ours.
-
-    ``allow_unobservable_exit`` is only used after a verified termination
-    request.  Some macOS process states keep ``kill(pid, 0)`` successful for a
-    short window after exit while ``ps`` no longer provides a start token.  At
-    that point the process cannot be live and safely signalable through this
-    receipt, so the stop wait treats the observation as an exit.  Callers that
-    may signal a process keep the strict default and refuse unknown identity.
-    """
+def is_alive(process: RustProcess) -> bool:
+    """Return whether the recorded process is alive and still ours."""
     if process.pid is None:
         raise RuntimeError("Cannot identify the launched Rust proxy; its lifetime record and console have been retained")
     if not process_is_alive(process.pid):
         return False
     observed = process_start_token(process.pid)
     if observed is None or process.start_token is None:
-        if allow_unobservable_exit:
-            return False
         raise RuntimeError("Cannot verify Rust proxy process identity; lifetime state has been retained")
     return observed == process.start_token
 
@@ -542,7 +533,7 @@ def stop(process: RustProcess) -> None:
         except ProcessLookupError:
             # It exited between the ownership observation and signal delivery.
             pass
-        while is_alive(process, allow_unobservable_exit=True):
+        while is_alive(process):
             time.sleep(0.1)
     # Keep the exited console for diagnostics. start_session reaps a dead pane
     # on the next launch. A failed pane query must never kill a replacement pane.
@@ -565,9 +556,14 @@ def _signal_process(process: RustProcess, selected_signal: int) -> None:
         finally:
             os.close(descriptor)
     elif is_alive(process):
-        # Other supported hosts use the existing start-token check and POSIX
-        # signal convention; they do not provide Linux's atomic PID handle.
-        os.kill(process.pid, selected_signal)
+        # Other supported hosts use the start-token check and POSIX signals;
+        # macOS can route a denied signal through the original tmux server.
+        try:
+            os.kill(process.pid, selected_signal)
+        except PermissionError:
+            if sys.platform != "darwin" or selected_signal != signal.SIGTERM:
+                raise
+            interrupt_session_process(process.pid, process.start_token)
 
 
 def _wait_ready(process: RustProcess, launch: RustLaunch, timeout: float = STARTUP_TIMEOUT) -> dict:

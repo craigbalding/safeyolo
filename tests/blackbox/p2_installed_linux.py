@@ -21,6 +21,7 @@ import tomllib
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _sha256
@@ -169,7 +170,8 @@ def run_guest(cli: str, agent: str, marker: str, phase: str, *extra: str) -> dic
 
 
 def control(method: str, path: str) -> dict:
-    connection = http.client.HTTPConnection("127.0.0.1", 19999, timeout=5)
+    control_url = urlsplit(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
+    connection = http.client.HTTPConnection(control_url.hostname, control_url.port, timeout=5)
     try:
         connection.request(method, path)
         response = connection.getresponse()
