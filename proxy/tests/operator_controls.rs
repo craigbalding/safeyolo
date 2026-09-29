@@ -755,6 +755,12 @@ async fn connect_stalled_events(port: u16, token: &str) -> TcpStream {
         .unwrap();
     let handshake = read_headers(&mut events).await;
     assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    assert!(
+        String::from_utf8(handshake)
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("\r\nconnection: upgrade\r\n")
+    );
     events
 }
 
@@ -829,6 +835,12 @@ async fn connect_events(port: u16, token: &str) -> TcpStream {
         .unwrap();
     let handshake = read_headers(&mut events).await;
     assert!(handshake.starts_with(b"HTTP/1.1 101"));
+    assert!(
+        String::from_utf8(handshake)
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("\r\nconnection: upgrade\r\n")
+    );
     events
 }
 

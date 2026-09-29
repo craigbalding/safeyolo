@@ -376,34 +376,6 @@ def test_start_tailnet_serve_uses_foreground_mapping(monkeypatch):
     assert process.returncode == -15
 
 
-def test_start_tailnet_serve_waits_for_exact_tls_tcp_mapping(monkeypatch):
-    process = BlockingFakeProcess()
-    target = "127.0.0.1:54321"
-    responses = iter([
-        {"BackendState": "Running", "Self": {"DNSName": "host.example.ts.net."}},
-        {},
-        {"Foreground": {"other": {"TCP": {"8443": {
-            "TCPForward": "127.0.0.1:9999", "TerminateTLS": "host.example.ts.net",
-        }}}}},
-        {"Foreground": {"owned": {"TCP": {"8443": {
-            "TCPForward": target, "TerminateTLS": "host.example.ts.net",
-        }}}}},
-    ])
-    monkeypatch.setattr("safeyolo.tailnet.shutil.which", lambda command: "/usr/bin/tailscale")
-    monkeypatch.setattr("safeyolo.tailnet.run_tailscale_json", lambda *args: next(responses))
-    monkeypatch.setattr("safeyolo.tailnet.time.sleep", lambda _: None)
-
-    with patch("safeyolo.tailnet.subprocess.Popen", return_value=process, autospec=True) as popen:
-        session = start_tailnet_serve(54321, 8443, tls_terminated_tcp=True)
-
-    assert popen.call_args.args[0] == [
-        "tailscale", "serve", "--yes", "--tls-terminated-tcp=8443", f"tcp://{target}",
-    ]
-    assert session.url("/admin/events") == "https://host.example.ts.net:8443/admin/events"
-    session.close()
-    assert process.returncode == -15
-
-
 def test_start_tailnet_serve_refuses_existing_mapping(monkeypatch):
     responses = iter(
         [

@@ -58,28 +58,15 @@ if args == ['status', '--json']:
     print(json.dumps({'BackendState': 'Running', 'Self': {'DNSName': 'host.test.ts.net.'}}))
 elif args == ['serve', 'status', '--json']:
     targets = {path.name: path.read_text() for path in root.glob('*.target')}
-    tcp = {}
-    web = {}
-    for name, target in targets.items():
-        port = name[:-7]
-        if (root / (port + '.mode')).read_text() == 'tls-tcp':
-            tcp[port] = {'TCPForward': target.removeprefix('tcp://'),
-                         'TerminateTLS': 'host.test.ts.net'}
-        else:
-            tcp[port] = {'HTTPS': True}
-            web[port] = {'Handlers': {'/': {'Proxy': target}}}
-    print(json.dumps({'TCP': tcp, 'Web': web}))
-elif len(args) == 4 and args[:2] == ['serve', '--yes'] and (
-    args[2].startswith('--https=') or args[2].startswith('--tls-terminated-tcp=')
-):
+    print(json.dumps({'TCP': {port[:-7]: {'HTTPS': True} for port in targets},
+                      'Web': {port: {'Handlers': {'/': {'Proxy': target}}}
+                              for port, target in targets.items()}}))
+elif len(args) == 4 and args[:2] == ['serve', '--yes'] and args[2].startswith('--https='):
     port = args[2].split('=', 1)[1]
     marker = root / (port + '.target')
     marker.write_text(args[3])
-    mode = root / (port + '.mode')
-    mode.write_text('tls-tcp' if args[2].startswith('--tls-terminated-tcp=') else 'https')
     def close(_signal, _frame):
         marker.unlink(missing_ok=True)
-        mode.unlink(missing_ok=True)
         sys.exit(0)
     signal.signal(signal.SIGTERM, close)
     while True:
@@ -235,6 +222,13 @@ else:
         headers.push(events.read_u8().await.unwrap());
     }
     assert!(headers.starts_with(b"HTTP/1.1 101"));
+    assert!(
+        String::from_utf8(headers.clone())
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("\r\nconnection: upgrade\r\n"),
+        "a reverse proxy must receive Connection: Upgrade with the 101"
+    );
     std::fs::OpenOptions::new().append(true).open(root.join("audit.jsonl")).unwrap()
         .write_all(b"{\"event\":\"agent.started\",\"kind\":\"agent\",\"severity\":\"low\",\"summary\":\"Agent probe started\",\"agent\":\"probe\"}\n").unwrap();
     let mut frame = [0u8; 2];
@@ -304,7 +298,7 @@ else:
     );
     assert_eq!(
         std::fs::read_to_string(root.join("tailnet/10444.target")).unwrap(),
-        format!("tcp://127.0.0.1:{events_port}")
+        format!("http://127.0.0.1:{events_port}")
     );
     published.shutdown().await;
     assert!(!tailnet_state.exists());

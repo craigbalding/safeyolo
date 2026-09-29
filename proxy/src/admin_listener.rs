@@ -429,10 +429,19 @@ async fn serve_connection(
                     path,
                     event_tasks,
                 )
-                .await;
+                .await
+                .map(|response| {
+                    if response.status() == hyper::StatusCode::SWITCHING_PROTOCOLS {
+                        response
+                    } else {
+                        close_http_response(response)
+                    }
+                });
             }
             if access.events_only {
-                return Ok::<_, admin_api::Error>(admin_api::event_not_found().into_response());
+                return Ok::<_, admin_api::Error>(close_http_response(
+                    admin_api::event_not_found().into_response(),
+                ));
             }
             let stats = || {
                 let runtime = runtime.clone();
@@ -540,12 +549,12 @@ async fn serve_connection(
                     .headers_mut()
                     .insert("x-safeyolo-evidence-error", "true".parse().unwrap());
             }
-            Ok::<_, admin_api::Error>(response)
+            Ok::<_, admin_api::Error>(close_http_response(response))
         }
     });
-    let mut builder = hyper::server::conn::http1::Builder::new();
-    // The shipped BaseHTTPRequestHandler closes after its HTTP/1.0 response.
-    builder.keep_alive(false);
+    // Hyper replaces Connection: Upgrade with Connection: close on a 101 when
+    // keep_alive(false) is set. Close ordinary responses explicitly instead.
+    let builder = hyper::server::conn::http1::Builder::new();
     let connection = builder
         .serve_connection(TokioIo::new(socket), service)
         .with_upgrades();
@@ -557,6 +566,14 @@ async fn serve_connection(
             let _ = connection.await;
         }
     }
+}
+
+fn close_http_response<B>(mut response: hyper::Response<B>) -> hyper::Response<B> {
+    response.headers_mut().insert(
+        hyper::header::CONNECTION,
+        hyper::header::HeaderValue::from_static("close"),
+    );
+    response
 }
 
 async fn serve_events(

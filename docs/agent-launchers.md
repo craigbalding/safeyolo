@@ -214,9 +214,7 @@ safeyolo command-centre status
 ```
 
 The status command reports the Admin and event URLs after both Serve mappings
-are ready. Admin uses Serve's HTTPS reverse proxy. Events use Serve's
-TLS-terminated TCP forwarder so the WebSocket upgrade reaches the native event
-listener. The proxy owns the mappings and removes them when it stops. The
+are ready. The proxy owns the mappings and removes them when it stops. The
 existing Admin credential authorizes both endpoints. Keep that credential in
 the app's Keychain profile; Tailnet access alone does not authorize Admin
 requests.
