@@ -175,6 +175,22 @@ def test_http_preview_respects_utf8_bom_and_utf7_shift_boundaries():
     assert "retained preview truncated: 5 of 12 retained bytes" in utf7
     assert "unsupported or undecodable charset" not in utf7
 
+    withheld = b"+AOkA6QDp-pad"
+    short_shift = http_body_preview(preview(withheld[:6], total=len(withheld)), utf7_headers, pretty=False)
+    assert short_shift.startswith("é")
+    assert "retained preview truncated: 6 of 13 retained bytes" in short_shift
+
+    long_shift = ("é" * 40_000).encode("utf-7")
+    long_identity = http_body_preview(preview(long_shift[:BODY_PREVIEW_BYTES], total=len(long_shift)),
+        utf7_headers, pretty=False)
+    assert long_identity.startswith("é" * 100)
+    assert "retained preview truncated" in long_identity
+    long_compressed = http_body_preview(preview(gzip.compress(long_shift)),
+        [*utf7_headers, ["Content-Encoding", "gzip"]], pretty=False)
+    assert long_compressed.startswith("é" * 100)
+    assert "decoded preview truncated at 65536 bytes" in long_compressed
+    assert "retained preview truncated" not in long_compressed
+
     for body, headers, total in (
         (bom + b"hello\xc3", utf8_sig_headers, None),
         (bom + b"hello\xed\xa0", utf8_sig_headers, 11),

@@ -177,7 +177,10 @@ def _decode_text_preview(decoded: bytes, charset: str, *, incomplete: bool) -> s
         }):
             return None
         try:
-            return codecs.getincrementaldecoder(charset)(errors="strict").decode(decoded, final=False)
+            codecs.getincrementaldecoder(charset)(errors="strict").decode(decoded, final=False)
+            # UTF-7 can buffer a whole open shift despite complete characters
+            # inside it. The checks above leave only the incomplete tail to omit.
+            return decoded.decode(charset, errors="ignore")
         except (LookupError, UnicodeError, TypeError):
             return None
     except (LookupError, UnicodeError, TypeError):
