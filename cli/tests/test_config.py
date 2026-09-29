@@ -1,5 +1,6 @@
 """Tests for config module."""
 
+import pytest
 import yaml
 
 from safeyolo.config import (
@@ -16,6 +17,7 @@ from safeyolo.config import (
     get_config_dir,
     get_config_path,
     get_data_dir,
+    get_desktop_present_host_port,
     get_desktop_size,
     get_logs_dir,
     get_policies_dir,
@@ -133,6 +135,21 @@ class TestDesktopSize:
         )
 
         assert get_desktop_size("1600x900") == "1600x900"
+
+
+class TestDesktopPresentHostPort:
+    def test_default_uses_an_available_loopback_port(self, tmp_config_dir):
+        assert get_desktop_present_host_port() == 0
+
+    def test_reads_fixed_port(self, tmp_config_dir):
+        (tmp_config_dir / "config.yaml").write_text("desktop:\n  present_host_port: 46375\n")
+        assert get_desktop_present_host_port() == 46375
+
+    @pytest.mark.parametrize("value", ["false", "'46375'", "-1", "65536"])
+    def test_rejects_invalid_port(self, tmp_config_dir, value):
+        (tmp_config_dir / "config.yaml").write_text(f"desktop:\n  present_host_port: {value}\n")
+        with pytest.raises(ValueError, match="desktop.present_host_port"):
+            get_desktop_present_host_port()
 
 
 class TestSaveConfig:

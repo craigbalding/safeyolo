@@ -98,9 +98,54 @@ def test_present_starts_desktop_once_and_reuses_preview(monkeypatch):
     staged.assert_called_once_with("forge", preferred_size="1280x800")
     start_preview.assert_called_once()
     assert start_preview.call_args.args[0].tailnet_port is None
+    assert start_preview.call_args.args[0].host_port == 0
 
     presenter.close_all()
     assert preview.closed
+
+
+def test_present_binds_configured_host_port(monkeypatch, tmp_config_dir):
+    (tmp_config_dir / "config.yaml").write_text("desktop:\n  present_host_port: 46375\n")
+    platform = FakePlatform()
+    preview = FakePreview()
+    start_preview = create_autospec(start_managed_preview, spec_set=True, return_value=preview)
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.get_agent_by_id",
+        lambda agent_id: ("forge", {"agent_id": agent_id}),
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_platform", lambda: platform)
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_desktop_size", lambda: "1280x800")
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.resolve_vnc_geometry",
+        lambda size: (size, None),
+    )
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.stage_guest_desktop_launcher",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.start_managed_preview", start_preview)
+
+    result = DesktopPresenter().present("ag-forge")
+
+    assert result.reused is False
+    assert start_preview.call_args.args[0].host_port == 46375
+    assert start_preview.call_args.args[0].host == "127.0.0.1"
+    assert platform.desktop_ready
+
+
+def test_invalid_present_port_does_not_start_guest_desktop(monkeypatch, tmp_config_dir):
+    (tmp_config_dir / "config.yaml").write_text("desktop:\n  present_host_port: 65536\n")
+    platform = FakePlatform()
+    monkeypatch.setattr(
+        "safeyolo.desktop_presenter.get_agent_by_id",
+        lambda agent_id: ("forge", {"agent_id": agent_id}),
+    )
+    monkeypatch.setattr("safeyolo.desktop_presenter.get_platform", lambda: platform)
+
+    with pytest.raises(ValueError, match="desktop.present_host_port"):
+        DesktopPresenter().present("ag-forge")
+
+    assert platform.commands == []
 
 
 def test_present_publishes_preview_to_tailnet_for_remote_command_centre(monkeypatch):

@@ -12,7 +12,7 @@ from .agents_store import (
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
 )
-from .config import get_desktop_size
+from .config import get_desktop_present_host_port, get_desktop_size
 from .platform import AgentPlatform, get_platform
 from .preview import (
     ManagedPreview,
@@ -97,6 +97,7 @@ class DesktopPresenter:
                     raise DesktopPresentationError(f"Agent '{agent}' is not running")
 
                 preferred_size = get_desktop_size()
+                present_host_port = get_desktop_present_host_port()
                 geometry, _detected = resolve_vnc_geometry(preferred_size)
                 stage_guest_desktop_launcher(agent, preferred_size=preferred_size)
                 desktop_was_ready = (
@@ -123,7 +124,7 @@ class DesktopPresenter:
                     PreviewConfig(
                         agent=agent,
                         guest_port=6080,
-                        host_port=0,
+                        host_port=present_host_port,
                         display_path="/vnc.html#autoconnect=true&resize=remote",
                         tailnet_port=tailnet_port,
                     ),
