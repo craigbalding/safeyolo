@@ -172,12 +172,12 @@ final class SafeYoloClient: ObservableObject {
                 diagnostics.attempts += 1
                 if await refreshInstance() {
                     let approvalsReady = await refreshApprovals()
-                    let agentsReady = await refreshAgents()
+                    _ = await refreshAgents()
                     guard !Task.isCancelled, !stopping else { return }
                     if eventEndpoint?.enabled == false {
                         setRequestError("Live events", nil)
                         setConnectionState(.eventsDisabled)
-                    } else if approvalsReady && agentsReady {
+                    } else if approvalsReady {
                         await connectEvents()
                     } else {
                         setConnectionState(.reconnecting)
@@ -387,8 +387,8 @@ final class SafeYoloClient: ObservableObject {
             if approvals != fresh { approvals = fresh }
             let newApprovals = fresh.filter { !knownApprovalIDs.contains($0.id) }
             knownApprovalIDs = Set(fresh.map(\.id))
-            if let first = newApprovals.first {
-                onNewApproval?(first)
+            for approval in newApprovals {
+                onNewApproval?(approval)
             }
             setRequestError("Pending approvals", nil)
             return true
@@ -433,6 +433,11 @@ final class SafeYoloClient: ObservableObject {
             try await ping(socket)
             guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             diagnostics.lastEventSuccess = Date()
+            // The listener starts at its handshake audit offset. Re-read the
+            // pending list so an approval created after the earlier snapshot
+            // but before this handshake cannot fall between both channels.
+            guard await refreshApprovals() else { throw ClientError.invalidResponse }
+            guard !stopping, !Task.isCancelled, webSocket === socket else { return }
             setConnectionState(.connected)
             if eventFeedGap != nil {
                 eventFeedGap = "Live event feed reconnected after a gap; events during the gap may be missing."
@@ -479,9 +484,7 @@ final class SafeYoloClient: ObservableObject {
             }
         }
         if event.event.hasPrefix("agent.") {
-            guard await refreshAgents() else {
-                throw ClientError.invalidResponse
-            }
+            _ = await refreshAgents()
         }
         if event.isSecurityObservation {
             recordSecurityEvent(event)
