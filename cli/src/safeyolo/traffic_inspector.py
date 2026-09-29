@@ -7,6 +7,7 @@ import base64
 import binascii
 import codecs
 import hashlib
+import io
 import json
 import os
 import sys
@@ -16,13 +17,19 @@ import zlib
 from collections import Counter
 from email.message import Message
 from pathlib import Path
+from urllib.parse import parse_qsl
 
+import brotlicffi
+import zstandard
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.widgets import TextArea
+from pygments.lexers import CssLexer, HtmlLexer, JavascriptLexer, JsonLexer, XmlLexer
+from pygments.token import Keyword, Literal, Name, Operator, Punctuation
 
 from .api import AdminAPI, APIError, ExportCancelled, ExportPublicationState, TrafficExportResult
 
@@ -31,6 +38,8 @@ BODY_PREVIEW_BYTES = 64 * 1024
 DETAIL_PREVIEW_CHARS = 128 * 1024
 BODY_PREVIEW_CHARS = 32 * 1024
 HTTP_SECTION_CHARS = 48 * 1024
+MAX_ENCODING_STAGES = 16
+ZSTD_MAX_WINDOW_BYTES = 32 * 1024 * 1024
 # Only ordinary negotiation fields. Keep Host, connection/framing, cache,
 # security, tracing and content description headers visible for diagnosis.
 ROUTINE_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent"})
@@ -90,38 +99,169 @@ def _content_type(headers: list) -> tuple[str, str]:
     return message.get_content_type(), message.get_param("charset") or "utf-8"
 
 
-def _content_encoding(headers: list) -> str:
+def _content_encodings(headers: list) -> list[str]:
     values = [value for name, value in headers if name.lower() == "content-encoding"]
     if not values:
-        return "identity"
-    if len(values) != 1:
-        return "multiple"
-    return values[0].strip().lower()
+        return []
+    return [coding.strip().lower() for value in values for coding in value.split(",")]
 
 
-def _binary_fallback(raw: bytes, media_type: str, total: int, reason: str) -> str:
-    sample = raw[:16].hex(" ") or "none"
+def _binary_fallback(raw: bytes, total: int, summary: str, side: str | None,
+                     *, decoded: bytes | None = None) -> str:
+    sample = (raw if decoded is None else decoded)[:16].hex(" ") or "none"
+    kind = "retained" if decoded is None else "decoded"
     truncated = " · preview truncated" if len(raw) < total else ""
-    return (f"{plain_text(media_type)} · {plain_text(reason)} · "
-            f"{len(raw)} of {total} retained bytes{truncated} · first bytes: {sample}")
+    export = f"raw_{side}" if side in {"request", "response"} else "raw_request/raw_response"
+    summary_text = plain_text(summary[:160]) + ("…" if len(summary) > 160 else "")
+    return (f"{summary_text} · "
+            f"{len(raw)} of {total} retained bytes{truncated} · first {kind} bytes: {sample} · x export {export}")
 
 
-def _decoded_content(raw: bytes, encoding: str) -> tuple[bytes | None, str | None]:
-    if encoding in {"", "identity"}:
-        return raw, None
-    window = {"gzip": 16 + zlib.MAX_WBITS, "deflate": zlib.MAX_WBITS}.get(encoding)
-    if window is None:
-        return None, None
+def _decode_zlib(raw: bytes, coding: str) -> tuple[bytes, str | None]:
+    window = 16 + zlib.MAX_WBITS if coding == "gzip" else zlib.MAX_WBITS
+    decoder = zlib.decompressobj(window)
+    output = bytearray()
+    # Feed the trailer separately so a bad checksum does not hide text already
+    # recovered from the compressed payload.
+    payload_end = max(0, len(raw) - (8 if coding == "gzip" else 4))
+    chunks = [raw[pos:min(pos + 512, payload_end)] for pos in range(0, payload_end, 512)]
+    chunks.append(raw[payload_end:])
+    member_finished = False
+    for chunk in chunks:
+        pending = chunk
+        while pending:
+            if member_finished:
+                if coding != "gzip":
+                    return bytes(output), "malformed"
+                decoder = zlib.decompressobj(window)
+                member_finished = False
+            try:
+                output.extend(decoder.decompress(pending, BODY_PREVIEW_BYTES + 1 - len(output)))
+            except zlib.error:
+                return bytes(output), "malformed"
+            if len(output) > BODY_PREVIEW_BYTES or decoder.unconsumed_tail:
+                return bytes(output[:BODY_PREVIEW_BYTES]), "display_limit"
+            member_finished = decoder.eof
+            next_pending = decoder.unused_data if member_finished else b""
+            if next_pending == pending:
+                return bytes(output), "malformed"
+            pending = next_pending
+    return bytes(output), None if member_finished else "stream_incomplete"
+
+
+def _decode_brotli(raw: bytes) -> tuple[bytes, str | None]:
+    decoder = brotlicffi.Decompressor()
+    output = bytearray()
+    for pos in range(0, len(raw), 512):
+        try:
+            output.extend(decoder.decompress(
+                raw[pos:pos + 512], output_buffer_limit=BODY_PREVIEW_BYTES + 1 - len(output),
+            ))
+        except brotlicffi.error:
+            return bytes(output), "malformed"
+        if len(output) > BODY_PREVIEW_BYTES:
+            return bytes(output[:BODY_PREVIEW_BYTES]), "display_limit"
+        if not decoder.can_accept_more_data():
+            return bytes(output), "malformed"
+        if decoder.is_finished() and pos + 512 < len(raw):
+            return bytes(output), "malformed"
+    return bytes(output), None if decoder.is_finished() else "stream_incomplete"
+
+
+def _verify_zstd_stream(raw: bytes) -> str | None:
+    """Check frame completion with small input steps and bounded output counting."""
+    decoder = None
+    output_size = 0
+    for pos in range(len(raw)):
+        pending = raw[pos:pos + 1]
+        while pending:
+            if decoder is None:
+                decoder = zstandard.ZstdDecompressor(max_window_size=ZSTD_MAX_WINDOW_BYTES).decompressobj()
+            try:
+                output_size += len(decoder.decompress(pending))
+            except zstandard.ZstdError as exc:
+                return "resource_limit" if "too much memory" in str(exc).lower() else "malformed"
+            if output_size > BODY_PREVIEW_BYTES:
+                return "display_limit"
+            if decoder.eof:
+                next_pending = decoder.unused_data
+                if next_pending == pending:
+                    return "malformed"
+                pending = next_pending
+                decoder = None
+            else:
+                pending = b""
+    return None if decoder is None else "stream_incomplete"
+
+
+def _decode_zstd(raw: bytes) -> tuple[bytes, str | None]:
+    output = bytearray()
     try:
-        decoder = zlib.decompressobj(window)
-        decoded = decoder.decompress(raw, BODY_PREVIEW_BYTES + 1)
-    except zlib.error:
-        return None, None
-    if len(decoded) > BODY_PREVIEW_BYTES or decoder.unconsumed_tail:
-        return decoded[:BODY_PREVIEW_BYTES], "display_limit"
-    if not decoder.eof:
-        return decoded, "stream_incomplete"
-    return decoded, None
+        parameters = zstandard.get_frame_parameters(raw)
+        if parameters.window_size > ZSTD_MAX_WINDOW_BYTES:
+            return b"", "resource_limit"
+        decompressor = zstandard.ZstdDecompressor(max_window_size=ZSTD_MAX_WINDOW_BYTES)
+        with decompressor.stream_reader(io.BytesIO(raw), read_across_frames=True) as reader:
+            while len(output) <= BODY_PREVIEW_BYTES:
+                chunk = reader.read(min(8192, BODY_PREVIEW_BYTES + 1 - len(output)))
+                if not chunk:
+                    break
+                output.extend(chunk)
+        if len(output) > BODY_PREVIEW_BYTES:
+            return bytes(output[:BODY_PREVIEW_BYTES]), "display_limit"
+        # The stream reader can return EOF for a retained prefix of a frame.
+        # A separate bounded pass checks completion, including multiple frames.
+        return bytes(output), _verify_zstd_stream(raw)
+    except zstandard.ZstdError as exc:
+        error = str(exc).lower()
+        if "not enough data for frame parameters" in error:
+            return bytes(output), "stream_incomplete"
+        if "too much memory" in error:
+            return bytes(output), "resource_limit"
+        return bytes(output), "malformed"
+
+
+def _decode_coding(raw: bytes, coding: str) -> tuple[bytes, str | None]:
+    if coding in {"gzip", "deflate"}:
+        return _decode_zlib(raw, coding)
+    if coding == "br":
+        return _decode_brotli(raw)
+    return _decode_zstd(raw)
+
+
+def _decode_note(coding: str, state: str) -> str:
+    if state == "display_limit":
+        return f"decoded preview truncated at {BODY_PREVIEW_BYTES} bytes ({coding})"
+    if state == "stream_incomplete":
+        return f"encoded stream incomplete ({coding})"
+    return f"malformed {coding} stream"
+
+
+def _decoded_content(raw: bytes, codings: list[str]) -> tuple[bytes | None, list[str]]:
+    if len(codings) > MAX_ENCODING_STAGES:
+        return None, [f"content encoding has more than {MAX_ENCODING_STAGES} stages"]
+    if any(not coding for coding in codings):
+        return None, ["malformed Content-Encoding header"]
+    for coding in codings:
+        if coding not in {"identity", "gzip", "deflate", "br", "zstd"}:
+            return None, [f"unsupported content encoding {coding}"]
+    notes = []
+    decoded = raw
+    input_incomplete = False
+    for coding in reversed(codings):
+        if coding == "identity":
+            continue
+        decoded, state = _decode_coding(decoded, coding)
+        if state == "resource_limit":
+            return None, [f"zstd window exceeds {ZSTD_MAX_WINDOW_BYTES} byte viewer limit"]
+        if state == "malformed" and input_incomplete:
+            state = "stream_incomplete"
+        if state:
+            notes.append(_decode_note(coding, state))
+        if state in {"malformed", "stream_incomplete"} and not decoded:
+            return None, notes
+        input_incomplete |= state in {"display_limit", "stream_incomplete"}
+    return decoded, notes
 
 
 def _http_preview_bytes(value: dict) -> tuple[bytes, int, bool]:
@@ -153,14 +293,54 @@ def _pretty_json(content: str) -> str:
         return content  # Incomplete or invalid JSON remains readable as text.
 
 
-def _http_preview_notes(raw_size: int, total: int, truncated: bool, decode_state: str | None) -> str:
+def _pretty_ndjson(content: str) -> str:
+    parts = []
+    length = 0
+    for line in content.splitlines():
+        formatted = _pretty_json(line) if line.strip() else line
+        remaining = BODY_PREVIEW_CHARS + 1 - length
+        parts.append(formatted[:remaining])
+        length += min(len(formatted), remaining)
+        if length > BODY_PREVIEW_CHARS:
+            break
+        parts.append("\n")
+        length += 1
+    return "".join(parts).removesuffix("\n")
+
+
+def _pretty_form(content: str, charset: str) -> str:
+    try:
+        fields = parse_qsl(content, keep_blank_values=True, encoding=charset,
+                           errors="strict", max_num_fields=256)
+    except (ValueError, LookupError, UnicodeError):
+        return content
+    return "\n".join(f"{name} = {value}" for name, value in fields) if fields else content
+
+
+def _readable_media_type(media_type: str) -> bool:
+    return (media_type.startswith("text/") or media_type.endswith(("+json", "+xml"))
+            or media_type in {"application/json", "application/xml", "application/javascript",
+                              "application/ecmascript", "application/x-javascript", "application/x-ndjson",
+                              "application/ndjson", "application/x-www-form-urlencoded"})
+
+
+def _format_content(content: str, media_type: str, charset: str, pretty: bool) -> str:
+    if not pretty:
+        return content
+    if media_type == "application/json" or media_type.endswith("+json"):
+        return _pretty_json(content)
+    if media_type in {"application/x-ndjson", "application/ndjson", "text/x-ndjson"}:
+        return _pretty_ndjson(content)
+    if media_type == "application/x-www-form-urlencoded":
+        return _pretty_form(content, charset)
+    return content
+
+
+def _http_preview_notes(raw_size: int, total: int, truncated: bool, decode_notes: list[str]) -> str:
     notes = []
     if truncated:
         notes.append(f"[retained preview truncated: {raw_size} of {total} retained bytes; export for full evidence]")
-    if decode_state == "display_limit":
-        notes.append(f"[decoded preview truncated at {BODY_PREVIEW_BYTES} bytes]")
-    elif decode_state == "stream_incomplete":
-        notes.append("[encoded stream incomplete in retained preview]")
+    notes.extend(f"[{note}]" for note in decode_notes)
     return "\n" + "\n".join(notes) if notes else ""
 
 
@@ -187,35 +367,167 @@ def _decode_text_preview(decoded: bytes, charset: str, *, incomplete: bool) -> s
         return None
 
 
-def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
-    """Render one bounded HTTP preview without changing retained or exported bytes."""
+def _http_body_preview(value: dict, headers: list, *, pretty: bool, side: str | None) -> tuple[str, int | None]:
+    """Return the preview and length of readable content before any diagnostic notes."""
     if not value.get("available"):
         reason = plain_text(value.get("reason") or "not available")
-        return "pending: body capture is still in progress" if reason == "pending" else f"absent: {reason}"
+        text = "pending: body capture is still in progress" if reason == "pending" else f"absent: {reason}"
+        return text, None
     raw, total, truncated = _http_preview_bytes(value)
     if total == 0:
-        return "(present, empty body)"
+        return "(present, empty body)", None
     media_type, charset = _content_type(headers)
-    encoding = _content_encoding(headers)
-    decoded, decode_state = _decoded_content(raw, encoding)
+    decoded, decode_notes = _decoded_content(raw, _content_encodings(headers))
     if decoded is None:
-        return _binary_fallback(raw, media_type, total, f"encoded {encoding}; decoding unavailable")
-    is_json = media_type == "application/json" or media_type.endswith("+json")
-    is_text = is_json or media_type.startswith("text/") or media_type in {
-        "application/xml", "application/javascript", "application/x-www-form-urlencoded",
-    } or media_type.endswith("+xml")
-    if not is_text:
-        return _binary_fallback(raw, media_type, total, "binary")
+        return _binary_fallback(raw, total, f"{media_type} · {'; '.join(decode_notes)}", side), None
+    if not _readable_media_type(media_type):
+        reason = "binary or unknown body"
+        if decode_notes:
+            reason += "; " + "; ".join(decode_notes)
+        return _binary_fallback(raw, total, f"{media_type} · {reason}", side, decoded=decoded), None
     if not decoded:
-        text = "(present, empty decoded body)" if not truncated and decode_state is None else "(no decoded bytes in retained preview)"
+        text = "(present, empty decoded body)" if not truncated and not decode_notes else "(no decoded bytes in retained preview)"
+        content_length = None
     else:
-        content = _decode_text_preview(decoded, charset, incomplete=truncated or decode_state is not None)
+        content = _decode_text_preview(decoded, charset, incomplete=truncated or bool(decode_notes))
         if content is None:
-            return _binary_fallback(raw, media_type, total, f"unsupported or undecodable charset {charset}")
-        if pretty and is_json:
-            content = _pretty_json(content)
+            reason = f"unsupported or undecodable charset {charset}"
+            if decode_notes:
+                reason += "; " + "; ".join(decode_notes)
+            return _binary_fallback(raw, total, f"{media_type} · {reason}", side), None
+        content = _format_content(content, media_type, charset, pretty)
         text = _limited_text(plain_text(content, multiline=True), BODY_PREVIEW_CHARS, "body")
-    return text + _http_preview_notes(len(raw), total, truncated, decode_state)
+        content_length = min(len(text), BODY_PREVIEW_CHARS)
+    return text + _http_preview_notes(len(raw), total, truncated, decode_notes), content_length
+
+
+def http_body_preview(value: dict, headers: list, *, pretty: bool, side: str | None = None) -> str:
+    """Render one bounded HTTP preview without changing retained or exported bytes."""
+    return _http_body_preview(value, headers, pretty=pretty, side=side)[0]
+
+
+def _body_syntax_lexer(media_type: str):
+    if media_type == "application/json" or media_type.endswith("+json") or media_type in {
+        "application/x-ndjson", "application/ndjson", "text/x-ndjson",
+    }:
+        return JsonLexer
+    if media_type == "text/html" or media_type == "application/xhtml+xml":
+        return HtmlLexer
+    if media_type == "application/xml" or media_type.endswith("+xml") or media_type == "text/xml":
+        return XmlLexer
+    if media_type in {"application/javascript", "application/ecmascript", "application/x-javascript",
+                      "text/javascript"}:
+        return JavascriptLexer
+    if media_type == "text/css":
+        return CssLexer
+    return None
+
+
+_SYNTAX_STYLES = (
+    (Name.Tag, "ansiblue bold"), (Name.Class, "ansiblue bold"),
+    (Name.Attribute, "ansicyan"), (Literal.String, "ansigreen"),
+    (Literal.Number, "ansiyellow"), (Keyword, "ansimagenta"),
+    (Punctuation, "ansicyan"), (Operator, "ansicyan"),
+)
+
+
+def _syntax_style(token) -> str:
+    for family, style in _SYNTAX_STYLES:
+        if token in family:
+            return style
+    return ""
+
+
+def _form_syntax_ranges(content: str):
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        if " = " in line:
+            key, separator, value = line.partition(" = ")
+            yield offset, offset + len(key), "ansiblue bold"
+            yield offset + len(key), offset + len(key) + len(separator), "ansicyan"
+            yield offset + len(key) + len(separator), offset + len(key) + len(separator) + len(value.rstrip("\n")), "ansigreen"
+        else:
+            field_offset = offset
+            for field in line.rstrip("\n").split("&"):
+                key, separator, _ = field.partition("=")
+                yield field_offset, field_offset + len(key), "ansiblue bold"
+                if separator:
+                    yield field_offset + len(key), field_offset + len(key) + 1, "ansicyan"
+                    yield field_offset + len(key) + 1, field_offset + len(field), "ansigreen"
+                field_offset += len(field) + 1
+        offset += len(line)
+
+
+def _event_stream_syntax_ranges(content: str):
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        name, separator, _ = line.partition(":")
+        if separator and name in {"event", "data", "id", "retry"}:
+            yield offset, offset + len(name), "ansiblue bold"
+            yield offset + len(name), offset + len(name) + 1, "ansicyan"
+        offset += len(line)
+
+
+def _body_syntax_ranges(content: str, media_type: str):
+    lexer = _body_syntax_lexer(media_type)
+    if lexer is not None:
+        for offset, token, value in lexer(stripnl=False, ensurenl=False).get_tokens_unprocessed(content):
+            style = _syntax_style(token)
+            if style:
+                yield offset, offset + len(value), style
+    elif media_type == "application/x-www-form-urlencoded":
+        yield from _form_syntax_ranges(content)
+    elif media_type == "text/event-stream":
+        yield from _event_stream_syntax_ranges(content)
+
+
+class DetailSyntaxLexer(Lexer):
+    """Apply colour only to the selected HTTP body ranges in a plain-text detail pane."""
+
+    def __init__(self):
+        self.text = ""
+        self.body_spans: tuple[tuple[int, int, str], ...] = ()
+        self._fragments: list[list[tuple[str, str]]] | None = None
+
+    def update(self, text: str, body_spans: list[tuple[int, int, str]]) -> None:
+        spans = tuple(body_spans)
+        if text != self.text or spans != self.body_spans:
+            self.text = text
+            self.body_spans = spans
+            self._fragments = None
+
+    def lex_document(self, document):
+        lines = document.lines
+        if document.text != self.text:
+            return lambda line_number: [("", lines[line_number])]
+        if self._fragments is not None:
+            fragments = self._fragments
+            return lambda line_number: fragments[line_number]
+        styles = [""] * len(document.text)
+        for start, end, media_type in self.body_spans:
+            for offset, stop, style in _body_syntax_ranges(document.text[start:end], media_type):
+                token_start = start + offset
+                token_end = min(start + stop, end)
+                if token_start < token_end:
+                    styles[token_start:token_end] = [style] * (token_end - token_start)
+
+        fragments = []
+        offset = 0
+        for line in lines:
+            styled_line = []
+            if line:
+                run_start = 0
+                current_style = styles[offset]
+                for index in range(1, len(line)):
+                    style = styles[offset + index]
+                    if style != current_style:
+                        styled_line.append((current_style, line[run_start:index]))
+                        run_start, current_style = index, style
+                styled_line.append((current_style, line[run_start:]))
+            fragments.append(styled_line or [("", "")])
+            offset += len(line) + 1
+        self._fragments = fragments
+        return lambda line_number: fragments[line_number]
 
 
 def http_header_lines(headers: list, *, hide_routine: bool) -> list[str]:
@@ -366,6 +678,7 @@ class TrafficInspector:
         self._notice_hold: str | None = None
         self.websocket_mode = False
         self.transcript = WebSocketTranscript()
+        self.detail_syntax = DetailSyntaxLexer()
         self.wake = asyncio.Event()
 
     def select(self, offset: int) -> None:
@@ -819,20 +1132,20 @@ class TrafficInspector:
     def _with_export_report(self, text: str) -> str:
         return text + (f"\n\n{self.export_report}" if self.export_report else "")
 
-    def _http_body_text(self, row: dict, side: str) -> str:
+    def _http_body_text(self, row: dict, side: str) -> tuple[str, int | None]:
         if side in self.body_errors:
             key = "r" if side == "request" else "s"
-            return f"retrieval failed ({self.body_errors[side]}); {key} retries"
+            return f"retrieval failed ({self.body_errors[side]}); {key} retries", None
         if side in self.body_values:
-            return http_body_preview(
-                self.body_values[side], row.get(f"{side}_headers", []), pretty=self.pretty
+            return _http_body_preview(
+                self.body_values[side], row.get(f"{side}_headers", []), pretty=self.pretty, side=side
             )
         facts = row.get(f"{side}_body")
         if isinstance(facts, dict) and facts.get("reason") == "pending":
-            return "pending: body capture is still in progress"
-        return "loading retained preview…"
+            return "pending: body capture is still in progress", None
+        return "loading retained preview…", None
 
-    def _http_section(self, row: dict, side: str) -> str:
+    def _http_section(self, row: dict, side: str) -> tuple[str, tuple[int, int, str] | None]:
         if side == "request":
             first = f"{plain_text(row.get('method'))} {_limited_text(plain_text(row.get('url')), 2048, 'URL')}"
         else:
@@ -842,9 +1155,18 @@ class TrafficInspector:
             12 * 1024,
             "headers",
         )
-        body = self._http_body_text(row, side)
-        section = f"HTTP {side}\n{first}\nHeaders:\n{headers}\nBody: {body}"
-        return _limited_text(section, HTTP_SECTION_CHARS, side)
+        body, content_length = self._http_body_text(row, side)
+        prefix = f"HTTP {side}\n{first}\nHeaders:\n{headers}\nBody: "
+        section = _limited_text(prefix + body, HTTP_SECTION_CHARS, side)
+        media_type, _ = _content_type(row.get(f"{side}_headers", []))
+        syntax_media = _body_syntax_lexer(media_type) is not None or media_type in {
+            "application/x-www-form-urlencoded", "text/event-stream",
+        }
+        if content_length is None or not syntax_media:
+            return section, None
+        body_end = min(len(prefix) + content_length, HTTP_SECTION_CHARS)
+        span = (len(prefix), body_end, media_type) if len(prefix) < body_end else None
+        return section, span
 
     def _metadata_section(self, row: dict) -> str:
         lines = ["SafeYolo metadata"]
@@ -858,26 +1180,41 @@ class TrafficInspector:
         lines.append("metadata: " + plain_text(json.dumps(row.get("metadata", {}), ensure_ascii=True)))
         return _limited_text("\n".join(lines), 32 * 1024, "metadata")
 
-    def detail_text(self) -> str:
+    def _detail_render(self) -> tuple[str, list[tuple[int, int, str]]]:
         if self.websocket_mode:
             error = plain_text((self.detail or {}).get("error"))
             text = f"error: {error}\n\n" + self.transcript.detail_text()
-            return self._with_export_report(text)
+            return self._with_export_report(text), []
         row = self.detail
         if row is None:
             text = ("Loading selected exchange and both body previews…" if self.selected else
                     "Select a flow with Up/Down. Body previews load automatically.")
-            return self._with_export_report(text)
-        text = "\n\n──────── HTTP exchange ────────\n\n".join((
-            self._http_section(row, "request"), self._http_section(row, "response"),
-        ))
+            return self._with_export_report(text), []
+        request, request_span = self._http_section(row, "request")
+        response, response_span = self._http_section(row, "response")
+        separator = "\n\n──────── HTTP exchange ────────\n\n"
+        text = request + separator + response
         text += "\n\n──────── SafeYolo ────────\n" + self._metadata_section(row)
+        spans = []
+        if request_span is not None:
+            spans.append(request_span)
+        if response_span is not None:
+            start, end, media_type = response_span
+            shift = len(request) + len(separator)
+            spans.append((start + shift, end + shift, media_type))
         if len(text) > DETAIL_PREVIEW_CHARS:
             text = text[:DETAIL_PREVIEW_CHARS] + "\n[detail preview truncated]"
-        return self._with_export_report(text)
+            spans = [(start, min(end, DETAIL_PREVIEW_CHARS), media_type)
+                     for start, end, media_type in spans if start < DETAIL_PREVIEW_CHARS]
+        return self._with_export_report(text), spans
+
+    def detail_text(self) -> str:
+        return self._detail_render()[0]
 
     def _show(self, rows: TextArea, detail: TextArea) -> None:
-        for area, text in ((rows, self.rows_text()), (detail, self.detail_text())):
+        detail_text, body_spans = self._detail_render()
+        self.detail_syntax.update(detail_text, body_spans)
+        for area, text in ((rows, self.rows_text()), (detail, detail_text)):
             if area.text != text:
                 position = area.buffer.cursor_position
                 area.text = text
@@ -1073,16 +1410,16 @@ class TrafficInspector:
 
     def help_text(self) -> str:
         view = "w HTTP · [/] message page · r/s retry HTTP body" if self.websocket_mode else "r/s retry body · w WebSocket"
-        pretty = "on" if self.pretty else "off"
+        body_mode = "formatted" if self.pretty else "source"
         headers = "hidden" if self.hide_routine_headers else "shown"
         return (
-            f"p pretty {pretty} · h routine headers {headers} · ↑↓ select · > focus · * marked · "
+            f"p body {body_mode} · h routine headers {headers} · ↑↓ select · > focus · * marked · "
             f"Tab pane · PgUp/PgDn scroll · {view} · m mark/unmark · "
             "x export marked (or focused) · f filter · a/t scope · c clear scope · q detach"
         )
 
     def application(self) -> Application:
-        detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
+        detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True, lexer=self.detail_syntax)
         rows = TextArea(read_only=True, scrollbar=True, wrap_lines=False)
         prompt = TextArea(height=1, multiline=False)
         app = Application(
