@@ -1586,6 +1586,72 @@ def test_live_tail_json_picker_last_item_independent_pins_missing_and_changed_ch
     asyncio.run(run())
 
 
+def test_live_tail_highlights_changes_in_displayed_pinned_json_for_same_endpoint():
+    # Each request body comes from the Admin API; the TUI must compare what it displays.
+    cases = [
+        (b'1', "POST", "/same?turn=0", True, False),
+        (b'true', "POST", "/same?turn=1", True, True),
+        (b'0', "POST", "/same?turn=2", True, True),
+        (b'false', "POST", "/same?turn=3", True, True),
+        (b'1.0', "POST", "/same?turn=4", True, True),
+        (b'1', "POST", "/same?turn=5", True, True),
+        (b'{"a":1,"b":2}', "POST", "/same?turn=6", True, True),
+        (b'{"b":2,"a":1}', "POST", "/same?turn=7", True, True),
+        (b'{"b":2,"a":1}', "POST", "/same?turn=8", True, False),
+        (b'"other"', "POST", "/other", True, False),
+        (b'"method"', "GET", "/same", True, False),
+        (b'"back"', "POST", "/same", True, False),
+        (b'"next"', "POST", "/same", True, True),
+        (b'9', "POST", "/same", False, False),
+        (b'10', "POST", "/same", True, False),
+    ]
+    bodies = {
+        str(index): b'{"flag":' + value + b'}' if has_pin else b'{"different":9}'
+        for index, (value, _, _, has_pin, _) in enumerate(cases)
+    }
+    bodies["8"] = b'{"flag" : {"b": 2, "a": 1}}'  # different raw bytes, same displayed pin
+    rows = {
+        str(index): flow(str(index), started=float(index), method=method,
+                         url="http://owned.invalid" + endpoint,
+                         request_headers=[["Content-Type", "application/json"]],
+                         request_body={"available": True, "size": len(bodies[str(index)])})
+        for index, (_, method, endpoint, _, _) in enumerate(cases)
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(reversed(list(rows.values()))),
+                                      "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: preview(bodies[flow_id])
+    view = TrafficInspector(api)
+    view.toggle_tail()
+    view.tail_pins["request"] = ("flag",)
+
+    async def run():
+        for _ in range(4):
+            await view.refresh()
+        assert all("request" in view.tail_cards[str(index)].bodies for index in range(len(cases)))
+
+    asyncio.run(run())
+    tail, detail = TextArea(lexer=view.tail_syntax), TextArea()
+    view._show(tail, detail)
+    assert "\x1b" not in tail.text
+    document = Document(tail.text)
+    request_lines = [number for number, line in enumerate(document.lines)
+                     if line.startswith("  → request")]
+    assert len(request_lines) == len(cases)
+    lex_line = view.tail_syntax.lex_document(document)
+    styled_requests = []
+    for line_number, (value, _, _, has_pin, expected_change) in zip(request_lines, cases, strict=True):
+        line = document.lines[line_number]
+        expected_value = value.decode() if has_pin else "[missing path]"
+        assert line.endswith(": " + ("Δ " if expected_change else "") + expected_value)
+        styled = "".join(chunk for style, chunk in lex_line(line_number) if "ansiyellow" in style)
+        styled_requests.append(styled)
+        assert ("Δ" in styled) == expected_change
+        assert any(char not in "Δ " for char in styled) == expected_change
+    assert styled_requests[5] == "Δ1"  # 1.0 → 1 has only a deleted suffix
+
+
 def test_live_tail_fetch_budget_truncated_json_and_terminal_controls():
     rows = [flow(str(index), started=float(index),
                  request_headers=[["Content-Type", "application/json"]],

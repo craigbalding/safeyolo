@@ -754,9 +754,19 @@ def _endpoint(row: dict) -> tuple[str, str]:
 
 
 def _changed_spans(previous: str, current: str) -> list[tuple[int, int]]:
-    return [(start, end) for operation, _, _, start, end in
-            difflib.SequenceMatcher(None, previous, current, autojunk=False).get_opcodes()
-            if operation != "equal" and start != end]
+    spans = []
+    for operation, _, _, start, end in difflib.SequenceMatcher(
+        None, previous, current, autojunk=False
+    ).get_opcodes():
+        if operation == "equal":
+            continue
+        if start == end and current:
+            # A deletion has no changed character on this card; emphasize its neighbour.
+            start = min(start, len(current) - 1)
+            end = start + 1
+        if start != end:
+            spans.append((start, end))
+    return spans
 
 
 @dataclass
@@ -1535,20 +1545,20 @@ class TrafficInspector:
             lines.append(plain_text(text))
         return "\n".join(lines) or "No matching flows. Scope is shared with other clients."
 
-    def _tail_body_content(self, row: dict, side: str) -> tuple[str, object | None, str]:
+    def _tail_body_content(self, row: dict, side: str) -> tuple[str, bool, str]:
         facts = row.get(f"{side}_body")
         if not isinstance(facts, dict):
-            return "[body facts unavailable]", None, ""
+            return "[body facts unavailable]", False, ""
         if not facts.get("available"):
             reason = facts.get("reason") or "not available"
-            return ("[pending]" if reason == "pending" else f"[absent: {_short_line(reason, 80)}]"), None, ""
+            return ("[pending]" if reason == "pending" else f"[absent: {_short_line(reason, 80)}]"), False, ""
         card = self.tail_cards.get(row["id"])
         error = (f"detail unavailable: {card.detail_error}" if card and card.detail_error else
                  f"preview failed: {card.body_errors[side]}; r/s retries" if card and side in card.body_errors else None)
         if error:
-            return f"[{error}]", None, ""
+            return f"[{error}]", False, ""
         if card is None or side not in card.bodies or card.detail is None:
-            return "[loading preview…]", None, ""
+            return "[loading preview…]", False, ""
         body = card.bodies[side]
         headers = card.detail.get(f"{side}_headers", [])
         path = self.tail_pins[side]
@@ -1556,11 +1566,11 @@ class TrafficInspector:
             if side not in card.body_texts:
                 text = http_body_preview(body, headers, pretty=False, side=side)
                 card.body_texts[side] = _short_line(text, TAIL_BODY_CHARS)
-            return card.body_texts[side], None, ""
+            return card.body_texts[side], False, ""
         return self._tail_pinned_content(card, side, body, headers, path)
 
     def _tail_pinned_content(self, card: TailCard, side: str, body: dict,
-                             headers: list, path: tuple) -> tuple[str, object | None, str]:
+                             headers: list, path: tuple) -> tuple[str, bool, str]:
         if side not in card.json_values:
             try:
                 card.json_values[side] = _json_preview(body, headers)
@@ -1568,12 +1578,12 @@ class TrafficInspector:
                 card.json_values[side] = JSON_UNAVAILABLE
         root = card.json_values[side]
         if root is JSON_UNAVAILABLE:
-            return "[complete JSON preview unavailable]", None, ""
+            return "[complete JSON preview unavailable]", False, ""
         found, value = _json_at(root, path)
         if not found:
-            return "[missing path]", (False, None), ""
+            return "[missing path]", False, ""
         shown, _ = _json_value_text(value)
-        return shown, (True, value), shown
+        return shown, True, shown
 
     def _tail_card_header(self, row: dict) -> str:
         started = row.get("started")
@@ -1616,17 +1626,17 @@ class TrafficInspector:
             append(f"[showing {len(visible)} of {len(self.flows)} matching flows; older cards outside window]")
         if not visible:
             append("No matching flows. Scope and filter are shared with other clients.")
-        previous: tuple[tuple[str, str], object | None, str] | None = None
+        previous: tuple[tuple[str, str], bool, str] | None = None
         for row in visible:
             if lines:
                 append("")
             card_offsets.append(length)
             append(self._tail_card_header(row))
-            request, current_value, current_text = self._tail_body_content(row, "request")
+            request, current_pinned, current_text = self._tail_body_content(row, "request")
             req_path = self.tail_pins["request"]
             same_endpoint = previous is not None and previous[0] == _endpoint(row)
-            changed = bool(req_path is not None and same_endpoint and previous[1] is not None
-                           and current_value is not None and previous[1] != current_value)
+            changed = bool(req_path is not None and same_endpoint and previous[1]
+                           and current_pinned and previous[2] != current_text)
             req_prefix = "  → request" + (f" {_short_line(_json_path_text(req_path), 100)}" if req_path is not None else "")
             req_prefix += ": " + ("Δ " if changed else "")
             offset = append(req_prefix + request)
@@ -1635,7 +1645,7 @@ class TrafficInspector:
                 spans.append((marker, marker + 1))
                 spans.extend((offset + len(req_prefix) + start, offset + len(req_prefix) + end)
                              for start, end in _changed_spans(previous[2], current_text))
-            previous = (_endpoint(row), current_value, current_text)
+            previous = (_endpoint(row), current_pinned, current_text)
             response, _, _ = self._tail_body_content(row, "response")
             resp_path = self.tail_pins["response"]
             resp_prefix = "  ← response" + (f" {_short_line(_json_path_text(resp_path), 100)}" if resp_path is not None else "")
