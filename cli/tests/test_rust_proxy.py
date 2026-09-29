@@ -1,5 +1,7 @@
 """Owned-file Rust CLI lifecycle controls with mocked external boundaries."""
 
+import ctypes
+import errno
 import json
 import signal
 import socket
@@ -419,9 +421,9 @@ def test_graceful_stop_waits_beyond_both_old_deadlines_without_sigkill(launch):
     assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
 
 
-def test_macos_post_signal_unobservable_exit_preserves_other_live_socket(launch):
-    """An exited native process cannot authorize removal of another UDS."""
-    receipt(launch)
+def test_post_signal_unknown_identity_keeps_receipt_and_other_live_socket(launch):
+    """An unreadable process cannot authorize lifetime or other UDS cleanup."""
+    process = receipt(launch)
     launch.ready.write_text(json.dumps(marker()))
     launch.token.side_effect = [TOKEN, None]
     bridge = rust_proxy.get_bridge_sockets_dir()
@@ -432,16 +434,17 @@ def test_macos_post_signal_unobservable_exit_preserves_other_live_socket(launch)
         other.listen()
         inode = other_path.stat().st_ino
 
-        proxy.stop_proxy()
+        with pytest.raises(RuntimeError, match="Cannot verify Rust proxy process identity"):
+            proxy.stop_proxy()
 
         assert other_path.stat().st_ino == inode
         with socket.socket(socket.AF_UNIX) as client:
             client.connect(str(other_path))
 
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
-    assert not launch.ready.exists()
-    assert not rust_proxy.state_file().exists()
-    assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
+    assert launch.ready.exists()
+    assert rust_proxy.read_process() == process
+    assert (rust_proxy.get_data_dir() / "proxy.pid").exists()
 
 
 def test_interrupted_stop_keeps_receipt_and_does_not_kill_tmux(launch):
@@ -623,6 +626,54 @@ def test_process_liveness_reports_exited_before_reading_proc(launch, monkeypatch
     read.assert_not_called()
 
 
+def test_darwin_libproc_token_and_liveness_without_ps(monkeypatch):
+    monkeypatch.setattr(runtime_identity.sys, "platform", "darwin")
+    info = runtime_identity._DarwinBSDInfo()
+    info.pbi_pid = PID
+    info.pbi_status = 2
+    info.pbi_start_tvsec = 1_790_000_000
+    info.pbi_start_tvusec = 123456
+
+    def pidinfo(pid, flavor, argument, buffer, size):
+        assert (pid, flavor, argument, size) == (PID, 3, 0, 136)
+        ctypes.memmove(buffer, ctypes.byref(info), size)
+        return size
+
+    monkeypatch.setattr(runtime_identity.ctypes, "CDLL", lambda *_args, **_kwargs: SimpleNamespace(proc_pidinfo=pidinfo))
+    assert runtime_identity.process_start_token(PID) == "darwin:24680:1790000000:123456"
+    assert runtime_identity.process_is_alive(PID)
+    info.pbi_status = 5
+    assert not runtime_identity.process_is_alive(PID)
+
+
+@pytest.mark.parametrize("failure", ["exited", "denied", "short", "wrong-pid"])
+def test_darwin_libproc_failure_never_proves_ownership(monkeypatch, failure):
+    monkeypatch.setattr(runtime_identity.sys, "platform", "darwin")
+
+    def pidinfo(_pid, _flavor, _argument, buffer, size):
+        if failure == "exited":
+            ctypes.set_errno(errno.ESRCH)
+            return 0
+        if failure == "denied":
+            ctypes.set_errno(errno.EPERM)
+            return 0
+        if failure == "short":
+            return size - 1
+        info = runtime_identity._DarwinBSDInfo()
+        info.pbi_pid = PID + 1
+        info.pbi_start_tvsec = 1_790_000_000
+        ctypes.memmove(buffer, ctypes.byref(info), size)
+        return size
+
+    monkeypatch.setattr(runtime_identity.ctypes, "CDLL", lambda *_args, **_kwargs: SimpleNamespace(proc_pidinfo=pidinfo))
+    assert runtime_identity.process_start_token(PID) is None
+    if failure == "exited":
+        assert not runtime_identity.process_is_alive(PID)
+    else:
+        with pytest.raises((OSError, RuntimeError)):
+            runtime_identity.process_is_alive(PID)
+
+
 class _PidfdOperations:
     """Concrete PID-handle boundary, independent of the test host OS."""
 
@@ -801,3 +852,18 @@ def test_posix_signal_fallback_rechecks_identity_without_pidfd(launch, monkeypat
         launch.kill.assert_called_once_with(PID, signal.SIGTERM)
     else:
         launch.kill.assert_not_called()
+
+
+def test_darwin_denied_direct_signal_uses_verified_tmux_pane(launch, monkeypatch):
+    process = receipt(launch)
+    monkeypatch.setattr(rust_proxy.sys, "platform", "darwin")
+    monkeypatch.setattr(rust_proxy, "os", SimpleNamespace(kill=launch.kill))
+    monkeypatch.setattr(rust_proxy, "signal", SimpleNamespace(SIGTERM=signal.SIGTERM))
+    interrupt = create_autospec(rust_proxy.interrupt_session_process, spec_set=True)
+    monkeypatch.setattr(rust_proxy, "interrupt_session_process", interrupt)
+    launch.kill.side_effect = PermissionError("seatbelt denied direct signal")
+
+    launch.terminate_original(process)
+
+    launch.kill.assert_called_once_with(PID, signal.SIGTERM)
+    interrupt.assert_called_once_with(PID, TOKEN)
