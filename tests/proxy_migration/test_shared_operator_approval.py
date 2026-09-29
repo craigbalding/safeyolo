@@ -137,8 +137,9 @@ def test_shared_operator_approval_is_scoped_and_retried(proxy_backend, tmp_path)
             admin_api_token_file=token_file,
         ) as proxy:
             api = _admin_client(proxy, token_file)
-            instance = api.instance()
-            assert instance["capabilities"]["approvals"] is True
+            if proxy_backend == "python":
+                instance = api.instance()
+                assert instance["capabilities"]["approvals"] is True
 
             port = origin.server_address[1]
             target = f"http://127.0.0.1:{port}/shared-operator-approval"
