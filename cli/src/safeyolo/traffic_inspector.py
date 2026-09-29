@@ -6,18 +6,22 @@ import asyncio
 import base64
 import binascii
 import codecs
+import difflib
 import hashlib
 import io
 import json
+import math
 import os
 import sys
 import tempfile
+import time
 import unicodedata
 import zlib
 from collections import Counter
+from dataclasses import dataclass, field
 from email.message import Message
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import brotlicffi
 import zstandard
@@ -25,6 +29,7 @@ from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.containers import DynamicContainer
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.widgets import TextArea
@@ -44,6 +49,13 @@ ZSTD_MAX_WINDOW_BYTES = 32 * 1024 * 1024
 # security, tracing and content description headers visible for diagnosis.
 ROUTINE_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent"})
 EXPORT_FORMATS = ("raw", "raw_request", "raw_response", "curl", "httpie", "har", "zhar")
+TAIL_CARDS = 40
+TAIL_FETCHES_PER_POLL = 12
+TAIL_VALUE_CHARS = 220
+TAIL_BODY_CHARS = 180
+TAIL_PICKER_LINES = 24
+LAST_ITEM = object()
+JSON_UNAVAILABLE = object()
 
 
 def plain_text(value: object, *, multiline: bool = False) -> str:
@@ -652,6 +664,144 @@ class WebSocketTranscript:
         return "\n".join(lines)
 
 
+def _short_line(value: object, limit: int) -> str:
+    text = plain_text(value)
+    return text if len(text) <= limit else text[:limit] + "… [preview]"
+
+
+def _json_preview(body: dict | None, headers: list) -> object:
+    """Parse only a complete, bounded JSON preview through the HTTP decoder."""
+    if not body or not body.get("available"):
+        return JSON_UNAVAILABLE
+    _, charset = _content_type(headers)
+    raw, _, truncated = _http_preview_bytes(body)
+    decoded, notes = _decoded_content(raw, _content_encodings(headers))
+    if truncated or decoded is None or notes:
+        return JSON_UNAVAILABLE
+    content = _decode_text_preview(decoded, charset, incomplete=False)
+    if content is None:
+        return JSON_UNAVAILABLE
+    try:
+        return json.loads(content)
+    except (ValueError, TypeError, RecursionError):
+        return JSON_UNAVAILABLE
+
+
+def _json_at(value: object, path: tuple) -> tuple[bool, object]:
+    for part in path:
+        if part is LAST_ITEM:
+            if not isinstance(value, list) or not value:
+                return False, None
+            value = value[-1]
+        elif isinstance(value, dict) and isinstance(part, str) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and type(part) is int and 0 <= part < len(value):
+            value = value[part]
+        else:
+            return False, None
+    return True, value
+
+
+def _json_path_text(path: tuple) -> str:
+    parts = ["$"]
+    for part in path:
+        if part is LAST_ITEM:
+            parts.append("[last]")
+        elif type(part) is int:
+            parts.append(f"[{part}]")
+        else:
+            parts.append("[" + json.dumps(part, ensure_ascii=True) + "]")
+    return "".join(parts)
+
+
+def _json_children(value: object, path: tuple) -> list[tuple]:
+    found, node = _json_at(value, path)
+    if not found:
+        return []
+    if isinstance(node, dict):
+        return [(*path, key) for key in node]
+    if isinstance(node, list):
+        return ([(*path, LAST_ITEM)] if node else []) + [(*path, index) for index in range(len(node))]
+    return []
+
+
+def _json_value_text(value: object, limit: int = TAIL_VALUE_CHARS) -> tuple[str, bool]:
+    """Bound JSON serialization before any terminal text is assembled."""
+    try:
+        encoded = json.JSONEncoder(ensure_ascii=True, separators=(",", ":")).iterencode(value)
+        parts = []
+        remaining = limit + 1
+        for part in encoded:
+            parts.append(part[:remaining])
+            remaining -= min(len(part), remaining)
+            if remaining == 0:
+                break
+        text = "".join(parts)
+    except (TypeError, ValueError, RecursionError):
+        return "[JSON value unavailable]", False
+    truncated = len(text) > limit
+    return text[:limit] + ("… [preview]" if truncated else ""), truncated
+
+
+def _endpoint(row: dict) -> tuple[str, str]:
+    url = str(row.get("url") or "")
+    try:
+        parsed = urlsplit(url)
+        endpoint = f"{parsed.scheme}://{parsed.netloc}{parsed.path}" if parsed.netloc else parsed.path
+    except ValueError:
+        endpoint = url.split("?", 1)[0].split("#", 1)[0]
+    return str(row.get("method") or ""), endpoint
+
+
+def _changed_spans(previous: str, current: str) -> list[tuple[int, int]]:
+    return [(start, end) for operation, _, _, start, end in
+            difflib.SequenceMatcher(None, previous, current, autojunk=False).get_opcodes()
+            if operation != "equal" and start != end]
+
+
+@dataclass
+class TailCard:
+    signature: tuple | None = None
+    detail: dict | None = None
+    detail_error: str | None = None
+    bodies: dict[str, dict] = field(default_factory=dict)
+    body_signatures: dict[str, tuple] = field(default_factory=dict)
+    body_errors: dict[str, str] = field(default_factory=dict)
+    body_texts: dict[str, str] = field(default_factory=dict)
+    json_values: dict[str, object] = field(default_factory=dict)
+
+
+class TailChangeLexer(Lexer):
+    """Colour changed request characters; the visible Δ also works without colour."""
+
+    def __init__(self):
+        self.text = ""
+        self.spans: tuple[tuple[int, int], ...] = ()
+
+    def update(self, text: str, spans: list[tuple[int, int]]) -> None:
+        self.text, self.spans = text, tuple(spans)
+
+    def lex_document(self, document):
+        if document.text != self.text:
+            return lambda line_number: [("", document.lines[line_number])]
+        offset = 0
+        fragments = []
+        for line in document.lines:
+            styles = [""] * len(line)
+            for start, end in self.spans:
+                for position in range(max(start, offset), min(end, offset + len(line))):
+                    styles[position - offset] = "ansiyellow bold underline"
+            pieces = []
+            for char, style in zip(line, styles, strict=True):
+                if pieces and pieces[-1][0] == style:
+                    pieces[-1] = (style, pieces[-1][1] + char)
+                else:
+                    pieces.append((style, char))
+            fragments.append(pieces or [("", "")])
+            offset += len(line) + 1
+        return lambda line_number: fragments[line_number]
+
+
 class TrafficInspector:
     """One client projection; scope and retained traffic remain proxy-owned."""
 
@@ -679,6 +829,21 @@ class TrafficInspector:
         self.websocket_mode = False
         self.transcript = WebSocketTranscript()
         self.detail_syntax = DetailSyntaxLexer()
+        self.tail_syntax = TailChangeLexer()
+        self.tail_mode = False
+        self.tail_follow = True
+        self.tail_detail_open = False
+        self.tail_pins: dict[str, tuple | None] = {"request": None, "response": None}
+        self.tail_cards: dict[str, TailCard] = {}
+        self.tail_known_ids: set[str] | None = None
+        self.tail_departed = 0
+        self.tail_failed_polls = 0
+        self.tail_poll_interrupted = False
+        self.tail_revision = 0
+        self.pin_picker_side: str | None = None
+        self.pin_picker_root: object | None = None
+        self.pin_picker_prefix: tuple = ()
+        self.pin_picker_index = 0
         self.wake = asyncio.Event()
 
     def select(self, offset: int) -> None:
@@ -686,19 +851,140 @@ class TrafficInspector:
             self.transcript.select(offset)
             self.wake.set()
             return
-        if not self.flows:
+        rows = self._tail_visible() if self.tail_mode else self.flows
+        if not rows:
             return
-        ids = [row["id"] for row in self.flows]
-        index = ids.index(self.selected) if self.selected in ids else 0
+        ids = [row["id"] for row in rows]
+        index = ids.index(self.selected) if self.selected in ids else (len(ids) - 1 if self.tail_mode else 0)
+        if self.tail_mode:
+            self.tail_follow = False
         self._select(ids[max(0, min(len(ids) - 1, index + offset))])
         self.wake.set()
 
     def _select(self, flow_id: str | None) -> None:
         if flow_id != self.selected:
             self.selected = flow_id
+            self.close_pin_picker()
             self._clear_selected_detail()
             self.websocket_mode = False
             self.transcript = WebSocketTranscript()
+
+    def _tail_visible(self) -> list[dict]:
+        if not self.flows:
+            return []
+        if self.tail_follow or self.selected is None:
+            start = 0
+        else:
+            ids = [row["id"] for row in self.flows]
+            index = ids.index(self.selected) if self.selected in ids else 0
+            start = max(0, min(index - TAIL_CARDS // 2, len(self.flows) - TAIL_CARDS))
+        return list(reversed(self.flows[start:start + TAIL_CARDS]))
+
+    def toggle_tail(self) -> None:
+        self.tail_mode = not self.tail_mode
+        self.close_pin_picker()
+        self.tail_detail_open = False
+        if self.tail_mode:
+            self.tail_known_ids = None
+            if self.tail_follow:
+                self._select(self.flows[0]["id"] if self.flows else None)
+        self.wake.set()
+
+    def resume_tail(self) -> None:
+        if self.tail_mode:
+            self.tail_follow = True
+            self.tail_detail_open = False
+            self._select(self.flows[0]["id"] if self.flows else None)
+            self.wake.set()
+
+    def _reset_tail_snapshot(self) -> None:
+        self.tail_revision += 1
+        self.tail_cards.clear()
+        self.tail_known_ids = None
+        self.tail_departed = 0
+        self.tail_failed_polls = 0
+        self.tail_poll_interrupted = False
+        self.close_pin_picker()
+
+    def _tail_poll_failed(self) -> None:
+        if self.tail_mode:
+            self.tail_failed_polls += 1
+
+    def close_pin_picker(self) -> None:
+        self.pin_picker_side = None
+        self.pin_picker_root = None
+        self.pin_picker_prefix = ()
+        self.pin_picker_index = 0
+
+    def open_pin_picker(self, side: str) -> None:
+        if not self.tail_mode or self.detail is None or side not in self.body_values:
+            self._hold_notice("Choose a loaded JSON request or response in tail mode")
+            return
+        try:
+            value = _json_preview(self.body_values[side], self.detail.get(f"{side}_headers", []))
+        except (TypeError, ValueError):
+            value = JSON_UNAVAILABLE
+        if value is JSON_UNAVAILABLE:
+            self._hold_notice("Selected side has no complete JSON preview; retry or export the body")
+            return
+        self.pin_picker_side = side
+        self.pin_picker_root = value
+        self.pin_picker_prefix = ()
+        self.pin_picker_index = 0
+        self.tail_follow = False
+        self.tail_detail_open = True
+        self.wake.set()
+
+    def _pin_picker_choices(self) -> list[tuple]:
+        return [self.pin_picker_prefix, *_json_children(self.pin_picker_root, self.pin_picker_prefix)]
+
+    def move_pin_picker(self, offset: int) -> None:
+        choices = self._pin_picker_choices()
+        self.pin_picker_index = max(0, min(len(choices) - 1, self.pin_picker_index + offset))
+        self.wake.set()
+
+    def descend_pin_picker(self) -> None:
+        path = self._pin_picker_choices()[self.pin_picker_index]
+        if _json_children(self.pin_picker_root, path):
+            self.pin_picker_prefix, self.pin_picker_index = path, 0
+        self.wake.set()
+
+    def ascend_pin_picker(self) -> None:
+        if self.pin_picker_prefix:
+            child = self.pin_picker_prefix
+            self.pin_picker_prefix = child[:-1]
+            self.pin_picker_index = self._pin_picker_choices().index(child)
+        self.wake.set()
+
+    def pin_picker_selection(self) -> None:
+        if self.pin_picker_side is not None:
+            self.tail_pins[self.pin_picker_side] = self._pin_picker_choices()[self.pin_picker_index]
+            self.close_pin_picker()
+            self.tail_detail_open = False
+            self.wake.set()
+
+    def clear_pin_picker(self) -> None:
+        if self.pin_picker_side is not None:
+            self.tail_pins[self.pin_picker_side] = None
+            self.close_pin_picker()
+            self.tail_detail_open = False
+            self.wake.set()
+
+    def _pin_picker_text(self) -> str:
+        side = self.pin_picker_side
+        choices = self._pin_picker_choices()
+        start = max(0, min(self.pin_picker_index - TAIL_PICKER_LINES // 2,
+                           len(choices) - TAIL_PICKER_LINES))
+        lines = [f"Pin {side} JSON from selected exchange",
+                 "↑↓/PgUp/PgDn choose · → open subtree · ← parent · Enter pin · Backspace clear pin · Esc cancel",
+                 f"{len(choices)} choices here · showing {start + 1}–{min(len(choices), start + TAIL_PICKER_LINES)}"]
+        for index in range(start, min(len(choices), start + TAIL_PICKER_LINES)):
+            path = choices[index]
+            _, value = _json_at(self.pin_picker_root, path)
+            sample, _ = _json_value_text(value, 100)
+            marker = ">" if index == self.pin_picker_index else " "
+            lines.append(f"{marker} {_short_line(_json_path_text(path), 120)} = {sample}")
+        return "\n".join(lines)
 
     def _clear_selected_detail(self) -> None:
         self._selection_revision += 1
@@ -715,13 +1001,25 @@ class TrafficInspector:
         scope = document.get("scope", {})
         if scope != self.scope:
             self._clear_selected_detail()
+            self._reset_tail_snapshot()
         self.flows = rows
         self.scope = scope
         ids = [row["id"] for row in rows]
+        if self.tail_mode:
+            current_ids = set(ids)
+            if self.tail_known_ids is not None:
+                self.tail_departed += len(self.tail_known_ids - current_ids)
+            self.tail_known_ids = current_ids
         # Marks are a view-local convenience, never an authority grant. Drop
         # anything that a refreshed scope, filter, or retention pass hid.
         self.marked.intersection_update(ids)
-        self._select(self.selected if self.selected in ids else next(iter(ids), None))
+        if self.tail_mode and not self.tail_follow and self.selected not in ids:
+            next_selected = ids[-1] if ids else None
+        else:
+            next_selected = self.selected if self.selected in ids else next(iter(ids), None)
+        self._select(next_selected)
+        if self.tail_mode and self.tail_follow:
+            self._select(next(iter(ids), None))
 
     def toggle_mark(self) -> None:
         """Mark or unmark the focused visible flow for a later bulk export."""
@@ -751,10 +1049,16 @@ class TrafficInspector:
             self.body_values.pop(side, None)
             self.body_errors.pop(side, None)
             self.body_attempted.discard(side)
+            card = self.tail_cards.get(self.selected)
+            if card is not None:
+                card.bodies.pop(side, None)
+                card.body_errors.pop(side, None)
+                card.body_signatures.pop(side, None)
             self.wake.set()
 
     def set_scope(self, field: str, value: str) -> None:
         self._selection_revision += 1
+        self.tail_revision += 1
         if field == "agent":
             self.pending_scope = {"agent": value or None}
         else:
@@ -765,6 +1069,7 @@ class TrafficInspector:
 
     def set_filter(self, expression: str) -> None:
         self._selection_revision += 1
+        self.tail_revision += 1
         self.pending_filter = expression
         self.wake.set()
 
@@ -1054,6 +1359,89 @@ class TrafficInspector:
             return
         self.body_values[side] = value
 
+    async def _refresh_tail_detail(self, row: dict, card: TailCard, revision: int, budget: int) -> int:
+        flow_id = row["id"]
+        signature = (row.get("status"), row.get("state"), row.get("request_completed"),
+                     row.get("response_head_observed"), row.get("response_completed"),
+                     repr(row.get("request_body")), repr(row.get("response_body")))
+        if flow_id == self.selected and self.detail is not None:
+            if card.signature != signature:
+                card.json_values.clear()
+                card.body_texts.clear()
+            card.detail, card.signature, card.detail_error = self.detail, signature, None
+            return 0
+        if card.signature == signature or budget == 0:
+            return 0
+        try:
+            detail = await asyncio.to_thread(self.api.traffic_flow, flow_id)
+            if not isinstance(detail, dict) or detail.get("id") != flow_id:
+                raise ValueError("Invalid traffic detail response")
+        except (APIError, TypeError, ValueError) as exc:
+            if revision == self.tail_revision:
+                card.signature, card.detail, card.detail_error = signature, None, type(exc).__name__
+            return 1
+        if revision == self.tail_revision and self.tail_mode:
+            card.json_values.clear()
+            card.body_texts.clear()
+            card.detail, card.signature, card.detail_error = detail, signature, None
+        return 1
+
+    async def _refresh_tail_side(self, row: dict, card: TailCard, side: str,
+                                 revision: int, budget: int) -> int:
+        facts = row.get(f"{side}_body")
+        signature = (repr(facts), row.get(f"{side}_completed"), row.get("state"))
+        if card.body_signatures.get(side) != signature:
+            card.bodies.pop(side, None)
+            card.body_errors.pop(side, None)
+            card.body_texts.pop(side, None)
+            card.json_values.pop(side, None)
+        if row["id"] == self.selected and side in self.body_values:
+            card.bodies[side], card.body_signatures[side] = self.body_values[side], signature
+            return 0
+        if row["id"] == self.selected and side in self.body_errors:
+            card.body_errors[side], card.body_signatures[side] = self.body_errors[side], signature
+            return 0
+        if not isinstance(facts, dict) or not facts.get("available"):
+            card.body_signatures[side] = signature
+            return 0
+        if side in card.bodies or side in card.body_errors or budget == 0:
+            return 0
+        try:
+            body = await asyncio.to_thread(self.api.traffic_body, row["id"], side,
+                                           preview_bytes=BODY_PREVIEW_BYTES)
+            if not isinstance(body, dict):
+                raise ValueError("Invalid retained body preview")
+            http_body_preview(body, card.detail.get(f"{side}_headers", []), pretty=False)
+        except (APIError, TypeError, ValueError) as exc:
+            if revision == self.tail_revision:
+                card.body_errors[side], card.body_signatures[side] = type(exc).__name__, signature
+            return 1
+        if revision == self.tail_revision and self.tail_mode:
+            card.bodies[side], card.body_signatures[side] = body, signature
+        return 1
+
+    async def _refresh_tail_cards(self) -> None:
+        visible = self._tail_visible()
+        visible_ids = {row["id"] for row in visible}
+        self.tail_cards = {flow_id: card for flow_id, card in self.tail_cards.items() if flow_id in visible_ids}
+        # The selected card is reused from the detail pane. Then fill newer
+        # cards first, with one shared budget for all other Admin requests.
+        selected = next((row for row in visible if row["id"] == self.selected), None)
+        candidates = ([selected] if selected is not None else []) + [
+            row for row in reversed(visible) if row["id"] != self.selected
+        ]
+        budget = TAIL_FETCHES_PER_POLL
+        revision = self.tail_revision
+        for row in candidates:
+            if budget == 0 or not self.tail_mode or revision != self.tail_revision:
+                return
+            card = self.tail_cards.setdefault(row["id"], TailCard())
+            budget -= await self._refresh_tail_detail(row, card, revision, budget)
+            if revision != self.tail_revision or card.detail is None:
+                continue
+            for side in ("request", "response"):
+                budget -= await self._refresh_tail_side(row, card, side, revision, budget)
+
     async def _refresh_websocket(self) -> None:
         flow_id, transcript = self.selected, self.transcript
         document = await asyncio.to_thread(self.api.traffic_websocket_messages, flow_id)
@@ -1079,9 +1467,21 @@ class TrafficInspector:
                 pass  # Keep the prior scope and report the original list failure.
             else:
                 if isinstance(scope, dict):
+                    if scope != self.scope:
+                        self._reset_tail_snapshot()
                     self.scope = scope
+            self._tail_poll_failed()
             raise
-        self.snapshot(document)
+        except (ValueError, TypeError):
+            self._tail_poll_failed()
+            raise
+        try:
+            self.snapshot(document)
+        except (ValueError, TypeError):
+            self._tail_poll_failed()
+            raise
+        if self.tail_mode and self.tail_failed_polls:
+            self.tail_poll_interrupted = True
 
     async def refresh(self) -> None:
         """One worker serializes this mutable AdminAPI client's requests."""
@@ -1091,16 +1491,20 @@ class TrafficInspector:
                 accepted = await asyncio.to_thread(self.api.set_traffic_scope, **scope)
                 if accepted != self.scope:
                     self._clear_selected_detail()
+                    self._reset_tail_snapshot()
                 self.scope = accepted
             if self.pending_filter is not None:
                 expression, self.pending_filter = self.pending_filter, None
                 accepted = await asyncio.to_thread(self.api.set_traffic_filter, expression)
                 if accepted != self.scope:
                     self._clear_selected_detail()
+                    self._reset_tail_snapshot()
                 self.scope = accepted
             await self._refresh_flows()
             await self._refresh_detail()
             await self._refresh_body_previews()
+            if self.tail_mode:
+                await self._refresh_tail_cards()
             if self.websocket_mode and self.selected:
                 await self._refresh_websocket()
             if self.pending_export is not None:
@@ -1121,6 +1525,8 @@ class TrafficInspector:
     def rows_text(self) -> str:
         if self.websocket_mode:
             return self.transcript.rows_text()
+        if self.tail_mode:
+            return self._tail_render()[0]
         lines = []
         for row in self.flows:
             focus = ">" if row["id"] == self.selected else " "
@@ -1128,6 +1534,113 @@ class TrafficInspector:
             text = f"{focus}{marked} {row.get('status') or '-'} {row.get('state', '')} {row.get('agent') or '-'} {row.get('method', '')} {row.get('url', '')}"
             lines.append(plain_text(text))
         return "\n".join(lines) or "No matching flows. Scope is shared with other clients."
+
+    def _tail_body_content(self, row: dict, side: str) -> tuple[str, object | None, str]:
+        facts = row.get(f"{side}_body")
+        if not isinstance(facts, dict):
+            return "[body facts unavailable]", None, ""
+        if not facts.get("available"):
+            reason = facts.get("reason") or "not available"
+            return ("[pending]" if reason == "pending" else f"[absent: {_short_line(reason, 80)}]"), None, ""
+        card = self.tail_cards.get(row["id"])
+        error = (f"detail unavailable: {card.detail_error}" if card and card.detail_error else
+                 f"preview failed: {card.body_errors[side]}; r/s retries" if card and side in card.body_errors else None)
+        if error:
+            return f"[{error}]", None, ""
+        if card is None or side not in card.bodies or card.detail is None:
+            return "[loading preview…]", None, ""
+        body = card.bodies[side]
+        headers = card.detail.get(f"{side}_headers", [])
+        path = self.tail_pins[side]
+        if path is None:
+            if side not in card.body_texts:
+                text = http_body_preview(body, headers, pretty=False, side=side)
+                card.body_texts[side] = _short_line(text, TAIL_BODY_CHARS)
+            return card.body_texts[side], None, ""
+        return self._tail_pinned_content(card, side, body, headers, path)
+
+    def _tail_pinned_content(self, card: TailCard, side: str, body: dict,
+                             headers: list, path: tuple) -> tuple[str, object | None, str]:
+        if side not in card.json_values:
+            try:
+                card.json_values[side] = _json_preview(body, headers)
+            except (TypeError, ValueError):
+                card.json_values[side] = JSON_UNAVAILABLE
+        root = card.json_values[side]
+        if root is JSON_UNAVAILABLE:
+            return "[complete JSON preview unavailable]", None, ""
+        found, value = _json_at(root, path)
+        if not found:
+            return "[missing path]", (False, None), ""
+        shown, _ = _json_value_text(value)
+        return shown, (True, value), shown
+
+    def _tail_card_header(self, row: dict) -> str:
+        started = row.get("started")
+        valid_started = type(started) in {int, float} and math.isfinite(started)
+        try:
+            stamp = time.strftime("%H:%M:%S", time.localtime(started)) if valid_started else "--:--:--"
+        except (OverflowError, OSError, ValueError):
+            stamp = "--:--:--"
+        finished = row.get("response_completed") or row.get("ended")
+        if type(finished) not in {int, float} or not math.isfinite(finished):
+            finished = time.time()
+        elapsed = f"{max(0, finished - started):.1f}s" if valid_started else "?s"
+        status = row.get("status") if row.get("status") is not None else "pending"
+        mark = ">" if row["id"] == self.selected else " "
+        return (f"{mark} {stamp} #{_short_line(row['id'], 20)} {_short_line(row.get('agent') or '-', 32)} "
+                f"{_short_line(row.get('method') or '-', 12)} {_short_line(row.get('url') or '-', 100)} "
+                f"· {_short_line(status, 12)} {_short_line(row.get('state') or '', 20)} · {elapsed}")
+
+    def _tail_render(self) -> tuple[str, list[int], list[tuple[int, int]]]:
+        lines: list[str] = []
+        card_offsets: list[int] = []
+        spans: list[tuple[int, int]] = []
+        length = 0
+
+        def append(line: str) -> int:
+            nonlocal length
+            start = length
+            lines.append(line)
+            length += len(line) + 1
+            return start
+
+        append("LIVE TAIL · " + ("FOLLOW newest" if self.tail_follow else "PAUSED · End resumes newest")
+               + " · polled view; unseen exchanges possible")
+        if self.tail_poll_interrupted:
+            append(f"[polling gap: {self.tail_failed_polls} failed snapshot(s); unseen exchanges possible]")
+        if self.tail_departed:
+            append(f"[snapshot gap: {self.tail_departed} previously visible flow(s) left retention/filter view]")
+        visible = self._tail_visible()
+        if len(self.flows) > len(visible):
+            append(f"[showing {len(visible)} of {len(self.flows)} matching flows; older cards outside window]")
+        if not visible:
+            append("No matching flows. Scope and filter are shared with other clients.")
+        previous: tuple[tuple[str, str], object | None, str] | None = None
+        for row in visible:
+            if lines:
+                append("")
+            card_offsets.append(length)
+            append(self._tail_card_header(row))
+            request, current_value, current_text = self._tail_body_content(row, "request")
+            req_path = self.tail_pins["request"]
+            same_endpoint = previous is not None and previous[0] == _endpoint(row)
+            changed = bool(req_path is not None and same_endpoint and previous[1] is not None
+                           and current_value is not None and previous[1] != current_value)
+            req_prefix = "  → request" + (f" {_short_line(_json_path_text(req_path), 100)}" if req_path is not None else "")
+            req_prefix += ": " + ("Δ " if changed else "")
+            offset = append(req_prefix + request)
+            if changed and previous is not None:
+                marker = offset + len(req_prefix) - len("Δ ")
+                spans.append((marker, marker + 1))
+                spans.extend((offset + len(req_prefix) + start, offset + len(req_prefix) + end)
+                             for start, end in _changed_spans(previous[2], current_text))
+            previous = (_endpoint(row), current_value, current_text)
+            response, _, _ = self._tail_body_content(row, "response")
+            resp_path = self.tail_pins["response"]
+            resp_prefix = "  ← response" + (f" {_short_line(_json_path_text(resp_path), 100)}" if resp_path is not None else "")
+            append(resp_prefix + ": " + response)
+        return "\n".join(lines), card_offsets, spans
 
     def _with_export_report(self, text: str) -> str:
         return text + (f"\n\n{self.export_report}" if self.export_report else "")
@@ -1181,6 +1694,8 @@ class TrafficInspector:
         return _limited_text("\n".join(lines), 32 * 1024, "metadata")
 
     def _detail_render(self) -> tuple[str, list[tuple[int, int, str]]]:
+        if self.pin_picker_side is not None:
+            return self._pin_picker_text(), []
         if self.websocket_mode:
             error = plain_text((self.detail or {}).get("error"))
             text = f"error: {error}\n\n" + self.transcript.detail_text()
@@ -1212,18 +1727,30 @@ class TrafficInspector:
         return self._detail_render()[0]
 
     def _show(self, rows: TextArea, detail: TextArea) -> None:
+        rows.wrap_lines = self.tail_mode and not self.websocket_mode
         detail_text, body_spans = self._detail_render()
         self.detail_syntax.update(detail_text, body_spans)
-        for area, text in ((rows, self.rows_text()), (detail, detail_text)):
+        if self.tail_mode and not self.websocket_mode:
+            rows_text, card_offsets, tail_spans = self._tail_render()
+            self.tail_syntax.update(rows_text, tail_spans)
+        else:
+            rows_text, card_offsets = self.rows_text(), []
+            self.tail_syntax.update(rows_text, [])
+        for area, text in ((rows, rows_text), (detail, detail_text)):
             if area.text != text:
                 position = area.buffer.cursor_position
                 area.text = text
                 area.buffer.cursor_position = min(position, len(text))
         selected = self.transcript.selected if self.websocket_mode else self.selected
-        items = self.transcript.messages if self.websocket_mode else self.flows
+        items = (self.transcript.messages if self.websocket_mode else
+                 self._tail_visible() if self.tail_mode else self.flows)
         if selected is not None:
-            index = next(i for i, row in enumerate(items) if row["id"] == selected)
-            rows.buffer.cursor_position = sum(len(line) + 1 for line in rows.text.splitlines()[:index])
+            index = next((i for i, row in enumerate(items) if row["id"] == selected), None)
+            if index is not None:
+                if self.tail_mode and not self.websocket_mode:
+                    rows.buffer.cursor_position = (len(rows.text) if self.tail_follow else card_offsets[index])
+                else:
+                    rows.buffer.cursor_position = sum(len(line) + 1 for line in rows.text.splitlines()[:index])
 
     def _finish_prompt(
         self,
@@ -1309,7 +1836,8 @@ class TrafficInspector:
 
         prompt.accept_handler = finish_prompt
 
-        browsing = Condition(lambda: not prompt_field)
+        browsing = Condition(lambda: not prompt_field and self.pin_picker_side is None)
+        pinning = Condition(lambda: self.pin_picker_side is not None)
         listing = browsing & Condition(lambda: get_app().layout.has_focus(rows))
 
         @bindings.add("q", filter=browsing)
@@ -1323,10 +1851,19 @@ class TrafficInspector:
         def move(event) -> None:
             self.select({"up": -1, "down": 1}[event.key_sequence[0].key])
             self._show(rows, detail)
+        self._tail_bindings(bindings, browsing, listing, rows, detail)
+        self._pin_bindings(bindings, pinning, rows, detail)
 
         @bindings.add("tab", filter=browsing)
         def focus(event) -> None:
-            event.app.layout.focus(detail if event.app.layout.has_focus(rows) else rows)
+            if self.tail_mode and not self.websocket_mode:
+                self.tail_detail_open = not self.tail_detail_open
+                if self.tail_detail_open:
+                    self.tail_follow = False
+                event.app.layout.focus(detail if self.tail_detail_open else rows)
+                self._show(rows, detail)
+            else:
+                event.app.layout.focus(detail if event.app.layout.has_focus(rows) else rows)
 
         @bindings.add("r", filter=browsing)
         @bindings.add("s", filter=browsing)
@@ -1370,6 +1907,87 @@ class TrafficInspector:
         self._websocket_bindings(bindings, browsing, rows, detail)
         return bindings
 
+    def _tail_bindings(self, bindings: KeyBindings, browsing: Condition, listing: Condition,
+                       rows: TextArea, detail: TextArea) -> None:
+        tail_listing = listing & Condition(lambda: self.tail_mode and not self.websocket_mode)
+        tail_browsing = browsing & Condition(lambda: self.tail_mode and not self.websocket_mode)
+
+        @bindings.add("pageup", filter=tail_listing)
+        @bindings.add("pagedown", filter=tail_listing)
+        def move_page(event) -> None:
+            self.select({"pageup": -5, "pagedown": 5}[event.key_sequence[0].key])
+            self._show(rows, detail)
+
+        @bindings.add("home", filter=tail_listing)
+        def oldest(event) -> None:
+            self.select(-TAIL_CARDS)
+            self._show(rows, detail)
+
+        @bindings.add("end", filter=tail_browsing)
+        def resume(event) -> None:
+            self.resume_tail()
+            event.app.layout.focus(rows)
+            self._show(rows, detail)
+
+        @bindings.add("l", filter=browsing)
+        def tail(event) -> None:
+            self.toggle_tail()
+            event.app.layout.focus(rows)
+            self._show(rows, detail)
+
+        @bindings.add("R", filter=tail_browsing)
+        @bindings.add("S", filter=tail_browsing)
+        def choose_pin(event) -> None:
+            self.open_pin_picker({"R": "request", "S": "response"}[event.key_sequence[0].key])
+            if self.pin_picker_side is not None:
+                event.app.layout.focus(detail)
+            self._show(rows, detail)
+
+    def _pin_bindings(self, bindings: KeyBindings, pinning: Condition,
+                      rows: TextArea, detail: TextArea) -> None:
+        @bindings.add("up", filter=pinning)
+        @bindings.add("down", filter=pinning)
+        def picker_move(event) -> None:
+            self.move_pin_picker({"up": -1, "down": 1}[event.key_sequence[0].key])
+            self._show(rows, detail)
+
+        @bindings.add("pageup", filter=pinning)
+        @bindings.add("pagedown", filter=pinning)
+        def picker_page(event) -> None:
+            self.move_pin_picker({"pageup": -TAIL_PICKER_LINES, "pagedown": TAIL_PICKER_LINES}[
+                event.key_sequence[0].key
+            ])
+            self._show(rows, detail)
+
+        @bindings.add("right", filter=pinning)
+        def picker_descend(event) -> None:
+            self.descend_pin_picker()
+            self._show(rows, detail)
+
+        @bindings.add("left", filter=pinning)
+        def picker_ascend(event) -> None:
+            self.ascend_pin_picker()
+            self._show(rows, detail)
+
+        @bindings.add("enter", filter=pinning)
+        def picker_pin(event) -> None:
+            self.pin_picker_selection()
+            event.app.layout.focus(rows)
+            self._show(rows, detail)
+
+        @bindings.add("backspace", filter=pinning)
+        def picker_clear(event) -> None:
+            self.clear_pin_picker()
+            event.app.layout.focus(rows)
+            self._show(rows, detail)
+
+        @bindings.add("escape", filter=pinning)
+        def picker_cancel(event) -> None:
+            self.close_pin_picker()
+            self.tail_detail_open = False
+            event.app.layout.focus(rows)
+            self._show(rows, detail)
+
     def _display_bindings(self, bindings: KeyBindings, browsing: Condition, rows: TextArea, detail: TextArea) -> None:
         @bindings.add("p", filter=browsing)
         def pretty(event) -> None:
@@ -1409,24 +2027,33 @@ class TrafficInspector:
             self.cancel_export()
 
     def help_text(self) -> str:
+        if self.pin_picker_side is not None:
+            return "↑↓/PgUp/PgDn choose · → subtree · ← parent · Enter pin · Backspace clear pin · Esc cancel"
         view = "w HTTP · [/] message page · r/s retry HTTP body" if self.websocket_mode else "r/s retry body · w WebSocket"
         body_mode = "formatted" if self.pretty else "source"
         headers = "hidden" if self.hide_routine_headers else "shown"
+        tail = ("" if self.websocket_mode else
+                "l list · End resume · ↑↓/PgUp/PgDn pause · R/S pin JSON · Tab detail/cards · "
+                if self.tail_mode else "l live tail · ")
         return (
-            f"p body {body_mode} · h routine headers {headers} · ↑↓ select · > focus · * marked · "
+            f"{tail}p body {body_mode} · h routine headers {headers} · ↑↓ select · > focus · * marked · "
             f"Tab pane · PgUp/PgDn scroll · {view} · m mark/unmark · "
             "x export marked (or focused) · f filter · a/t scope · c clear scope · q detach"
         )
 
     def application(self) -> Application:
         detail = TextArea(read_only=True, scrollbar=True, wrap_lines=True, lexer=self.detail_syntax)
-        rows = TextArea(read_only=True, scrollbar=True, wrap_lines=False)
+        rows = TextArea(read_only=True, scrollbar=True, wrap_lines=False, lexer=self.tail_syntax)
         prompt = TextArea(height=1, multiline=False)
+        split_view = VSplit([rows, Window(width=1, char="│"), detail])
+        traffic_view = DynamicContainer(lambda: (
+            detail if self.tail_detail_open else rows
+        ) if self.tail_mode and not self.websocket_mode else split_view)
         app = Application(
             layout=Layout(HSplit([
                 Window(FormattedTextControl(lambda: plain_text(self.notice)), height=1),
                 Window(FormattedTextControl(lambda: "Scope: " + plain_text(self.scope.get("effective_filter") or "all traffic")), height=1),
-                VSplit([rows, Window(width=1, char="│"), detail]),
+                traffic_view,
                 Window(FormattedTextControl(self.help_text), height=1),
                 prompt,
             ]), focused_element=rows),

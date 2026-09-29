@@ -408,6 +408,33 @@ SafeYolo metadata sections. The inspector fetches both retained body previews
 when a flow is selected. It fetches a side again when its body facts change.
 Pending, unavailable, empty, truncated, and failed previews have distinct
 messages. Press `r` or `s` to retry the request or response preview.
+
+Press `l` to switch between the flow list and live tail. The tail shows up to
+40 matching exchanges in chronological order as request and response cards.
+It follows the newest card while new requests arrive and updates a pending
+card when its response arrives. In the card pane, Up/Down or Page Up/Page Down
+pauses follow and selects an older card. Press End to resume at the newest
+card. Tab opens the selected card's full HTTP detail; press Tab again to return
+to the cards. Opening detail pauses follow.
+
+In live tail, press `R` for a request JSON pin or `S` for a response JSON pin.
+Use Up/Down to choose a path, Right to open a subtree, Left to return to its
+parent, and Enter to pin the selected field or subtree. Select `[last]` inside
+an array to follow its final item as the array grows. Backspace clears the pin
+for that side; Escape leaves the pin unchanged. Each side keeps one independent
+pin for this terminal session. A missing field shows a marker. For consecutive
+requests to the same method and endpoint, changed characters in the pinned
+request value receive colour and a `Δ` marker. The marker remains visible in a
+monochrome terminal. A different endpoint starts a new comparison. Other body
+fields remain available in the selected exchange's full detail and exports.
+
+The tail bounds body previews and work per poll. A loading marker remains until
+a card's preview is fetched. It shows when older cards fall outside its window,
+when previously visible flows leave the current retained or filtered snapshot,
+and when polling fails. Polling cannot count exchanges that appear and disappear
+between successful snapshots. A pin requires a complete JSON preview; export
+the body if a preview is truncated or unavailable.
+
 Each preview fetch transfers at most 64 KiB of retained bytes. The inspector
 also limits rendered body text to 32,768 characters per side. These limits
 do not change retained bytes or exports. The authenticated body route accepts
