@@ -297,14 +297,8 @@ fn audit_writer_stays_inert_until_emit_and_proxy_shutdown_joins_it() {
                 .unwrap()
                 .block_on(async {
                     let sink = directory.join("lazy-parent/audit.jsonl");
-                    let inert = Runtime::new(
-                        config(directory, &sink),
-                        "owned-lazy",
-                        Arc::new(tokio::sync::Mutex::new(())),
-                        None,
-                        None,
-                    )
-                    .unwrap();
+                    let inert =
+                        Runtime::new(config(directory, &sink), "owned-lazy", None, None).unwrap();
                     let writer = inert.audit.clone();
                     assert_no_writer_threads(Duration::ZERO);
                     assert!(!sink.parent().unwrap().exists());

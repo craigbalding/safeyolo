@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::memory_monitor::{MemorySample, SampleError};
-use std::sync::Arc;
 
 const SAMPLE: fn() -> Result<MemorySample, SampleError> = || {
     Ok(MemorySample {
@@ -12,9 +11,10 @@ const SAMPLE: fn() -> Result<MemorySample, SampleError> = || {
 };
 
 fn runtime(directory: &std::path::Path) -> Runtime {
+    std::fs::write(directory.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     let config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("unused.sock")}],
-        "temporary_policy_socket":directory.join("unused-policy.sock"),
+        "policy_file":directory.join("policy.json"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl"),
@@ -23,18 +23,11 @@ fn runtime(directory: &std::path::Path) -> Runtime {
         "circuit_state_file":""
     }))
     .unwrap();
-    Runtime::new(
-        config,
-        "owned",
-        Arc::new(tokio::sync::Mutex::new(())),
-        None,
-        None,
-    )
-    .unwrap()
+    Runtime::new(config, "owned", None, None).unwrap()
 }
 
 #[test]
-fn memory_is_first_in_the_temporary_lane_and_reports_the_shared_owner() {
+fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = runtime(directory.path());
     runtime

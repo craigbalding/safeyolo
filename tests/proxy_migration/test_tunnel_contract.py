@@ -19,8 +19,8 @@ from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy, read_events
 from tests.proxy_migration.scenarios import POLICY as ALICE_EGRESS_POLICY
 from tests.proxy_migration.test_http2_contract import POLICY, origin_certificate, origin_server
@@ -696,7 +696,7 @@ def test_fragmented_tls_keeps_the_inner_request_decision(proxy_backend, tmp_path
         request.node.add_marker(pytest.mark.xfail(strict=True, reason="Existing short TLS prefix selects opaque forwarding before inner policy"))
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     trusted = directory / "client-trust.pem"
     trusted.write_bytes(public.read_bytes() + (directory / "ca/mitmproxy-ca-cert.pem").read_bytes())
@@ -711,7 +711,7 @@ def test_configured_tls_passthrough_scope_and_interception_failure(proxy_backend
     """An exact endpoint stays end-to-end TLS; other endpoints keep inspection."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     certificates = {}
     for name in ("opaque", "inspected", "untrusted"):
         material = directory / name

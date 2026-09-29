@@ -163,8 +163,8 @@ must_contain = "synthetic loopback"
 
 [[assertion]]
 name = "admin-api-bind"
-source = "cli/src/safeyolo/mitm_addons/admin_api.py"
-pattern = 'HTTPServer\(\("127\.0\.0\.1", port\)'
+source = "proxy/src/admin_listener.rs"
+pattern = 'TcpListener::bind\(\(Ipv4Addr::LOCALHOST, port\)\)'
 docs = ["SECURITY.md"]
 # Either explicit IP or the equivalent English phrasing is acceptable —
 # avoids spurious failure if a future rewrite prefers "loopback only".
@@ -205,26 +205,10 @@ docs = ["docs/proxy-parity.md"]
 must_contain = "/plumb/request-chat"
 
 [[assertion]]
-name = "credguard-scan-url-option-name"
-source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
-pattern = 'loader\.add_option\("(?P<opt>credguard_scan_urls)"'
-docs = ["SECURITY.md"]
-must_contain = "{opt}"
-
-[[assertion]]
-name = "credguard-scan-body-option-name"
-source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
-pattern = 'loader\.add_option\("(?P<opt>credguard_scan_bodies)"'
-docs = ["SECURITY.md"]
-must_contain = "{opt}"
-
-[[assertion]]
 name = "block-response-status-code"
-# credential_guard's destination-mismatch response is the canonical
-# example of the 428 "fail closed with actionable feedback" contract
-# advertised in SECURITY.md.
-source = "cli/src/safeyolo/mitm_addons/credential_guard.py"
-pattern = 'Create (?P<code>428) response for destination mismatch'
+# Approval-required credential decisions use 428 in the native guard.
+source = "proxy/src/credential_guard.rs"
+pattern = 'PdpEffect::RequireApproval => (?P<code>428)'
 docs = ["SECURITY.md"]
 must_contain = "HTTP {code}"
 

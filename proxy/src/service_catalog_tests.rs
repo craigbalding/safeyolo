@@ -57,14 +57,16 @@ fn catalog_configuration_requires_a_pair_and_native_policy() {
     settings.gateway_builtin_services_dir = Some(directory.path().join("builtin"));
     settings.validate().unwrap();
     settings.policy_file = None;
-    settings.temporary_policy_socket = Some(directory.path().join("unused-adapter.sock"));
     assert_eq!(
         settings.validate().unwrap_err().to_string(),
-        "service catalog requires native policy_file"
+        "native proxy requires policy_file"
     );
     settings.gateway_builtin_services_dir = None;
     settings.gateway_services_dir = None;
-    settings.validate().unwrap();
+    assert_eq!(
+        settings.validate().unwrap_err().to_string(),
+        "native proxy requires policy_file"
+    );
 }
 
 // Authentication reads its environment only in a selected unit-test child.
@@ -118,17 +120,17 @@ fn owned_child(test: &str, workflow: impl Future<Output = ()>) {
 }
 
 #[test]
-fn initial_reader_is_empty_without_a_catalog_in_both_policy_modes() {
+fn initial_reader_is_empty_without_a_catalog() {
     owned_child(
-        "service_catalog_tests::initial_reader_is_empty_without_a_catalog_in_both_policy_modes",
+        "service_catalog_tests::initial_reader_is_empty_without_a_catalog",
         empty_reader_workflow(),
     );
 }
 
 async fn empty_reader_workflow() {
-    for native in [true, false] {
+    {
         let directory = tempfile::tempdir().unwrap();
-        let mut settings = config(directory.path());
+        let settings = config(directory.path());
         // Canonical tokens can exist without an accepted registry. The read
         // owner must not mistake those policy data for active catalog bindings.
         let policy = json!({"permissions":[],"gateway":{
@@ -139,25 +141,17 @@ async fn empty_reader_workflow() {
             "agent_env":{"alice":{"demo":"sgw_owned_canonical_token"}}
         }});
         write_json(&directory.path().join("policy.json"), &policy);
-        if !native {
-            settings.policy_file = None;
-            settings.temporary_policy_socket = Some(directory.path().join("absent-adapter.sock"));
-        }
         let fixture = Fixture::start(directory, settings).await;
         let runtime = fixture.runtime();
-        if native {
-            let snapshot = runtime.policy.as_ref().unwrap().gateway().unwrap();
-            assert!(snapshot.registry().is_none());
-            assert!(
-                snapshot
-                    .agent_services_json("alice")
-                    .unwrap()
-                    .expose_secret()
-                    .contains("sgw_owned_canonical_token")
-            );
-        } else {
-            assert!(runtime.policy.is_none());
-        }
+        let snapshot = runtime.policy.as_ref().unwrap().gateway().unwrap();
+        assert!(snapshot.registry().is_none());
+        assert!(
+            snapshot
+                .agent_services_json("alice")
+                .unwrap()
+                .expose_secret()
+                .contains("sgw_owned_canonical_token")
+        );
         let reply = fixture.read("alice", "GET", TOKEN).await;
         assert_eq!(reply.status, 200);
         assert!(reply.value() == json!({"agent":"alice","authorized":{},"available":[]}));

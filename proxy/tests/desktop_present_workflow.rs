@@ -35,6 +35,7 @@ struct Reply {
 }
 
 fn config(root: &Path) -> Config {
+    std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     Config {
         listeners: vec![AgentListener {
             agent_id: "alice".into(),
@@ -43,8 +44,7 @@ fn config(root: &Path) -> Config {
         }],
         agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
-        temporary_policy_socket: Some(root.join("policy.sock")),
-        policy_file: None,
+        policy_file: Some(root.join("policy.json")),
         gateway_builtin_services_dir: None,
         gateway_services_dir: None,
         network_guard_enabled: false,

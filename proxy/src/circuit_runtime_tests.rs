@@ -45,7 +45,7 @@ fn runtime_with_event_path(
     }))
     .unwrap();
     // Prepare only: this constructor binds no listener and starts no worker.
-    Runtime::new(config, "owned-audit-test", Arc::default(), None, None).unwrap()
+    Runtime::new(config, "owned-audit-test", None, None).unwrap()
 }
 
 fn runtime(directory: &std::path::Path) -> Runtime {

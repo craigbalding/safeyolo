@@ -5,11 +5,13 @@ import os
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
+from tests.proxy_migration import harness as migration_harness
 from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
 
 
@@ -770,10 +772,38 @@ def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path
     assert result.returncode == 2
 
 
-def test_selected_rust_runner_requires_native_policy_provenance():
-    """Release Rust selection opts out of the temporary Python policy adapter."""
+@pytest.mark.parametrize("native_policy", [False, True])
+def test_selected_rust_runner_requires_native_policy_provenance(tmp_path, monkeypatch, native_policy):
+    """Every Rust fixture supplies its policy file and records native ownership."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
-    harness = (Path(__file__).parent / "proxy_migration" / "harness.py").read_text()
-    assert 'export SAFEYOLO_RUST_NATIVE_ONLY=1' in runner
-    assert 'os.environ.get("SAFEYOLO_RUST_NATIVE_ONLY") == "1"' in harness
-    assert '"policy_mode": "native" if use_native_policy else "temporary_adapter"' in harness
+    selector = (Path(__file__).parent / "proxy_migration" / "run.py").read_text()
+    assert "SAFEYOLO_RUST_NATIVE_ONLY" not in runner + selector
+
+    binary = tmp_path / "safeyolo-proxy"
+    binary.write_text("fixture binary")
+    monkeypatch.setenv("SAFEYOLO_RUST_PROXY", str(binary))
+
+    @contextmanager
+    def fake_child_process(command, directory, env):
+        assert command[0] == str(binary)
+        yield object()
+
+    monkeypatch.setattr(migration_harness, "child_process", fake_child_process)
+    monkeypatch.setattr(migration_harness, "wait_ready", lambda *args, **kwargs: None)
+    directory = tmp_path / "fixture"
+    with migration_harness.launch_proxy(
+        "rust", directory, '[hosts]\n"*" = { egress = "deny" }\n',
+        native_policy=native_policy,
+    ):
+        config = json.loads((directory / "proxy.json").read_text())
+        provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+
+    assert config["policy_file"] == str(directory / "policy.toml")
+    assert "temporary_policy_socket" not in config
+    assert provenance == {
+        "backend": "rust",
+        "policy_mode": "native",
+        "policy_file": config["policy_file"],
+        "temporary_policy_socket": None,
+        "temporary_policy_adapter": False,
+    }

@@ -710,14 +710,13 @@ async fn standalone_policy_checks_retry_newer_failures_and_rearm_without_a_catal
     assert!(poll_policy(&fixture.proxy).is_ready());
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
     let configured = settings.clone();
+    let retained_check_at = fixture.proxy.policy_check_at;
     settings.policy_file = None;
-    settings.temporary_policy_socket = Some(fixture.directory.path().join("unused-adapter.sock"));
-    fixture.proxy.reload(settings).await.unwrap();
-    assert!(fixture.proxy.policy_check_at.is_none());
-    assert!(poll_policy(&fixture.proxy).is_pending());
+    assert!(fixture.proxy.reload(settings).await.is_err());
+    assert_eq!(fixture.proxy.policy_check_at, retained_check_at);
     advance(Duration::from_secs(3600)).await;
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
-    assert!(fixture.proxy.policy_check_at.is_none());
+    assert_eq!(fixture.proxy.policy_check_at, retained_check_at);
     fixture.proxy.reload(configured).await.unwrap();
     assert_eq!(fixture.proxy.policy_check_at, Some(Instant::now()));
     let retained = fixture.runtime();

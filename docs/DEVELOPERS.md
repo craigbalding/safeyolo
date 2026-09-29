@@ -1,108 +1,35 @@
 # SafeYolo Developer Guide
 
-This guide is for developers who want to contribute to SafeYolo, build integrations, or extend it with custom addons.
+This guide is for developers who contribute to the host CLI, native proxy,
+agent sandbox, and operator integrations.
 
 Before changing agent attribution or sandbox lifecycle, read the
 [agent identity and run-lifecycle implementation plan](agent-lifecycle-identity-plan.md).
-It separates operator-facing names from durable agent identity, records the
-current restart behavior, and defines the proposed minimal runtime incarnation.
+It separates operator-facing names from durable agent identity and records
+restart behavior.
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     HOST (trusted)                            │
-│                                                              │
-│  ┌──────────────┐        ┌──────────────────────────────┐   │
-│  │ safeyolo CLI │───────▶│ mitmproxy (host process)     │   │
-│  │  (Typer)     │  admin │   + addons (credential-guard,│   │
-│  │  init/start/ │  :9090 │     policy_engine, agent_api,│   │
-│  │  watch/logs  │◀───────│     network_guard, ...)      │   │
-│  └──────┬───────┘  JSONL └──────────────┬───────────────┘   │
-│         │                               │ per-agent UDS      │
-│         ▼                               ▼                    │
-│  ┌───────────────┐          ┌───────────────────────────┐   │
-│  │ ~/.safeyolo/  │          │ Agent sandbox VMs         │   │
-│  │  config.yaml  │          │  macOS: Virtualization.fw │   │
-│  │  policy.toml  │          │  Linux: rootless gVisor   │   │
-│  │  addons.yaml  │          │  (no external network —   │   │
-│  │  logs/        │          │   UDS is the only egress) │   │
-│  └───────────────┘          └───────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Key design principles:**
-- Addons are sensors: detect credentials/patterns, build HttpEvents, call PolicyClient
-- PDP package (~2500 lines) handles policy evaluation (can run in-process or as service)
-- Detection module (~350 lines) is pure Python for easy testing/fuzzing
-- CLI handles user interaction, approval workflow, notifications
-- Communication via Admin API (HTTP) and JSONL logs (file)
-- Policy files are the source of truth for approvals
+The trusted host CLI starts the packaged Rust proxy and manages agent
+sandboxes. Each sandbox has a per-agent Unix domain socket (UDS) to the proxy
+and no direct external network interface. The native proxy owns policy,
+credential inspection, the Agent and Admin APIs, traffic evidence, and the
+read-only terminal inspector. The CLI reads and updates instance configuration,
+uses the authenticated Admin API, and displays JSON Lines (JSONL) audit events.
+The instance policy file is the source of truth for durable permissions.
 
 ## Repository Structure
 
-```
-safeyolo/
-├── addons/                   # mitmproxy addons (sensors, run in host proxy)
-│   ├── detection/            # Pure detection logic (no mitmproxy deps)
-│   │   ├── patterns.py       # PatternRule, compile_rules, scan_text
-│   │   ├── credentials.py    # CredentialRule, analyze_headers, entropy
-│   │   └── matching.py       # Host/resource matching, HMAC fingerprinting
-│   ├── admin_api.py          # REST API for runtime control
-│   ├── admin_shield.py       # Protects admin API endpoints
-│   ├── agent_api.py          # Read-only PDP agent API for agent self-service
-│   ├── base.py               # Base addon class with shared functionality
-│   ├── budget_tracker.py     # GCRA-based rate limiting
-│   ├── circuit_breaker.py    # Fail-fast for unhealthy upstreams
-│   ├── credential_guard.py   # Core credential detection and protection
-│   ├── file_logging.py       # Structured JSONL file logging setup
-│   ├── flow_pruner.py        # TUI-only: prune old flows for memory
-│   ├── loop_guard.py         # Proxy loop detection (Via header)
-│   ├── memory_monitor.py     # Process memory + connection tracking
-│   ├── metrics.py            # Statistics collection
-│   ├── network_guard.py      # Network-level security policies
-│   ├── pattern_scanner.py    # Regex pattern matching for secrets
-│   ├── policy_engine.py      # PolicyEngineAddon, mitmproxy integration
-│   ├── policy_loader.py      # Policy file loading and caching
-│   ├── request_id.py         # Request ID generation
-│   ├── request_logger.py     # JSONL audit logging
-│   ├── sensor_utils.py       # HttpEvent builders for sensors
-│   ├── service_discovery.py  # Client IP to project mapping
-│   ├── sse_streaming.py      # Server-sent events handling
-│   ├── test_context.py       # X-SafeYolo-Test-Context header enforcement
-│   └── utils.py              # Shared utilities (logging, blocking)
-├── pdp/                      # Policy Decision Point (library + service)
-│   ├── schemas.py            # HttpEvent, PolicyDecision, Effect enums
-│   ├── core.py               # PDPCore - policy evaluation engine
-│   ├── client.py             # PolicyClient interface (local/HTTP modes, incl. admin)
-│   ├── tokens.py             # HMAC-signed readonly tokens for agent API
-│   └── app.py                # FastAPI service (optional deployment)
-├── cli/                      # safeyolo CLI (runs on host)
-│   ├── src/safeyolo/
-│   │   ├── cli.py            # Typer app entry point
-│   │   ├── config.py         # Configuration loading
-│   │   ├── api.py            # Admin API client
-│   │   ├── proxy.py          # Host mitmproxy lifecycle
-│   │   ├── vm.py             # Sandbox VM lifecycle (macOS / Linux)
-│   │   └── commands/         # CLI command modules
-│   │       ├── admin.py      # check, mode, policies
-│   │       ├── agent.py      # agent subcommands
-│   │       ├── cert.py       # certificate management
-│   │       ├── doctor.py     # 11-check diagnostic cascade
-│   │       ├── init.py       # init command
-│   │       ├── lifecycle.py  # start, stop, status
-│   │       ├── logs.py       # log viewing
-│   │       ├── sandbox.py    # sandbox subcommands
-│   │       ├── setup.py      # setup subcommands
-│   │       ├── token.py      # token create/list/revoke
-│   │       └── watch.py      # real-time log watching
-│   └── pyproject.toml
-├── fuzz/                     # Atheris fuzz targets (ClusterFuzzLite)
-├── contrib/                  # Example integrations
-├── config/                   # Default configurations
-├── tests/                    # Test suite (unit + integration)
-└── docs/                     # Documentation
-```
+- `proxy/src/` contains the Rust proxy and its policy, inspection, API, and
+  traffic-view implementations.
+- `cli/src/safeyolo/` contains the Python CLI, host lifecycle, shared policy
+  compiler, and platform-specific sandbox launchers.
+- `cli/src/safeyolo/templates/` contains initial policy, addon settings, and
+  named lists consumed by native policy loading.
+- `tests/proxy_migration/` contains selected native contract tests and the
+  isolated historical Python comparator fixture.
+- `tests/blackbox/` contains installed host and sandbox lane probes.
+- `docs/proxy-parity.md` records migration discrepancies and disposition.
 
 ## Coord trust boundary
 
@@ -116,7 +43,9 @@ for the contract and the per-sink obligations (terminal, web, log export).
 
 ### Option 1: Consume JSONL Events
 
-The simplest integration is tailing the JSONL log file. Every security decision is logged with structured data.
+The simplest integration is tailing the JSONL log file. The proxy emits
+structured events for reached decisions; a write failure can leave an event
+unavailable, so do not infer a complete history from a successful request.
 
 **Event format:**
 ```json
@@ -259,119 +188,45 @@ print(modes)
 api.set_mode("credential-guard", "warn")
 ```
 
-### Option 3: Write a Custom Addon
-
-Create a new mitmproxy addon for custom logic.
-
-**Basic addon structure:**
-```python
-# addons/my_addon.py
-from mitmproxy import ctx, http
-
-try:
-    from .utils import write_event
-except ImportError:
-    from utils import write_event
-
-class MyAddon:
-    name = "my-addon"
-
-    def load(self, loader):
-        """Register options."""
-        loader.add_option(
-            name="myaddon_enabled",
-            typespec=bool,
-            default=True,
-            help="Enable my addon",
-        )
-
-    def request(self, flow: http.HTTPFlow):
-        """Called for each request."""
-        if not ctx.options.myaddon_enabled:
-            return
-
-        # Your logic here
-        host = flow.request.host
-
-        if self.should_block(flow):
-            flow.response = http.Response.make(
-                403,
-                b'{"error": "Blocked by my-addon"}',
-                {"Content-Type": "application/json", "X-Blocked-By": self.name}
-            )
-            flow.metadata["blocked_by"] = self.name
-
-            # Log the event
-            write_event("security.custom",
-                addon=self.name,
-                decision="block",
-                host=host,
-                request_id=flow.metadata.get("request_id")
-            )
-
-    def should_block(self, flow: http.HTTPFlow) -> bool:
-        # Your detection logic
-        return False
-
-    def get_stats(self) -> dict:
-        """Return stats for admin API."""
-        return {"blocks": 0}
-
-# TrafficMaster registers this list directly
-addons = [MyAddon()]
-```
-
-**Add to startup:**
-```python
-# In cli/src/safeyolo/mitm_addons/__init__.py, add the filename to
-# ADDON_CHAIN at the required security hook position:
-"my_addon.py",
-```
-
-Production addons are package imports, not mitmproxy `-s` scripts. The traffic
-process loads each addon and its imported `safeyolo.*` dependencies once; source
-edits take effect together on the next proxy restart rather than through an
-implicit partial hot reload.
-
-**Key patterns:**
-- Use `flow.metadata["blocked_by"]` when blocking (logger picks it up)
-- Use `write_event()` for structured logging
-- Implement `get_stats()` for admin API integration
-- Check `flow.metadata.get("policy")` for per-domain config
-
 ## Development Setup
 
 For host installation and retrying an individual bootstrap phase, use the
 [installation reference](../cli/README.md#installation).
 
-**Running the retained Python comparator with live source editing:**
-```bash
-# Edit ~/.safeyolo/config.yaml and set proxy.backend to python before using
-# the source-backed development path.
-safeyolo stop
-safeyolo start --dev
+For historical Python comparison, use the pinned separate checkout and
+environment in the [migration contract](../tests/proxy_migration/CONTRACT.md).
 
-# Edit mitm_addons/*.py, safeyolo/*.py, or pdp/*.py, then restart the traffic
-# process to pick up one consistent code generation:
-safeyolo stop && safeyolo start --dev
+For native contract development, run these commands from the repository root
+on Linux or macOS with uv and Rust 1.94.0 selected. The tests
+start isolated native processes and local fixtures; they do not use the
+operator's configured instance or require mitmproxy:
+
+```sh
+uv sync --frozen --group dev
+cargo build --locked --manifest-path proxy/Cargo.toml
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+  uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 ```
 
-### Rust proxy development backend
+The historical Python selection requires its own pinned checkout and locked
+environment. [The migration contract](../tests/proxy_migration/CONTRACT.md)
+gives that separate command. The focused pull-request workflow also separates
+native checks from explicitly selected historical oracle and comparison jobs.
 
-The CLI defaults to `proxy.backend: rust` and generates a native JSON
-configuration under `data/native.json` for each initialized instance. Set
-`proxy.backend: python` explicitly for the retained comparator and operator
-rollback path; Rust launch failures never fall back automatically. HTTP
-credential inspection and injection, WebMITM, and complete agent management
-remain incomplete. Native listeners include the supplied JSON entries and
-the CLI's agent-map sockets. See [proxy parity](proxy-parity.md) for current scope.
+### Native proxy development
+
+The CLI uses Rust and generates a native JSON configuration under
+`data/native.json` for each initialized instance. Existing
+`proxy.backend: rust` settings remain valid; this package rejects a Python
+backend setting and never falls back after a Rust launch failure. Explicit
+rollback selects a pinned prior Python package. Native listeners include the
+supplied JSON entries and the CLI's agent-map sockets. See
+[proxy parity](proxy-parity.md) for current scope.
 
 `./install.sh` builds `proxy/target/release/safeyolo-proxy` with Cargo and
-installs a wheel containing that exact native executable. The installer does
-not impose the factory host's disk-space reserve. The installed binary is
-selected by the generated native default; the wheel keeps
-the Python CLI and comparator dependencies so an operator can explicitly set
-`proxy.backend: python` for rollback.
+installs a wheel containing that native executable. The installer does
+not impose the factory host's disk-space reserve. The wheel keeps the Python
+CLI; the historical comparator has its own locked environment.
 
 ### Cargo disk-space guard and target retirement
 
@@ -530,8 +385,9 @@ persist an agent's service binding through `POST /admin/agents/{agent}/services`
 It validates the accepted service and capability, requires an existing agent,
 and saves the selected vault credential name. It does not read the vault.
 The existing policy watcher activates accepted changes after the save; the
-response does not promise immediate service access. Gateway forwarding and
-credential injection remain unfinished.
+response does not promise immediate service access.
+
+### Live traffic inspection
 
 For a running Rust development proxy with its admin listener enabled, run
 `safeyolo traffic` on the host to open the terminal inspector. The inspector
@@ -723,63 +579,34 @@ the result is unconfirmed; the requested JSON remains for the next reload or
 start. It does not imply that the live configuration was rolled back. Processes
 launched before configuration-path recording need one restart to use live sync.
 
-To return to Python, run `safeyolo stop`, change `proxy.backend` to `python` in
-`config.yaml`, then run `safeyolo start`. A requested/live backend mismatch is an
-error; changing the setting does not replace a running backend. The development
-files remain available for inspection after rollback. Native stop waits for the
-process to exit. An interrupted stop retains its process ownership state so that
-the stop can be retried. The exited console remains in the private tmux session
-for diagnostics; the next start reaps that dead pane.
+For an explicit return to Python and then Rust, follow the
+[package rollback procedure](../cli/README.md#return-to-the-prior-python-package).
+The current package does not switch implementations through `proxy.backend`.
+Native stop waits for process exit;
+an interrupted stop retains ownership state so it can be retried. The exited
+console remains in the private tmux session for diagnostics, and the next
+start reaps that dead pane.
 
 ### Runtime and build identity
 
-The Python traffic process captures one immutable runtime-identity snapshot at
-startup. Operators can inspect it with `safeyolo doctor`; the underlying
-authenticated host-admin route is `GET /admin/runtime-identity`. It is not
-exposed through the sandbox Agent API, and the public `/health` response
-remains only `{"status": "ok"}`.
+The native lifecycle receipt records the selected executable path, process ID,
+process-start token, configuration path, and readiness marker. `safeyolo status`
+and `safeyolo doctor` use that receipt to report the running native process.
+Doctor checks process liveness and that the recorded executable path still
+exists. It does not compare the running image's bytes with a file that may have
+been replaced after launch.
 
-The Rust lifecycle receipt records process ownership and readiness. Rust does
-not yet implement this build-identity endpoint or the corresponding doctor check.
+The authenticated host-admin `GET /admin/runtime-identity` route reports the
+native instance ID. It does not report the wheel's source revision. The sandbox
+Agent API does not expose this host-admin route.
 
 Production wheels include `safeyolo/_build_identity.json`, generated by the
-Hatch wheel-build hook rather than at runtime. Release automation should set
-`SAFEYOLO_BUILD_REVISION` to the immutable source revision and may set
-`SAFEYOLO_BUILD_ID` to a CI or release identifier before running `uv build
---wheel`. A local wheel build falls back to a clean build checkout's Git
-revision; a dirty checkout or missing Git evidence produces an explicit
-`unknown` stamp. The checkout's resolved Git top-level must also be the build
-project root, so a source archive nested under an unrelated repository cannot
-inherit that repository's revision.
-An installed production runtime only reads this package resource: it does not
-invoke Git or scan a checkout.
-
-An explicit `safeyolo start --dev` also records the selected `safeyolo` and
-`pdp` package roots, their Git revision and relevant working-tree state, and a
-deterministic SHA-256 fingerprint. The fingerprint hashes sorted, root-relative
-file names plus contents for Python, YAML, TOML, Jinja, and `py.typed` files.
-It excludes documentation, shell helpers, VCS data, virtual environments,
-build output, caches, and dependency trees; roots are limited to the selected
-code packages, so operator configuration, user data, logs, and secrets are
-never scanned.
-Symlinked, missing, or unreadable source produces explicit `unknown` evidence.
-The traffic Python process runs in safe-path/no-user-site mode, ensuring its
-imports come from those selected roots rather than a package in the launch
-directory or a user-site shadow.
-
-On a later `safeyolo doctor` run, production mode reports only the immutable
-wheel stamp. Dev mode recomputes the recorded roots and distinguishes a clean
-match, an unchanged dirty generation, dirty same-commit drift, committed
-revision drift, and missing or unreadable evidence. Drift means the running
-traffic generation is still the startup snapshot; converge with:
-
-```bash
-safeyolo stop && safeyolo start --dev
-```
-
-The snapshot includes the traffic PID, capture time, and an OS process-start
-token. Doctor compares all three against the live proxy so a stale pidfile,
-mid-check restart, or reused PID cannot be reported as the running generation.
+Hatch wheel-build hook. Release automation may set `SAFEYOLO_BUILD_REVISION`
+to the immutable source revision and `SAFEYOLO_BUILD_ID` to a CI or release
+identifier before running `uv build --wheel`. A local wheel build uses the
+Git revision only from a clean checkout rooted at the build project. A dirty
+checkout or missing Git evidence produces an explicit `unknown` stamp. The
+installed runtime reads this package resource without invoking Git.
 
 Guest VM artifacts (kernel, initramfs, rootfs) are rebuilt separately via
 `safeyolo build` — see the top-level README for the full guest-build flow.

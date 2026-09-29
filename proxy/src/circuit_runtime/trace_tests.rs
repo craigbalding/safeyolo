@@ -33,8 +33,7 @@ fn make_runtime(directory: &std::path::Path, settings: Value, enabled: bool) -> 
         "circuit_state_file":"","circuit_breaker_enabled":enabled,
     }))
     .unwrap();
-    let mut runtime =
-        Runtime::new(config, "owned-circuit-trace", Arc::default(), None, None).unwrap();
+    let mut runtime = Runtime::new(config, "owned-circuit-trace", None, None).unwrap();
     runtime.traces = Arc::new(TraceStore::new(Settings::default()));
     runtime
 }

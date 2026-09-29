@@ -1,10 +1,7 @@
 """
-Tests for TOML save paths in policy_engine.py.
+Tests for retained TOML policy round-trip helpers and normalization.
 
-Verifies that policy engine save methods correctly handle .toml files:
-- Incremental saves (credential approvals) with comment preservation
-- Full saves with denormalization
-- Plain saves as fallback
+The CLI still uses these helpers after the Python proxy engine is removed.
 """
 
 import tempfile
@@ -113,38 +110,3 @@ class TestTOMLDenormalize:
         parsed = tomlkit.parse(content)
         assert parsed["version"] == "2.0"
         assert parsed["budget"] == 12000
-
-
-class TestTOMLPolicyFlow:
-    """End-to-end: TOML load -> compile -> evaluate."""
-
-    def test_toml_loads_compiles_evaluates(self):
-        """Full pipeline: TOML file loads, compiles, creates valid UnifiedPolicy."""
-        from safeyolo.policy.loader import PolicyLoader
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "policy.toml"
-            path.write_text(SAMPLE_TOML)
-
-            loader = PolicyLoader(baseline_path=path)
-            policy = loader.baseline
-
-            # Should have real permissions
-            assert len(policy.permissions) > 0
-
-            # credential:use for openai
-            cred_perms = [p for p in policy.permissions if p.action == "credential:use"]
-            assert any(
-                p.condition and p.condition.credential and "openai:*" in (
-                    p.condition.credential if isinstance(p.condition.credential, list)
-                    else [p.condition.credential]
-                )
-                for p in cred_perms
-            )
-
-            # network:request budget
-            budget_perms = [
-                p for p in policy.permissions
-                if p.action == "network:request" and p.effect == "budget"
-            ]
-            assert len(budget_perms) > 0

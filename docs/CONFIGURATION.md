@@ -1,24 +1,26 @@
 # Configuration
 
-SafeYolo reads configuration from `$SAFEYOLO_CONFIG_DIR` when that environment
-variable is set. Otherwise, it uses `~/.safeyolo/`. SafeYolo does not search for
-a project-local `./safeyolo/` directory.
+The installed CLI starts the packaged Rust proxy. SafeYolo reads configuration
+from `$SAFEYOLO_CONFIG_DIR` when that environment variable is set. Otherwise,
+it uses `~/.safeyolo/`. SafeYolo does not search for a project-local
+`./safeyolo/` directory.
 
 ## Directory Structure
 
 ```
 ~/.safeyolo/
-├── config.yaml          # Proxy settings
+├── config.yaml          # Host CLI and proxy settings
 ├── policy.toml          # Policy: hosts, credentials, rate limits, agents, lists
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── services/            # User service definitions (override builtin services)
-├── certs/               # Certificate authority (CA) certificate for HTTPS inspection
+├── certs/               # Retained certificate authority (CA) material for HTTPS inspection
 ├── policies/            # Reserved policy-data directory
 ├── agents/              # Agent metadata, persistent homes, and overlays
 ├── share/               # Installed guest artifacts
 ├── data/                # Admin token, HMAC secret, agent API tokens
 │   ├── vault.yaml.enc   # Encrypted credential vault
-│   └── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
+│   ├── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
+│   └── native.json      # Generated Rust proxy configuration
 ```
 
 SafeYolo stores logs and flow state separately. It uses
@@ -35,13 +37,8 @@ version: 1
 proxy:
   port: 8080           # Proxy port for agents
   admin_port: 9090     # Admin API port
-  web_host: 127.0.0.1  # WebMITM remains host-loopback only
-  web_port: 8081
-  web_tailnet:
-    enabled: false     # Persistent Tailscale Serve publication
-    port: 443          # Fixed Tailnet HTTPS port
-  image: safeyolo:latest
-  container_name: safeyolo
+  backend: rust         # The current package accepts only Rust
+  rust_config: data/native.json
   ignore_hosts: []      # Exact HOST or HOST:PORT TLS passthrough entries
   upstream_ca_cert: ""  # Optional PEM bundle for additional upstream trust
   upstream_proxy: ""    # Optional parent HTTP(S) proxy for nested labs
@@ -74,16 +71,16 @@ safeyolo start
 ```
 
 Use `safeyolo proxy upstream-ca show` to inspect the setting and
-`safeyolo proxy upstream-ca remove` to restore the default system and certifi
-trust stores. `SAFEYOLO_CA_CERT` remains available as a temporary environment
+`safeyolo proxy upstream-ca remove` to restore the default upstream trust
+stores. `SAFEYOLO_CA_CERT` remains available as a temporary environment
 override and takes precedence over the persistent setting; `safeyolo doctor`
 warns when that non-persistent form is active. Bundles add trust and continue
-to enforce certificate signatures, validity periods, and hostnames. SafeYolo
-does not enable mitmproxy's global `ssl_insecure` option.
+to enforce certificate signatures, validity periods, and hostnames. The Rust
+proxy does not disable upstream certificate verification.
 
 `SAFEYOLO_UPSTREAM_PROXY` temporarily overrides `proxy.upstream_proxy`. It is
 an explicit HTTP(S) parent proxy for SafeYolo's own outbound connections; it
-does not rely on ambient `HTTP_PROXY` behavior inside mitmproxy. URLs with
+does not select a parent from ambient `HTTP_PROXY`. URLs with
 credentials or paths are rejected. `SAFEYOLO_VIA_TOKEN` similarly overrides
 `proxy.via_token`; values must be one RFC token. When neither is set, SafeYolo
 derives a stable Via pseudonym from its instance ID so intentional nested
@@ -106,30 +103,19 @@ applies when the operator approves an agent's desktop presentation request.
 The default `0` asks the host to choose a free port. The preview remains on
 host loopback and requires its normal unlock code.
 
-Manage the WebMITM interface with `safeyolo proxy web`:
+The first Rust release has no WebMITM listener or web inspector. The old
+`proxy.web_*` keys and `safeyolo proxy web` commands remain registered for
+compatibility, but they do not provide a working web view with the current
+package. Use the [read-only terminal inspector](DEVELOPERS.md#live-traffic-inspection)
+for supported traffic viewing and selected exports.
 
-```bash
-safeyolo proxy web share --tailnet           # Use Tailnet HTTPS port 443
-safeyolo proxy web share --tailnet --port 8446
-safeyolo proxy web status
-safeyolo proxy web open
-safeyolo proxy web unshare
-```
-
-Sharing is persistent: the traffic master owns a foreground Tailscale Serve
-process, restores it on `safeyolo start`, and removes only that mapping on
-`safeyolo stop` or `proxy web unshare`. SafeYolo refuses an occupied Tailnet
-port and never resets unrelated Serve mappings or enables Funnel. The local
-WebMITM listener remains on `127.0.0.1`; the Tailnet URL retains mitmweb's
-admin-password authentication. Changes are reconciled live through the
-authenticated operator API when SafeYolo is running; the proxy and agent
-traffic are not restarted.
-
-The WebMITM interface can inspect and manipulate proxied traffic. Treat remote
-access as an administrative capability: restrict the host and port with
-Tailnet ACLs/grants and do not share the admin credential. On hosts where the
-Tailscale CLI cannot manage Serve as the current user, the operator can grant
-that one-time host capability with `sudo tailscale set --operator=$USER`.
+The inspector reads a retained live view, not every byte sent through the
+proxy. Native `flow_pruner_max` (default 5,000 flows) and
+`flow_pruner_max_body_bytes` (default 1 GiB) in `data/native.json` are positive
+retention targets. Open flows can exceed them. Streamed, unavailable, failed,
+or pruned bodies are identified as such in the view; exports requiring missing
+content fail. These targets do not bound process memory or forwarded message
+size. See [capture and retention behavior](DEVELOPERS.md#live-traffic-inspection).
 
 ## policy.toml
 
@@ -512,10 +498,10 @@ atomically replaces `addons.yaml`. Repeated add/remove operations are idempotent
 `test_context` also accepts two optional keys under `addons.test_context` for
 the declared-context feature (mobile / header-less traffic):
 `inject_declared` (bool, default `false`) and `declared_ttl_max` (int seconds,
-default `900`). Leave them **unset** in the default template so the
-`test_context_inject_declared` / `test_context_declared_ttl` mitmproxy option
-fallbacks apply; set them only for engagements that need header-less traffic
-recorded. See `docs/ADDONS.md` → `test_context.py` → *Declared context*.
+default `900`). When absent, Rust uses the corresponding
+`test_context_inject_declared` and `test_context_declared_ttl` values in
+`data/native.json`. Set the addon keys when an engagement needs header-less
+traffic recorded. See [the native test-context contract](proxy-parity.md).
 
 ### Egress posture
 
@@ -613,25 +599,13 @@ In `warn` mode, violations are logged but traffic is not blocked. Useful for:
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
 | `SAFEYOLO_LOGS_DIR` | Override log and flow-state directory location |
 | `SAFEYOLO_ALLOW_ROOT` | Allow running CLI as root (not recommended) |
-| `SAFEYOLO_TUI` | Set to `true` for the mitmproxy terminal user interface (TUI) in tmux (default: headless `mitmdump`) |
-| `SAFEYOLO_BLOCK` | Set to `true` to enable blocking mode for all security addons |
-| `PATTERN_BLOCK` | Set to `true` to block matching HTTP and WebSocket pattern messages |
-| `PATTERN_BLOCK_WEBSOCKET_REQUEST` | Set to `true` or `false` to block or warn on matching client WebSocket messages |
-| `PATTERN_BLOCK_WEBSOCKET_RESPONSE` | Set to `true` or `false` to block or warn on matching server WebSocket messages |
+| `SAFEYOLO_BLOCK` | Set to `true` to force credential-guard blocking in the native proxy |
+| `CREDGUARD_BLOCK` | Override credential-guard blocking when `SAFEYOLO_BLOCK` does not force it |
 
-Pattern blocking precedence is deterministic: `SAFEYOLO_BLOCK=true` forces
-all four pattern options to `true`. Otherwise, `PATTERN_BLOCK=true` enables
-the HTTP request/response options and supplies `true` defaults for both
-WebSocket directions; an explicit `PATTERN_BLOCK_WEBSOCKET_REQUEST` or
-`PATTERN_BLOCK_WEBSOCKET_RESPONSE` value overrides that WebSocket default.
-The directional variables may therefore be set to `false` while
-`PATTERN_BLOCK=true`, but no directional setting can relax
-`SAFEYOLO_BLOCK=true`.
-
-Migration note: direct mitmproxy configurations that previously used only
-`pattern_block_request=true` or `pattern_block_response=true` to block
-WebSocket traffic must add the corresponding WebSocket-specific options
-after upgrading. The generic options now govern HTTP traffic only.
+The native proxy does not read the historical `SAFEYOLO_TUI` or
+`PATTERN_BLOCK*` variables. Configure pattern-scanner modes and settings in
+the retained policy and addon files. `SAFEYOLO_BLOCK=true` does not change
+every addon mode.
 
 ## Per-Agent Policies
 
@@ -644,5 +618,5 @@ rules. SafeYolo does not load per-agent policy from
 ## See Also
 
 - [CLI Reference](../cli/README.md) - Command documentation
-- [Addons](ADDONS.md) - Security addon configuration
+- [Historical Python addons](ADDONS.md) - Prior implementation reference
 - [Security](../SECURITY.md) - Security principles and threat model

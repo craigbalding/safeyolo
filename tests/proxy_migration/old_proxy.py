@@ -16,8 +16,8 @@ from pathlib import Path
 
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
-
 from pdp import PolicyClientConfig, configure_policy_client
+
 from safeyolo.core.audit_writer import get_writer
 from safeyolo.core.internal_api import is_agent_api_host
 from safeyolo.core.probe import is_probe_host

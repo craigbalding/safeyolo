@@ -1,10 +1,13 @@
 # State compatibility and rollback inventory
 
-This inventory is the starting point for issue #638. It names every state
-family consumed by the proxy migration, its source and native writers and
-readers, the on-disk format, and the existing executable controls. A row is
-not a rollback claim until a disposable fixture has written the state through
-the named consumer and the selected prior release has read and used it.
+This existing inventory names the state families consumed by the proxy
+migration, their historical Python and native writers and readers, on-disk
+formats, and executable controls. The table preserves the original proof
+obligations and component observations. Use the accepted dispositions in
+[#638](https://github.com/craigbalding/safeyolo/issues/638) for their actual
+scope. The post-deletion package-return gate is separate under
+[#640 B4](https://github.com/craigbalding/safeyolo/issues/640); a component
+row alone does not prove that installed return.
 
 ## Comparator identity
 
@@ -42,65 +45,83 @@ private keys, and raw credential material from ordinary output.
 | Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/coord_state_cross_version.rs`, and the installed transition below. |
 | Readiness, runtime identity, listener registry and task registry (ephemeral) | Source startup/lifecycle writes readiness/PID markers and keeps listener/task state in process memory; restart intentionally creates a new process state. | `proxy/src/lib.rs` and `runtime.rs` own readiness/listeners and the process-local task registry; native admin/API writers do not persist these records. | Verify cleanup, identity attribution and restart reset. Do not treat an in-memory snapshot as durable rollback evidence. | `tests/proxy_migration/test_readiness.py`, `test_operator_task_api.py`, `test_agent_api_status.py`; #637 owns installed lifecycle and #627 owns retained operator controls. |
 
-## Installed Linux transition and recovery
+## Installed Linux transition and package return
 
-On an isolated Linux instance, install the exact Python comparator checkpoint
-and the current candidate as separate wheels in separate Python 3.12
-environments. The candidate wheel must contain the frozen R native binary.
-Keep both installed command paths and the clean comparator source checkout
-available. The comparator wheel omits the top-level `pdp` package that its
-proxy imports; set `SAFEYOLO_PDP_DIR` to that checkout's `pdp/` directory.
-Use one disposable `SAFEYOLO_CONFIG_DIR` for the transition. The procedure is:
+The complete #638 W6 inventory was first exercised before deletion, when the
+installed R candidate could select both backends. The current package rejects
+`proxy.backend: python`. For an operator package change to the selected prior
+checkpoint and back, use the [explicit rollback procedure](../cli/README.md#return-to-the-prior-python-package).
+The [Linux B4 candidate](https://github.com/craigbalding/safeyolo/pull/828)
+is preparatory; macOS package return and exact-F acceptance remain open.
 
-1. Start the old installed CLI with `proxy.backend: python`. Create the policy,
+On an isolated Linux instance, install the selected Python checkpoint and the
+post-deletion Rust candidate as separate wheels in separate environments. Use
+Python 3.12.14 and the checkpoint's locked dependencies for the old wheel.
+The Rust wheel must contain the native binary built from its named revision.
+Keep both installed command paths and the clean old source checkout available.
+The old wheel omits the top-level `pdp` package that its proxy imports. Set
+`SAFEYOLO_PDP_DIR` to the old checkout's `pdp/` directory for that package
+only. Use one disposable `SAFEYOLO_CONFIG_DIR` without `proxy.backend` for the
+transition. Select each package by its installed CLI path:
+
+1. Start the old installed CLI. Create the policy,
    vault, certificate authority (CA), catalog, and external coordination state.
    Verify the initial denied request and trusted Transport Layer Security (TLS)
    request. Stop it and check that its listener and process markers are gone.
-2. Set `proxy.backend: rust` in the same configuration. Start the installed
-   candidate CLI. Read old state through native consumers. Write an approval,
+2. Start the installed Rust CLI on the same state. Read old state through native
+   consumers. Write an approval,
    service authorization, contract binding, grant, refreshed credential,
    circuit state, flow, audit event, coordination message, and collaboration
    state. Register and activate a task policy; verify that the active overlay
    denies a scoped request without origin contact. Clear it so the remaining
    durable controls can run. Register and activate it again before stopping
    the process. Stop without restoring a state backup.
-3. Select `proxy.backend: python` again and start the selected old CLI. Read and
+3. Start the selected old CLI again. Read and
    use the native writes. Verify that the native task registration and overlay
    are absent. Register a task through the old admin API. Revoke the approval,
    service authorization, binding, and grant; refresh the credential; reset
    the circuit; tag the flow; and reply through coordination and collaboration.
    Stop it cleanly.
-4. Select `proxy.backend: rust` and start the same candidate wheel again.
+4. Start the same Rust wheel again.
    Verify that the old process task registration and overlay are absent. Verify
    the old revocations, refreshed credential, recovered circuit, flow tag,
    retained messages, CA and key continuity, and an unrelated permitted
    control. Close the collaboration and stop the final native process.
 
-`tests/blackbox/installed_state_transition.py` runs these steps against a new
-disposable state directory. From the repository root, set `OLD_SOURCE` to a
-clean checkout at `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`, `OLD_PYTHON`
+The four steps above describe the complete #638 W6 inventory, which remains
+available through the script's default mode. For #640 B4,
+`tests/blackbox/installed_state_transition.py --post-deletion` runs a focused
+package return on a new disposable state directory. It checks the installed
+CLI and process at each switch, CA/HMAC and vault continuity, scoped host
+approval, a denied and then granted service request, and process-local task
+registration reset. It uses the accepted #638 results for the other state
+families. From the repository root, set `OLD_SOURCE` to a clean checkout at
+`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`, `OLD_PYTHON`
 and `OLD_CLI` to the interpreter and CLI from its wheel, `RUST_CLI` to the
 candidate wheel's CLI, `RUST_REVISION` to that wheel's full source commit, and
 `STATE_PARENT` to a writable directory outside both checkouts. The script
-checks the installed package revisions and the executed native binary path.
-Compare the candidate binary with the frozen R binary separately when building
-the wheel. The Linux ARM64 run at R used binary SHA-256
-`933b0c9368279416ecd3e92ba60260882f2a328622b787378cdae31a40d073a8`
-in both the frozen R and candidate wheels.
+checks the installed package revisions, the old Python and mitmproxy versions,
+and each running process. It supplies the old `pdp` source path only to the old
+package. The installed Rust package uses neither that source path nor a backend
+selector. For a final F candidate, build and install a fresh wheel from the
+exact release commit before repeating this transition.
 
 ```sh
 SAFEYOLO_PDP_DIR="$OLD_SOURCE/pdp" \
   "$OLD_PYTHON" tests/blackbox/installed_state_transition.py \
+  --post-deletion \
   --old-cli "$OLD_CLI" --rust-cli "$RUST_CLI" \
   --rust-revision "$RUST_REVISION" --state-parent "$STATE_PARENT"
 ```
 
-The successful run prints `linux_installed_transition_passed`, the four
-process identities, effective request and state observations, and the retained
-disposable state path. No untouched pre-native snapshot is restored. The
-existing component controls below cover malformed state, failed transactions,
-large grant values, and service-catalog empty semantics; the installed run
-exercises their supported cross-version path once.
+The successful focused run prints `linux_post_deletion_package_return_passed`,
+the four package and process identities, effective request and state
+observations, and the disposable state path. The fixture registers agent
+records but starts no agents. It stops both proxy packages, the private tmux
+session, and its NATS server. No untouched pre-native snapshot is restored.
+The existing component controls below cover malformed state, failed
+transactions, large grant values, and service-catalog empty semantics. The
+accepted #638 run exercised their supported cross-version path once.
 
 The operator selected process-local task policy for #638 W2. The installed run
 checks that native registration and activation affect only the current Rust
@@ -217,10 +238,12 @@ status without secret values. That component fixture alone did not exercise
 the installed OAuth refresh or user catalog paths; the installed transition
 above exercises those selected paths.
 
-The installed-instance rollback command is now available in the disposable
-host smoke lane. Run `tests/blackbox/installed_host_smoke.py --mode smoke
---rollback-python` against an installed CLI and a caller-created disposable
-configuration. With that flag, the lane starts Rust, writes one allowed and
+The pre-deletion installed-instance rollback selection
+`tests/blackbox/installed_host_smoke.py --mode smoke --rollback-python`
+switched backends in one old package; it is not
+a package-return command for the current release. Use the separate old and
+Rust package paths in the focused command above. In that historical lane, the
+script starts Rust, writes one allowed and
 one denied host rule through the authenticated native admin writer, checks
 200/403 behavior through the real UDS, stops Rust, selects the retained
 Python comparator in the same installation, and checks the saved host rules
@@ -235,8 +258,8 @@ check, and stops both processes cleanly. The lane changes only
 `SAFEYOLO_RUST_PROXY` for the rollback start, records the durable policy hash,
 asserts the exact `host:port` key in both the persisted policy and
 `policy show --section hosts`, and restores the caller's original selector
-bytes. The report marks this
-rollback sequence `passed` while the overall smoke result remains partial
+bytes. Its report marked this
+rollback sequence `passed` while the overall smoke result remained partial
 because guest isolation and platform acceptance are separate requirements. It
 does not claim that the Python comparator, guest isolation, or a platform lane
 has passed as a full release gate.

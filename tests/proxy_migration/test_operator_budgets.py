@@ -467,8 +467,12 @@ def test_operator_malformed_budget_reset_is_terminal_without_mutation(
         assert_no_refill(started)
 
 
-def test_operator_python_rejected_numeric_body_does_not_reset_budget(tmp_path, monkeypatch):
+def test_operator_python_rejected_numeric_body_does_not_reset_budget(
+    proxy_backend, tmp_path, monkeypatch,
+):
     """A Python JSON conversion error must not become an all-budget reset."""
+    if proxy_backend != "python":
+        pytest.skip("historical Python comparator requires explicit selection")
     with budget_proxy("python", tmp_path, POLICY, monkeypatch) as (proxy, parent, _client, port):
         started = time.monotonic()
         hit(proxy, parent, "alpha.invalid", 200)

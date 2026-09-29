@@ -75,7 +75,7 @@ def _stdout_to_stderr():
 #     to install the rootfs tree into ~/.safeyolo/share/ preserving ownership.
 #   e2fsprogs: build-rootfs.sh invokes mkfs.ext4 for the macOS VZ artifact even
 #     when the build itself runs on Linux (including a nested Linux lab).
-#   tmux: `safeyolo start` runs the mitmproxy master inside a private tmux
+#   tmux: `safeyolo start` runs the native proxy inside a private tmux
 #     session (see traffic_session.py).
 #
 # dnf (Fedora / RHEL): no mmdebstrap (Debian-only); everything else in

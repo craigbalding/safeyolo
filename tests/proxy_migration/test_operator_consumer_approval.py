@@ -20,7 +20,6 @@ from tests.proxy_migration.harness import request as send_request
 from tests.proxy_migration.scenarios import origin_server
 from tests.proxy_migration.test_native_network_policy import policy_proxy
 
-
 PROMPT_POLICY = """
 budget = 12000
 [hosts]

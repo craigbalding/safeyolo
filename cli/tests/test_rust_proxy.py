@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
+from cryptography import x509
 
 from safeyolo import config as safeyolo_config
 from safeyolo import proxy, runtime_identity, rust_proxy, traffic_session, vm
@@ -43,15 +44,10 @@ def launch(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(rust_proxy.subprocess, "run", version)
     monkeypatch.setattr(proxy, "load_config", create_autospec(proxy.load_config, spec_set=True, return_value=config))
-    python_start = create_autospec(proxy._start_python_proxy, spec_set=True)
-    python_stop = create_autospec(proxy._stop_python_proxy, spec_set=True)
-    monkeypatch.setattr(proxy, "_start_python_proxy", python_start)
-    monkeypatch.setattr(proxy, "_stop_python_proxy", python_stop)
     pane = create_autospec(rust_proxy.session_process_id, spec_set=True, return_value=None)
     begin = create_autospec(rust_proxy.start_session, spec_set=True, return_value=PID)
     end = create_autospec(traffic_session.stop_session, spec_set=True)
     monkeypatch.setattr(traffic_session, "stop_session", end)
-    monkeypatch.setattr(proxy, "stop_session", end)
     capture = create_autospec(rust_proxy.capture_session, spec_set=True, return_value="owned console evidence")
     alive = create_autospec(rust_proxy.process_is_alive, spec_set=True, return_value=True)
     token = create_autospec(rust_proxy.process_start_token, spec_set=True, return_value=TOKEN)
@@ -82,8 +78,6 @@ def launch(tmp_path, monkeypatch):
         native=native,
         config=config,
         version=version,
-        python_start=python_start,
-        python_stop=python_stop,
         pane=pane,
         begin=begin,
         end=end,
@@ -119,16 +113,6 @@ def receipt(launch, *, admin_port=None, token_file=None):
 
 
 def test_selected_rust_launch_skips_python_setup_and_publishes_owned_receipt(launch, monkeypatch):
-    for name in (
-        "_ensure_certs",
-        "_ensure_tokens",
-        "_find_addons_dir",
-        "_find_pdp_dir",
-        "_merge_system_cas_into_certifi",
-    ):
-        monkeypatch.setattr(
-            proxy, name, create_autospec(getattr(proxy, name), spec_set=True, side_effect=AssertionError("Python setup must not run"))
-        )
     launch.ready.write_text(json.dumps(marker(instance_id="stale")))
 
     def launched(*_args, **_kwargs):
@@ -139,7 +123,6 @@ def test_selected_rust_launch_skips_python_setup_and_publishes_owned_receipt(lau
 
     launch.begin.side_effect = launched
     proxy.start_proxy()
-    launch.python_start.assert_not_called()
     launch.version.assert_called_once_with(
         [str(launch.binary), "--version"], capture_output=True, text=True, timeout=5, check=False
     )
@@ -215,12 +198,6 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
     binary.write_text("native")
     binary.chmod(0o700)
     monkeypatch.setattr(rust_proxy, "_binary", lambda: binary)
-    def ensure_certs(cert_dir):
-        cert_dir.mkdir(parents=True)
-        (cert_dir / "mitmproxy-ca.pem").write_text("existing signing CA")
-
-    monkeypatch.setattr(proxy, "_ensure_certs", ensure_certs)
-
     launch = rust_proxy.prepare(
         {"proxy": {"backend": "rust", "rust_config": safeyolo_config.DEFAULT_NATIVE_CONFIG}}
     )
@@ -236,11 +213,31 @@ def test_default_native_config_is_generated_for_the_selected_instance(tmp_path, 
         rust_proxy.resolve_service_directories(config_dir / "services").builtin
     )
     assert native["gateway_services_dir"] == str(config_dir / "services")
-    # The installed Python backend uses these paths for the same instance.
+    # Durable native state reuses the existing instance paths.
     assert native["circuit_state_file"] == str(config_dir / "data" / "circuit_breaker_state.json")
     assert native["flow_store_db_path"] == str(logs_dir / "flows.sqlite3")
     assert native["event_log"] == str(logs_dir / "native-events.jsonl")
     assert native_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_native_signing_ca_preserves_existing_trust_and_rejects_partial_state(tmp_path):
+    cert_dir = tmp_path / "certs"
+    public = rust_proxy._ensure_signing_ca(cert_dir)
+    combined = cert_dir / "mitmproxy-ca.pem"
+    original = combined.read_bytes(), public.read_bytes()
+    assert x509.load_pem_x509_certificate(original[0]) == x509.load_pem_x509_certificate(original[1])
+    assert cert_dir.stat().st_mode & 0o777 == 0o700
+    assert combined.stat().st_mode & 0o777 == 0o600
+    rust_proxy._ensure_signing_ca(cert_dir)
+    assert (combined.read_bytes(), public.read_bytes()) == original
+
+    public.write_bytes(b"invalid trust root")
+    with pytest.raises(RuntimeError, match="existing trust root"):
+        rust_proxy._ensure_signing_ca(cert_dir)
+    assert combined.read_bytes() == original[0]
+    combined.unlink()
+    with pytest.raises(RuntimeError, match="Signing CA key is missing"):
+        rust_proxy._ensure_signing_ca(cert_dir)
 
 
 def test_existing_native_config_does_not_generate_or_replace_a_ca(tmp_path, monkeypatch):
@@ -249,7 +246,6 @@ def test_existing_native_config_does_not_generate_or_replace_a_ca(tmp_path, monk
     native_path.parent.mkdir(parents=True)
     original = '{"listeners":[],"tls_ca_file":null}\n'
     native_path.write_text(original)
-    monkeypatch.setattr(proxy, "_ensure_certs", lambda _path: pytest.fail("existing native config was changed"))
 
     rust_proxy._ensure_default_native_config({"proxy": {}}, native_path)
 
@@ -274,15 +270,14 @@ def test_selected_rust_startup_errors_never_fall_back_to_python(launch, failure)
         launch.version.side_effect = OSError("owned version failure")
     with pytest.raises((RuntimeError, ValueError)):
         proxy.start_proxy()
-    launch.python_start.assert_not_called()
     launch.begin.assert_not_called()
     assert not rust_proxy.state_file().exists()
 
 
-def test_explicit_python_backend_preserves_python_dispatch(launch):
+def test_python_backend_configuration_fails_before_native_launch(launch):
     launch.config["proxy"]["backend"] = "python"
-    proxy.start_proxy(proxy_port=18080, admin_port=19090, flow_cache=25, flow_cache_bytes=2048, dev=True)
-    launch.python_start.assert_called_once_with(18080, 19090, 25, 2048, True)
+    with pytest.raises(ValueError, match="proxy.backend: python is unavailable"):
+        proxy.start_proxy()
     launch.begin.assert_not_called()
     launch.version.assert_not_called()
 
@@ -295,7 +290,6 @@ def test_missing_backend_uses_native_dispatch_without_python_fallback(launch, mo
     proxy.start_proxy()
 
     native_start.assert_called_once_with(launch.config)
-    launch.python_start.assert_not_called()
 
 
 def test_binary_prefers_the_packaged_native_artifact(monkeypatch, tmp_path):
@@ -385,7 +379,6 @@ def test_before_ready_exit_captures_console_before_cleaning_lifetime_state(launc
     launch.capture.assert_called_once_with()
     launch.kill.assert_not_called()
     assert not rust_proxy.state_file().exists()
-    launch.python_start.assert_not_called()
 
 
 def test_startup_timeout_captures_evidence_then_requests_graceful_cleanup(launch):
@@ -399,7 +392,6 @@ def test_startup_timeout_captures_evidence_then_requests_graceful_cleanup(launch
     assert elapsed[0] >= rust_proxy.STARTUP_TIMEOUT
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
     assert not rust_proxy.state_file().exists()
-    launch.python_start.assert_not_called()
 
 
 def test_lifetime_state_survives_removed_readiness_and_configured_backend_change(launch):
@@ -409,10 +401,9 @@ def test_lifetime_state_survives_removed_readiness_and_configured_backend_change
     launch.config["proxy"]["backend"] = "python"
     assert proxy.is_proxy_running()
     assert rust_proxy.readiness(process) is None
-    with pytest.raises(RuntimeError, match="rust proxy is still running"):
+    with pytest.raises(ValueError, match="proxy.backend: python is unavailable"):
         proxy.start_proxy()
     assert rust_proxy.read_process() == process
-    launch.python_start.assert_not_called()
 
 
 def test_graceful_stop_waits_beyond_both_old_deadlines_without_sigkill(launch):
@@ -423,7 +414,6 @@ def test_graceful_stop_waits_beyond_both_old_deadlines_without_sigkill(launch):
     assert launch.clock.sleep.call_count == 121
     assert sum(call.args[0] for call in launch.clock.sleep.call_args_list) > 10.0
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
-    launch.python_stop.assert_not_called()
     launch.end.assert_not_called()
     assert not rust_proxy.state_file().exists()
     assert not (rust_proxy.get_data_dir() / "proxy.pid").exists()
@@ -463,7 +453,6 @@ def test_interrupted_stop_keeps_receipt_and_does_not_kill_tmux(launch):
     assert (rust_proxy.get_data_dir() / "proxy.pid").exists()
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
     launch.end.assert_not_called()
-    launch.python_stop.assert_not_called()
 
 
 def test_missing_identity_token_is_unknown_and_does_not_clear_or_signal(launch):
@@ -476,7 +465,6 @@ def test_missing_identity_token_is_unknown_and_does_not_clear_or_signal(launch):
     assert rust_proxy.read_process() == process
     launch.kill.assert_not_called()
     launch.end.assert_not_called()
-    launch.python_stop.assert_not_called()
 
 
 @pytest.mark.parametrize("missing", ["pid", "token"])
@@ -508,7 +496,6 @@ def test_interrupted_or_uncertain_launch_keeps_pending_lifetime_receipt(launch, 
     assert process is not None and process.pid is None and process.start_token is None
     launch.kill.assert_not_called()
     launch.end.assert_not_called()
-    launch.python_start.assert_not_called()
 
 
 @pytest.mark.parametrize("error", [OSError("owned creation failure"), subprocess.CalledProcessError(1, "owned-tmux")])
@@ -518,7 +505,6 @@ def test_known_session_creation_failure_clears_pending_receipt(launch, error):
         rust_proxy.start(launch.config)
     assert not rust_proxy.state_file().exists()
     launch.kill.assert_not_called()
-    launch.python_start.assert_not_called()
 
 
 @pytest.mark.parametrize("pane_pid", [PID, PID + 1])
@@ -529,7 +515,6 @@ def test_reused_pid_or_replacement_pane_is_not_signalled_or_killed(launch, pane_
     proxy.stop_proxy()
     launch.kill.assert_not_called()
     launch.end.assert_not_called()
-    launch.python_stop.assert_not_called()
     launch.pane.assert_not_called()
 
 
@@ -607,8 +592,6 @@ def test_invalid_lifetime_receipt_never_falls_back_to_python(launch, operation):
             "health": proxy.wait_for_healthy,
         }[operation]()
     assert rust_proxy.state_file().read_text() == "{"
-    launch.python_start.assert_not_called()
-    launch.python_stop.assert_not_called()
     launch.begin.assert_not_called()
     launch.kill.assert_not_called()
     launch.http.assert_not_called()
@@ -716,7 +699,6 @@ def test_failed_start_cleanup_preserves_original_error_and_ownership(launch, mon
     assert any("owned cleanup failure" in note for note in error.value.__notes__)
     assert rust_proxy.read_process().pid == PID
     launch.end.assert_not_called()
-    launch.python_start.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -735,7 +717,6 @@ def test_readiness_collision_preserves_native_input_and_state_files(launch, fiel
         proxy.start_proxy()
     assert launch.ready.read_text() == "owned input must survive a rejected launch"
     launch.begin.assert_not_called()
-    launch.python_start.assert_not_called()
 
 
 def test_health_rejects_readiness_removed_during_successful_http_response(launch):
@@ -759,14 +740,13 @@ def test_health_rejects_readiness_removed_during_successful_http_response(launch
 
 
 def test_stale_native_receipt_does_not_hide_a_different_live_python_pid(launch):
-    receipt(launch)
+    process = receipt(launch)
     launch.token.return_value = "old PID has been reused"
-    launch.config["proxy"]["backend"] = "python"
     (rust_proxy.get_data_dir() / "proxy.pid").write_text(f"{PID + 1}\n")
-    proxy.start_proxy()
-    launch.python_start.assert_not_called()
+    with pytest.raises(RuntimeError, match="prior Python proxy is still running"):
+        proxy.start_proxy()
     launch.begin.assert_not_called()
-    assert not rust_proxy.state_file().exists()
+    assert rust_proxy.read_process() == process
     assert (rust_proxy.get_data_dir() / "proxy.pid").read_text() == f"{PID + 1}\n"
 
 
@@ -793,21 +773,18 @@ def test_failed_atomic_legacy_pid_publication_cannot_leave_a_partial_pid(launch,
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
 
 
-def test_explicit_stop_then_python_selection_uses_only_the_requested_backend(launch):
+def test_explicit_stop_then_python_selection_requires_prior_package(launch):
     def started(*_args, **_kwargs):
         launch.ready.write_text(json.dumps(marker()))
         return PID
 
     launch.begin.side_effect = started
     proxy.start_proxy()
-    launch.config["proxy"]["backend"] = "python"
-    with pytest.raises(RuntimeError, match="rust proxy is still running"):
-        proxy.start_proxy()
-    launch.python_start.assert_not_called()
     launch.kill.side_effect = lambda _pid, _signal: setattr(launch.alive, "return_value", False)
     proxy.stop_proxy()
-    proxy.start_proxy()
-    launch.python_start.assert_called_once_with(8080, 9090, None, None, False)
+    launch.config["proxy"]["backend"] = "python"
+    with pytest.raises(ValueError, match="proxy.backend: python is unavailable"):
+        proxy.start_proxy()
     launch.begin.assert_called_once()
     launch.kill.assert_called_once_with(PID, signal.SIGTERM)
     assert not rust_proxy.state_file().exists()

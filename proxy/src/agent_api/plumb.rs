@@ -1902,6 +1902,7 @@ mod tests {
     }
 
     fn shutdown_config(root: &Path) -> Config {
+        std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
         serde_json::from_value(json!({
             "listeners": [AgentListener {
                 agent_id: "alice".to_owned(),
@@ -1909,7 +1910,7 @@ mod tests {
                 source_id: None,
             }],
             "data_dir": root.join("data"),
-            "temporary_policy_socket": root.join("policy.sock"),
+            "policy_file": root.join("policy.json"),
             "agent_api_enabled": true,
             "test_context_block": true,
             "test_context_inject_declared": false,

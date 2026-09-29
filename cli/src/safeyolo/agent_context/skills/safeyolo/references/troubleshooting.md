@@ -19,7 +19,7 @@ loop-guard response is an exception and may omit that header. Prefer the JSON
 | `403` | Policy, route, token, contract, homoglyph, pattern, or admin-port denial | Self-correct the destination/request; do not request a blanket bypass |
 | `428` | Approval required or credential destination mismatch | Inspect `type` and `action`; wait only when `action` is `wait_for_approval` |
 | `429` | Rate or budget exhausted | Honor `Retry-After`, inspect `/budgets`, and back off |
-| `503` | PDP, registry, vault, circuit, or proxy dependency unavailable | Inspect `X-Blocked-By`, body, `/health`, and `/circuits` |
+| `503` | Policy, registry, vault, circuit, or proxy dependency unavailable | Inspect `X-Blocked-By`, body, `/health`, and `/circuits` |
 | `508` | Request re-entered the SafeYolo proxy | Stop and report a proxy loop or double-proxy configuration |
 
 Important 428 distinctions:
@@ -83,8 +83,9 @@ Current event prefixes include `traffic.*`, `security.*`, `gateway.*`,
 `plumb.*`, `agent.*`, `ops.*`, and `admin.*`. Audit decisions include
 `allow`, `deny`, `warn`, `require_approval`, `budget_exceeded`, and `log`.
 
-Use `/explain?request_id=req-<32hex>` when a request ID is known. Block
-and upstream responses expose SafeYolo's canonical request ID in the
+The Rust proxy generates a canonical request ID at ingress; a caller-supplied
+request ID does not select it. Use `/explain?request_id=req-<32hex>` when a
+request ID is known. Block and upstream responses expose that ID in the
 `X-SafeYolo-Request-Id` response header. When a response cannot carry that
 header, ask the operator to obtain the ID from `safeyolo logs`.
 
@@ -96,7 +97,7 @@ Request the narrowest relevant host-side action and explain the evidence:
 |---|---|
 | `safeyolo watch` | A 428, gateway request, contract binding, risky route, credential, or plumb chat awaits approval |
 | `safeyolo agent diag <name>` | The agent-to-proxy socket, attribution, bridge, or end-to-end route may be broken |
-| `safeyolo doctor` | Proxy dependencies, addons, runtime, image, CA, or isolation may be unhealthy |
+| `safeyolo doctor` | Proxy dependencies, native runtime, image, CA, or isolation may be unhealthy |
 | `safeyolo check` | A quick host proxy/config/CA sanity check is sufficient |
 | `safeyolo status` | You need proxy and running-agent state |
 | `safeyolo logs --event security --tail 20` | You need recent security decisions |

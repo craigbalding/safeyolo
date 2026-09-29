@@ -2028,7 +2028,6 @@ def test_safeyolo_acceptance_graph_tool_hashes_match_sources() -> None:
     } <= acceptance_dependencies
     assert {
         "ev.accept_python_lane",
-        "ev.accept_policy_chaos_lane",
         "ev.accept_proxy_lane",
         "ev.accept_runsc_lane",
         "ev.accept_vz_lane",

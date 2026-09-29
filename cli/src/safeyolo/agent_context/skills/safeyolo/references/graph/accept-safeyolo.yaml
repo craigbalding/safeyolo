@@ -181,9 +181,9 @@ nodes:
       obtain_from: "pytest, pytest-cov, and Hypothesis distributions named and hash-locked in uv.lock, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
+          sha256: fea3be7e65a66c26664b6ceb5aa5a677416ca68dca7f4af499ffbbd22062665c
         - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
+          sha256: 7fa47e25432b2c111595f62c43fc07dea1973b7e60cbfa23f7663df9f303db31
         - path: scripts/check_test_assurance.py
           sha256: 3dc6bc589625ea3058b7ca20711d97f3007ca41b0ebd1653a671a4642dc91974
       setup: "uv sync --frozen --group dev"
@@ -194,39 +194,12 @@ nodes:
         acceptance_identity: "uv run python scripts/check_test_assurance.py"
       capture: [trusted base, exact test nodes, pytest and plugin versions, seed when applicable, exit status, failing assertion]
 
-  - id: ev.accept_policy_chaos_lane
-    kind: evidence
-    label: "Use the Hypothesis-backed policy transaction chaos runner"
-    detail: |
-      This is the primary generated-sequence tool for policy permissions,
-      concurrent mutation, failure stages, and crash-recovery semantics. The
-      normal mode is hermetic and retains replayable machine-readable output;
-      guarded power-cut mode belongs only on an approved disposable KVM guest.
-      For a new state-transition claim, write a focused Hypothesis scenario
-      that generates the relevant operations and checks the invariant after
-      each step. Reuse the runner's replay and evidence facilities where they
-      fit; a passing published seed set does not cover an untested operation.
-    source: tools/policy_chaos.py
-    tool:
-      obtain_from: "the exact trusted-base sources plus Hypothesis and tomlkit distributions hash-locked in uv.lock"
-      sources:
-        - path: tools/policy_chaos.py
-          sha256: 265c7607126337da8dd3c895580fe9fa0ecaff94f6c5696b3a00693b21b476c6
-        - path: experiments/policy_assurance/run_experiments.py
-          sha256: 898fa727527e70de2f3cf9f33e0ca870e39f66385b0e80b21d0551b3f0ccb916
-        - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
-      setup: "uv sync --frozen --group dev; use a durable evidence directory outside the checkout"
-      verify: "sha256sum tools/policy_chaos.py experiments/policy_assurance/run_experiments.py uv.lock"
-      run: "uv run python -m tools.policy_chaos run --published-seeds --output <evidence-dir>/policy-chaos.json"
-      capture: [trusted base, report JSON, assertion hashes, published seeds, replay command, exit status]
-
   - id: ev.accept_proxy_lane
     kind: evidence
-    label: "Use real mitmproxy, per-agent UDS, sinkhole, curl/TLS, and host pytest through the proxy blackbox lane"
+    label: "Use the installed Rust proxy, per-agent UDS, sinkhole, curl/TLS, and host pytest through the proxy blackbox lane"
     detail: |
-      The proxy lane installs the product, starts the actual mitmproxy addons
-      and per-agent Unix listener, and drives HTTP, CONNECT/TLS, credentials,
+      The proxy lane installs the product, starts the selected native proxy
+      and per-agent Unix listeners, and drives HTTP, CONNECT/TLS, credentials,
       policy, rate limits, attribution, and upstream capture against the real
       sinkhole. It is the primary proxy-system tool, not a substitute for
       sandbox isolation.
@@ -237,22 +210,22 @@ nodes:
       harness setup; do not require the whole lane for each new assertion.
     source: tests/blackbox/run-lane.sh
     tool:
-      obtain_from: "the trusted-base harness; mitmproxy and Python tools are hash-locked in uv.lock and fetched through the approved SafeYolo proxy"
+      obtain_from: "the trusted-base installer and harness; Python dependencies are hash-locked in uv.lock and Rust dependencies in proxy/Cargo.lock"
       sources:
         - path: install.sh
-          sha256: f4891e8f8b40ff59dd0bdcd744d8c700b7013dd3d5eb14875b888c35321a46e5
+          sha256: 86f2f3910b12c2df8361ffacedb2267f4851f3fc4c2753fca643a0b1b32fe041
         - path: tests/blackbox/run-lane.sh
-          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
+          sha256: 54fc53b33f637f04fdb37f6b2394505a9575ad1a1b5a7f31c738e85b3288e42c
         - path: tests/blackbox/run-tests.sh
-          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
+          sha256: c64b04111656e0fc86d1186f5abf49c3878bd3f1fb0fe9872efc78c728a7b98e
         - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
+          sha256: 7fa47e25432b2c111595f62c43fc07dea1973b7e60cbfa23f7663df9f303db31
       setup: "Use an approved host; the lane owns a separate .safeyolo-test instance, ports, certificates, and sinkhole."
       verify: "sha256sum install.sh tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh uv.lock"
       run:
-        install_and_proxy: "./tests/blackbox/run-lane.sh proxy --verbose"
-        prepared_install: "./tests/blackbox/run-tests.sh --proxy --verbose"
-      capture: [trusted base, mitmproxy version, proxy and UDS readiness, sinkhole observation, TLS result, exit status]
+        install_and_proxy: "./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose"
+        prepared_install: "./tests/blackbox/run-tests.sh --proxy --proxy-impl rust --verbose"
+      capture: [trusted base, native proxy identity, proxy and UDS readiness, sinkhole observation, TLS result, exit status]
 
   - id: ev.accept_runsc_lane
     kind: evidence
@@ -274,9 +247,9 @@ nodes:
       obtain_from: "runsc from gVisor's official signed apt repository, or its official tarball plus published SHA-512, through trusted-base safeyolo setup"
       sources:
         - path: tests/blackbox/run-lane.sh
-          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
+          sha256: 54fc53b33f637f04fdb37f6b2394505a9575ad1a1b5a7f31c738e85b3288e42c
         - path: tests/blackbox/run-tests.sh
-          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
+          sha256: c64b04111656e0fc86d1186f5abf49c3878bd3f1fb0fe9872efc78c728a7b98e
         - path: cli/src/safeyolo/commands/setup.py
           sha256: 55fa6e69dc813acfb313c82d0556b8a54f3ef3020025c6d5c526ae646e7e2ee6
         - path: cli/src/safeyolo/platform/linux.py
@@ -284,8 +257,8 @@ nodes:
       setup: "Use an approved Linux host; run the product bootstrap/setup path and preserve SAFEYOLO_RUNSC_DEBUG=1 for diagnostic evidence."
       verify: "sha256sum tests/blackbox/run-lane.sh tests/blackbox/run-tests.sh cli/src/safeyolo/commands/setup.py cli/src/safeyolo/platform/linux.py && runsc --version && safeyolo doctor --json"
       run:
-        gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --verbose"
-        gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --verbose"
+        gvisor_systrap: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose"
+        gvisor_kvm: "SAFEYOLO_RUNSC_DEBUG=1 ./tests/blackbox/run-lane.sh kvm --proxy-impl rust --verbose"
       capture: [trusted base, runsc version, asserted platform, uid map, guest-root boundary, lifecycle result, runsc logs, exit status]
 
   - id: ev.accept_vz_lane
@@ -312,11 +285,11 @@ nodes:
         - path: vm/test/snapshot-smoke.sh
           sha256: d31fc5882ef185a66a86c634df38077eb1629df324bf03ae2e2068d5d9e7df6e
         - path: tests/blackbox/run-lane.sh
-          sha256: 4a0c46af66610b32b5efa6356318c60bdeb8945a1cdbeafeea6888ba9e357a83
+          sha256: 54fc53b33f637f04fdb37f6b2394505a9575ad1a1b5a7f31c738e85b3288e42c
       setup: "Use the approved physical Apple Silicon host; make -C vm install; prepare a disposable BYOA agent for snapshot smoke."
       verify: "sha256sum vm/Makefile vm/Package.swift vm/test/snapshot-smoke.sh tests/blackbox/run-lane.sh && safeyolo-vm version && safeyolo-vm check"
       run:
-        full_vz: "./tests/blackbox/run-lane.sh vz --verbose"
+        full_vz: "./tests/blackbox/run-lane.sh vz --proxy-impl rust --verbose"
         snapshot_restore: "bash vm/test/snapshot-smoke.sh <disposable-agent>"
       capture: [trusted base, safeyolo-vm version, physical host identity, VZ assertion, snapshot fingerprint result, exit status]
 
@@ -460,7 +433,7 @@ nodes:
     label: "Use current blackbox UDS transport plus focused socket and attribution pytest"
     detail: |
       The system proof is the current proxy or platform blackbox path: it binds
-      the real mitmproxy UnixInstance, drives HTTP and CONNECT over the UDS, and
+      the native per-agent Unix listener, drives HTTP and CONNECT over the UDS, and
       checks sandbox reachability and attribution. Use focused CLI pytest for
       parsing, mount construction, native runsc stream donation, or doctor
       diagnostics; do not substitute the excluded historical uds-networking
@@ -470,7 +443,7 @@ nodes:
       obtain_from: "the exact trusted-base blackbox and focused pytest sources; Python tools hash-locked in uv.lock"
       sources:
         - path: tests/blackbox/run-tests.sh
-          sha256: 1fa875b46674d8fc7456ab14dc33248b5a12508681c5df9a3d832e180aeeadcc
+          sha256: c64b04111656e0fc86d1186f5abf49c3878bd3f1fb0fe9872efc78c728a7b98e
         - path: tests/blackbox/host/uds_transport.py
           sha256: 3f4c2d9f5cea0a7e63e6bf8a80cb5df1cba86eda021e223a5bd62c1316355eab
         - path: cli/tests/test_sockets.py
@@ -480,7 +453,7 @@ nodes:
       setup: "Use the prepared proxy lane for system evidence or the locked Python environment for a focused implementation probe."
       verify: "sha256sum tests/blackbox/run-tests.sh tests/blackbox/host/uds_transport.py cli/tests/test_sockets.py cli/tests/test_linux_platform_oci.py"
       run:
-        real_proxy_uds: "./tests/blackbox/run-tests.sh --proxy --verbose"
+        real_proxy_uds: "./tests/blackbox/run-tests.sh --proxy --proxy-impl rust --verbose"
         focused_implementation: "uv run pytest -q cli/tests/test_sockets.py cli/tests/test_linux_platform_oci.py"
       capture: [trusted base, real or focused boundary, UDS path identity, agent attribution, transport result, exit status]
 
@@ -501,7 +474,7 @@ nodes:
         - path: .pre-commit-config.yaml
           sha256: 2a9be72ad47afcd4b9674af9b3ffd0d2b15a1877c24fe01d566c76565b2d3798
         - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
+          sha256: 7fa47e25432b2c111595f62c43fc07dea1973b7e60cbfa23f7663df9f303db31
       setup: "Use the trusted base's locked Python environment and already-approved hook dependencies."
       verify: "sha256sum ruff.toml .pre-commit-config.yaml uv.lock && uv run ruff --version"
       run:
@@ -553,9 +526,9 @@ nodes:
       obtain_from: "pytest-repeat and pytest-xdist in the hash-bearing tools/acceptance stress requirements export, layered over the exact root project environment"
       sources:
         - path: pyproject.toml
-          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
+          sha256: fea3be7e65a66c26664b6ceb5aa5a677416ca68dca7f4af499ffbbd22062665c
         - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
+          sha256: 7fa47e25432b2c111595f62c43fc07dea1973b7e60cbfa23f7663df9f303db31
         - path: tools/acceptance/requirements-stress.txt
           sha256: 5ef03fb3b4dbceda038ab1c919061096bb3c1e0548d244da0015f7ea4939e20e
       setup: "uv sync --frozen --group dev; select only hermetic focused nodes and give each test-owned external service a distinct endpoint"
@@ -607,9 +580,9 @@ nodes:
       obtain_from: "pip-audit declared and hash-locked in the isolated tools/acceptance uv project, fetched through the approved SafeYolo proxy"
       sources:
         - path: pyproject.toml
-          sha256: 239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04
+          sha256: fea3be7e65a66c26664b6ceb5aa5a677416ca68dca7f4af499ffbbd22062665c
         - path: uv.lock
-          sha256: 021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc
+          sha256: 7fa47e25432b2c111595f62c43fc07dea1973b7e60cbfa23f7663df9f303db31
         - path: tools/acceptance/pyproject.toml
           sha256: 95d5d041dea3951f039ad4ffeebf8fb2897dd216df6ddf2bd1da0e03e7804d2c
         - path: tools/acceptance/uv.lock
@@ -760,8 +733,8 @@ edges:
   - {from: sym.accept_background, to: ev.accept_select_boundary, kind: next_check, when: "choose one recent, stale, failed, or unproven useful boundary"}
 
   - {from: ev.accept_select_boundary, to: ev.accept_python_lane, kind: next_check, when: "a focused Python behavior or regression is material"}
-  - {from: ev.accept_select_boundary, to: ev.accept_policy_chaos_lane, kind: next_check, when: "generated policy sequences, concurrency, or failure stages are material"}
-  - {from: ev.accept_select_boundary, to: ev.accept_proxy_lane, kind: next_check, when: "install, mitmproxy, policy enforcement, credentials, HTTP, or TLS is material"}
+  - {from: ev.accept_select_boundary, to: cls.accept_coverage_gap, kind: implies, when: "the claim needs generated native policy sequences; the Python chaos lane was retired at cutover"}
+  - {from: ev.accept_select_boundary, to: ev.accept_proxy_lane, kind: next_check, when: "install, native proxy, policy enforcement, credentials, HTTP, or TLS is material"}
   - {from: ev.accept_select_boundary, to: ev.accept_runsc_lane, kind: next_check, when: "Linux runsc, systrap, KVM, guest-root, isolation, or lifecycle is material"}
   - {from: ev.accept_select_boundary, to: ev.accept_vz_lane, kind: next_check, when: "Apple VZ, safeyolo-vm, or snapshot behavior is material"}
   - {from: ev.accept_select_boundary, to: ev.accept_coord_lane, kind: next_check, when: "Coord retention, JetStream, or schema upgrade is material"}
@@ -780,7 +753,7 @@ edges:
 
   - {from: sym.accept_install_proxy, to: ev.accept_proxy_lane, kind: next_check, when: "exercise the installed real proxy and sinkhole boundary"}
   - {from: sym.accept_python_behavior, to: ev.accept_python_lane, kind: next_check, when: "reuse or write a focused pytest or Hypothesis test"}
-  - {from: sym.accept_policy_assurance, to: ev.accept_policy_chaos_lane, kind: next_check, when: "generated transaction sequences or concurrency are material"}
+  - {from: sym.accept_policy_assurance, to: cls.accept_coverage_gap, kind: implies, when: "generated native policy sequences or concurrency are material; the old Python chaos tool is retired"}
   - {from: sym.accept_policy_assurance, to: ev.accept_proxy_lane, kind: next_check, when: "the claim is actual loaded-proxy enforcement rather than the policy transaction engine"}
   - {from: sym.accept_agent_isolation, to: ev.accept_runsc_lane, kind: next_check, when: "the affected production platform is Linux/gVisor"}
   - {from: sym.accept_agent_isolation, to: ev.accept_vz_lane, kind: next_check, when: "the affected production platform is physical Apple Silicon/VZ"}
@@ -804,14 +777,13 @@ edges:
   - {from: sym.accept_security_analysis, to: ev.accept_dependency_audit_lane, kind: next_check, when: "the risk is in the locked runtime dependency closure"}
   - {from: sym.accept_security_analysis, to: cls.accept_resource_missing, kind: implies, when: "only a platform without a pinned native CodeQL bundle is available"}
   - {from: sym.accept_state_integrity, to: ev.accept_mypy_lane, kind: next_check, when: "challenge impossible or confused states at Python interfaces"}
-  - {from: sym.accept_state_integrity, to: ev.accept_policy_chaos_lane, kind: next_check, when: "state transitions need generated dynamic sequences"}
+  - {from: sym.accept_state_integrity, to: cls.accept_coverage_gap, kind: implies, when: "generated native state transitions are needed and no bound tool exercises them"}
   - {from: sym.accept_state_integrity, to: ev.accept_python_lane, kind: next_check, when: "a focused state-transition regression can be exercised directly"}
   - {from: sym.accept_race_risk, to: ev.accept_concurrency_stress_lane, kind: next_check, when: "bounded repeated or multi-process stress can expose the suspected coupling"}
-  - {from: sym.accept_race_risk, to: ev.accept_policy_chaos_lane, kind: next_check, when: "policy transaction interleavings or crash stages are material"}
+  - {from: sym.accept_race_risk, to: cls.accept_coverage_gap, kind: implies, when: "native policy transaction interleavings or crash stages need a new probe"}
   - {from: sym.accept_dependency_security, to: ev.accept_dependency_audit_lane, kind: next_check, when: "audit the exact locked product runtime closure"}
 
   - {from: ev.accept_python_lane, to: ev.accept_classify_result, kind: next_check, when: "focused tests complete or fail"}
-  - {from: ev.accept_policy_chaos_lane, to: ev.accept_classify_result, kind: next_check, when: "the chaos report completes or records a finding/infrastructure error"}
   - {from: ev.accept_proxy_lane, to: ev.accept_classify_result, kind: next_check, when: "the real proxy lane completes or fails"}
   - {from: ev.accept_runsc_lane, to: ev.accept_classify_result, kind: next_check, when: "the asserted runsc platform lane completes or fails"}
   - {from: ev.accept_vz_lane, to: ev.accept_classify_result, kind: next_check, when: "the physical VZ probe completes or fails"}

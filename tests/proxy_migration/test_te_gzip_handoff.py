@@ -18,8 +18,8 @@ import h2.connection
 import h2.errors
 import h2.events
 import pytest
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy
 from tests.proxy_migration.run import proxy_identity
 from tests.proxy_migration.scenarios import POLICY
@@ -325,7 +325,7 @@ def _h2_response(stream, connection, stream_id, authority, path):
 def test_http2_client_http1_origin_transfer_coding(proxy_backend, tmp_path, coding):
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     with _origin(coding, pem) as origin, _origin("plain", pem) as denied:
         authority = f"127.0.0.1:{origin.server_address[1]}"

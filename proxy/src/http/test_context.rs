@@ -808,14 +808,7 @@ mod tests {
                 "event_log": event_log.clone(),
             }))
             .unwrap();
-            let mut runtime = Runtime::new(
-                config,
-                "capture-fixture",
-                Arc::new(tokio::sync::Mutex::new(())),
-                None,
-                None,
-            )
-            .unwrap();
+            let mut runtime = Runtime::new(config, "capture-fixture", None, None).unwrap();
             if read_only_event_log {
                 // Fail only the completed-response evidence write. The owned
                 // log opens normally, then this read-only handle makes the
@@ -882,16 +875,7 @@ mod tests {
             let mut config = old.config.clone();
             config.sse_streaming_enabled = enabled;
             std::fs::write(config.policy_file.as_ref().unwrap(), policy.to_string()).unwrap();
-            *state = Arc::new(
-                Runtime::new(
-                    config,
-                    "capture-fixture",
-                    Arc::new(tokio::sync::Mutex::new(())),
-                    Some(&old),
-                    None,
-                )
-                .unwrap(),
-            );
+            *state = Arc::new(Runtime::new(config, "capture-fixture", Some(&old), None).unwrap());
         }
     }
 

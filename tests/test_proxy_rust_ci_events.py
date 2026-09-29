@@ -73,6 +73,17 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert step_names.index("Install preview test system dependency") < step_names.index(
         "Test the desktop presenter protocol"
     )
+    producer = steps["Prepare pinned Python Agent API audit producer"]
+    assert producer["env"]["SAFEYOLO_AUDIT_COMPARATOR_COMMIT"] == (
+        "2ca598ce11d7c375a024b38eb3e7b4104a795d84"
+    )
+    assert "uv sync --frozen --group dev --python 3.12.14" in producer["run"]
+    assert step_names.index("Prepare pinned Python Agent API audit producer") < step_names.index(
+        "Test focused native boundaries"
+    )
+    native = steps["Test focused native boundaries"]
+    assert native["env"]["SAFEYOLO_PYTHON_SOURCE"] == producer["env"]["SAFEYOLO_PYTHON_SOURCE"]
+    assert "historical_source_producer_matches_frozen_rows -- --ignored --exact" in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
@@ -80,7 +91,6 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "cli/tests/test_rust_proxy.py",
         "cli/tests/test_sockets.py",
         "tests/test_proxy_rust_coord_fixture.py",
-        "tests/test_rust_temporary_policy.py",
         "tests/test_proxy_cutover_deletion_map.py",
         "cli/tests/test_desktop_presenter.py",
         "cli/tests/test_desktop_presenter_rpc.py",
@@ -98,6 +108,17 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["http-slice"]["steps"])
     assert "cargo_with_space.sh test --locked" in full_runs
     assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
+    full_steps = {
+        step["name"]: step for step in rust_workflow()["jobs"]["http-slice"]["steps"]
+        if "name" in step
+    }
+    comparator = full_steps["Compare native behavior with the historical implementation"]
+    assert comparator["env"]["SAFEYOLO_PYTHON_SOURCE"] == (
+        full_steps["Run shared HTTP contracts against native Rust"]["env"]["SAFEYOLO_PYTHON_SOURCE"]
+    )
+    assert comparator["env"]["SAFEYOLO_PYTHON_EXECUTABLE"] == (
+        full_steps["Run shared HTTP contracts against native Rust"]["env"]["SAFEYOLO_PYTHON_EXECUTABLE"]
+    )
 
 
 def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
@@ -127,7 +148,7 @@ def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() 
     )
     short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-py' || '' }}"
     assert steps["Run shared HTTP contracts against the historical Python comparator"]["env"]["PYTEST_ADDOPTS"] == short_tmp
-    assert steps["Run shared HTTP contracts against native Rust without the temporary adapter"]["env"][
+    assert steps["Run shared HTTP contracts against native Rust"]["env"][
         "PYTEST_ADDOPTS"
     ] == short_tmp.replace("sy-py", "sy-rs")
     assert (
@@ -135,7 +156,7 @@ def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() 
     )
     assert (
         "--proxy-backend rust"
-        in steps["Run shared HTTP contracts against native Rust without the temporary adapter"]["run"]
+        in steps["Run shared HTTP contracts against native Rust"]["run"]
     )
 
 
@@ -143,7 +164,7 @@ def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> 
     steps = rust_workflow()["jobs"]["http-slice"]["steps"]
     named = {step.get("name"): step for step in steps}
     assert named["Install uv"]["with"]["version"] == "0.12.8"
-    installation = named["Install the historical comparator and temporary policy adapter"]["run"]
+    installation = named["Install the native CLI test environment"]["run"]
     assert "uv python install 3.12.14" in installation
     assert "uv sync --frozen --group dev --python 3.12.14" in installation
 
