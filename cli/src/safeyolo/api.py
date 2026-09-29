@@ -270,10 +270,15 @@ class AdminAPI:
     def traffic_flow(self, flow_id: str) -> dict[str, Any]:
         return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}")
 
-    def traffic_body(self, flow_id: str, side: str) -> dict[str, Any]:
+    def traffic_body(self, flow_id: str, side: str, *, preview_bytes: int | None = None) -> dict[str, Any]:
         if side not in {"request", "response"}:
             raise ValueError("body side must be request or response")
-        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}")
+        if preview_bytes is not None and (type(preview_bytes) is not int or not 0 <= preview_bytes <= 64 * 1024):
+            raise ValueError("preview_bytes must be between 0 and 65536")
+        path = f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}"
+        if preview_bytes is not None:
+            path += f"&preview_bytes={preview_bytes}"
+        return self._request("GET", path)
 
     def traffic_export(
         self,

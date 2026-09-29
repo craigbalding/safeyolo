@@ -11,6 +11,9 @@ import os
 import sys
 import tempfile
 import unicodedata
+import zlib
+from collections import Counter
+from email.message import Message
 from pathlib import Path
 
 from prompt_toolkit.application import Application, get_app
@@ -22,9 +25,14 @@ from prompt_toolkit.widgets import TextArea
 
 from .api import AdminAPI, APIError, ExportCancelled, ExportPublicationState, TrafficExportResult
 
-# Rendering limits leave the proxy's retained model and body response unchanged.
+# Rendering limits leave the proxy's retained model and full-body route unchanged.
 BODY_PREVIEW_BYTES = 64 * 1024
 DETAIL_PREVIEW_CHARS = 128 * 1024
+BODY_PREVIEW_CHARS = 32 * 1024
+HTTP_SECTION_CHARS = 48 * 1024
+# Only ordinary negotiation fields. Keep Host, connection/framing, cache,
+# security, tracing and content description headers visible for diagnosis.
+ROUTINE_HEADERS = frozenset({"accept", "accept-encoding", "accept-language", "user-agent"})
 EXPORT_FORMATS = ("raw", "raw_request", "raw_response", "curl", "httpie", "har", "zhar")
 
 
@@ -62,6 +70,132 @@ def body_preview(value: dict) -> str:
     if len(raw) > BODY_PREVIEW_BYTES:
         rendered += f"\n[preview: first {BODY_PREVIEW_BYTES} of {len(raw)} bytes]"
     return rendered
+
+
+def _limited_text(value: str, limit: int, label: str) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit] + f"\n[{label} preview truncated; export for full evidence]"
+
+
+def _content_type(headers: list) -> tuple[str, str]:
+    values = [value for name, value in headers if name.lower() == "content-type"]
+    if len(values) != 1:
+        return "application/octet-stream", "utf-8"
+    if "/" not in values[0].split(";", 1)[0]:
+        return "application/octet-stream", "utf-8"
+    message = Message()
+    message["Content-Type"] = values[0]
+    return message.get_content_type(), message.get_param("charset") or "utf-8"
+
+
+def _content_encoding(headers: list) -> str:
+    values = [value for name, value in headers if name.lower() == "content-encoding"]
+    if not values:
+        return "identity"
+    if len(values) != 1:
+        return "multiple"
+    return values[0].strip().lower()
+
+
+def _binary_fallback(raw: bytes, media_type: str, total: int, reason: str) -> str:
+    sample = raw[:16].hex(" ") or "none"
+    truncated = " · preview truncated" if len(raw) < total else ""
+    return (f"{plain_text(media_type)} · {plain_text(reason)} · "
+            f"{len(raw)} of {total} retained bytes{truncated} · first bytes: {sample}")
+
+
+def _decoded_content(raw: bytes, encoding: str) -> tuple[bytes | None, bool]:
+    if encoding in {"", "identity"}:
+        return raw, False
+    window = {"gzip": 16 + zlib.MAX_WBITS, "deflate": zlib.MAX_WBITS}.get(encoding)
+    if window is None:
+        return None, False
+    try:
+        decoder = zlib.decompressobj(window)
+        decoded = decoder.decompress(raw, BODY_PREVIEW_BYTES + 1)
+    except zlib.error:
+        return None, False
+    return decoded[:BODY_PREVIEW_BYTES], len(decoded) > BODY_PREVIEW_BYTES or not decoder.eof
+
+
+def _http_preview_bytes(value: dict) -> tuple[bytes, int, bool]:
+    try:
+        raw = base64.b64decode(value["data_base64"], validate=True)
+        total, preview_size, truncated = (value[key] for key in ("size", "preview_size", "truncated"))
+    except (KeyError, ValueError, TypeError, binascii.Error) as exc:
+        raise ValueError("Invalid retained body preview") from exc
+    if (type(total) is not int or total < 0 or type(preview_size) is not int
+            or preview_size != len(raw) or len(raw) > BODY_PREVIEW_BYTES or len(raw) > total
+            or type(truncated) is not bool or truncated is not (len(raw) < total)):
+        raise ValueError("Invalid retained body preview")
+    return raw, total, truncated
+
+
+def _pretty_json(content: str) -> str:
+    try:
+        value = json.loads(content)
+        parts = []
+        length = 0
+        for part in json.JSONEncoder(ensure_ascii=False, indent=2).iterencode(value):
+            remaining = BODY_PREVIEW_CHARS + 1 - length
+            parts.append(part[:remaining])
+            length += min(len(part), remaining)
+            if length > BODY_PREVIEW_CHARS:
+                break
+        return "".join(parts)
+    except (ValueError, TypeError, RecursionError):
+        return content  # Incomplete or invalid JSON remains readable as text.
+
+
+def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
+    """Render one bounded HTTP preview without changing retained or exported bytes."""
+    if not value.get("available"):
+        reason = plain_text(value.get("reason") or "not available")
+        return "pending: body capture is still in progress" if reason == "pending" else f"absent: {reason}"
+    raw, total, truncated = _http_preview_bytes(value)
+    if total == 0:
+        return "(present, empty body)"
+    media_type, charset = _content_type(headers)
+    encoding = _content_encoding(headers)
+    decoded, decoded_truncated = _decoded_content(raw, encoding)
+    if decoded is None:
+        return _binary_fallback(raw, media_type, total, f"encoded {encoding}; decoding unavailable")
+    is_json = media_type == "application/json" or media_type.endswith("+json")
+    is_text = is_json or media_type.startswith("text/") or media_type in {
+        "application/xml", "application/javascript", "application/x-www-form-urlencoded",
+    } or media_type.endswith("+xml")
+    if not is_text:
+        return _binary_fallback(raw, media_type, total, "binary")
+    try:
+        content = decoded.decode(charset)
+    except (LookupError, UnicodeError, TypeError):
+        return _binary_fallback(raw, media_type, total, f"unsupported or undecodable charset {charset}")
+    if pretty and is_json:
+        content = _pretty_json(content)
+    text = _limited_text(plain_text(content, multiline=True), BODY_PREVIEW_CHARS, "body")
+    if truncated or decoded_truncated:
+        text += f"\n[preview truncated: {len(raw)} of {total} retained bytes; export for full evidence]"
+    return text
+
+
+def http_header_lines(headers: list, *, hide_routine: bool) -> list[str]:
+    visible = []
+    hidden = Counter()
+    names = {}
+    for name, value in headers:
+        normalized = name.lower()
+        if hide_routine and normalized in ROUTINE_HEADERS:
+            hidden[normalized] += 1
+            names.setdefault(normalized, name)
+        else:
+            visible.append(f"{plain_text(name)}: {plain_text(value)}")
+    if not visible:
+        visible.append("(none visible)")
+    if hide_routine:
+        summary = ", ".join(f"{plain_text(names[name])} ×{count}" for name, count in hidden.items()) or "none"
+        visible.insert(0, f"Hidden routine headers ({sum(hidden.values())}): {summary}")
+    return visible
 
 
 def bulk_export_filename(flow_id: str, format_name: str) -> str:
@@ -177,11 +311,16 @@ class TrafficInspector:
         self.selected: str | None = None
         self.marked: set[str] = set()
         self.detail: dict | None = None
-        self.body = ""
+        self.body_values: dict[str, dict] = {}
+        self.body_errors: dict[str, str] = {}
+        self.body_attempted: set[str] = set()
+        self.body_facts: dict[str, tuple[dict, object, object]] = {}
+        self.pretty = True
+        self.hide_routine_headers = False
+        self._selection_revision = 0
         self.notice = "Connecting…"
         self.pending_scope: dict | None = None
         self.pending_filter: str | None = None
-        self.pending_body: tuple[str, str] | None = None
         self.pending_export: tuple[str | tuple[str, ...], str, Path] | None = None
         self._export_cancel_event: ExportPublicationState | None = None
         self.export_report = ""
@@ -204,17 +343,28 @@ class TrafficInspector:
 
     def _select(self, flow_id: str | None) -> None:
         if flow_id != self.selected:
-            self.selected, self.detail, self.body = flow_id, None, ""
-            self.pending_body = None
+            self.selected = flow_id
+            self._clear_selected_detail()
             self.websocket_mode = False
             self.transcript = WebSocketTranscript()
+
+    def _clear_selected_detail(self) -> None:
+        self._selection_revision += 1
+        self.detail = None
+        self.body_values.clear()
+        self.body_errors.clear()
+        self.body_attempted.clear()
+        self.body_facts.clear()
 
     def snapshot(self, document: dict) -> None:
         rows = document.get("flows")
         if not isinstance(rows, list) or any(not isinstance(row, dict) or not isinstance(row.get("id"), str) for row in rows):
             raise ValueError("Invalid traffic list response")
+        scope = document.get("scope", {})
+        if scope != self.scope:
+            self._clear_selected_detail()
         self.flows = rows
-        self.scope = document.get("scope", {})
+        self.scope = scope
         ids = [row["id"] for row in rows]
         # Marks are a view-local convenience, never an authority grant. Drop
         # anything that a refreshed scope, filter, or retention pass hid.
@@ -244,11 +394,15 @@ class TrafficInspector:
 
     def request_body(self, side: str) -> None:
         self.websocket_mode = False
-        if self.selected:
-            self.pending_body = self.selected, side
+        if self.selected and side in {"request", "response"}:
+            self._selection_revision += 1
+            self.body_values.pop(side, None)
+            self.body_errors.pop(side, None)
+            self.body_attempted.discard(side)
             self.wake.set()
 
     def set_scope(self, field: str, value: str) -> None:
+        self._selection_revision += 1
         if field == "agent":
             self.pending_scope = {"agent": value or None}
         else:
@@ -258,7 +412,16 @@ class TrafficInspector:
         self.wake.set()
 
     def set_filter(self, expression: str) -> None:
+        self._selection_revision += 1
         self.pending_filter = expression
+        self.wake.set()
+
+    def toggle_pretty(self) -> None:
+        self.pretty = not self.pretty
+        self.wake.set()
+
+    def toggle_headers(self) -> None:
+        self.hide_routine_headers = not self.hide_routine_headers
         self.wake.set()
 
     def queue_export(self, flow_id: str, format_name: str, destination: str) -> None:
@@ -482,7 +645,6 @@ class TrafficInspector:
             self.websocket_mode = False
         elif self.detail is not None and isinstance(self.detail.get("websocket"), dict):
             self.websocket_mode = True
-            self.pending_body = None
         else:
             self.notice = "Selected flow has no WebSocket session."
         self.wake.set()
@@ -490,16 +652,55 @@ class TrafficInspector:
     async def _refresh_detail(self) -> None:
         flow_id = self.selected
         if flow_id is not None:
+            revision = self._selection_revision
             detail = await asyncio.to_thread(self.api.traffic_flow, flow_id)
             if not isinstance(detail, dict):
                 raise ValueError("Invalid traffic detail response")
-            if self.selected == flow_id:
-                if self.detail is not None and any(
-                    detail.get(key) != self.detail.get(key)
-                    for key in ("state", "request_body", "response_body")
-                ):
-                    self.body = ""
+            if self.selected == flow_id and self._selection_revision == revision:
+                for side in ("request", "response"):
+                    key = f"{side}_body"
+                    facts = detail.get(key)
+                    if not isinstance(facts, dict):
+                        facts = {}
+                    signature = (facts.copy(), detail.get(f"{side}_completed"), detail.get("state"))
+                    if signature != self.body_facts.get(side):
+                        self.body_values.pop(side, None)
+                        self.body_errors.pop(side, None)
+                        self.body_attempted.discard(side)
+                        self.body_facts[side] = signature
                 self.detail = detail
+
+    async def _refresh_body_previews(self) -> None:
+        flow_id = self.selected
+        if flow_id is None or self.detail is None:
+            return
+        revision = self._selection_revision
+        for side in ("request", "response"):
+            if self.selected != flow_id or self._selection_revision != revision:
+                return
+            if side in self.body_attempted:
+                continue
+            self.body_attempted.add(side)
+            headers = self.detail.get(f"{side}_headers", [])
+            await self._fetch_body_preview(flow_id, side, revision, headers)
+
+    async def _fetch_body_preview(self, flow_id: str, side: str, revision: int, headers: list) -> None:
+        try:
+            value = await asyncio.to_thread(self.api.traffic_body, flow_id, side, preview_bytes=BODY_PREVIEW_BYTES)
+            if self.selected != flow_id or self._selection_revision != revision:
+                if self.selected == flow_id:
+                    self.body_attempted.discard(side)
+                return
+            if not isinstance(value, dict):
+                raise ValueError("Invalid retained body preview")
+            http_body_preview(value, headers, pretty=self.pretty)
+        except (APIError, ValueError, TypeError) as exc:
+            status = exc.status_code if isinstance(exc, APIError) else None
+            error = f"{type(exc).__name__}{f' {status}' if status else ''}"
+            if self.selected == flow_id and self._selection_revision == revision:
+                self.body_errors[side] = error
+            return
+        self.body_values[side] = value
 
     async def _refresh_websocket(self) -> None:
         flow_id, transcript = self.selected, self.transcript
@@ -535,20 +736,21 @@ class TrafficInspector:
         try:
             if self.pending_scope is not None:
                 scope, self.pending_scope = self.pending_scope, None
-                self.scope = await asyncio.to_thread(self.api.set_traffic_scope, **scope)
+                accepted = await asyncio.to_thread(self.api.set_traffic_scope, **scope)
+                if accepted != self.scope:
+                    self._clear_selected_detail()
+                self.scope = accepted
             if self.pending_filter is not None:
                 expression, self.pending_filter = self.pending_filter, None
-                self.scope = await asyncio.to_thread(self.api.set_traffic_filter, expression)
+                accepted = await asyncio.to_thread(self.api.set_traffic_filter, expression)
+                if accepted != self.scope:
+                    self._clear_selected_detail()
+                self.scope = accepted
             await self._refresh_flows()
             await self._refresh_detail()
+            await self._refresh_body_previews()
             if self.websocket_mode and self.selected:
                 await self._refresh_websocket()
-            if self.pending_body is not None:
-                requested, self.pending_body = self.pending_body, None
-                flow_id, side = requested
-                value = await asyncio.to_thread(self.api.traffic_body, flow_id, side)
-                if self.selected == flow_id:
-                    self.body = f"{side.title()} body (fetched snapshot: encoded bytes, UTF-8 preview)\n{body_preview(value)}"
             if self.pending_export is not None:
                 request, self.pending_export = self.pending_export, None
                 await self._run_export(request)
@@ -578,6 +780,45 @@ class TrafficInspector:
     def _with_export_report(self, text: str) -> str:
         return text + (f"\n\n{self.export_report}" if self.export_report else "")
 
+    def _http_body_text(self, row: dict, side: str) -> str:
+        if side in self.body_errors:
+            key = "r" if side == "request" else "s"
+            return f"retrieval failed ({self.body_errors[side]}); {key} retries"
+        if side in self.body_values:
+            return http_body_preview(
+                self.body_values[side], row.get(f"{side}_headers", []), pretty=self.pretty
+            )
+        facts = row.get(f"{side}_body")
+        if isinstance(facts, dict) and facts.get("reason") == "pending":
+            return "pending: body capture is still in progress"
+        return "loading retained preview…"
+
+    def _http_section(self, row: dict, side: str) -> str:
+        if side == "request":
+            first = f"{plain_text(row.get('method'))} {_limited_text(plain_text(row.get('url')), 2048, 'URL')}"
+        else:
+            first = f"Status: {plain_text(row.get('status'))}"
+        headers = _limited_text(
+            "\n".join(http_header_lines(row.get(f"{side}_headers", []), hide_routine=self.hide_routine_headers)),
+            12 * 1024,
+            "headers",
+        )
+        body = self._http_body_text(row, side)
+        section = f"HTTP {side}\n{first}\nHeaders:\n{headers}\nBody: {body}"
+        return _limited_text(section, HTTP_SECTION_CHARS, side)
+
+    def _metadata_section(self, row: dict) -> str:
+        lines = ["SafeYolo metadata"]
+        for key in (
+            "id", "connection_id", "agent", "state", "started", "request_completed",
+            "response_head_observed", "response_completed", "ended", "error", "upstream",
+        ):
+            lines.append(f"{key}: {plain_text(row.get(key))}")
+        if isinstance(row.get("websocket"), dict):
+            lines.append("WebSocket session: " + plain_text(row["websocket"].get("state")) + " · w opens transcript")
+        lines.append("metadata: " + plain_text(json.dumps(row.get("metadata", {}), ensure_ascii=True)))
+        return _limited_text("\n".join(lines), 32 * 1024, "metadata")
+
     def detail_text(self) -> str:
         if self.websocket_mode:
             error = plain_text((self.detail or {}).get("error"))
@@ -585,22 +826,15 @@ class TrafficInspector:
             return self._with_export_report(text)
         row = self.detail
         if row is None:
-            text = "Select a flow with Up/Down. Bodies are fetched only with r/s."
+            text = ("Loading selected exchange and both body previews…" if self.selected else
+                    "Select a flow with Up/Down. Body previews load automatically.")
             return self._with_export_report(text)
-        lines = [f"{key}: {plain_text(row.get(key))}" for key in
-                 ("id", "connection_id", "agent", "method", "url", "status", "state", "started", "ended", "error")]
-        for side in ("request", "response"):
-            lines.append(f"\n{side.title()} body: {body_facts(row.get(f'{side}_body'))}")
-            lines.append(f"{side.title()} headers:")
-            for name, value in row.get(f"{side}_headers", []):
-                lines.append(f"{plain_text(name)}: {plain_text(value)}")
-        if isinstance(row.get("websocket"), dict):
-            lines.append("\nWebSocket session: " + plain_text(row["websocket"].get("state")) + " · w opens transcript")
-        lines.append("\nMetadata: " + plain_text(json.dumps(row.get("metadata", {}), ensure_ascii=True)))
-        text = "\n".join(lines)
+        text = "\n\n──────── HTTP exchange ────────\n\n".join((
+            self._http_section(row, "request"), self._http_section(row, "response"),
+        ))
+        text += "\n\n──────── SafeYolo ────────\n" + self._metadata_section(row)
         if len(text) > DETAIL_PREVIEW_CHARS:
             text = text[:DETAIL_PREVIEW_CHARS] + "\n[detail preview truncated]"
-        text += "\n\n" + self.body if self.body else ""
         return self._with_export_report(text)
 
     def _show(self, rows: TextArea, detail: TextArea) -> None:
@@ -723,6 +957,8 @@ class TrafficInspector:
         def body(event) -> None:
             self.request_body({"r": "request", "s": "response"}[event.key_sequence[0].key])
 
+        self._display_bindings(bindings, browsing, rows, detail)
+
         @bindings.add("m", filter=browsing)
         def mark(event) -> None:
             self.toggle_mark()
@@ -730,6 +966,7 @@ class TrafficInspector:
 
         @bindings.add("c", filter=browsing)
         def clear(event) -> None:
+            self._selection_revision += 1
             self.pending_scope = {}
             self.wake.set()
 
@@ -756,6 +993,17 @@ class TrafficInspector:
 
         self._websocket_bindings(bindings, browsing, rows, detail)
         return bindings
+
+    def _display_bindings(self, bindings: KeyBindings, browsing: Condition, rows: TextArea, detail: TextArea) -> None:
+        @bindings.add("p", filter=browsing)
+        def pretty(event) -> None:
+            self.toggle_pretty()
+            self._show(rows, detail)
+
+        @bindings.add("h", filter=browsing)
+        def headers(event) -> None:
+            self.toggle_headers()
+            self._show(rows, detail)
 
     def _websocket_bindings(self, bindings: KeyBindings, browsing: Condition, rows: TextArea, detail: TextArea) -> None:
         @bindings.add("w", filter=browsing)
@@ -785,9 +1033,12 @@ class TrafficInspector:
             self.cancel_export()
 
     def help_text(self) -> str:
-        view = "w HTTP · [/] message page · r/s HTTP body" if self.websocket_mode else "r/s body · w WebSocket"
+        view = "w HTTP · [/] message page · r/s retry HTTP body" if self.websocket_mode else "r/s retry body · w WebSocket"
+        pretty = "on" if self.pretty else "off"
+        headers = "hidden" if self.hide_routine_headers else "shown"
         return (
-            f"↑↓ select · > focus · * marked · Tab pane · PgUp/PgDn scroll · {view} · m mark/unmark · "
+            f"p pretty {pretty} · h routine headers {headers} · ↑↓ select · > focus · * marked · "
+            f"Tab pane · PgUp/PgDn scroll · {view} · m mark/unmark · "
             "x export marked (or focused) · f filter · a/t scope · c clear scope · q detach"
         )
 

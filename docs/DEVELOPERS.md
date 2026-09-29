@@ -403,7 +403,33 @@ Scope and user-filter changes affect all inspectors and do not change forwarding
 policy.
 Detaching leaves the proxy and its retained view running.
 Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
-scroll. `r` and `s` fetch request and response body snapshots. `a` and `t`
+scroll. The selected exchange shows separate HTTP request, HTTP response, and
+SafeYolo metadata sections. The inspector fetches both retained body previews
+when a flow is selected. It fetches a side again when its body facts change.
+Pending, unavailable, empty, truncated, and failed previews have distinct
+messages. Press `r` or `s` to retry the request or response preview.
+Each preview fetch transfers at most 64 KiB of retained bytes. The inspector
+also limits rendered body text to 32,768 characters per side. These limits
+do not change retained bytes or exports. The authenticated body route accepts
+`preview_bytes=0..65536` for a bounded response with `preview_size` and
+`truncated` fields; omitting that parameter keeps the full-body response.
+
+Pretty formatting is on when the inspector opens. Press `p` to toggle JSON
+indentation. The setting persists across selections and refreshes. The
+inspector uses the declared charset for text and JSON when Python supports it.
+It decodes `gzip` and `deflate` content encoding within the preview limit.
+Binary content, unsupported encoding, and undecodable text get a compact
+type, size, and first-byte summary. The inspector escapes terminal controls
+in displayed traffic.
+
+All headers are shown when the inspector opens. Press `h` to hide or show only
+`Accept`, `Accept-Encoding`, `Accept-Language`, and `User-Agent`. The setting
+persists across selections and refreshes. Each HTTP side lists the hidden
+header names and field counts without hidden values. Showing headers again
+restores their original order, spelling, and duplicates. Content, connection,
+framing, cache, security, and tracing headers remain visible for diagnosis.
+
+`a` and `t`
 change the shared agent and test scope; `c` clears only that scope. `f` edits
 the shared user filter. Enter applies the expression, Escape cancels, and an
 empty expression clears only the user filter. `q` detaches.
