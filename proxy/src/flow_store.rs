@@ -477,6 +477,25 @@ impl FlowStore {
         Ok(Some(row))
     }
 
+    /// Resolve the proxy-issued response request ID through its unique index.
+    /// The Agent API checks trusted evidence ownership before loading bodies.
+    pub fn get_flow_by_request_id(&self, request_id: &str) -> Result<Option<Map<String, Value>>> {
+        let id = {
+            let connection = self.lock()?;
+            connection
+                .query_row(
+                    "SELECT id FROM flows WHERE request_id = ?",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        };
+        match id {
+            Some(id) => self.get_flow(id),
+            None => Ok(None),
+        }
+    }
+
     pub fn body(&self, id: i64, side: Side) -> Result<Option<StoredBody>> {
         let connection = self.lock()?;
         let (sql, prefix) = match side {

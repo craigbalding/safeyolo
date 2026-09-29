@@ -307,6 +307,7 @@ the first-class attribution fields.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` or `POST` | `/api/flows/search` | Search flow metadata with simple query parameters or JSON filters |
+| `GET` | `/api/flows/by-request-id/{request_id}` | Fetch one retained flow, including both captured bodies, by its proxy response header ID |
 | `GET` | `/api/flows/{id}` | Fetch flow metadata |
 | `GET` | `/api/flows/{id}/request-body` | Fetch decompressed request body |
 | `GET` | `/api/flows/{id}/response-body` | Fetch decompressed response body |
@@ -334,6 +335,126 @@ sy_api /api/flows/body-search \
 Search rejects unknown filters and invalid limits rather than silently
 returning unrelated recent flows. Request and response body endpoints return
 `body_base64`; text-like content also includes `body_text`.
+
+### Look up a response request ID
+
+An agent can use the `X-SafeYolo-Request-Id` header from a proxy response as
+`{request_id}`. The lookup returns the same metadata as the numeric detail
+route and both bodies in one response. The agent token can read only flows
+whose `evidence_owner` matches its trusted transport identity. The lookup does
+not use an `agent` query parameter or a request-supplied identity header.
+
+For this example, run in an agent whose HTTP proxy and `/app/agent_token` are
+configured. Before running the commands, replace `example.test` with a target
+covered by the active test-context policy. Replace `testing-agent` with the
+agent name in the test context. The commands write the target
+response to `response.body` and its headers to `response.headers` in the
+current directory.
+
+```sh
+target_url='http://example.test/owned'
+curl -sS -D response.headers -o response.body \
+  -H 'X-SafeYolo-Test-Context: run=lookup-example;agent=testing-agent;test=header-lookup;role=tester' \
+  "$target_url"
+request_id=$(awk 'tolower($1)=="x-safeyolo-request-id:" {gsub("\r", "", $2); print $2}' response.headers)
+test -n "$request_id" || exit 1
+sy_api "/api/flows/by-request-id/$request_id" | jq
+sy_api "/api/flows/search?request_id=$request_id" | jq
+```
+
+The first Agent API call returns a
+single object with `flow`, `request_body`, and `response_body`. The search
+call returns the normal owned summary with numeric `id`. `request_id` is an
+exact filter for both GET query parameters and POST JSON filters; `q` keeps
+its existing text-search behavior.
+
+Each body object retains the corresponding numeric body route's content type,
+storage encoding, original `*_body_size`, `*_body_stored`,
+`*_body_truncated`, `body_base64`, and decompressed `body_length` fields.
+Text-like content also has `body_text`. `capture_state` is `captured` when
+bytes were stored, `uncaptured` when the original body had bytes but the
+store retained none, and `absent` when the original body had zero bytes.
+For an absent or uncaptured side, `body_base64` is empty and `body_length` is
+zero. The store's configured capture limits bound both body values.
+
+An unknown, unretained, or other-owner ID gives the same 404 response:
+`{"error":"Flow not found"}`. A proxy response can have a request ID without
+a retained flow when the request did not meet the recording conditions. The
+proxy replaces any origin or request-supplied `X-SafeYolo-Request-Id`; use the
+header on the final proxy response.
+
+### Provision a read-all flow token
+
+The host operator can issue one separate read-only credential for this GET
+route. The proxy reads `flow_read_token` beside its host-side `agent_token`
+on each lookup. The installed default path is
+`~/.safeyolo/data/flow_read_token`; for a custom native data directory, use
+that directory instead. The proxy never creates this token or mounts it into
+an agent by default. Give it only to an explicitly selected client that can
+reach the proxy. The agent token and host admin token do not grant read-all
+access.
+
+On the operator host, the following command creates or rotates a 64-character
+hex token in the default data directory. The directory must already belong to
+the operator. The command replaces the old file atomically with a private
+regular file and prints no token.
+
+```sh
+python3 - <<'PY'
+import os
+import secrets
+import tempfile
+from pathlib import Path
+
+path = Path.home() / ".safeyolo/data/flow_read_token"
+temporary = None
+try:
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".flow_read_token.", delete=False) as stream:
+        temporary = Path(stream.name)
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(secrets.token_hex(32) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+finally:
+    if temporary is not None:
+        temporary.unlink(missing_ok=True)
+PY
+```
+
+For a custom data directory, replace `path` in the command before running it.
+Rerun the command to rotate the token; existing clients must receive the new
+value. On the operator host, remove the file to revoke the credential:
+
+```sh
+rm "$HOME/.safeyolo/data/flow_read_token"
+```
+
+For a custom data directory, remove `flow_read_token` from that directory.
+The proxy accepts only a private regular file, rejects symlinks, and compares
+the token in constant time. It reads the file again for every request, so
+rotation and revocation need no proxy restart.
+
+For a client explicitly given the token, with a working SafeYolo HTTP proxy,
+set `flow_token_file` to the provisioned secret file or its private copy. Set
+`request_id` to the proxy response header value. The command keeps the token
+out of the curl argument list and retrieves a retained cross-owner or
+ownerless flow through the one allowed route.
+
+```sh
+flow_token_file="$HOME/.safeyolo/data/flow_read_token"
+flow_read_token=$(cat "$flow_token_file") || exit
+printf 'Authorization: Bearer %s\n' "$flow_read_token" |
+  curl -sS --header @- \
+    "http://_safeyolo.proxy.internal/api/flows/by-request-id/$request_id" | jq
+```
+
+The read-all credential cannot authorize search, numeric detail or body reads,
+tags, mutations, or other Agent API routes. Every accepted read-all lookup,
+including a missing ID, writes a confirmed `security.flow_read_all_lookup`
+audit event with the trusted caller attribution and lookup request ID. The
+event contains no token or captured body. If the audit write fails, the proxy
+returns 500 without releasing the flow response.
 
 ## Service gateway
 

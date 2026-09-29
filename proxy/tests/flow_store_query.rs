@@ -85,11 +85,15 @@ fn five_query_methods_match_actual_source_rows_filters_order_and_errors() {
                     other => panic!("unmapped source exception {other}"),
                 };
                 assert_eq!(error.kind(), expected, "{name}");
-                assert_eq!(
-                    error.validation_message(),
-                    case["validation"].as_str(),
-                    "{name}"
-                );
+                // #873 adds one exact filter beyond the pinned Python source.
+                // Keep every other source validation byte under comparison.
+                let expected = case["validation"].as_str().map(|message| {
+                    message.replace(
+                        "request_header_contains, response_header_contains",
+                        "request_header_contains, request_id, response_header_contains",
+                    )
+                });
+                assert_eq!(error.validation_message(), expected.as_deref(), "{name}");
                 assert_eq!(error.to_string(), "flow query failed");
             }
         }

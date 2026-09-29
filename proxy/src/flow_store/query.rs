@@ -63,6 +63,7 @@ impl From<rusqlite::Error> for QueryError {
 type Result<T> = std::result::Result<T, QueryError>;
 
 const EXACT: &[&str] = &[
+    "request_id",
     "engagement_id",
     "agent_id",
     "evidence_owner",
