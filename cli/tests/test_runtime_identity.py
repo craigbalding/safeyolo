@@ -24,11 +24,31 @@ from safeyolo.runtime_identity import (
     fingerprint_source_roots,
     get_runtime_identity,
     initialize_runtime_identity,
+    process_start_token,
 )
 
 pytestmark = pytest.mark.assurance_boundary
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS process identity boundary")
+def test_macos_start_token_identifies_an_owned_child_without_ps(monkeypatch):
+    def ps_unavailable(*args, **kwargs):
+        pytest.fail("macOS process identity required ps")
+
+    child = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(5)"])
+    try:
+        monkeypatch.setattr(subprocess, "run", ps_unavailable)
+        own_token = process_start_token(os.getpid())
+        child_token = process_start_token(child.pid)
+        assert own_token.startswith(f"darwin:{os.getpid()}:")
+        assert child_token.startswith(f"darwin:{child.pid}:")
+        assert process_start_token(child.pid) == child_token
+        assert own_token != child_token
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
 
 
 def _source_roots(tmp_path: Path) -> dict[str, Path]:
