@@ -56,16 +56,8 @@ impl Fixture {
             "test_context_block":block,
         }))
         .unwrap();
-        let runtime = Arc::new(
-            Runtime::new(
-                config,
-                "request-context-fixture",
-                Arc::new(tokio::sync::Mutex::new(())),
-                None,
-                None,
-            )
-            .unwrap(),
-        );
+        let runtime =
+            Arc::new(Runtime::new(config, "request-context-fixture", None, None).unwrap());
         Self { directory, runtime }
     }
 

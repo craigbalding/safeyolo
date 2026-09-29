@@ -101,7 +101,9 @@ def stop_child(process: subprocess.Popen[str] | None) -> None:
             process.communicate(timeout=5)
 
 
-def runtime_identity(config_dir: Path, cli: str, binary: str, checkout: Path, output: Path, agent: str) -> dict:
+def runtime_identity(
+    config_dir: Path, cli: str, binary: str, checkout: Path, output: Path, agent: str, expected_revision: str
+) -> dict:
     checked(
         [
             "python3",
@@ -125,7 +127,7 @@ def runtime_identity(config_dir: Path, cli: str, binary: str, checkout: Path, ou
         ],
         timeout=40,
     )
-    return installed_identity(json.loads(output.read_text()), checkout, frozen_revision=FROZEN_R)
+    return installed_identity(json.loads(output.read_text()), checkout, expected_revision=expected_revision)
 
 
 def wait_stopped(config_dir: Path) -> None:
@@ -189,7 +191,7 @@ def prepare_owner(
     config_path = config_dir / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["proxy"]["backend"] = "rust"
-    config["proxy"]["admin_port"] = 0
+    config["proxy"]["admin_port"] = int(os.environ.get("SAFEYOLO_P4_OWNER_ADMIN_PORT", "0"))
     config["proxy"]["upstream_proxy"] = native["parent_proxy"]
     config["proxy"]["upstream_ca_cert"] = native["upstream_ca_file"]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -336,12 +338,13 @@ def main() -> None:
     parser.add_argument("--platform", choices=("systrap", "vz"), required=True)
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--install-commit", default=FROZEN_R)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
-    assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == FROZEN_R
+    assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == args.install_commit
     first_runtime = json.loads(args.runtime.read_text())
-    first_identity = installed_identity(first_runtime, checkout, frozen_revision=FROZEN_R)
+    first_identity = installed_identity(first_runtime, checkout, expected_revision=args.install_commit)
     native = json.loads((config_dir / "data/native.json").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
     assert Path(native["upstream_ca_file"]).is_file()
@@ -362,7 +365,7 @@ def main() -> None:
     cli = first_identity["cli"]["path"]
     binary = first_identity["candidate"]["path"]
     marker = "p4-" + uuid.uuid4().hex
-    sinkhole = SinkholeClient("http://127.0.0.1:19999")
+    sinkhole = SinkholeClient(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
     owner_dir = Path(os.environ["SAFEYOLO_P4_OWNER_CONFIG_DIR"]).resolve()
     source_dir = Path(os.environ["SAFEYOLO_P4_SOURCE_CONFIG_DIR"]).resolve()
     peer_added = False
@@ -472,7 +475,9 @@ def main() -> None:
         checked([cli, "start", "--no-wait"], timeout=40)
         second_listener = start_guest(cli, config_dir, args.agent)
         second_runtime_path = args.output.with_name("p4-restarted-runtime.json")
-        second_identity = runtime_identity(config_dir, cli, binary, checkout, second_runtime_path, args.agent)
+        second_identity = runtime_identity(
+            config_dir, cli, binary, checkout, second_runtime_path, args.agent, args.install_commit
+        )
         assert (
             second_identity["runtime"]["receipt"]["start_token"] != first_identity["runtime"]["receipt"]["start_token"]
         )
@@ -514,7 +519,9 @@ def main() -> None:
         checked([cli, "start", "--no-wait"], timeout=40)
         third_listener = start_guest(cli, config_dir, args.agent)
         third_runtime_path = args.output.with_name("p4-recovery-runtime.json")
-        third_identity = runtime_identity(config_dir, cli, binary, checkout, third_runtime_path, args.agent)
+        third_identity = runtime_identity(
+            config_dir, cli, binary, checkout, third_runtime_path, args.agent, args.install_commit
+        )
         assert third_identity["runtime"]["receipt"]["start_token"] not in {
             first_identity["runtime"]["receipt"]["start_token"],
             second_identity["runtime"]["receipt"]["start_token"],
@@ -532,7 +539,7 @@ def main() -> None:
         assert not (owner_dir / "agents/bbowner/container.pid").exists()
         report = {
             "status": "selected_checks_passed",
-            "frozen_revision": FROZEN_R,
+            "source_revision": args.install_commit,
             "platform": args.platform,
             "host": first_runtime["host"],
             "substrate": substrate,
@@ -582,6 +589,8 @@ def main() -> None:
                 {"pid": third_identity["runtime"]["pid"], "stopped": True, "guest_stopped": True},
             ],
         }
+        if args.install_commit == FROZEN_R:
+            report["frozen_revision"] = FROZEN_R
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(
             f"{args.platform} P4/P6: installed guest configuration, TLS, drain and three-cycle recovery verified ({args.output})"

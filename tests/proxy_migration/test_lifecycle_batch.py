@@ -331,8 +331,9 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
 
         restart_directory = directory / "restart"
         restart_directory.mkdir()
-        environment = python_proxy_environment(
-            python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE")
+        environment = (
+            python_proxy_environment(python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE"))
+            if proxy_backend == "python" else os.environ.copy()
         )
         environment["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         with child_process(command, restart_directory, environment) as restarted_process:

@@ -16,6 +16,7 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from host.sinkhole_client import SinkholeClient
 from installed_host_smoke import _agent_map, _sha256
@@ -28,7 +29,6 @@ from safeyolo.api import AdminAPI
 from safeyolo.coord import api as coord_api
 from safeyolo.coord.identity import new_operation_id
 from safeyolo.coord.nats_runtime import is_healthy
-from safeyolo.core.operator_event_server import OperatorEventServer
 from safeyolo.operator_approvals import approve
 from safeyolo.traffic_inspector import TrafficInspector
 
@@ -165,27 +165,25 @@ def run_coord(cli: str, primary: str, platform: str, marker: str) -> dict:
 
 
 def run_plumb_and_event(
-    api: AdminAPI, config_dir: Path, cli: str, primary: str, platform: str, marker: str, operator_token: str
+    api: AdminAPI, cli: str, primary: str, platform: str, marker: str, operator_token: str
 ) -> dict:
-    audit = config_dir / "logs" / "safeyolo.jsonl"
-    server = OperatorEventServer(log_path=audit, token=operator_token, port=0)
-    server.start()
-    try:
-        with connect(
-            f"ws://127.0.0.1:{server.port}/admin/events",
-            additional_headers={"Authorization": f"Bearer {operator_token}"},
-            proxy=None,
-        ) as websocket:
-            requested = guest(cli, primary, platform, marker, "plumb-request", peer=PEER)
-            event = None
-            for _ in range(5):
-                candidate = json.loads(websocket.recv(timeout=5))
-                if candidate.get("approval", {}).get("key") == requested["request_id"]:
-                    event = candidate
-                    break
-            assert event is not None and event.get("approval", {}).get("approval_type") == "plumb", (
-                "authenticated operator stream missed the selected Plumb approval"
-            )
+    admin = urlsplit(api.base_url)
+    assert admin.scheme == "http" and admin.hostname == "127.0.0.1" and admin.port
+    with connect(
+        f"ws://127.0.0.1:{admin.port}/admin/events",
+        additional_headers={"Authorization": f"Bearer {operator_token}"},
+        proxy=None,
+    ) as websocket:
+        requested = guest(cli, primary, platform, marker, "plumb-request", peer=PEER)
+        event = None
+        for _ in range(5):
+            candidate = json.loads(websocket.recv(timeout=5))
+            if candidate.get("approval", {}).get("key") == requested["request_id"]:
+                event = candidate
+                break
+        assert event is not None and event.get("approval", {}).get("approval_type") == "plumb", (
+            "authenticated operator stream missed the selected Plumb approval"
+        )
         pending = api.plumb_pending()["pending"]
         assert any(row["request_id"] == requested["request_id"] for row in pending), pending
         approved = api.plumb_approve(requested["request_id"], ttl_seconds=120)
@@ -203,8 +201,6 @@ def run_plumb_and_event(
             "peer_message_id": sent["message_id"],
             "closed_read_status": peer_closed["closed_read_status"],
         }
-    finally:
-        server.stop()
 
 
 def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> dict:
@@ -285,13 +281,14 @@ def main() -> None:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--platform", choices=("systrap", "vz"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--install-commit", default=FROZEN_R)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == FROZEN_R, f"pilot installed {revision}, expected frozen R"
+    assert revision == args.install_commit, f"pilot installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
-    identity = installed_identity(runtime, install_checkout, frozen_revision=FROZEN_R)
+    identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     native = json.loads((config_dir / "data/native.json").read_text())
     policy = tomllib.loads((config_dir / "policy.toml").read_text())
     assert native["parent_proxy"].startswith("http://127.0.0.1:")
@@ -313,7 +310,7 @@ def main() -> None:
     )
     fixture = json.loads((config_dir / "p3-fixture.json").read_text())
     marker = "p3-" + uuid.uuid4().hex
-    sinkhole = SinkholeClient("http://127.0.0.1:19999")
+    sinkhole = SinkholeClient(os.environ.get("SINKHOLE_API", "http://127.0.0.1:19999"))
     peer_added = False
     stolen_token_file = config_dir / "agents" / PEER / "config-share" / "p3-stolen-token"
     try:
@@ -359,7 +356,7 @@ def main() -> None:
         coord_backing = setup_coord(args.agent, PEER)
         coord = run_coord(cli, args.agent, args.platform, marker)
         assert coord["room_id"] == coord_backing["room_id"]
-        plumb = run_plumb_and_event(admin, config_dir, cli, args.agent, args.platform, marker, admin.token)
+        plumb = run_plumb_and_event(admin, cli, args.agent, args.platform, marker, admin.token)
         ws = guest(cli, args.agent, args.platform, marker, "websocket")
         assert ws["server"] == "server:p2-" + marker[3:]
         ws_state = control("GET", "/p2/state/p2-" + marker[3:])["websockets"]
@@ -369,7 +366,7 @@ def main() -> None:
         inspector = inspect_traffic(admin, args.output, args.agent, marker)
         report = {
             "status": "journeys_passed",
-            "frozen_revision": FROZEN_R,
+            "source_revision": args.install_commit,
             "platform": args.platform,
             "host": runtime["host"],
             "installed": identity,
@@ -396,6 +393,8 @@ def main() -> None:
             "origin": origin,
             "inspector": inspector,
         }
+        if args.install_commit == FROZEN_R:
+            report["frozen_revision"] = FROZEN_R
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(f"{args.platform} P3: six installed guest journeys and operator effects verified ({args.output})")
     finally:

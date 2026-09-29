@@ -1,274 +1,123 @@
-# Agent networking: vsock / UDS architecture
+# Agent networking: vsock and Unix sockets
 
-End-to-end reference for how an agent's outbound HTTP request travels
-from inside the sandbox to `mitmproxy`, and how `safeyolo agent shell`
-reaches it — on both Linux and macOS.
+This is the current request path for the Rust proxy. It describes the host
+transport used by Linux gVisor sandboxes and macOS Virtualization.framework
+microVMs. The physical macOS Virtualization.framework pilot and final release lanes
+remain open under [issue #640](https://github.com/craigbalding/safeyolo/issues/640).
 
-Use this doc as a reference when reasoning about the transport
-end-to-end — tracing a request hop-by-hop, understanding how
-per-connection agent attribution is established, or extending the
-stack.
+## Request and shell paths
 
----
+Each sandbox has no direct external network interface. Agent HTTP clients use
+the guest forwarder at `127.0.0.1:8080`. The host gives each agent a private
+Unix domain socket (UDS) at
+`~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock`. The native Rust proxy binds
+that socket; it has no public TCP traffic listener.
 
-## TL;DR
-
-The sandbox has **no external network interface**. All agent-initiated
-traffic is routed to a per-agent Unix domain socket on the host, bound
-directly by a per-agent `UnixInstance` inside mitmproxy. Identity is
-encoded in the socket directory (`<ip>_<agent>/proxy.sock`) — parsed once at
-bind and stamped on every accepted connection via
-`client.peername = (ip, 0)`. `service_discovery` and all downstream
-addons see per-agent identity for audit, policy, and rate limiting.
-
-On macOS, a Swift `VSockProxyRelay` in the `safeyolo-vm` helper bridges
-the guest's vsock endpoint to the per-agent host UDS; on Linux, the
-guest's socket IS the bind-mounted host UDS (via gVisor
-`--host-uds=open`). Everything downstream is identical — mitmproxy's
-`UnixInstance` accepts directly on the UDS in both cases.
-
-Shell access uses the same shape in reverse: a `VSockShellBridge` (on
-macOS) or `runsc exec` (on Linux) reaches the guest's `sshd` for
-`safeyolo agent shell`.
-
----
-
-## Hop-by-hop
-
-### Outbound (agent → Internet)
-
-```
-┌──────────────────────────────────┐
-│  Guest (sandbox)                 │
-│                                  │
-│  agent (curl, claude-code, …)    │
-│       │  HTTP_PROXY=127.0.0.1:8080
-│       ▼                          │
-│  guest-proxy-forwarder (Python)  │
-│       │  AF_UNIX or AF_VSOCK     │
-└───────┼──────────────────────────┘
-        │
-        │ (Linux: /safeyolo/proxy/proxy.sock)
-        │ (macOS: vsock cid=2 port=1080)
-        │
-┌───────▼──────────────────────────┐
-│  Host                            │
-│                                  │
-│  safeyolo-vm (macOS only)        │
-│    └── VSockProxyRelay           │
-│         (vsock → per-agent UDS)  │
-│       │                          │
-│       ▼                          │
-│  mitmproxy                       │
-│    └── UnixInstance per agent,   │
-│        binds <ip>_<agent>/proxy.sock │
-│    └── peername = (ip, 0)        │
-│        (parsed from filename)    │
-│    └── service_discovery maps    │
-│        10.200.X.Y → agent name   │
-└──────────────────────────────────┘
+```text
+Agent HTTP client -> guest forwarder -> per-agent host UDS -> Rust proxy -> upstream
+                       Linux: /safeyolo/proxy/proxy.sock through gVisor --host-uds=open
+                       macOS: vsock port 1080 -> safeyolo-vm VSockProxyRelay -> host UDS
 ```
 
-### Shell (operator → agent)
+On Linux, gVisor mounts only that agent's socket directory into the guest and
+allows the host UDS connection. On macOS, the Swift `VSockProxyRelay` connects
+each guest vsock stream to that agent's host UDS. The relay transports bytes;
+the Rust listener supplies the trusted agent identity.
 
-```
-safeyolo agent shell <name>
-       │
-       ▼
-ssh -o ProxyCommand='nc -U <shell.sock>' agent@sandbox    (macOS vsock)
-ssh -o ProxyCommand='runsc exec <cid>'   agent@sandbox    (Linux)
-       │
-       ▼ (macOS only)
-VSockShellBridge  (UDS → vsock:2220)
-       │
-       ▼
-guest-shell-bridge  (vsock:2220 → 127.0.0.1:22)
-       │
-       ▼
-sshd (inside guest)
-```
+`safeyolo agent shell <name>` uses a separate route. Linux runs the command
+through `runsc exec`. On macOS, the host SSH client uses the agent's shell UDS;
+`VSockShellBridge` forwards it through vsock port 2220 to the guest shell
+bridge and `sshd`. The shell socket is
+`~/.safeyolo/data/shell-sockets/<agent>.sock`. It is separate from the proxy
+socket.
 
----
+## Agent identity and listener updates
 
-## Attribution
+The host command-line interface (CLI) assigns each running agent an
+attribution Internet Protocol (IP) address from
+`10.200.0.0/16`. The CLI reserves a stable `network_slot` in the agent's
+configuration. It uses the lowest free slot for a new agent and preserves a
+running legacy agent's address when possible. For network slot `N`, the
+address is `10.200.{(N+1) / 256}.{(N+1) % 256}`, using integer division.
+Slot 0 has `10.200.0.1`. The live `~/.safeyolo/data/agent_map.json` entry is
+authoritative for an agent's assigned IP and socket path. The CLI creates a
+listener entry with
+`agent_id`, `source_id`, and `socket_path` in the native configuration.
 
-Each agent is assigned a **deterministic attribution IP** at
-`agent run` time, derived from the agent's index in the sorted list:
+The Rust proxy binds each configured path with `tokio::net::UnixListener`.
+On accept, it attaches the configured agent and source identity to the
+connection. An HTTP header cannot choose another agent. The private mount or
+vsock relay also prevents a guest from addressing a different agent's host
+socket. The socket directory is a host-controlled convention for the CLI;
+Rust uses the listener entry for identity. Host-local Admin application
+programming interface (API) traffic uses a separate listener.
 
-| Agent index | Attribution IP   |
-|-------------|------------------|
-| 0           | `10.200.0.1`     |
-| 1           | `10.200.0.2`     |
-| 255         | `10.200.1.0`     |
-| 511         | `10.200.2.0`     |
+When the CLI starts or stops an agent sandbox, it updates `agent_map.json` and
+reconciles its managed listener entries with the running Rust proxy.
+`rust_proxy.sync_listeners` writes the updated native configuration, sends
+SIGHUP, and waits for the matching `reload_id` and listener count in the
+readiness marker. Operator-defined listener entries remain intact. If the
+proxy does not acknowledge a written update before the timeout, the CLI logs
+a warning and leaves that configuration for the next reload or start. There is no
+`PUT /admin/proxy/mode` route or mitmproxy mode list in the current package.
 
-The IP is `10.200.{(N+1) / 256}.{(N+1) % 256}` from the `10.200.0.0/16`
-range — `/16` supports ~65k agents. It's configured on the guest's
-loopback (for in-sandbox visibility) and encoded into the per-agent
-UDS filename on the host.
+## Diagnose a broken path
 
-Identity mechanism:
+On the host, with the proxy and named agent running, start with:
 
-1. CLI computes `sockets.path_for(agent, ip)` → `<data_dir>/sockets/<ip>_<agent>/proxy.sock`
-   and writes the agent entry to `agent_map.json`.
-2. CLI calls admin API `PUT /admin/proxy/mode` with the current
-   `unix:<path>` list. Mitmproxy's `Proxyserver.configure()`
-   hot-reloads and spawns a `UnixInstance` for the new spec.
-3. `UnixInstance._start()` does `asyncio.start_unix_server(path=...)`
-   and parses `(ip, agent)` from the filename once, caching both.
-4. On each accepted connection, `handle_stream()` sets
-   `context.client.peername = (ip, 0)` before the protocol layer runs.
-5. `service_discovery` sees the attribution IP on `client.peername[0]`
-   and resolves it to the agent name via `agent_map.json` (unchanged).
-
-This means:
-
-- **Identity is enforced by the filesystem**, never claimed by the
-  guest. The private directory name is authoritative; directory
-  permissions prevent agents from renaming each other's sockets.
-- **Structural isolation**: agent A's directory (`sockets/10.200.0.1_agent-a/`)
-  is the only socket directory mounted into agent A's sandbox. Agent A cannot
-  address agent B's socket.
-- **No TCP listener**. Mitmproxy binds Unix domain sockets only; the
-  0.0.0.0 TCP listener used by earlier builds is gone.
-
----
-
-## Per-agent sockets
-
-```
-~/.safeyolo/data/sockets/<ip>_<agent>/proxy.sock # mitmproxy UnixInstance per agent
-~/.safeyolo/data/shell-sockets/<agent>.sock   # shell bridge listener (macOS only)
+```sh
+safeyolo agent diag syone
+safeyolo doctor
 ```
 
-The private socket directory is mounted read-only at `/safeyolo/proxy`
-(Linux, via gVisor `--host-uds=open`) or reached via `vsock:1080` (macOS,
-via `VSockProxyRelay`). In both cases the agent's in-guest forwarder
-sends bytes to "its" socket, and there's no cross-agent socket visibility.
+The agent diagnostic checks the map, socket, native process, sandbox,
+host-side UDS HTTP response, and authenticated Agent API separately.
+On macOS, it also checks the helper, shell bridge, SSH banner, and relay
+health. A complete HTTP response proves the UDS transport; the Agent API
+check separately requires its handler marker and source-attributed identity.
+A failed check gives a remediation and the command exits nonzero.
 
-`safeyolo agent add`/`remove` pushes the updated mode list to mitmproxy
-via admin API `PUT /admin/proxy/mode`; `Proxyserver.configure()`
-hot-reloads, starting/stopping `UnixInstance`s to match. No mitmproxy
-restart required when adding an agent.
+For decision and audit events on the host, run:
 
----
-
-## Logs
-
-Every hop emits timestamped, grep-friendly lines in a common logfmt-ish
-shape:
-
-```
-<ts> [<hop>] done flow=<N> agent=<name> bytes_in=<X> bytes_out=<Y> duration_ms=<ms>
-<ts> [<hop>] warn <any error context, with flow+agent>
-<ts> [<hop>] accept flow=<N> agent=<name> src=… upstream=…   (DEBUG-gated)
+```sh
+safeyolo logs --tail 50
 ```
 
-| Hop                    | Log file                                           |
-|------------------------|----------------------------------------------------|
-| guest-proxy-forwarder  | VM console / `serial.log` on host                  |
-| guest-shell-bridge     | VM console / `serial.log` on host                  |
-| VSockProxyRelay (mac)  | `~/.safeyolo/agents/<name>/serial.log`             |
-| VSockShellBridge (mac) | `~/.safeyolo/agents/<name>/serial.log`             |
-| mitmproxy process / upstream failures | `~/.local/state/safeyolo/mitmproxy.log` |
-| structured addon events | `~/.local/state/safeyolo/safeyolo.jsonl`         |
+`safeyolo logs` reads the JSON Lines audit file under `SAFEYOLO_LOGS_DIR`,
+or `$XDG_STATE_HOME/safeyolo/safeyolo.jsonl` by default. It is not a complete
+packet capture or a substitute for the diagnostic probes. On macOS, the VM
+helper's guest console and relay messages are in
+`~/.safeyolo/agents/<name>/serial.log`. On Linux, guest boot output is in
+`~/.safeyolo/agents/<name>/status/boot.log`. Setting `SAFEYOLO_VM_DEBUG=1`
+before starting the macOS helper enables its extra relay debug messages;
+it does not enable tracing across every proxy stage.
 
-**Cross-hop correlation.** All hops tag each flow with the agent name;
-`grep 'agent=syone'` across the log files above reconstructs a single
-flow's journey. `done` lines carry byte counts and durations, so the
-question "where did the time / the bytes go?" has a one-grep answer.
+| Symptom | First check |
+| --- | --- |
+| Agent cannot connect to the proxy | Run `safeyolo agent diag <name>`; check the named socket and the native process. |
+| Proxy transport passes but Agent API fails | Read the separate Agent API diagnostic and `safeyolo doctor` result. A generic HTTP response does not prove API health. |
+| Agent request is attributed to the wrong identity | Compare the host `agent_map.json` entry with the native listener and the named socket. Do not rely on a guest-supplied header. |
+| macOS shell hangs | Check the shell UDS, helper relay health, SSH banner, and guest `sshd` with `safeyolo agent diag <name>`. |
 
-**Debug mode.** Set `SAFEYOLO_VM_DEBUG=1` before starting `safeyolo` to
-emit the `accept` lines (per-flow start events). `done` and `warn` are
-always on — they carry the load-bearing diagnostic data and are low
-enough volume for production (~3 lines/sec under active Claude Code
-usage).
+## Platform and configuration notes
 
----
+| | Linux | macOS |
+| --- | --- | --- |
+| Sandbox | Rootless gVisor with systrap or KVM | Apple Virtualization.framework microVM |
+| Guest egress bridge | Bind-mounted UDS via `--host-uds=open` | vsock port 1080 through `VSockProxyRelay` |
+| Operator shell | `runsc exec` | SSH through `VSockShellBridge` and vsock port 2220 |
+| Agent identity at proxy | Configured Rust listener for the private UDS | Configured Rust listener for the private UDS |
 
-## Troubleshooting
+`SAFEYOLO_CONFIG_DIR` selects a separate instance root, including its agent
+map and socket directories. `SAFEYOLO_VM_HELPER` can select a macOS helper
+binary for a development run. `SAFEYOLO_VM_DEBUG` controls the helper's
+extra relay logging.
 
-### First port of call: `safeyolo agent diag <name>`
-
-Probes every hop and reports pass/fail with actionable remediation. Run
-this before grepping logs — usually tells you exactly which link is
-broken:
-
-```
-$ safeyolo agent diag syone
-
-  PASS  Agent config: /Users/…/agents/syone
-  PASS  Agent map: ip=127.0.0.2 socket=/Users/…/127.0.0.2_syone/proxy.sock
-  PASS  Attribution IP: 127.0.0.2 (UDS directory)
-  PASS  Proxy socket: /Users/…/127.0.0.2_syone/proxy.sock mode=0o600
-  PASS  Proxy process: mitmdump running (owns per-agent UnixInstance listeners)
-  PASS  Sandbox/VM: running
-  PASS  Proxy transport: mitmdump answered HTTP 400 (292B)
-  PASS  Agent API: HTTP 200 with handler marker; source attributed as syone
-```
-
-`Proxy transport` proves only that the named per-agent UDS reaches mitmproxy
-and carries a complete HTTP response back. `Agent API` is a separate,
-authenticated check: `/health` must return HTTP 200 with
-`X-SafeYolo-Agent-API: true`, then a harmless identity-scoped GET confirms the
-source-derived agent attribution. A generic mitmproxy response or the local
-Agent API containment 503 is therefore a failure even when transport passes.
-
-Exit code 0 on all-pass, 1 on any fail.
-
-### Common symptoms
-
-| Symptom                                   | Most likely cause                                        | Check / fix                                                   |
-|-------------------------------------------|----------------------------------------------------------|---------------------------------------------------------------|
-| `curl: (7) Failed to connect` inside agent after a few retries | mitmproxy not running, or `UnixInstance` not bound for this agent | `safeyolo status`; `safeyolo agent diag`                     |
-| Agent traffic shows in mitmproxy as `unknown` | Attribution IP on `peername` doesn't match an `agent_map.json` entry | `cat ~/.safeyolo/data/agent_map.json`; check the socket path is `<ip>_<agent>/proxy.sock` |
-| `safeyolo agent shell` hangs              | Shell-bridge relay not firing, or `sshd` not in guest   | `ls ~/.safeyolo/data/shell-sockets/<name>.sock`; serial.log for `listen agent=…` |
-| `VM running (detached)` but dies seconds later | Helper process `proc_exit`ed silently (historically SIGPIPE, RunLoop exit) | `sudo log show --last 60s --predicate 'processID == <pid>'` — shows exit reason |
-
-### Reading logs
-
-For a failing flow, start at the agent-map side and walk outward:
-
-```
-# All events for syone across every hop, in chronological order:
-( cat ~/.safeyolo/agents/syone/serial.log \
-  ~/.local/state/safeyolo/mitmproxy.log \
-  ~/.local/state/safeyolo/safeyolo.jsonl
-) | grep 'agent=syone\|"agent":"syone"' | sort
-```
-
-The `flow=N` id is per-process-monotonic; grep `flow=<N>` on a single
-hop to see one specific connection's accept + done pair.
-
----
-
-## Platform differences at a glance
-
-|                        | Linux                          | macOS                                     |
-|------------------------|--------------------------------|-------------------------------------------|
-| Isolation runtime      | gVisor (`runsc`) in rootless userns | Virtualization.framework             |
-| Guest sees sandbox as  | loopback-only netns            | no network interface (vsock only)         |
-| Agent → proxy path     | UDS via `--host-uds=open`     | vsock (1080) → VSockProxyRelay → UDS      |
-| Shell access           | `runsc exec`                  | ssh via VSockShellBridge (UDS → vsock → sshd) |
-| Attribution mechanism  | `<ip>_<agent>` directory name | `<ip>_<agent>` directory name             |
-| Host firewall          | none (structural)             | none (structural)                         |
-| Sudo at runtime        | none                          | none                                      |
-
----
-
-## Configuration knobs
-
-| Env var                      | Default      | Effect                                            |
-|------------------------------|--------------|---------------------------------------------------|
-| `SAFEYOLO_CONFIG_DIR`        | `~/.safeyolo`| Instance root (isolated from prod when set)       |
-| `SAFEYOLO_SUBNET_BASE`       | `65`         | Linux netns slot offset — shift to run a second instance (e.g. blackbox tests) without colliding with prod netns names |
-| `SAFEYOLO_VM_HELPER`         | unset        | Override `safeyolo-vm` binary path for single runs |
-| `SAFEYOLO_VM_DEBUG`          | unset (off)  | Enable per-flow `accept` logs on all hops         |
-
----
-
-## See also
-
-- `docs/microvm-architecture.md` — how the VM boots, snapshots, mounts
-- `docs/SERVICE_DISCOVERY.md` — how the `service_discovery` addon maps IP→agent
-- Source: `cli/src/safeyolo/sockets.py`, `cli/src/safeyolo/proxy_modes/unix_listener.py`, `vm/Sources/SafeYoloVM/VSockProxyRelay.swift`, `vm/Sources/SafeYoloVM/VSockShellBridge.swift`
+For the current component overview, see
+[architecture](ARCHITECTURE.md#sandbox-runtime-and-networking) and
+[developer architecture](DEVELOPERS.md#architecture-overview). For isolation
+checks, see [security verification](security-verification.md). Relevant
+sources are [socket paths](../cli/src/safeyolo/sockets.py),
+[native listener reconciliation](../cli/src/safeyolo/rust_proxy.py),
+[Rust listener ownership](../proxy/src/lib.rs), and the
+[macOS proxy relay](../vm/Sources/SafeYoloVM/VSockProxyRelay.swift).

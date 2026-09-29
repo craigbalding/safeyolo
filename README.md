@@ -25,12 +25,14 @@ Works with Claude Code, OpenAI Codex, and other coding agents.
 - **Visible work:** inspect live HTTP(S) traffic, open sandboxed browser and desktop
   previews, and optionally share these operator views over Tailscale.
 - **Limits and evidence:** rate budgets, circuit breakers, and loop detection
-  contain runaway requests. Audit logs and queryable traffic records preserve
-  request history and test context. Agents can inspect their policy and block
-  reasons to resolve problems.
+  contain runaway requests. Audit logs and queryable traffic records retain
+  scoped observations and test context, subject to capture and retention limits.
+  Agents can inspect their policy and block reasons to resolve problems.
 
-SafeYolo is **pre-v1** and currently installed from source. It builds on
-[mitmproxy](https://mitmproxy.org/), with microVM patterns informed by
+SafeYolo is **pre-v1** and currently installed from source. The installer builds
+and packages the Rust proxy. The first Rust release provides read-only traffic
+inspection and selected exports; [traffic scope and capture limits](docs/DEVELOPERS.md#live-traffic-inspection)
+describe what the view can show. Its microVM patterns are informed by
 [Shuru](https://github.com/superhq-ai/shuru/).
 
 ## Quick Start
@@ -38,9 +40,11 @@ SafeYolo is **pre-v1** and currently installed from source. It builds on
 ### 1. Install on your host
 
 Use your normal account on the Mac or Linux machine that will run SafeYolo.
-Install [uv](https://docs.astral.sh/uv/) first. Its tool directory, normally
-`~/.local/bin`, must be on your `PATH`; the installer selects a supported Python
-interpreter automatically.
+Install [uv](https://docs.astral.sh/uv/) and select Rust 1.94.0, as recorded in
+[`proxy/rust-toolchain.toml`](proxy/rust-toolchain.toml), before running the
+installer. `cargo` must be on your `PATH`. uv's tool directory, normally
+`~/.local/bin`, must also be on your `PATH`. The installer selects a supported
+Python interpreter automatically.
 
 | Host | Requirements |
 | --- | --- |
@@ -71,6 +75,8 @@ make -C vm install
 
 For other package managers, individual installation phases, and recovery, see
 [installation details](cli/README.md#installation).
+For an explicit return to the selected prior Python package, see
+[package rollback](cli/README.md#return-to-the-prior-python-package).
 
 ### 2. Choose your agent and workspace
 
@@ -157,9 +163,10 @@ from authentication that a host script intentionally copies into the agent.
 See the [security model](SECURITY.md) for the boundaries and limitations.
 
 - [Configuration](docs/CONFIGURATION.md)
-- [Architecture and platform runtimes](docs/ARCHITECTURE.md)
+- [Current proxy architecture](docs/DEVELOPERS.md#architecture-overview) and [platform runtimes](docs/ARCHITECTURE.md#sandbox-runtime-and-networking)
 - [Network routing and agent identity](docs/networking-vsock-uds.md)
-- [Architecture and addons](docs/ADDONS.md)
+- [Historical Python addon reference](docs/ADDONS.md)
+- [Historical Python proxy architecture](docs/ARCHITECTURE.md#historical-python-policy-model)
 - [Coord completion notes](docs/coord-completion-notes.md) and [factory proposals](docs/factory-proposals.md)
 - [Dispatch generation](docs/dispatch-generation.md)
 - [Contributing](docs/DEVELOPERS.md)

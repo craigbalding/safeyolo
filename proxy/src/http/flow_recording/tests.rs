@@ -461,7 +461,7 @@ async fn real_uds_http_records_owned_rows_full_decoded_sizes_and_error_without_o
             .iter()
             .all(|event| event["host"] == host && event["port"] == address.port())
     );
-    assert!(runtime.policy.is_some() && runtime.config.temporary_policy_socket.is_none());
+    assert!(runtime.policy.is_some());
 
     let first = store.get_flow(1).unwrap().unwrap();
     let second = store.get_flow(2).unwrap().unwrap();
@@ -613,16 +613,7 @@ async fn h2_unread_response_terminal_records_all_data_and_early_metadata_stays_i
         let directory = tempfile::tempdir().unwrap();
         let mut configuration = config(directory.path(), "127.0.0.2");
         configuration.listeners.clear();
-        let runtime = Arc::new(
-            Runtime::new(
-                configuration,
-                "recording-h2",
-                Arc::new(tokio::sync::Mutex::new(())),
-                None,
-                None,
-            )
-            .unwrap(),
-        );
+        let runtime = Arc::new(Runtime::new(configuration, "recording-h2", None, None).unwrap());
         let recorder = runtime.flow_recorder.clone();
         let store = recorder.store().unwrap().clone();
         let recording = Recording::new(recorder.clone(), identity("alice"), ID.into(), true);

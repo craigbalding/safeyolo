@@ -54,7 +54,8 @@ def test_writer_matrix_retains_explicit_rollback_and_unresolved_owners() -> None
     text = " ".join(INVENTORY.read_text(encoding="utf-8").split())
     for required in (
         "installed OAuth refresh or user catalog paths",
-        "task-policy API still has a process-local registry",
+        "The operator selected process-local task policy for #638 W2",
+        "Fresh Rust starts with no registration from either prior process",
         "Provider lease observations remain provider-owned",
         "installed-instance rollback",
         "Flow evidence (durable SQLite)",

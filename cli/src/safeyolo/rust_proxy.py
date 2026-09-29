@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import pwd
 import signal
 import stat
 import subprocess
@@ -14,12 +15,14 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .agent_command_supervisor import _write_json, _write_text
 from .agent_token import ensure_agent_token
 from .config import (
     DEFAULT_NATIVE_CONFIG,
+    command_centre_tailnet_status_file,
     get_agent_map_path,
     get_bridge_sockets_dir,
     get_config_dir,
@@ -28,17 +31,20 @@ from .config import (
     get_native_config_path,
     get_policy_toml_path,
 )
+from .coord.identity import get_or_create_instance_id, instance_id_file
 from .core.service_paths import resolve_service_directories
 from .runtime_identity import process_is_alive, process_start_token
 from .rust_listener_json import update_listeners
 from .traffic_session import (
     capture_session,
+    interrupt_session_process,
     session_process_id,
     start_session,
 )
 
 log = logging.getLogger("safeyolo.proxy")
 STARTUP_TIMEOUT = 10.0
+TAILNET_STARTUP_TIMEOUT = 75.0
 
 
 @contextmanager
@@ -67,6 +73,7 @@ class RustProcess:
     admin_token_file: str | None
     config_file: str | None = None
     working_directory: str | None = None
+    binary_path: str | None = None
 
 
 def read_process() -> RustProcess | None:
@@ -91,30 +98,20 @@ def read_process() -> RustProcess | None:
             not isinstance(process.admin_token_file, str) or not Path(process.admin_token_file).is_absolute()
         ))
         or any(value is not None and (not isinstance(value, str) or not Path(value).is_absolute())
-               for value in (process.config_file, process.working_directory))
+               for value in (process.config_file, process.working_directory, process.binary_path))
     ):
         raise RuntimeError(f"Invalid Rust proxy process record: {state_file()}")
     return process
 
 
-def is_alive(process: RustProcess, *, allow_unobservable_exit: bool = False) -> bool:
-    """Return whether the recorded process is alive and still ours.
-
-    ``allow_unobservable_exit`` is only used after a verified termination
-    request.  Some macOS process states keep ``kill(pid, 0)`` successful for a
-    short window after exit while ``ps`` no longer provides a start token.  At
-    that point the process cannot be live and safely signalable through this
-    receipt, so the stop wait treats the observation as an exit.  Callers that
-    may signal a process keep the strict default and refuse unknown identity.
-    """
+def is_alive(process: RustProcess) -> bool:
+    """Return whether the recorded process is alive and still ours."""
     if process.pid is None:
         raise RuntimeError("Cannot identify the launched Rust proxy; its lifetime record and console have been retained")
     if not process_is_alive(process.pid):
         return False
     observed = process_start_token(process.pid)
     if observed is None or process.start_token is None:
-        if allow_unobservable_exit:
-            return False
         raise RuntimeError("Cannot verify Rust proxy process identity; lifetime state has been retained")
     return observed == process.start_token
 
@@ -147,12 +144,91 @@ def _path(value: object, field: str) -> Path:
     return Path(value).absolute()
 
 
+def _ensure_signing_ca(cert_dir: Path) -> Path:
+    """Keep an existing instance CA, or create its initial native signing CA."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    cert_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    combined = cert_dir / "mitmproxy-ca.pem"
+    public = cert_dir / "mitmproxy-ca-cert.pem"
+    if not combined.exists() and public.exists():
+        raise RuntimeError(f"Signing CA key is missing while trust root exists: {combined}")
+    if combined.exists():
+        source = combined.read_bytes()
+        try:
+            key = serialization.load_pem_private_key(source, password=None)
+            certificate = x509.load_pem_x509_certificate(source)
+            key_public = key.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            cert_public = certificate.public_key().public_bytes(
+                serialization.Encoding.DER,
+                serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Cannot read existing signing CA: {combined}") from exc
+        if key_public != cert_public:
+            raise RuntimeError(f"Signing CA key and certificate do not match: {combined}")
+        certificate_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        if public.exists():
+            try:
+                trusted = x509.load_pem_x509_certificate(public.read_bytes())
+            except ValueError as exc:
+                raise RuntimeError(f"Cannot read existing trust root: {public}") from exc
+            if trusted != certificate:
+                raise RuntimeError(f"Signing CA and installed trust root differ: {cert_dir}")
+        else:
+            _write_text(public, certificate_pem.decode("ascii"), mode=0o600)
+    else:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mitmproxy")])
+        now = datetime.now(UTC)
+        certificate = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(days=1))
+            .not_valid_after(now + timedelta(days=3650))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(key.public_key()),
+                critical=False,
+            )
+            .add_extension(
+                x509.KeyUsage(
+                    digital_signature=True, content_commitment=False,
+                    key_encipherment=False, data_encipherment=False,
+                    key_agreement=False, key_cert_sign=True, crl_sign=True,
+                    encipher_only=False, decipher_only=False,
+                ), critical=True,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        certificate_pem = certificate.public_bytes(serialization.Encoding.PEM)
+        _write_text(
+            combined,
+            (
+                key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                ) + certificate_pem
+            ).decode("ascii"),
+            mode=0o600,
+        )
+        _write_text(public, certificate_pem.decode("ascii"), mode=0o600)
+    return public
+
+
 def _default_native_config(config: dict) -> dict:
     """Build the release native config from the existing CLI instance paths."""
-    # The Python and native backends must use the same persistent signing CA.
-    # Import here because proxy.py imports this module for backend dispatch.
-    from . import proxy as proxy_module
-
     proxy_options = config.get("proxy", {})
     if not isinstance(proxy_options, dict):
         raise ValueError("proxy configuration must be a mapping")
@@ -160,7 +236,7 @@ def _default_native_config(config: dict) -> dict:
     logs_dir = get_logs_dir(create=True)
     service_directories = resolve_service_directories(get_config_dir() / "services")
     cert_dir = get_config_dir() / "certs"
-    proxy_module._ensure_certs(cert_dir)
+    _ensure_signing_ca(cert_dir)
     signing_ca = cert_dir / "mitmproxy-ca.pem"
     if not signing_ca.is_file():
         raise RuntimeError(f"Native signing CA is unavailable: {signing_ca}")
@@ -457,7 +533,7 @@ def stop(process: RustProcess) -> None:
         except ProcessLookupError:
             # It exited between the ownership observation and signal delivery.
             pass
-        while is_alive(process, allow_unobservable_exit=True):
+        while is_alive(process):
             time.sleep(0.1)
     # Keep the exited console for diagnostics. start_session reaps a dead pane
     # on the next launch. A failed pane query must never kill a replacement pane.
@@ -480,13 +556,18 @@ def _signal_process(process: RustProcess, selected_signal: int) -> None:
         finally:
             os.close(descriptor)
     elif is_alive(process):
-        # Other supported hosts use the existing start-token check and POSIX
-        # signal convention; they do not provide Linux's atomic PID handle.
-        os.kill(process.pid, selected_signal)
+        # Other supported hosts use the start-token check and POSIX signals;
+        # macOS can route a denied signal through the original tmux server.
+        try:
+            os.kill(process.pid, selected_signal)
+        except PermissionError:
+            if sys.platform != "darwin" or selected_signal != signal.SIGTERM:
+                raise
+            interrupt_session_process(process.pid, process.start_token)
 
 
-def _wait_ready(process: RustProcess, launch: RustLaunch) -> dict:
-    deadline = time.monotonic() + STARTUP_TIMEOUT
+def _wait_ready(process: RustProcess, launch: RustLaunch, timeout: float = STARTUP_TIMEOUT) -> dict:
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not is_alive(process):
             raise RuntimeError("Rust proxy exited before readiness")
@@ -494,7 +575,32 @@ def _wait_ready(process: RustProcess, launch: RustLaunch) -> dict:
         if marker is not None:
             return marker
         time.sleep(0.05)
-    raise RuntimeError(f"Rust proxy did not signal ready within {STARTUP_TIMEOUT:g}s")
+    raise RuntimeError(f"Rust proxy did not signal ready within {timeout:g}s")
+
+
+def _command_centre_options(config: dict) -> dict:
+    """Validate the installed Command Centre setting before native launch."""
+    options = config.get("command_centre", {})
+    if not isinstance(options, dict) or type(options.get("enabled", False)) is not bool:
+        raise ValueError("command_centre must be a mapping with a Boolean enabled setting")
+    if not options.get("enabled", False):
+        return {"enabled": False}
+    events_port = options.get("events_port", 9091)
+    admin_port = options.get("tailnet_admin_port", 9443)
+    tailnet_events_port = options.get("tailnet_events_port", 9444)
+    if type(events_port) is not int or not 1 <= events_port <= 65535:
+        raise ValueError("Command Centre event port must be an integer from 1 to 65535")
+    share = options.get("share", "local")
+    if share not in {"local", "tailnet"}:
+        raise ValueError("command_centre.share must be local or tailnet")
+    if share == "tailnet":
+        if any(type(port) is not int or not 1 <= port <= 65535
+               for port in (admin_port, tailnet_events_port)):
+            raise ValueError("Command Centre Tailnet ports must be integers from 1 to 65535")
+        if admin_port == tailnet_events_port:
+            raise ValueError("Command Centre Tailnet Admin and event ports must differ")
+    return {"enabled": True, "events_port": events_port, "share": share,
+            "tailnet_admin_port": admin_port, "tailnet_events_port": tailnet_events_port}
 
 
 def _console() -> str:
@@ -518,17 +624,20 @@ def _cleanup_failed_start(process: RustProcess, failure: BaseException | None) -
 
 def start(config: dict) -> None:
     """Launch once in the private PTY; never select another backend on failure."""
+    command_centre = _command_centre_options(config)
     launch = prepare(config)
     if session_process_id() is not None:
         raise RuntimeError("The traffic session is still running; stop it before launching Rust")
+    try:
+        get_or_create_instance_id()
+    except (OSError, UnicodeError) as exc:
+        # Coord remains best-effort for the proxy. The identity endpoint will
+        # report 503 until the durable ID can be created or read.
+        log.warning("Could not prepare durable operator identity: %s", exc)
     # The CLI stages this same state file into every guest config share.
     # Bootstrap may have created an empty placeholder before first start.
     ensure_agent_token(get_data_dir())
     launch.readiness.unlink(missing_ok=True)
-    log.warning(
-        "Starting Rust proxy from native JSON; HTTP credential inspection, "
-        "vault injection and the full operator UI/management workflows are not yet implemented"
-    )
     env = os.environ.copy()
     env["SAFEYOLO_DATA_DIR"] = str(get_data_dir().absolute())
     env["SAFEYOLO_LOG_PATH"] = str((get_logs_dir(create=True) / "safeyolo.jsonl").absolute())
@@ -536,9 +645,28 @@ def start(config: dict) -> None:
     # desktop approvals.  The interpreter is inherited from the trusted CLI
     # launcher; request data supplies a validated stable agent ID only.
     env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
+    env["SAFEYOLO_OPERATOR_HOST_PYTHON"] = sys.executable
+    try:
+        env["SAFEYOLO_OPERATOR_HOST_USER"] = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        env.pop("SAFEYOLO_OPERATOR_HOST_USER", None)
+    env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] = str(instance_id_file().absolute())
+    for name in (
+        "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
+    ):
+        env.pop(name, None)
+    if command_centre["enabled"]:
+        env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] = str(command_centre["events_port"])
+        if command_centre["share"] == "tailnet":
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre["tailnet_admin_port"])
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre["tailnet_events_port"])
+            env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] = str(command_centre_tailnet_status_file().absolute())
     process = RustProcess(None, None, str(launch.readiness), launch.admin_port,
                           str(launch.admin_token) if launch.admin_token else None,
-                          str(launch.config), str(Path.cwd()))
+                          str(launch.config), str(Path.cwd()), str(launch.binary))
     # A failed identity observation must not send a later stop down the legacy
     # PID path. Retain one lifetime record throughout launch, even before readiness.
     _write_json(state_file(), asdict(process))
@@ -562,7 +690,9 @@ def start(config: dict) -> None:
     complete = False
     try:
         try:
-            marker = _wait_ready(process, launch)
+            marker = _wait_ready(process, launch, TAILNET_STARTUP_TIMEOUT
+                                 if command_centre["enabled"] and command_centre.get("share") == "tailnet"
+                                 else STARTUP_TIMEOUT)
         except RuntimeError as exc:
             raise RuntimeError(f"{exc}\nRust proxy console:\n{_console()}") from exc
         process.admin_port = marker.get("admin_port")

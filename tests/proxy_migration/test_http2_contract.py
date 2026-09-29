@@ -22,9 +22,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from mitmproxy.certs import CertStore
 
 from safeyolo.api import AdminAPI
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy, read_events
 from tests.proxy_migration.run import proxy_identity, runtime_resources
 
@@ -495,7 +495,7 @@ def test_upload_response_wait_requires_origin_progress(monkeypatch):
 def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     payload = bytes(range(256)) * 40960 + b"\xff"  # 10 MiB + 1 byte
     with origin_server(pem) as origin, launch_proxy(
@@ -559,7 +559,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
     """A header denial completes before END_STREAM and leaves another stream usable."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     partial_body = b"held-open-body-prefix"
     announced_body_bytes = 12 * 1024 * 1024
@@ -685,7 +685,7 @@ def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend,
 def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend, tmp_path):
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     with origin_server(pem) as origin, launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
         def run(agent):
@@ -716,7 +716,7 @@ def test_http2_mixed_stream_decisions_and_http1_control(proxy_backend, tmp_path)
     """One H2 connection cannot lend its approval or credential to a sibling."""
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     token_file = directory / "operator-token"
     token_file.write_text("h2-stream-approval-fixture\n")
@@ -891,7 +891,7 @@ def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend
         ))
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     with h2_cancellation_origin(pem) as origin, launch_proxy(
         proxy_backend,
@@ -1029,7 +1029,7 @@ def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_
         pytest.skip("connection_strategy is a Python-only fixture setting")
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     with origin_server(pem, protocols) as origin, launch_proxy(
         proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
@@ -1062,7 +1062,7 @@ def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_
 def test_http2_inner_authorities_cannot_change_destination(proxy_backend, tmp_path, mutation):
     directory = tmp_path / proxy_backend
     directory.mkdir()
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     pem, public = origin_certificate(directory)
     with origin_server(pem) as origin, origin_server(pem) as other:
         with launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:

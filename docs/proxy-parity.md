@@ -5,22 +5,18 @@ The source baseline is `4116c7ee3d44c623e9d89ae60c14ce671d0f295d` on
 `master`, inspected on 15 September 2026. Implementation starts on
 `feat/rust-proxy-620`. The baseline lockfile selects mitmproxy 12.2.3.
 
-**Status: M1 and the smallest M2 slice independently accepted at `c2afb9cf`; later policy, transport and state work continues.**
-A named test below means an existing executable check was located. It does not mean the test ran,
-passed, covered the production chain, or passed against Rust. Run manifests
-must identify the source commit, backend, platform, dependency versions, exact
-test selection and results. Future checks are marked **required**. No production
-deletion is authorized by the inventory alone. Acceptance applies only to the reviewed revision and scope.
-
-The Rust development slice covers trusted Unix domain socket (UDS) ingress,
-HTTP and explicitly selected native network policy. The temporary Python network
-policy adapter remains an explicit development option. An optional CA file enables
-a development HTTPS path. Approval and service-contract modules are tested
-separately and remain inactive in transport while their state contracts are implemented.
-Unsupported internal APIs return a local error. That response proves
-containment only; it does not establish API parity or a healthy inspection
-pipeline. The production Python proxy remains necessary until the retained
-contracts have replacement evidence.
+**Current status:** this is the original discrepancy and deletion inventory,
+not a release-acceptance checklist. The old source descriptions and historical
+test observations below retain their original dates and scope. The current
+package starts Rust and removes the Python proxy runtime; the 41 path owners
+are tracked in the [cutover deletion map](proxy-cutover-deletion-map.md).
+[Issue #640's A1/A2 disposition](https://github.com/craigbalding/safeyolo/issues/640#issuecomment-5859706461)
+accepts the finite ledger and selected Linux pre-cutover run at frozen R.
+[Issue #621's selected dual-backend disposition](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308)
+records the accepted comparison and its explicit differences. These results do
+not establish the final post-deletion release F: use the live #640 B-items for
+installed, rollback, macOS/VZ, and exact-F release gates. A test named in a
+historical row does not by itself mean it passed at F.
 
 The tables use these abbreviations: application programming interface (API),
 command-line interface (CLI), Transport Layer Security (TLS), certificate
@@ -66,7 +62,7 @@ policy and credentials, authorized evidence access and retention, platform
 validation, rollback and removal of the old proxy retain their requirements.
 Shared matching or decoding needed by those paths is not deferred by this scope.
 
-Local refs include proxy-related branches such as
+At the original inventory date, local refs included proxy-related branches such as
 `origin/feat/connect-policy-598` (`c19c0dc5`),
 `origin/feat/connect-trace-evidence-598-599` (`2a4dc17e`),
 `origin/agent/complete-flow-context` (`c0d384c1`),
@@ -74,13 +70,16 @@ Local refs include proxy-related branches such as
 `origin/forge/issue-49-websocket-inspection` (`5a8dadc1`). Their responsibilities
 are present in the inspected baseline. They are not ancestors of that baseline;
 squash integration means that fact alone cannot establish outstanding work.
-The integration owner's GitHub Connector search returned open pull requests
-#574 (aggregate host resource protection) and #484 (demo lab), with no open
-proxy, traffic or policy pull request returned. The local `gh` client lacked
-authentication. Recheck open work before cutover; do not merge historical refs
-solely because `git branch --no-merged` lists them.
+The original open-pull-request search was a planning snapshot, not current
+release status. Follow [#640](https://github.com/craigbalding/safeyolo/issues/640)
+and accepted child-issue dispositions for the remaining exact-F work.
 
 ## Production entry points and ordering
+
+The entry points and addon order in this section describe the original
+Python baseline. They are retained to explain the original observations and
+replacement responsibilities. The current CLI launches the packaged Rust
+executable; it does not import this addon chain.
 
 [proxy.py](../cli/src/safeyolo/proxy.py) starts the shared
 [traffic master](../cli/src/safeyolo/traffic_master.py), which imports the UDS
@@ -206,14 +205,18 @@ API is contained separately. Sources are `addons/agent_api.py`,
 
 The host-local admin listener uses bearer authentication except GET `/health`.
 Proxy ingress blocks agent access independently of token authentication.
-Sources are `addons/admin_api.py`, `api.py`, `core/operator_event_server.py`
-and `traffic_master.py`. Preserve configured binding/publication and event
-access; do not substitute an agent-accessible management listener.
+The prior Python sources were `addons/admin_api.py`, `api.py`,
+`core/operator_event_server.py` and `traffic_master.py`. The installed native
+launcher now supplies the durable host identity and fixed agent host operations
+to Rust's loopback Admin listener. The native event listener uses the configured
+loopback event port. Explicit Tailnet publication maps the Admin and event
+ports through the retained host Tailscale Serve helper. Agent ingress remains
+separate from both operator listeners.
 
 | Methods | Routes |
 |---|---|
 | GET | `/health`, `/stats`, `/debug/addons`, `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets`, `/admin/traffic/scope`, `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` |
-| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
+| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/{start,start-interactive,stop}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
 | PUT | `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/proxy/mode`, `/admin/proxy/ignore-hosts`, `/admin/proxy/web-tailnet`, `/admin/traffic/scope` |
 | DELETE | `/admin/policy/task/{id}`, `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
 
@@ -232,10 +235,10 @@ This Linux fixture does not prove a real supported-platform presentation; the
 Tart/macOS guest lane, missing-target and host-operation failure cases remain
 open.
 
-The authenticated WebSocket `/admin/events` streams selected operator audit
-events through `core/operator_event_server.py`. The web application's traffic
-routes expose stock flow operations through the shared master. Compatibility
-concerns the retained user workflows, not every undocumented mitmproxy endpoint.
+The authenticated native WebSocket `/admin/events` streams selected operator
+audit events. The web application's traffic routes exposed stock flow operations
+through the prior shared master. Compatibility concerns the retained user
+workflows, not every undocumented mitmproxy endpoint.
 
 The following is the compact status map for the retained operator operations.
 It records the current native route owner and the remaining owner when Rust
@@ -246,7 +249,8 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents` | Implemented | Native `admin_api`; state and audit owners, with the native wire and retained approval workflows exercising identity, approval, and agent reads. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity and reads pending approvals from the canonical audit owner. |
+| GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and invokes the retained host agent inventory function. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
 | GET `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` | Implemented | Native #625 gateway store and retained plumb owner. |
@@ -255,6 +259,7 @@ checked.
 | POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
 | POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
+| POST `/admin/agents/{agent}/{start,start-interactive,stop}` | Implemented for installed host use | Native Admin authentication and fixed request validation precede the retained host lifecycle functions. The installed loopback witness checks stop, unknown identity, invalid action and invalid arguments; the host helper tests check both start modes and error results. A supported-host start and the physical Mac app journey remain open in #640 B2. |
 | DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
 | POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Partly implemented | Native route and retained host boundary; the #629 running workflow witness proves pending approval, exact request-ID handoff, listener-derived target binding, fixture helper invocation and truthful unavailable/failure audit. Real supported-platform presentation and the remaining collaboration/persistence cases remain open. |
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
@@ -264,7 +269,7 @@ checked.
 | PUT `/admin/proxy/ignore-hosts` | Delegated | The existing CLI normalizes entries and the live consumer publication is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`; passthrough matching, reload effect and removal remain owned by #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
 | Add/remove listeners through retained operator consumers | Implemented | `sync_proxy_modes` replaces only conventional managed sockets, preserves custom listeners, signals the native reload owner and confirms the resulting socket set. `tests/proxy_migration/test_operator_modes_and_listeners.py` adds Bob, removes Alice, and sends requests through the resulting sockets. |
-| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`; its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. |
+| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`. The installed loopback witness checks the configured event port, an agent event, wrong token, and clean Tailnet mapping stop/restart with a local Tailscale fixture. Its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. Physical Tailnet forwarding and the Mac app remain open in #640 B2. |
 | GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
 
 The focused native facade and retained-client workflows are grouped by the
@@ -478,26 +483,26 @@ silently reduce accepted message sizes to a library default.
 | D69 | In the shared HTTP/2 cancellation case, a client resets one stream after partial response data while the origin holds a sibling response until it sees that reset. The Python comparator leaves the origin's `reset_seen` false and the sibling times out. | Native forwards the cancel reset and the sibling completes on a separate origin HTTP/2 connection. The [real-proxy test](../tests/proxy_migration/test_http2_contract.py) records both negotiated client and origin protocols and keeps Python's observed timeout as a strict expected failure. This finite case does not claim every reset timing or shared upstream connection shape. |
 | D70 | Before the Python repair, an absolute-form request to an allowed host with a forbidden Host field forwarded the allowed credential and forbidden Host to a controlled parent. The parent routed by Host, and the forbidden physical origin received the credential. Inside an allowed CONNECT, changed HTTP/1 Host or HTTP/2 `:authority` sent the credential to the allowed physical TLS origin under a forbidden virtual host. | Both backends now forward the admitted Host for the absolute-form case and reject changed inner authorities before application bytes. Python checks inner authority at the request head and uses its existing early-response path for streamed bodies. It compares IDNA A-labels with mitmproxy's decoded destination, preserves an ASCII A-label on the wire, and brackets rewritten IPv6 authorities. Native validates inner host, port and scheme against CONNECT; native policy reuses the admitted policy hostname for ASCII case-equivalent Host spellings, while other source spellings keep their own inspection input. Both proxies deliver valid ASCII case, IDNA and signed-style controls and reject a separate conflicting HTTP/2 Host field. The [paired real-proxy fixture](../tests/proxy_migration/test_authority_consistency.py) checks zero forbidden-origin accepts before its direct parent control, exact credential bytes only at the allowed origin, the parent CONNECT target, origin TLS Server Name Indication (SNI), wrong-name certificate rejection with zero application bytes, and exact path, query and body delivery. A direct trust control proves that the wrong-name certificate is valid for its own name. The parent can deliberately route an admitted CONNECT to another physical socket; SafeYolo verifies that socket's certificate against the admitted name before sending HTTP. Other route and authority combinations remain open under D4. |
 | D71 | At [PR #757 head `678ab150`](https://github.com/craigbalding/safeyolo/pull/757/commits/678ab15071a8f5d89e0abae987cda56fbb7f478e), both backends matched exact service route `/v1/read` for raw `/v1/read/` and forwarded the latter spelling with the vault credential. Rust also matched raw fullwidth letters that normalize to ASCII and forwarded their UTF-8 bytes; Python rejected those bytes at HTTP parsing with 400. | The [accepted correction at `0c730479`](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5838315697) denies a gateway token request when service-route normalization changes its path spelling. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks zero parent and origin contact for trailing slash on both backends and fullwidth letters on Rust, while canonical routes, repeated query parameters, exact body bytes, and ordinary signed paths remain usable. Python still returns parser 400 for raw fullwidth letters; Rust returns gateway 403. |
-| D72 | At `ac5a92c2`, the Python gateway checked duplicate query names on the wire but used the first decoded value for a bound contract constraint. For `account=alpha&%61ccount=beta`, the Python gateway injected the vault credential and forwarded both values to the origin. Native rejected the decoded-name collision. | The Python gateway now rejects duplicate decoded names before contract evaluation. The [running gateway scope fixture](../tests/proxy_migration/test_gateway_scope.py) requires 403 and zero origin contact for that collision on both backends. It also preserves a single encoded value that decodes to the approved value, the configured plain-HTTP exception, and an unrelated nonsecret request. Independent acceptance remains pending. |
-| D73 | Before this repair, the Python proxy forwarded an origin's WebSocket 101 that selected a subprotocol absent from the client's offer. The client saw the invalid selection, and the origin received an application message. Native rejected the same response before forwarding the 101. | The Python response hook now returns a correlated local 502 and disables the pending WebSocket relay for an unoffered selection. It still permits an origin to select the client's second offered protocol. The shared [WS/WSS fixture](../tests/proxy_migration/test_websocket_contract.py) checks the invalid response, zero forwarded application messages, a valid next handshake, and bidirectional inspected traffic on both backends. Independent acceptance remains pending. |
-| D74 | Both proxies folded repeated Authorization fields before checking for a reserved gateway token. When an ordinary value preceded a token, the gateway missed it and allowed the request to reach an owned origin with the token in its Authorization fields. A comma-separated ordinary value had the same effect. Both also forwarded a token after a tab instead of a space. At PR #795's first head, Python additionally forwarded a token after UTF-8 line or paragraph separator; Rust forwarded one after raw NEL (0x85) or NBSP (0xA0). Both selected a valid gateway Authorization while forwarding a second raw token in `X-Api-Key` to the origin. | The corrected gateway fallback checks original header bytes with one separator rule: comma, source-recognized single-byte whitespace, or UTF-8 Unicode whitespace before `sgw_`. Gateway selection also rejects more than one raw header field carrying a reserved token. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks both field orders, comma, tab, the four review-found byte forms, the second-token case, a plain duplicate-value control, and zero upstream accepts on denial. A valid gateway request still replaces its token with the vaulted credential; an ordinary signed target keeps its raw path, query order and body. Independent acceptance remains pending. |
+| D72 | At `ac5a92c2`, the Python gateway checked duplicate query names on the wire but used the first decoded value for a bound contract constraint. For `account=alpha&%61ccount=beta`, the Python gateway injected the vault credential and forwarded both values to the origin. Native rejected the decoded-name collision. | The Python gateway now rejects duplicate decoded names before contract evaluation. The [running gateway scope fixture](../tests/proxy_migration/test_gateway_scope.py) requires 403 and zero origin contact for that collision on both backends. It also preserves a single encoded value that decodes to the approved value, the configured plain-HTTP exception, and an unrelated nonsecret request. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
+| D73 | Before this repair, the Python proxy forwarded an origin's WebSocket 101 that selected a subprotocol absent from the client's offer. The client saw the invalid selection, and the origin received an application message. Native rejected the same response before forwarding the 101. | The Python response hook now returns a correlated local 502 and disables the pending WebSocket relay for an unoffered selection. It still permits an origin to select the client's second offered protocol. The shared [WS/WSS fixture](../tests/proxy_migration/test_websocket_contract.py) checks the invalid response, zero forwarded application messages, a valid next handshake, and bidirectional inspected traffic on both backends. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
+| D74 | Both proxies folded repeated Authorization fields before checking for a reserved gateway token. When an ordinary value preceded a token, the gateway missed it and allowed the request to reach an owned origin with the token in its Authorization fields. A comma-separated ordinary value had the same effect. Both also forwarded a token after a tab instead of a space. At PR #795's first head, Python additionally forwarded a token after UTF-8 line or paragraph separator; Rust forwarded one after raw NEL (0x85) or NBSP (0xA0). Both selected a valid gateway Authorization while forwarding a second raw token in `X-Api-Key` to the origin. | The corrected gateway fallback checks original header bytes with one separator rule: comma, source-recognized single-byte whitespace, or UTF-8 Unicode whitespace before `sgw_`. Gateway selection also rejects more than one raw header field carrying a reserved token. The [raw gateway fixture](../tests/proxy_migration/test_raw_http_gateway_boundary.py) checks both field orders, comma, tab, the four review-found byte forms, the second-token case, a plain duplicate-value control, and zero upstream accepts on denial. A valid gateway request still replaces its token with the vaulted credential; an ordinary signed target keeps its raw path, query order and body. The selected Linux comparison is independently accepted in [#621](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5849605308); this row does not claim final-F platform coverage. |
 
-## Development CLI process selection
+## Native CLI process ownership
 
-The [CLI development workflow](DEVELOPERS.md#rust-proxy-development-backend)
-selects the packaged Rust executable and generated native JSON configuration
-by default through `proxy.backend: rust`. Set `proxy.backend: python`
-explicitly for the retained comparator or operator rollback. Start, status and
-stop use the native readiness marker and a separate process lifetime record; no
-launch failure selects Python automatically. Rust shutdown waits for process
-exit.
+The [CLI development workflow](DEVELOPERS.md#native-proxy-development)
+selects the packaged Rust executable and generated native JSON configuration.
+Existing `proxy.backend: rust` settings remain valid. This package rejects a
+Python backend setting; the historical comparator runs from a pinned separate
+checkout, and explicit rollback installs that prior package. Start, status and
+stop use the native readiness marker and a separate process lifetime record.
+Rust shutdown waits for process exit.
 
-The source installer now builds the locked release executable with the Cargo
-space guard and packages it into the installed CLI. The default instance
-configuration points at a generated native JSON file whose policy, state,
-listener map, audit and readiness paths remain under the existing instance
-directories. The wheel retains the Python CLI and comparator dependencies for
-explicit rollback; it does not authorize deleting those paths.
+The source installer builds the locked release executable and packages it into
+the installed CLI. The default instance configuration points at a generated
+native JSON file whose policy, state, listener map, audit and readiness paths
+remain under the existing instance directories. The wheel retains the Python
+CLI; historical comparator and rollback dependencies live in their selected
+prior checkout or package.
 
 The shared CLI admin client selects the recorded native IPv4 loopback endpoint
 and credentials. It verifies process identity before requests and follows a
@@ -770,12 +775,14 @@ does not repeat that suite or claim #637's installed pilot, #640's final
 post-deletion release candidate, non-Linux resources, or a universal memory
 ceiling.
 
-## Run the initial development slice
+## Run the native development slice
 
-These commands require a Linux or macOS checkout, `uv`, and the Rust toolchain
-specified in [proxy/rust-toolchain.toml](../proxy/rust-toolchain.toml). Run from
-the repository root. The fixtures create isolated policy files, sockets and
+These commands require a Linux or macOS checkout, `uv`, and Rust 1.94.0
+selected as specified in
+[proxy/rust-toolchain.toml](../proxy/rust-toolchain.toml). Run from the
+repository root. The fixtures create isolated policy files, sockets and
 local upstream servers. They do not start an operator's configured instance.
+Set `SAFEYOLO_RUST_PROXY` to the executable built from this checkout.
 
 ```sh
 uv sync --frozen --group dev
@@ -783,35 +790,29 @@ cd proxy
 cargo build --locked
 cargo test --locked
 cd ..
-uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
-SAFEYOLO_RUST_NATIVE_ONLY=1 uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
-uv run --frozen pytest -q tests/test_rust_temporary_policy.py
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+  uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
 ```
 
 The Rust fixture launches `safeyolo-proxy --config PATH`. The JSON configuration
-provides `listeners` with `agent_id` and `socket_path`, `readiness_file` and
-`event_log`. Select exactly one of `policy_file` for native network policy or
-`temporary_policy_socket` for the separately named
-[temporary network-policy adapter](../tools/proxy_migration/temporary_policy.py).
-The native-policy fixture starts no Python adapter. Optional
+provides `listeners` with `agent_id` and `socket_path`, `readiness_file`,
+`event_log`, and `policy_file` for native network policy. Optional
 `parent_proxy`, `upstream_ca_file` and `via_token` select upstream transport.
 `tls_ca_file` selects an existing combined CA PEM for the development HTTPS path.
 The listener configuration supplies identity; request headers cannot select it.
 `SIGHUP` reads the configuration again. `SIGTERM` initiates shutdown.
 
-The adapter socket is private host state and must remain outside agent mounts.
-The adapter receives header names and request metadata, never header values or
-body bytes. It uses the existing Python policy decision point in blocking mode.
-It does not supply credential inspection, service operations or the complete
-NetworkGuard response and approval workflow.
+The optional historical comparator uses the pinned source commit named in
+[the migration contract](../tests/proxy_migration/CONTRACT.md). Create that
+checkout and its Python environment outside this checkout. Set
+`SAFEYOLO_PYTHON_SOURCE` to that checkout and `SAFEYOLO_PYTHON_EXECUTABLE` to
+its Python executable. Then run the following command from this repository
+root. The Python process imports the pinned package; normal native setup has
+no mitmproxy dependency.
 
-The shared Rust migration lane sets `SAFEYOLO_RUST_NATIVE_ONLY=1`, so its
-proxy fixtures select `policy_file` and do not start the temporary Python
-policy process. The separately named `tests/test_rust_temporary_policy.py`
-check and explicit adapter fixture remain because the historical comparator
-and rollback evidence still use them. This removes the adapter from the
-normal native contract path without deleting its retained test or comparator
-consumer.
+```sh
+uv run --frozen pytest -q tests/proxy_migration --proxy-backend python
+```
 
 Native policy uses the existing Rust policy matcher and network guard once per
 request. The source options `network_guard_enabled`, `network_guard_block` and
@@ -822,8 +823,8 @@ The shared audit writer emits canonical `security.network_guard` records for
 deny, warn, approval-required, budget and homoglyph decisions, plus allowed
 CONNECT admission. Ordinary allowed HTTP emits no network security event.
 Development `proxy.network_guard` diagnostics retain the guard intents without
-raw queries or application bytes. Approval persistence and the remaining
-production pipeline still require integration. The bounded local API reads are
+raw queries or application bytes. Approval persistence and the production pipeline are tracked by accepted issue
+results and the final #640 release gates. The bounded local API reads are
 described below.
 
 Owner validation at `22c9a008` on Linux aarch64 passed all 36 native policy wire cases and

@@ -183,7 +183,6 @@ fn failure(name: &str, message: &str) -> CircuitValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[cfg(unix)]
     #[test]
@@ -214,9 +213,14 @@ mod tests {
     #[test]
     fn temporary_adapter_does_not_report_uninstalled_native_owners() {
         let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("policy.json"),
+            r#"{"permissions":[]}"#,
+        )
+        .unwrap();
         let config = serde_json::from_value(json!({
             "listeners":[{"agent_id":"alice","socket_path":directory.path().join("alice.sock")}],
-            "temporary_policy_socket":directory.path().join("unused-bridge.sock"),
+            "policy_file":directory.path().join("policy.json"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
             "event_log":directory.path().join("events.jsonl"),
@@ -225,14 +229,7 @@ mod tests {
             "circuit_state_file":""
         }))
         .unwrap();
-        let runtime = Runtime::new(
-            config,
-            "owned",
-            Arc::new(tokio::sync::Mutex::new(())),
-            None,
-            None,
-        )
-        .unwrap();
+        let runtime = Runtime::new(config, "owned", None, None).unwrap();
         assert_eq!(
             document(&runtime)
                 .as_object()

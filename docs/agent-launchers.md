@@ -202,6 +202,23 @@ hostname; it does not use the Mac's login or the Admin URL's port.
 Standard SSH works over the tailnet, including
 when Tailscale SSH provides authentication on that host.
 
+On an installed SafeYolo host with Tailscale connected, enable the explicit
+Tailnet share and restart the native proxy. Select two free Tailnet HTTPS ports;
+the defaults are 9443 for Admin and 9444 for events.
+
+```sh
+safeyolo command-centre enable --share tailnet
+safeyolo stop
+safeyolo start
+safeyolo command-centre status
+```
+
+The status command reports the Admin and event URLs after both Serve mappings
+are ready. The proxy owns the mappings and removes them when it stops. The
+existing Admin credential authorizes both endpoints. Keep that credential in
+the app's Keychain profile; Tailnet access alone does not authorize Admin
+requests.
+
 For the initial non-Tailscale fallback, set up your own SSH forwards, select
 **SSH tunnel**, and enter their loopback Admin/events URLs. For example, forward
 local ports 19090 and 19091 to the remote host's loopback ports 9090 and 9091.

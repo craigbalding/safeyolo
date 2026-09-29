@@ -1373,13 +1373,10 @@ def _plumb_format_detail(event: dict) -> Panel:
     ts = event.get("ts", "")
     if ts:
         table.add_row("Time", str(ts))
-    # Agent-authored prose is untrusted. PlumbService stores it sanitized but
-    # untruncated; watch applies a display cap and escape() neutralizes rich
-    # markup so it can't spoof the operator prompt.
-    from safeyolo.core.plumb_service import UNTRUSTED_FIELD_DISPLAY_MAXLEN
-
-    topic = audit_schema.sanitize_for_log(hint.get("topic", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
-    note = audit_schema.sanitize_for_log(hint.get("note", ""), max_len=UNTRUSTED_FIELD_DISPLAY_MAXLEN)
+    # Agent-authored prose is untrusted. Cap and escape it before display so
+    # it cannot spoof the operator prompt.
+    topic = audit_schema.sanitize_for_log(hint.get("topic", ""), max_len=500)
+    note = audit_schema.sanitize_for_log(hint.get("note", ""), max_len=500)
     if topic or note:
         table.add_row("", "")
         table.add_row("[yellow]agent-supplied (untrusted)[/yellow]", "")

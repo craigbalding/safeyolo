@@ -60,7 +60,6 @@ fn config(root: &Path) -> Config {
         }],
         agent_map_file: String::new(),
         data_dir: Some(root.join("data")),
-        temporary_policy_socket: None,
         policy_file: Some(root.join("policy.toml")),
         gateway_builtin_services_dir: Some(root.join("builtin")),
         gateway_services_dir: Some(root.join("services")),

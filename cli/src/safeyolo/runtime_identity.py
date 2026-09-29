@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import hashlib
 import importlib.metadata
 import importlib.resources
@@ -309,7 +310,11 @@ def _run_git(directory: Path, *arguments: str) -> str | None:
 
 
 def process_is_alive(process_id: int) -> bool:
-    """Observe process exit, including Linux zombies; propagate access failures."""
+    """Observe process exit, including zombies; propagate access failures."""
+    if sys.platform == "darwin":
+        info = _darwin_process_info(process_id)
+        # SZOMB is 5 in sys/proc.h. A zombie cannot serve or accept signals.
+        return info is not None and info.pbi_status != 5
     try:
         os.kill(process_id, 0)
     except ProcessLookupError:
@@ -327,42 +332,59 @@ def process_is_alive(process_id: int) -> bool:
     return True
 
 
-class _MacProcessInfo(ctypes.Structure):
-    """Fields through the start time in Darwin's ``proc_bsdinfo``."""
+class _DarwinBSDInfo(ctypes.Structure):
+    """The proc_bsdinfo layout in macOS sys/proc_info.h."""
 
     _fields_ = [
-        ("flags", ctypes.c_uint32),
-        ("status", ctypes.c_uint32),
-        ("exit_status", ctypes.c_uint32),
-        ("pid", ctypes.c_uint32),
-        ("other_ids", ctypes.c_uint32 * 8),
-        ("command", ctypes.c_char * 16),
-        ("name", ctypes.c_char * 32),
-        ("other", ctypes.c_uint32 * 6),
-        ("start_seconds", ctypes.c_uint64),
-        ("start_microseconds", ctypes.c_uint64),
+        (name, ctypes.c_uint32) for name in (
+            "pbi_flags", "pbi_status", "pbi_xstatus", "pbi_pid", "pbi_ppid",
+            "pbi_uid", "pbi_gid", "pbi_ruid", "pbi_rgid", "pbi_svuid",
+            "pbi_svgid", "rfu_1",
+        )
+    ] + [
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+    ] + [
+        (name, ctypes.c_uint32) for name in (
+            "pbi_nfiles", "pbi_pgid", "pbi_pjobc", "e_tdev", "e_tpgid",
+        )
+    ] + [
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
     ]
+
+
+def _darwin_process_info(process_id: int) -> _DarwinBSDInfo | None:
+    """Read kernel process data without invoking ps, which may be seatbelt-denied."""
+    info = _DarwinBSDInfo()
+    if ctypes.sizeof(info) != 136:
+        raise RuntimeError("Unexpected macOS process information layout")
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    pidinfo = libproc.proc_pidinfo
+    pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    pidinfo.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    size = pidinfo(process_id, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
+    if size == 0 and ctypes.get_errno() == errno.ESRCH:
+        return None
+    if size != ctypes.sizeof(info):
+        error = ctypes.get_errno() or errno.EIO
+        raise OSError(error, os.strerror(error))
+    if info.pbi_pid != process_id or not info.pbi_start_tvsec or info.pbi_start_tvusec >= 1_000_000:
+        raise RuntimeError("Invalid macOS process information")
+    return info
 
 
 def _macos_process_start_token(process_id: int) -> str | None:
     """Read a PID's kernel start time without requiring process-list access."""
     try:
-        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
-        proc_pidinfo = libproc.proc_pidinfo
-        proc_pidinfo.argtypes = (
-            ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
-        )
-        proc_pidinfo.restype = ctypes.c_int
-        info = _MacProcessInfo()
-        size = ctypes.sizeof(info)
-        # PROC_PIDTBSDINFO is 3 in the macOS proc_info.h system header.
-        if proc_pidinfo(process_id, 3, 0, ctypes.byref(info), size) != size:
-            return None
-    except (AttributeError, OSError):
+        info = _darwin_process_info(process_id)
+    except (AttributeError, OSError, RuntimeError):
         return None
-    if info.pid != process_id or not info.start_seconds or info.start_microseconds >= 1_000_000:
+    if info is None:
         return None
-    return f"darwin:{process_id}:{info.start_seconds}:{info.start_microseconds}"
+    return f"darwin:{process_id}:{info.pbi_start_tvsec}:{info.pbi_start_tvusec}"
 
 
 def process_start_token(process_id: int) -> str | None:

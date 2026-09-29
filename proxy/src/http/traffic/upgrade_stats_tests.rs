@@ -711,14 +711,7 @@ async fn immediate_shutdown_joins_listener_before_its_first_poll() {
 async fn dropping_listener_stops_its_unpolled_task() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = std::sync::Arc::new(
-        Runtime::new(
-            config(directory.path()),
-            "owned-listener-drop",
-            std::sync::Arc::default(),
-            None,
-            None,
-        )
-        .unwrap(),
+        Runtime::new(config(directory.path()), "owned-listener-drop", None, None).unwrap(),
     );
     let (socket, path) = crate::SocketPath::bind(&directory.path().join("alice.sock")).unwrap();
     let listener = crate::RunningListener::start(

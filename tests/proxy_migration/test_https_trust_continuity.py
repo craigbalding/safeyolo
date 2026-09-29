@@ -1,8 +1,10 @@
 """Upstream TLS trust and interception CA continuity through real proxies."""
 
 import http.client
+import os
 import socket
 import ssl
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,8 +12,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy
 from tests.proxy_migration.test_authority_consistency import (
     ALLOWED,
@@ -29,6 +31,11 @@ AUTHORITY = f"{ALLOWED}:443".encode()
 CA_FILES = (
     "mitmproxy-ca.pem", "mitmproxy-ca-cert.pem", "mitmproxy-ca-cert.cer",
     "mitmproxy-ca.p12", "mitmproxy-ca-cert.p12", "mitmproxy-dhparam.pem",
+)
+CA_KEY_USAGE = x509.KeyUsage(
+    digital_signature=True, content_commitment=False, key_encipherment=False,
+    data_encipherment=False, key_agreement=False, key_cert_sign=True,
+    crl_sign=True, encipher_only=None, decipher_only=None,
 )
 
 
@@ -107,6 +114,9 @@ def _ca_chain(directory, label, now):
             .public_key(root_key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - timedelta(days=2)).not_valid_after(now + timedelta(days=30))
             .add_extension(x509.BasicConstraints(ca=True, path_length=1), critical=True)
+            .add_extension(CA_KEY_USAGE, critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
             .sign(root_key, hashes.SHA256()))
     intermediate_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     intermediate_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"{label} intermediate")])
@@ -114,6 +124,9 @@ def _ca_chain(directory, label, now):
                     .public_key(intermediate_key.public_key()).serial_number(x509.random_serial_number())
                     .not_valid_before(now - timedelta(days=2)).not_valid_after(now + timedelta(days=10))
                     .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+                    .add_extension(CA_KEY_USAGE, critical=True)
+                    .add_extension(x509.SubjectKeyIdentifier.from_public_key(intermediate_key.public_key()), critical=False)
+                    .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()), critical=False)
                     .sign(root_key, hashes.SHA256()))
     root_file = directory / f"{label}-root.pem"
     root_file.write_bytes(root.public_bytes(serialization.Encoding.PEM))
@@ -130,6 +143,7 @@ def _chain_leaf(directory, label, host, intermediate_key, intermediate, now, *, 
                    .add_extension(x509.SubjectAlternativeName([x509.DNSName(host)]), critical=False)
                    .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
                    .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+                   .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(intermediate_key.public_key()), critical=False)
                    .sign(intermediate_key, hashes.SHA256()))
     pem = directory / f"{label}.pem"
     pem.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
@@ -169,7 +183,7 @@ def test_upstream_tls_uses_logical_name_sni_and_additional_ca(proxy_backend, tmp
         _server(Origin("future-leaf", tls_context=future_context)) as future,
         _server(Parent(allowed, wrong_name, allowed, wrong_name)) as parent,
     ):
-        CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "proxy/ca")
         client_ca = directory / "proxy/ca/mitmproxy-ca-cert.pem"
         parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
         with launch_proxy(proxy_backend, directory / "proxy", POLICY, native_policy=True,
@@ -210,7 +224,7 @@ def test_upstream_tls_uses_logical_name_sni_and_additional_ca(proxy_backend, tmp
 
         # The same complete chain fails when the additional root is absent.
         parent.connect_override = allowed
-        CertStore.from_store(directory / "without-extra-ca/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "without-extra-ca/ca")
         without_extra_ca = directory / "without-extra-ca/ca/mitmproxy-ca-cert.pem"
         with launch_proxy(proxy_backend, directory / "without-extra-ca", POLICY,
                           native_policy=True, credential_head_decision=True,
@@ -232,13 +246,20 @@ def test_python_ca_is_reused_by_rust_after_restart(proxy_backend, tmp_path):
     """A Python-generated CA remains the client trust anchor across Rust starts."""
     if proxy_backend == "python":
         pytest.skip("The cross-backend transition runs in the Rust leg")
+    comparator = os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
+    if not comparator:
+        pytest.skip("The pinned Python comparator is required for this transition")
     directory = tmp_path / "ca-transition"
     with _peers(directory / "peers") as (parent, peers, trust):
         _, _, allowed, _ = peers
         proxy_dir = directory / "proxy"
         ca_dir = proxy_dir / "ca"
         ca_dir.mkdir(parents=True)
-        CertStore.from_store(ca_dir, "mitmproxy", 2048)
+        subprocess.run(
+            [comparator, "-c", "from mitmproxy.certs import CertStore; from pathlib import Path; import sys; "
+             "CertStore.from_store(Path(sys.argv[1]), 'mitmproxy', 2048)", str(ca_dir)],
+            check=True, timeout=30,
+        )
         original = _ca_files(ca_dir)
         key = serialization.load_pem_private_key(original["mitmproxy-ca.pem"], password=None)
         certificate = x509.load_pem_x509_certificate(original["mitmproxy-ca-cert.pem"])

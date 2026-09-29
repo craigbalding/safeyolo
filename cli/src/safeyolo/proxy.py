@@ -1,507 +1,110 @@
-"""Host-side proxy process management for SafeYolo."""
+"""Host-side lifecycle and configuration helpers for the native proxy."""
 
-import json
+from __future__ import annotations
+
 import logging
 import os
-import re
-import shutil
-import signal
-import subprocess
-import sys
 import time
 from pathlib import Path
 
 from . import rust_proxy
-from .agent_token import ensure_agent_token
-from .config import get_config_dir, get_data_dir, get_logs_dir, load_config
-from .ignore_hosts import (
-    build_ignore_patterns,
-    normalize_ignore_hosts,
-)
-from .runtime_identity import DEV_MODE_ENV, DEV_SOURCE_ROOTS_ENV
-from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS, validate_tailnet_port
-from .timing import child_environment as _profile_child_environment
-from .timing import enter as _profile_enter
+from .config import get_config_dir, get_data_dir, load_config
+from .ignore_hosts import normalize_ignore_hosts
+from .tailnet import TAILSCALE_OPERATION_TIMEOUT_SECONDS
 
 log = logging.getLogger("safeyolo.proxy")
 
-DEFAULT_FLOW_CACHE = 5_000
-DEFAULT_FLOW_CACHE_BYTES = 1024**3
-_VIA_TOKEN_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
-
-
-def __getattr__(name: str):
-    """Load the retained Python addon chain only when explicitly inspected."""
-    if name == "ADDON_CHAIN":
-        from .mitm_addons import ADDON_CHAIN
-
-        globals()[name] = ADDON_CHAIN
-        return ADDON_CHAIN
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def capture_session(*args, **kwargs):
-    """Delegate diagnostics to the retained Python session on demand."""
-    from .traffic_session import capture_session as _capture_session
-
-    return _capture_session(*args, **kwargs)
-
-
-def session_process_alive(*args, **kwargs):
-    """Check the retained Python session only when that path is selected."""
-    from .traffic_session import session_process_alive as _session_process_alive
-
-    return _session_process_alive(*args, **kwargs)
-
-
-def start_session(*args, **kwargs):
-    """Start the retained Python session only when that path is selected."""
-    from .traffic_session import start_session as _start_session
-
-    return _start_session(*args, **kwargs)
-
-
-def stop_session(*args, **kwargs):
-    """Stop the retained Python session only when that path is selected."""
-    from .traffic_session import stop_session as _stop_session
-
-    return _stop_session(*args, **kwargs)
-
-
-def _pid_file() -> Path:
-    return get_data_dir() / "proxy.pid"
-
 
 def web_tailnet_status_file() -> Path:
-    """Return the traffic master's durable WebMITM Tailnet state path."""
     return get_data_dir() / "web-tailnet-status.json"
 
 
-def command_centre_tailnet_status_file() -> Path:
-    """Return the Command Centre Tailnet publication state path."""
-    return get_data_dir() / "command-centre-tailnet-status.json"
-
-
-def resolve_upstream_proxy(proxy_config: dict | None) -> str | None:
-    """Return a validated HTTP(S) parent proxy URL, if configured.
-
-    The environment override is intentionally explicit for disposable nested
-    labs. Persistent configuration remains useful for longer-lived instances.
-    Credentials and URL paths are rejected: SafeYolo currently supports an
-    unauthenticated HTTP-proxy hop, not a general proxy URL transport.
-    """
-    from urllib.parse import urlsplit
-
-    value = os.environ.get("SAFEYOLO_UPSTREAM_PROXY")
-    if value in (None, ""):
-        value = (proxy_config or {}).get("upstream_proxy")
-    if value in (None, ""):
-        return None
-    if not isinstance(value, str):
-        raise ValueError("proxy.upstream_proxy must be an HTTP(S) URL")
-
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
-        raise ValueError("SAFEYOLO_UPSTREAM_PROXY/proxy.upstream_proxy must use http:// or https:// with a host")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("authenticated upstream proxy URLs are not supported")
-    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("upstream proxy URL must not contain a path, query, or fragment")
+def prior_python_proxy_running() -> bool:
+    """Recognize a prior package's live process without taking ownership of it."""
+    marker = get_data_dir() / "proxy.pid"
     try:
-        port = parsed.port or (80 if parsed.scheme == "http" else 443)
-    except ValueError as exc:
-        raise ValueError("upstream proxy URL has an invalid port") from exc
-    host = parsed.hostname
-    rendered_host = f"[{host}]" if ":" in host else host
-    return f"{parsed.scheme}://{rendered_host}:{port}"
-
-
-def resolve_via_token(proxy_config: dict | None) -> str:
-    """Return this SafeYolo instance's stable RFC Via pseudonym."""
-    value = os.environ.get("SAFEYOLO_VIA_TOKEN")
-    if value in (None, ""):
-        value = (proxy_config or {}).get("via_token")
-    if value in (None, ""):
-        from .coord.identity import get_or_create_instance_id
-
-        # The coord instance ID is already an RFC token and globally unique.
-        # Keep it unprefixed so a nested instance also works behind older
-        # SafeYolo releases whose legacy loop guard used substring matching
-        # against the fixed word "safeyolo".
-        value = get_or_create_instance_id()
-    if not isinstance(value, str) or not _VIA_TOKEN_RE.fullmatch(value):
-        raise ValueError("SAFEYOLO_VIA_TOKEN/proxy.via_token must be one RFC token without whitespace")
-    if len(value) > 128:
-        raise ValueError("SAFEYOLO_VIA_TOKEN/proxy.via_token must be at most 128 characters")
-    return value
-
-
-def _read_startup_failure(path: Path, offset: int) -> str | None:
-    """Read this launch attempt's structured failure event, if present."""
-    try:
-        with path.open(encoding="utf-8") as event_file:
-            event_file.seek(offset)
-            candidates = []
-            for line in event_file:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if event.get("event") == "ops.proxy_start_failed":
-                    candidates.append(event)
-    except OSError:
-        return None
-    if not candidates:
-        return None
-    event = candidates[-1]
-    return str(event.get("summary") or event.get("details", {}).get("error") or "Proxy startup failed")
-
-
-def _tail_text(path: Path, *, offset: int = 0, limit: int = 4_000) -> str:
-    """Read a bounded diagnostic tail without turning logging into a failure."""
-    try:
-        with path.open(encoding="utf-8", errors="replace") as source:
-            source.seek(offset)
-            text = source.read()
-    except OSError:
-        return "<unavailable>"
-    return text[-limit:].strip() or "<empty>"
-
-
-def _startup_diagnostics(
-    *,
-    event_log: Path,
-    event_offset: int,
-    logs_dir: Path,
-    pid_file: Path,
-) -> str:
-    """Capture evidence before a failed traffic session is torn down."""
-    try:
-        pane = capture_session() or "<empty>"
-    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
-        pane = f"<unavailable: {type(exc).__name__}: {exc}>"
-    try:
-        alive = session_process_alive()
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        alive = False
-
-    profile_value = os.environ.get("SAFEYOLO_PROFILE_PATH")
-    profile = _tail_text(Path(profile_value)) if profile_value else "<profiling disabled>"
-    return "\n".join(
-        (
-            f"traffic session alive: {alive}",
-            f"readiness marker exists: {pid_file.exists()}",
-            "structured startup events:",
-            _tail_text(event_log, offset=event_offset),
-            "mitmproxy log:",
-            _tail_text(logs_dir / "mitmproxy.log"),
-            "traffic console:",
-            pane[-4_000:],
-            "startup profile:",
-            profile,
-        )
-    )
-
-
-def resolve_flow_cache(cli_value: int | None, environ: dict[str, str] | None = None) -> int:
-    """Resolve CLI > environment > default flow-cache configuration."""
-    environment = os.environ if environ is None else environ
-    raw_value: int | str = (
-        cli_value if cli_value is not None else environment.get("SAFEYOLO_FLOW_CACHE", DEFAULT_FLOW_CACHE)
-    )
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("SAFEYOLO_FLOW_CACHE must be a positive integer") from exc
-    if value <= 0:
-        source = "--flow-cache" if cli_value is not None else "SAFEYOLO_FLOW_CACHE"
-        raise ValueError(f"{source} must be a positive integer")
-    return value
-
-
-def resolve_flow_cache_bytes(
-    cli_value: int | None,
-    environ: dict[str, str] | None = None,
-) -> int:
-    """Resolve CLI > environment > default retained-body byte limit."""
-    environment = os.environ if environ is None else environ
-    raw_value: int | str = (
-        cli_value if cli_value is not None else environment.get("SAFEYOLO_FLOW_CACHE_BYTES", DEFAULT_FLOW_CACHE_BYTES)
-    )
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("SAFEYOLO_FLOW_CACHE_BYTES must be a positive integer") from exc
-    if value <= 0:
-        source = "--flow-cache-bytes" if cli_value is not None else "SAFEYOLO_FLOW_CACHE_BYTES"
-        raise ValueError(f"{source} must be a positive integer")
-    return value
-
-
-def _addons_package_root(addons_dir: Path) -> Path:
-    """Return the import root for an addon directory inside ``safeyolo``."""
-    resolved = addons_dir.resolve()
-    package_dir = resolved.parent
-    if (
-        resolved.name != "mitm_addons"
-        or package_dir.name != "safeyolo"
-        or not (resolved / "__init__.py").is_file()
-        or not (package_dir / "__init__.py").is_file()
-    ):
-        raise ValueError("the addons directory must be a safeyolo/mitm_addons package directory")
-    return package_dir.parent
-
-
-def _is_addons_package_dir(candidate: Path) -> bool:
-    if not candidate.is_dir() or not (candidate / "request_id.py").is_file():
+        pid = int(marker.read_text().strip())
+    except FileNotFoundError:
         return False
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Cannot inspect prior Python proxy marker: {marker}") from exc
+    if pid <= 1:
+        raise RuntimeError(f"Invalid prior Python proxy marker: {marker}")
     try:
-        _addons_package_root(candidate)
-    except ValueError:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        marker.unlink(missing_ok=True)
         return False
+    except PermissionError:
+        return True
     return True
 
 
-def _find_addons_dir() -> Path | None:
-    """Find the mitmproxy addons directory.
-
-    Post-refactor (#200 phase 5), addons live next to this module in
-    the installed package: `safeyolo/mitm_addons/`. The sibling lookup
-    works for both source checkouts and non-editable installs, since the
-    package layout itself is consistent. `SAFEYOLO_ADDONS_DIR` still overrides for testing or
-    custom deployments. The override selects the containing ``safeyolo``
-    package for the fresh traffic process so addons and their package
-    dependencies always come from the same checkout.
-    """
-    env_override = os.environ.get("SAFEYOLO_ADDONS_DIR")
-    if env_override:
-        p = Path(env_override)
-        if _is_addons_package_dir(p):
-            return p
-        return None
-
-    sibling = Path(__file__).resolve().parent / "mitm_addons"
-    if _is_addons_package_dir(sibling):
-        return sibling
-    return None
+def selected_backend(config: dict | None = None) -> str:
+    """Validate legacy configuration while requiring the native release path."""
+    selected = load_config() if config is None else config
+    options = selected.get("proxy", {})
+    if not isinstance(options, dict):
+        raise ValueError("proxy configuration must be a mapping")
+    backend = options.get("backend", "rust")
+    if backend != "rust":
+        raise ValueError(
+            "proxy.backend: python is unavailable in this release; "
+            "use the pinned prior package for explicit rollback"
+        )
+    return "rust"
 
 
-def _child_pythonpath(
-    addons_dir: Path,
-    pdp_dir: Path | None,
-    existing: str = "",
-) -> str:
-    """Build import roots for one coherent traffic-process generation."""
-    python_paths = [str(_addons_package_root(addons_dir))]
-    if pdp_dir:
-        python_paths.append(str(pdp_dir.parent))  # Parent so `from pdp import ...` works
-    if existing:
-        python_paths.append(existing)
-    return os.pathsep.join(python_paths)
+def check_running_backend() -> bool:
+    """Reject starting a second proxy when the prior package still owns ingress."""
+    selected_backend()
+    if is_proxy_running():
+        return True
+    if prior_python_proxy_running():
+        raise RuntimeError(
+            "A prior Python proxy is still running; stop it with the pinned prior package before starting Rust"
+        )
+    return False
 
 
-def _find_pdp_dir() -> Path | None:
-    """Find the pdp directory for PYTHONPATH.
-
-    Repo layout works for editable installs. Non-editable installs need
-    SAFEYOLO_PDP_DIR set because pdp/ is still outside the Python package.
-    """
-    env_override = os.environ.get("SAFEYOLO_PDP_DIR")
-    if env_override:
-        p = Path(env_override)
-        if p.is_dir() and (p / "__init__.py").exists():
-            return p
-        return None
-
-    candidates = [
-        Path(__file__).resolve().parents[3] / "pdp",
-        Path(__file__).resolve().parents[4] / "pdp",
-    ]
-    for p in candidates:
-        if p.is_dir() and (p / "__init__.py").exists():
-            return p
-    return None
+def start_proxy() -> None:
+    """Start only the installed native executable; a failed start has no fallback."""
+    with rust_proxy.lifecycle_lock():
+        config = load_config()
+        selected_backend(config)
+        if check_running_backend():
+            log.info("Native proxy already running")
+            return
+        stale = rust_proxy.read_process()
+        if stale is not None:
+            rust_proxy.clear_process(stale)
+        rust_proxy.start(config)
 
 
-def _ensure_certs(cert_dir: Path) -> Path:
-    """Generate mitmproxy CA cert if not present. Returns path to public cert.
-
-    mitmdump generates its CA lazily on first startup. We boot it just long
-    enough for the ``mitmproxy-ca-cert.pem`` file to land in ``confdir`` —
-    then kill it. Rather than guessing how long that takes (cold cache vs
-    warm cache differ by an order of magnitude on modest hardware), poll
-    for the file and give up only after a generous wall-clock deadline.
-    """
-    cert_dir.mkdir(parents=True, exist_ok=True)
-    ca_cert = cert_dir / "mitmproxy-ca-cert.pem"
-
-    if ca_cert.exists():
-        return ca_cert
-
-    log.info("Generating mitmproxy CA certificate...")
-    # Prefer the mitmdump sibling of the current interpreter (same reason
-    # as _build_command below: avoids Homebrew's sealed-env mitmdump when
-    # PATH ordering would otherwise pick it).
-    python_dir = Path(sys.executable).parent
-    candidate = python_dir / "mitmdump"
-    mitmdump = str(candidate) if candidate.exists() else (shutil.which("mitmdump") or "mitmdump")
-
-    # Start mitmdump detached; poll for the cert file. 60s deadline is
-    # generous for a cold-cache first run (Python + mitmproxy imports +
-    # RSA keypair gen) while still terminating in reasonable time on
-    # pathological hosts.
-    proc = subprocess.Popen(
-        [mitmdump, "--set", f"confdir={cert_dir}", "-p", "0"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            if ca_cert.exists():
-                break
-            if proc.poll() is not None:
-                # mitmdump exited before writing the cert — unusual, but
-                # if the file landed in the meantime we still win.
-                if ca_cert.exists():
-                    break
-                raise RuntimeError(
-                    f"mitmdump exited (rc={proc.returncode}) before writing "
-                    f"{ca_cert}. Check that mitmproxy is installed and "
-                    f"importable in the current environment."
-                )
-            time.sleep(0.1)
-        else:
+def stop_proxy() -> None:
+    with rust_proxy.lifecycle_lock():
+        process = rust_proxy.read_process()
+        if process is not None:
+            rust_proxy.stop(process)
+        elif prior_python_proxy_running():
             raise RuntimeError(
-                f"Timed out waiting 60s for mitmdump to generate {ca_cert}. "
-                f"Re-run after confirming mitmdump starts on this host."
+                "A prior Python proxy is running; stop it with the pinned prior package"
             )
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-
-    if not ca_cert.exists():
-        raise RuntimeError(f"Failed to generate CA certificate in {cert_dir}")
-
-    # Tighten permissions on private key material
-    for f in cert_dir.iterdir():
-        if f.suffix in (".pem", ".p12"):
-            f.chmod(0o600)
-    cert_dir.chmod(0o700)
-
-    return ca_cert
 
 
-def _ensure_tokens(data_dir: Path) -> tuple[str, str]:
-    """Ensure admin and agent tokens exist. Returns (admin_token, agent_token)."""
-    import secrets
-
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    # Admin token: persist across restarts
-    admin_token_file = data_dir / "admin_token"
-    if admin_token_file.exists():
-        admin_token = admin_token_file.read_text().strip()
-    else:
-        admin_token = secrets.token_urlsafe(32)
-        admin_token_file.write_text(admin_token)
-        admin_token_file.chmod(0o600)  # DOC: docs/security-verification.md, SECURITY.md
-
-    # Agent token: persist across restarts. The token is copied into the
-    # guest at staging time, so regenerating it here would break any
-    # running sandbox (401 on agent API) until it restarts. The threat
-    # model does not benefit from rotation — the guest always holds the
-    # current value via /app/agent_token.
-    agent_token = ensure_agent_token(data_dir)
-
-    return admin_token, agent_token
-
-
-def _initial_mode_specs(data_dir: Path) -> list[str]:
-    """Build the startup `mode` list from agent_map.json.
-
-    Each known agent becomes a `unix:<path>` entry. The CLI mutates this
-    list at runtime via admin API `PUT /admin/proxy/mode` as agents are
-    added/removed. Empty list is valid — mitmproxy starts with no
-    listeners until the first agent is added.
-    """
-    from .sockets import path_for
-
-    map_path = data_dir / "agent_map.json"
-    if not map_path.exists():
-        return []
-    try:
-        data = json.loads(map_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return []
-
-    specs: list[str] = []
-    for name, entry in data.items():
-        ip = entry.get("ip")
-        if not ip:
-            continue
-        try:
-            p = path_for(name, ip)
-        except ValueError as exc:
-            log.warning("skipping agent %r: %s", name, exc)
-            continue
-        specs.append(f"unix:{p}")
-    return specs
+def is_proxy_running() -> bool:
+    process = rust_proxy.read_process()
+    return process is not None and rust_proxy.is_alive(process)
 
 
 def sync_proxy_modes(admin_port: int = 9090, timeout: float = 5.0) -> bool:
-    """Reconcile agent-map listeners with the actual running proxy backend.
-
-    Python changes options.mode through its operator API. Rust replaces only
-    conventional CLI socket entries in the launch configuration and requests
-    a full native reload. An exact accepted reload ID confirms the latter.
-
-    Return False when stopped, rejected, or unconfirmed. Both startup paths
-    reconcile the latest map, so a stopped proxy can apply changes next time.
-    """
+    """Reconcile the current agent map with native Unix listeners."""
+    del admin_port
     try:
-        if rust_proxy.read_process() is not None:
-            return rust_proxy.sync_listeners(timeout=timeout)
-        if selected_backend() == "rust" and not is_proxy_running():
-            return False
+        return rust_proxy.sync_listeners(timeout=timeout) if is_proxy_running() else False
     except (OSError, ValueError, RuntimeError) as exc:
-        log.warning("Cannot resolve the running proxy for listener synchronization: %s", exc)
+        log.warning("Cannot synchronize native listeners: %s", exc)
         return False
-
-    import httpx
-
-    data_dir = get_data_dir()
-    specs = _initial_mode_specs(data_dir)
-
-    token_path = data_dir / "admin_token"
-    if not token_path.exists():
-        log.warning("admin_token not found; skipping proxy mode sync")
-        return False
-    token = token_path.read_text().strip()
-
-    url = f"http://127.0.0.1:{admin_port}/admin/proxy/mode"
-    try:
-        resp = httpx.put(
-            url,
-            json={"modes": specs},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=timeout,
-        )
-    except httpx.HTTPError as exc:
-        log.warning("proxy mode sync failed: %s: %s", type(exc).__name__, exc)
-        return False
-
-    if resp.status_code != 200:
-        log.warning("proxy mode sync returned %d: %s", resp.status_code, resp.text[:200])
-        return False
-    log.info("proxy mode sync ok (%d listeners)", len(specs))
-    return True
 
 
 def sync_proxy_ignore_hosts(
@@ -509,7 +112,7 @@ def sync_proxy_ignore_hosts(
     admin_port: int | None = None,
     timeout: float = 5.0,
 ) -> bool:
-    """Push configured exact passthrough hosts to a running mitmproxy."""
+    """Push configured exact passthrough hosts to the native operator API."""
     import httpx
 
     config = load_config()
@@ -517,18 +120,18 @@ def sync_proxy_ignore_hosts(
         hosts = normalize_ignore_hosts(config.get("proxy", {}).get("ignore_hosts", []))
     else:
         hosts = normalize_ignore_hosts(hosts)
+    process = rust_proxy.read_process()
+    if process is not None:
+        admin_port = process.admin_port
     if admin_port is None:
-        admin_port = int(config.get("proxy", {}).get("admin_port", 9090))
-
+        return False
     token_path = get_data_dir() / "admin_token"
     if not token_path.exists():
         log.warning("admin_token not found; skipping proxy ignore-host sync")
         return False
-
-    url = f"http://127.0.0.1:{admin_port}/admin/proxy/ignore-hosts"
     try:
         response = httpx.put(
-            url,
+            f"http://127.0.0.1:{admin_port}/admin/proxy/ignore-hosts",
             json={"hosts": hosts},
             headers={"Authorization": f"Bearer {token_path.read_text().strip()}"},
             timeout=timeout,
@@ -536,15 +139,9 @@ def sync_proxy_ignore_hosts(
     except httpx.HTTPError as exc:
         log.warning("proxy ignore-host sync failed: %s: %s", type(exc).__name__, exc)
         return False
-
     if response.status_code != 200:
-        log.warning(
-            "proxy ignore-host sync returned %d: %s",
-            response.status_code,
-            response.text[:200],
-        )
+        log.warning("proxy ignore-host sync returned %d: %s", response.status_code, response.text[:200])
         return False
-    log.info("proxy ignore-host sync ok (%d operator entries)", len(hosts))
     return True
 
 
@@ -555,16 +152,15 @@ def sync_web_tailnet(
     admin_port: int | None = None,
     timeout: float = TAILSCALE_OPERATION_TIMEOUT_SECONDS + 2.0,
 ) -> tuple[bool, dict]:
-    """Ask the running traffic master to reconcile its Serve child."""
+    """Request WebMITM sharing where the selected native operator API supports it."""
     import httpx
 
-    config = load_config()
-    if admin_port is None:
-        admin_port = int(config.get("proxy", {}).get("admin_port", 9090))
+    process = rust_proxy.read_process()
+    if process is not None:
+        admin_port = process.admin_port
     token_path = get_data_dir() / "admin_token"
-    if not token_path.exists():
-        return False, {"error": "admin token is unavailable"}
-
+    if admin_port is None or not token_path.exists():
+        return False, {"error": "native operator API is unavailable"}
     try:
         response = httpx.put(
             f"http://127.0.0.1:{admin_port}/admin/proxy/web-tailnet",
@@ -574,308 +170,49 @@ def sync_web_tailnet(
         )
     except httpx.HTTPError as exc:
         return False, {"error": f"{type(exc).__name__}: {exc}"}
-
     try:
         payload = response.json()
     except ValueError:
         payload = {"error": response.text[:200] or "invalid admin API response"}
     if not isinstance(payload, dict):
         payload = {"error": "unexpected admin API response"}
-    if response.status_code != 200:
-        log.warning(
-            "WebMITM Tailnet reconcile returned %d: %s",
-            response.status_code,
-            response.text[:200],
-        )
-        return False, payload
-    return True, payload
+    return response.status_code == 200, payload
 
 
-def _build_command(
-    cert_dir: Path,
-    config_dir: Path,
-    data_dir: Path,
-    logs_dir: Path,
-    admin_token: str,
-    proxy_port: int = 8080,
-    admin_port: int = 9090,
-    flow_cache: int = DEFAULT_FLOW_CACHE,
-    flow_cache_bytes: int = DEFAULT_FLOW_CACHE_BYTES,
-    test_config: dict | None = None,
-    proxy_config: dict | None = None,
-    command_centre_config: dict | None = None,
-) -> list[str]:
-    """Build the mitmdump command line."""
-    # The SafeYolo entrypoint composes ConsoleMaster and mitmweb around one
-    # canonical View/Proxyserver. It must run inside the private tmux PTY.
-    # Safe-path and no-user-site modes make the selected PYTHONPATH roots
-    # authoritative. The private tmux session retains the caller's cwd; without
-    # -P, a checkout package there can shadow the roots fingerprinted for dev.
-    cmd = [sys.executable, "-P", "-s", "-m", "safeyolo.traffic_master"]
+def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
+    """Require native process readiness and its authenticated operator health."""
+    import urllib.error
+    import urllib.request
 
-    # UnixMode and the production addon chain are registered directly by
-    # safeyolo.traffic_master. Keeping the scripts option empty prevents
-    # mitmproxy's ScriptLoader from watching and partially reloading the chain.
-
-    # Core options
-    cmd.extend(["--set", f"confdir={cert_dir}"])
-    cmd.extend(["--set", "block_global=false"])
-    cmd.extend(["--set", "stream_large_bodies=10m"])
-    cmd.extend(["--set", f"flow_pruner_max={flow_cache}"])
-    cmd.extend(["--set", f"flow_pruner_max_body_bytes={flow_cache_bytes}"])
-    cmd.extend(["--set", "web_open_browser=false"])
-    cmd.extend(["--set", f"web_host={(proxy_config or {}).get('web_host', '127.0.0.1')}"])  # DOC: docs/security-verification.md
-    cmd.extend(["--set", f"web_port={(proxy_config or {}).get('web_port', 8081)}"])
-    cmd.extend(["--set", f"admin_port={admin_port}"])
-    command_centre_enabled = (command_centre_config or {}).get("enabled", False)
-    if type(command_centre_enabled) is not bool:
-        raise ValueError("command_centre.enabled must be true or false")
-    command_centre_events_port = (command_centre_config or {}).get("events_port", 9091)
-    if type(command_centre_events_port) is not int or not 1 <= command_centre_events_port <= 65535:
-        raise ValueError("command_centre.events_port must be an integer from 1 to 65535")
-    command_centre_share = (command_centre_config or {}).get("share", "local")
-    if command_centre_share not in {"local", "tailnet"}:
-        raise ValueError("command_centre.share must be local or tailnet")
-    command_centre_tailnet_admin_port = (command_centre_config or {}).get("tailnet_admin_port", 9443)
-    command_centre_tailnet_events_port = (command_centre_config or {}).get("tailnet_events_port", 9444)
-    validate_tailnet_port(command_centre_tailnet_admin_port)
-    validate_tailnet_port(command_centre_tailnet_events_port)
-    if command_centre_tailnet_admin_port == command_centre_tailnet_events_port:
-        raise ValueError("Command Centre Tailnet Admin and event ports must differ")
-    cmd.extend(
-        [
-            "--set",
-            f"command_centre_enabled={'true' if command_centre_enabled else 'false'}",
-            "--set",
-            f"command_centre_events_port={command_centre_events_port}",
-        ]
-    )
-    # Pass token via file path, NOT on the command line. The cmdline is
-    # visible to any local user via /proc/PID/cmdline or `ps aux` — putting
-    # the admin token there leaks it to every process on the host.
-    admin_token_file = data_dir / "admin_token"
-    cmd.extend(["--set", f"admin_api_token_file={admin_token_file}"])
-
-    # Complete TLS passthrough list: built-ins, constrained CIDR environment
-    # entries, and exact operator-managed hosts from config.yaml. Validation
-    # failures abort startup instead of silently losing an exemption.
-    configured_hosts = (proxy_config or {}).get("ignore_hosts", [])
-    for pattern in build_ignore_patterns(configured_hosts):
-        cmd.extend(["--ignore-hosts", pattern])
-
-    # -------------------------------------------------------------------------
-    # Blocking mode configuration
-    # Each addon has its own default. SAFEYOLO_BLOCK=true overrides all to block.
-    # Individual env vars provide fine-grained control.
-    # NOTE: Runtime mode changes via admin API are in-memory only.
-    # On restart, SafeYolo returns to these startup defaults.
-    # -------------------------------------------------------------------------
-    force_block = os.environ.get("SAFEYOLO_BLOCK") == "true"
-
-    # network-guard: defaults to BLOCK
-    ng_block = force_block or os.environ.get("NETWORK_GUARD_BLOCK", "true").lower() == "true"
-    cmd.extend(["--set", f"network_guard_block={'true' if ng_block else 'false'}"])
-
-    # credential-guard: defaults to BLOCK
-    cg_block = force_block or os.environ.get("CREDGUARD_BLOCK", "true").lower() == "true"
-    cmd.extend(["--set", f"credguard_block={'true' if cg_block else 'false'}"])
-
-    # pattern-scanner: defaults to WARN-ONLY. HTTP and WebSocket directions
-    # have independent options. PATTERN_BLOCK keeps its historical meaning of
-    # enabling every pattern-block option unless a narrower WebSocket override
-    # is supplied.
-    ps_block = force_block or os.environ.get("PATTERN_BLOCK", "false").lower() == "true"
-    if ps_block:
-        cmd.extend(["--set", "pattern_block_request=true"])
-        cmd.extend(["--set", "pattern_block_response=true"])
-    for env_name, option_name in (
-        ("PATTERN_BLOCK_WEBSOCKET_REQUEST", "pattern_block_websocket_request"),
-        ("PATTERN_BLOCK_WEBSOCKET_RESPONSE", "pattern_block_websocket_response"),
-    ):
-        override = os.environ.get(env_name)
-        if force_block:
-            override = "true"
-        elif override is None and ps_block:
-            override = "true"
-        if override is not None:
-            cmd.extend(["--set", f"{option_name}={'true' if override.lower() == 'true' else 'false'}"])
-
-    # test-context: defaults to BLOCK (428 soft-reject for missing context).
-    # In test mode (blackbox harness), disable blocking so host-side proxy
-    # tests that don't include X-SafeYolo-Test-Context aren't 428'd. The isolation
-    # tests explicitly include the header on probes they want recorded.
-    if test_config:
-        tc_block = False
-    else:
-        tc_block = force_block or os.environ.get("TEST_CONTEXT_BLOCK", "true").lower() == "true"
-    cmd.extend(["--set", f"test_context_block={'true' if tc_block else 'false'}"])
-
-    # Override container-default paths for host execution
-    data_dir = config_dir / "data"
-    cmd.extend(["--set", f"circuit_state_file={data_dir / 'circuit_breaker_state.json'}"])
-    cmd.extend(["--set", f"flow_store_db_path={logs_dir / 'flows.sqlite3'}"])
-
-    # Policy file
-    policy_toml = config_dir / "policy.toml"
-    policy_yaml = config_dir / "policy.yaml"
-    if policy_toml.exists():
-        cmd.extend(["--set", f"policy_file={policy_toml}"])
-    elif policy_yaml.exists():
-        cmd.extend(["--set", f"policy_file={policy_yaml}"])
-    else:
-        raise RuntimeError(
-            f"No policy file found in {config_dir}. Run 'safeyolo init' to create a default configuration."
-        )
-
-    # Rate limit config (optional)
-    ratelimit_config = config_dir / "rate_limits.json"
-    if ratelimit_config.exists():
-        cmd.extend(["--set", f"ratelimit_config={ratelimit_config}"])
-
-    # Service gateway — auto-enable when vault exists
-    vault_key = config_dir / "data" / "vault.key"
-    vault_enc = config_dir / "data" / "vault.yaml.enc"
-    if vault_key.exists() and vault_enc.exists():
-        from .core.service_loader import ServiceRegistry, ServiceRegistryError
-        from .core.service_paths import resolve_service_directories
-
-        service_directories = resolve_service_directories(config_dir / "services")
-        registry = ServiceRegistry(
-            service_directories.user,
-            builtin_dir=service_directories.builtin,
-            require_builtin=True,
-        )
+    process = rust_proxy.read_process()
+    if process is None:
+        return False
+    if process.admin_port is None:
+        return rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
+    admin_port = process.admin_port
+    token_path = Path(process.admin_token_file) if process.admin_token_file else None
+    token = token_path.read_text().strip() if token_path and token_path.exists() else ""
+    for _ in range(timeout):
+        if not rust_proxy.is_alive(process) or rust_proxy.readiness(process) is None:
+            return False
         try:
-            registry.load(strict=True)
-        except ServiceRegistryError as error:
-            raise RuntimeError(f"Service gateway configuration is invalid: {error}") from error
-        cmd.extend(["--set", "gateway_enabled=true"])
-        cmd.extend(["--set", f"gateway_services_dir={service_directories.user}"])
-        cmd.extend(
-            [
-                "--set",
-                f"gateway_builtin_services_dir={service_directories.builtin}",
-            ]
-        )
-        cmd.extend(["--set", f"gateway_vault_path={vault_enc}"])
-        cmd.extend(["--set", f"gateway_vault_key={vault_key}"])
-
-    # Agent map file for service discovery (microVM mode)
-    agent_map = config_dir / "data" / "agent_map.json"
-    cmd.extend(["--set", f"agent_map_file={agent_map}"])
-
-    # Custom upstream CA trust
-    # Sources: test config > environment override > persistent proxy config.
-    # Used for: blackbox tests (test CA), corporate environments (internal CA)
-    #
-    # Creates a combined CA bundle (certifi CAs + custom CA) and passes it
-    # to mitmproxy via ssl_verify_upstream_trusted_ca. This is deterministic
-    # — no mutating the certifi package, survives uv sync/pip install.
-    ca_path, ca_source = resolve_upstream_ca_cert(test_config, proxy_config)
-    if ca_path is not None:
-        combined_bundle = _build_combined_ca_bundle(ca_path, data_dir)
-        cmd.extend(["--set", f"ssl_verify_upstream_trusted_ca={combined_bundle}"])
-        log.info(
-            "Trusting upstream CA from %s: %s (combined bundle at %s)",
-            ca_source,
-            ca_path,
-            combined_bundle,
-        )
-
-    # Blackbox test sinkhole routing
-    # Sources: test config (test.sinkhole_router) > env var (SAFEYOLO_SINKHOLE_ROUTER)
-    # Loads LAST so upstream connections are redirected after security addons run.
-    sinkhole_router = None
-    if test_config and test_config.get("sinkhole_router"):
-        sinkhole_router = test_config["sinkhole_router"]
-    elif os.environ.get("SAFEYOLO_SINKHOLE_ROUTER"):
-        sinkhole_router = os.environ["SAFEYOLO_SINKHOLE_ROUTER"]
-    if sinkhole_router:
-        router_path = Path(sinkhole_router)
-        if not router_path.exists():
-            raise RuntimeError(f"Sinkhole router addon not found: {sinkhole_router}")
-        log.info("Loading sinkhole router addon: %s", sinkhole_router)
-        cmd.extend(["-s", str(router_path)])
-        # Defer upstream connect until AFTER the request hook runs so
-        # the sinkhole router can rewrite flow.request.host to the
-        # local sinkhole BEFORE mitmproxy resolves DNS. Without this,
-        # blackbox test hostnames that don't resolve (e.g. *.test)
-        # fail at CONNECT with [Errno 8] nodename nor servname. Real
-        # upstreams aren't affected because the router no-ops for them.
-        cmd.extend(["--set", "connection_strategy=lazy"])
-
-    return cmd
-
-
-def _merge_system_cas_into_certifi() -> None:
-    """Merge system CA bundle into certifi so mitmproxy trusts all roots.
-
-    Cross-signed chains (e.g. Cloudflare → SSL.com → Comodo "AAA Certificate
-    Services") may chain to roots present in only one bundle.  Merging both
-    prevents upstream TLS failures when either bundle drops a root the other
-    still carries.
-    """
-    try:
-        import certifi
-
-        certifi_bundle = Path(certifi.where())
-    except (ImportError, Exception) as exc:
-        log.warning("Cannot locate certifi bundle, skipping CA merge: %s", exc)
-        return
-
-    # Collect candidate system CA bundle paths (Linux + macOS)
-    system_bundles = [
-        Path("/etc/ssl/certs/ca-certificates.crt"),  # Debian/Ubuntu
-        Path("/etc/pki/tls/certs/ca-bundle.crt"),  # RHEL/Fedora
-        Path("/etc/ssl/cert.pem"),  # macOS / Alpine
-    ]
-    system_bundle = next((p for p in system_bundles if p.exists()), None)
-    if not system_bundle:
-        log.debug("No system CA bundle found, skipping merge")
-        return
-
-    # Read both bundles and check if merge is needed
-    system_pems = system_bundle.read_text()
-    certifi_pems = certifi_bundle.read_text()
-
-    # Simple dedup: only append certs not already present
-    new_certs = []
-    for block in system_pems.split("-----END CERTIFICATE-----"):
-        block = block.strip()
-        if block and block not in certifi_pems:
-            new_certs.append(block + "\n-----END CERTIFICATE-----\n")
-
-    if not new_certs:
-        log.debug("System CAs already present in certifi bundle")
-        return
-
-    with certifi_bundle.open("a") as f:
-        f.write("\n")
-        f.writelines(new_certs)
-    log.info("Merged %d system CA certs into certifi bundle", len(new_certs))
-
-
-def _build_combined_ca_bundle(custom_ca: Path, data_dir: Path) -> Path:
-    """Create a CA bundle combining certifi CAs + a custom CA.
-
-    Returns the path to the combined bundle. The bundle is written to
-    data_dir/combined-ca-bundle.pem and recreated each time to ensure
-    it always reflects the current certifi bundle + custom CA.
-    """
-    import certifi
-
-    certifi_bundle = Path(certifi.where())
-
-    combined = data_dir / "combined-ca-bundle.pem"
-    combined.write_text(certifi_bundle.read_text() + "\n" + custom_ca.read_text())
-    return combined
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{admin_port}/health",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                if response.status == 200:
+                    return rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
+        except (urllib.error.URLError, ConnectionError, OSError):
+            pass
+        time.sleep(1)
+    return False
 
 
 def resolve_upstream_ca_cert(
     test_config: dict | None,
     proxy_config: dict | None,
 ) -> tuple[Path | None, str | None]:
-    """Resolve additional upstream trust with explicit override precedence."""
     candidates = (
         ("test.ca_cert", (test_config or {}).get("ca_cert")),
         ("SAFEYOLO_CA_CERT", os.environ.get("SAFEYOLO_CA_CERT")),
@@ -893,413 +230,6 @@ def resolve_upstream_ca_cert(
     return None, None
 
 
-def selected_backend(config: dict | None = None) -> str:
-    """Resolve the persistent process selection, including automatic starts."""
-    selected = load_config() if config is None else config
-    options = selected.get("proxy", {})
-    if not isinstance(options, dict):
-        raise ValueError("proxy configuration must be a mapping")
-    backend = options.get("backend", "rust")
-    if backend not in ("python", "rust"):
-        raise ValueError("proxy.backend must be python or rust")
-    return backend
-
-
-def check_running_backend() -> bool:
-    """Reject reusing a live process from a different requested backend."""
-    backend = selected_backend()
-    if not is_proxy_running():
-        return False
-    running = "rust" if rust_proxy.read_process() is not None else "python"
-    if running != backend:
-        raise RuntimeError(f"The {running} proxy is still running; run safeyolo stop before starting {backend}")
-    return True
-
-
-def start_proxy(
-    proxy_port: int = 8080,
-    admin_port: int = 9090,
-    flow_cache: int | None = None,
-    flow_cache_bytes: int | None = None,
-    dev: bool = False,
-) -> None:
-    """Start the selected proxy process without automatic backend fallback."""
-    with rust_proxy.lifecycle_lock():
-        config = load_config()
-        backend = selected_backend(config)
-        if backend == "rust" and (dev or flow_cache is not None or flow_cache_bytes is not None):
-            raise ValueError("Rust startup uses proxy.rust_config; --dev and live-view cache options require Python")
-        if check_running_backend():
-            log.info("Proxy already running (%s)", backend)
-            return
-        stale = rust_proxy.read_process()
-        if stale is not None:
-            rust_proxy.clear_process(stale)
-            if check_running_backend():
-                log.info("Proxy already running (%s)", backend)
-                return
-        if backend == "rust":
-            rust_proxy.start(config)
-        else:
-            _start_python_proxy(proxy_port, admin_port, flow_cache, flow_cache_bytes, dev)
-
-
-def _start_python_proxy(
-    proxy_port: int = 8080,
-    admin_port: int = 9090,
-    flow_cache: int | None = None,
-    flow_cache_bytes: int | None = None,
-    dev: bool = False,
-) -> None:
-    """Start mitmproxy as a host background process."""
-    if is_proxy_running():
-        log.info("Proxy already running")
-        return
-
-    _profile_enter("proxy: resolve runtime paths and addons")
-    config_dir = get_config_dir()
-    data_dir = get_data_dir()
-    logs_dir = get_logs_dir()
-    cert_dir = config_dir / "certs"
-
-    addons_dir = _find_addons_dir()
-    if not addons_dir:
-        raise RuntimeError(
-            "Cannot find the SafeYolo addons directory.\n"
-            "\n"
-            "Looked in the repo layout relative to this package and at "
-            "$SAFEYOLO_ADDONS_DIR (unset or invalid).\n"
-            "\n"
-            "Fixes:\n"
-            "  1. From the SafeYolo repository root, run the supported installer:\n"
-            "       ./install.sh reinstall\n"
-            "  2. Or point SafeYolo at an existing checkout:\n"
-            "       export SAFEYOLO_ADDONS_DIR=/path/to/safeyolo/cli/src/safeyolo/mitm_addons\n"
-            "       export SAFEYOLO_PDP_DIR=/path/to/safeyolo/pdp\n"
-        )
-
-    pdp_dir = _find_pdp_dir()
-    if dev and pdp_dir is None:
-        raise RuntimeError(
-            "--dev requires the selected PDP checkout source; set SAFEYOLO_PDP_DIR to its pdp package directory"
-        )
-
-    # Ensure certs, tokens, log dirs
-    _profile_enter("proxy: ensure certificates, tokens, and logs")
-    _ensure_certs(cert_dir)
-    admin_token, _agent_token = _ensure_tokens(data_dir)
-    logs_dir.mkdir(parents=True, exist_ok=True)
-
-    # Merge system CAs into certifi so mitmproxy can verify all upstream chains
-    _profile_enter("proxy: merge host CA trust")
-    _merge_system_cas_into_certifi()
-
-    # Load test config if enabled
-    _profile_enter("proxy: load configuration and build child command")
-    full_config = load_config()
-    test_config = full_config.get("test", {})
-    if not test_config.get("enabled"):
-        test_config = None
-    else:
-        log.info("Test mode enabled via config.yaml")
-
-    proxy_config = full_config.get("proxy", {})
-    if not isinstance(proxy_config, dict):
-        raise ValueError("proxy configuration must be a mapping")
-    upstream_proxy = resolve_upstream_proxy(proxy_config)
-    via_token = resolve_via_token(proxy_config)
-    command_centre_config = full_config.get("command_centre", {})
-    if not isinstance(command_centre_config, dict):
-        raise ValueError("command_centre configuration must be a mapping")
-
-    resolved_flow_cache = resolve_flow_cache(flow_cache)
-    resolved_flow_cache_bytes = resolve_flow_cache_bytes(flow_cache_bytes)
-
-    # Build command
-    cmd = _build_command(
-        cert_dir=cert_dir,
-        config_dir=config_dir,
-        data_dir=data_dir,
-        logs_dir=logs_dir,
-        admin_token=admin_token,
-        proxy_port=proxy_port,
-        admin_port=admin_port,
-        flow_cache=resolved_flow_cache,
-        flow_cache_bytes=resolved_flow_cache_bytes,
-        test_config=test_config,
-        proxy_config=proxy_config,
-        command_centre_config=command_centre_config,
-    )
-
-    # Select the entire package containing the chosen addons, not the flat
-    # addon directory. The fresh child then imports traffic_master, addons,
-    # and safeyolo.* dependencies from one checkout. Source edits take effect
-    # together on the next restart and never as a partial live generation.
-    _profile_enter("proxy: construct child environment")
-    env = os.environ.copy()
-    env.update(_profile_child_environment("traffic-master"))
-    env["PYTHONPATH"] = _child_pythonpath(
-        addons_dir,
-        pdp_dir,
-        env.get("PYTHONPATH", ""),
-    )
-    env[DEV_MODE_ENV] = "1" if dev else "0"
-    env["SAFEYOLO_VIA_TOKEN"] = via_token
-    if upstream_proxy is None:
-        env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
-    else:
-        env["SAFEYOLO_UPSTREAM_PROXY"] = upstream_proxy
-        log.info("Forwarding proxy egress through %s", upstream_proxy)
-    if dev:
-        env[DEV_SOURCE_ROOTS_ENV] = json.dumps(
-            {
-                "pdp": str(pdp_dir.resolve()),
-                "safeyolo": str(addons_dir.resolve().parent),
-            },
-            sort_keys=True,
-        )
-    else:
-        env.pop(DEV_SOURCE_ROOTS_ENV, None)
-
-    # Addons hardcode /safeyolo and /app/logs as defaults for the guest
-    # layout. When running the mitmproxy master on the host these env vars
-    # redirect writes to the operator's config + logs directories.
-    env["CONFIG_DIR"] = str(config_dir)
-    env["LOG_DIR"] = str(logs_dir)
-    env["SAFEYOLO_LOG_PATH"] = str(logs_dir / "safeyolo.jsonl")
-    env["MITMPROXY_LOG_PATH"] = str(logs_dir / "mitmproxy.log")
-    env["SAFEYOLO_DATA_DIR"] = str(config_dir / "data")
-    env["SAFEYOLO_SERVICES_DIR"] = str(config_dir / "services")
-    # Where addons/pid_writer.py will drop the pid when mitmproxy reaches
-    # `running` (= listener bound, all addons loaded). We poll for this
-    # file below rather than sleeping -- the absence of the file during
-    # the poll window tells us mitmdump crashed.
-    env["SAFEYOLO_PROXY_PID_FILE"] = str(_pid_file())
-    env["SAFEYOLO_DEFER_PROXY_READY"] = "1"
-    # The custom traffic-master entry point applies these modes after parsing
-    # command/config options but before Master.run() binds listeners. This
-    # avoids a temporary TCP listener and the old fixed bootstrap delay.
-    env["SAFEYOLO_INITIAL_MODES"] = json.dumps(_initial_mode_specs(data_dir))
-    env["SAFEYOLO_WEB_PASSWORD_FILE"] = str(data_dir / "admin_token")
-    web_tailnet = proxy_config.get("web_tailnet", {})
-    if not isinstance(web_tailnet, dict):
-        raise ValueError("proxy.web_tailnet must be a mapping")
-    web_tailnet_enabled = web_tailnet.get("enabled", False)
-    if type(web_tailnet_enabled) is not bool:
-        raise ValueError("proxy.web_tailnet.enabled must be true or false")
-    web_tailnet_port = web_tailnet.get("port", 443)
-    validate_tailnet_port(web_tailnet_port)
-    if web_tailnet_enabled and proxy_config.get("web_host", "127.0.0.1") != "127.0.0.1":
-        raise ValueError("WebMITM Tailnet sharing requires proxy.web_host to remain 127.0.0.1")
-    env["SAFEYOLO_WEB_TAILNET_ENABLED"] = "1" if web_tailnet_enabled else "0"
-    env["SAFEYOLO_WEB_TAILNET_PORT"] = str(web_tailnet_port)
-    env["SAFEYOLO_WEB_TAILNET_STATUS_FILE"] = str(web_tailnet_status_file())
-    command_centre_share = command_centre_config.get("share", "local")
-    env["SAFEYOLO_COMMAND_CENTRE_SHARE"] = str(command_centre_share)
-    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre_config.get("tailnet_admin_port", 9443))
-    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre_config.get("tailnet_events_port", 9444))
-    env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] = str(command_centre_tailnet_status_file())
-
-    # Pass test sinkhole config to child process (read by sinkhole_router addon)
-    if test_config:
-        env["SAFEYOLO_SINKHOLE_HOST"] = str(test_config.get("sinkhole_host", "127.0.0.1"))
-        env["SAFEYOLO_SINKHOLE_HTTP_PORT"] = str(test_config.get("sinkhole_http_port", 18080))
-        env["SAFEYOLO_SINKHOLE_HTTPS_PORT"] = str(test_config.get("sinkhole_https_port", 18443))
-
-    _profile_enter("proxy: remove stale readiness and socket state")
-    # Clear any stale pid file from a previous crashed run so the poll
-    # below doesn't mistake it for "ready". addons/pid_writer.py will
-    # recreate it on `running`.
-    pid_file = _pid_file()
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.unlink(missing_ok=True)
-
-    # A crash can leave filesystem socket inodes behind. No proxy is alive at
-    # this point, so none can be a functioning listener.
-    from .sockets import remove_stale_sockets
-
-    remove_stale_sockets()
-
-    # Start inside SafeYolo's private terminal server. ConsoleMaster receives
-    # a real PTY even when no operator is attached; mitmweb and proxy traffic
-    # remain alive across console attach/detach.
-    event_log = logs_dir / "safeyolo.jsonl"
-    try:
-        event_offset = event_log.stat().st_size
-    except OSError:
-        event_offset = 0
-    try:
-        _profile_enter("proxy: create private traffic session")
-        start_session(cmd, env=env)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"failed to start private traffic session: {exc}") from exc
-
-    # Wait for addons/pid_writer.py to signal ready, OR for mitmdump to
-    # die (whichever first). No fixed sleep: the pid file usually appears
-    # in 150-300ms; poll interval 50ms = sub-tick on success. On failure
-    # proc.poll() surfaces the exit code immediately.
-    try:
-        _profile_enter("proxy: wait for traffic-master readiness")
-        startup_timeout = TAILSCALE_OPERATION_TIMEOUT_SECONDS if web_tailnet_enabled else 10.0
-        deadline = time.monotonic() + startup_timeout
-        while time.monotonic() < deadline:
-            if pid_file.exists():
-                break
-            if not session_process_alive():
-                failure = _read_startup_failure(event_log, event_offset) or (
-                    "Traffic master exited before recording a structured startup failure."
-                )
-                diagnostics = _startup_diagnostics(
-                    event_log=event_log,
-                    event_offset=event_offset,
-                    logs_dir=logs_dir,
-                    pid_file=pid_file,
-                )
-                raise RuntimeError(f"shared traffic master exited during startup.\n{failure}\n{diagnostics}")
-            time.sleep(0.05)
-        else:
-            failure = _read_startup_failure(event_log, event_offset) or (
-                "Traffic master remained alive but did not finish startup before the readiness deadline."
-            )
-            diagnostics = _startup_diagnostics(
-                event_log=event_log,
-                event_offset=event_offset,
-                logs_dir=logs_dir,
-                pid_file=pid_file,
-            )
-            raise RuntimeError(f"Proxy did not signal ready within {startup_timeout:g}s.\n{failure}\n{diagnostics}")
-    except Exception:
-        pid_file.unlink(missing_ok=True)
-        stop_session()
-        raise
-
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (OSError, ValueError):
-        pid_file.unlink(missing_ok=True)
-        stop_session()
-        raise RuntimeError("Proxy published an invalid readiness marker") from None
-    log.info("Proxy started (PID %d) on port %d", pid, proxy_port)
-
-
-def stop_proxy() -> None:
-    """Stop the actual running backend, even after the configured selection changes."""
-    with rust_proxy.lifecycle_lock():
-        process = rust_proxy.read_process()
-        if process is not None:
-            rust_proxy.stop(process)
-        else:
-            _stop_python_proxy()
-
-
-def _stop_python_proxy() -> None:
-    """Stop the host mitmproxy process.
-
-    Per-agent UDS listeners are owned by mitmproxy directly (one
-    `UnixInstance` per agent). Stopping the process tears them down
-    along with their socket files. Guest-side socat retries connects
-    while mitmproxy is offline (see `guest-proxy-forwarder.sh`), so a
-    brief restart window is absorbed without the agent seeing an
-    HTTP-layer failure — provided mitmproxy recovers within the retry
-    window.
-    """
-    _profile_enter("proxy: resolve traffic-master state")
-    pid_file = _pid_file()
-    if not pid_file.exists():
-        stop_session()
-        return
-
-    pid = int(pid_file.read_text().strip())
-
-    _profile_enter("proxy: send graceful termination")
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pid_file.unlink(missing_ok=True)
-        stop_session()
-        return
-
-    # Wait up to 5 seconds for clean exit
-    _profile_enter("proxy: wait for graceful traffic-master exit")
-    for _ in range(50):
-        try:
-            os.kill(pid, 0)  # Check if alive
-            time.sleep(0.1)
-        except ProcessLookupError:
-            break
-    else:
-        # Still alive after 5s — force kill
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            # Process died during the SIGTERM wait loop — fine.
-            pass
-
-    _profile_enter("proxy: clean private traffic session")
-    pid_file.unlink(missing_ok=True)
-    stop_session()
-    log.info("Proxy stopped")
-
-
-def is_proxy_running() -> bool:
-    """Check lifetime state; native readiness can disappear before process exit."""
-    process = rust_proxy.read_process()
-    if process is not None:
-        return rust_proxy.is_alive(process)
-    pid_file = _pid_file()
-    if not pid_file.exists():
-        return False
-
-    pid = int(pid_file.read_text().strip())
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        pid_file.unlink(missing_ok=True)
-        return False
-
-
-def wait_for_healthy(timeout: int = 30, admin_port: int = 9090) -> bool:
-    """Check the running backend's readiness and optional operator health endpoint."""
-    import urllib.error
-    import urllib.request
-
-    process = rust_proxy.read_process()
-    if process is not None and process.admin_port is None:
-        return rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
-    admin_token_file = get_data_dir() / "admin_token"
-    if process is not None:
-        admin_port = process.admin_port
-        admin_token_file = Path(process.admin_token_file) if process.admin_token_file else None
-    token = admin_token_file.read_text().strip() if admin_token_file and admin_token_file.exists() else ""
-
-    for _ in range(timeout):
-        # start_proxy has already published its final readiness marker. If
-        # that process disappears, no amount of HTTP retrying can recover it.
-        if process is not None:
-            if not rust_proxy.is_alive(process) or rust_proxy.readiness(process) is None:
-                return False
-        elif not is_proxy_running():
-            return False
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{admin_port}/health",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                if resp.status == 200:
-                    return process is None or (
-                        rust_proxy.is_alive(process) and rust_proxy.readiness(process) is not None
-                    )
-        except (urllib.error.URLError, ConnectionError, OSError):
-            # Proxy not up yet this tick — sleep and retry until timeout.
-            pass
-        time.sleep(1)
-
-    return False
-
-
 def get_ca_cert_path() -> Path | None:
-    """Return path to the public CA cert, or None if not generated yet."""
     cert = get_config_dir() / "certs" / "mitmproxy-ca-cert.pem"
     return cert if cert.exists() else None

@@ -89,7 +89,6 @@ advice = "Derive installer/runtime compatibility from pyproject.toml and exercis
 paths = [
   "install.sh",
   "pyproject.toml",
-  "scripts/install-mitmproxy-pipx.sh",
 ]
 source = "README.md#install-from-source-advanced; pyproject.toml"
 

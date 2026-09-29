@@ -795,9 +795,10 @@ configuration (whatever isn't explicitly blocked is reachable)
 would let an agent pivot to local-only services assumed safe
 because they're bound to loopback or LAN.
 
-- **`test_admin_api_unreachable`** — SafeYolo admin API ports (9090, 9190) are unreachable.
-  - *Probe:* TCP connect to host:9090 and host:9190 from inside the
-sandbox; assert both fail.
+- **`test_admin_api_unreachable`** — The host admin API listeners are unreachable from the sandbox.
+  - *Probe:* TCP connect to the admin ports named by the harness. The
+default Linux lane checks both production 9090 and test 9190;
+the physical VZ lane checks its assigned live test port.
   - *Consequence if unasserted:* The admin API can change policy modes (block → warn),
 add allowlist entries, or approve credentials. Agent access
 to it would defeat every other control SafeYolo enforces —
@@ -836,9 +837,9 @@ loopback. If one agent could reach another's attribution
 IP, cross-agent lateral movement would be possible — an
 agent compromised by the user's content could pivot to a
 neighbouring agent's workspace.
-- **`test_sinkhole_direct_unreachable`** — Sinkhole ports 18080/18443/19999 unreachable direct from sandbox.
-  - *Probe:* TCP connect to host:18080, :18443, :19999 (sinkhole
-HTTP, HTTPS, control API); assert all fail.
+- **`test_sinkhole_direct_unreachable`** — The live sinkhole HTTP, HTTPS, and control paths are unreachable.
+  - *Probe:* TCP connect to each harness origin and control path. On VZ,
+HTTP and control share one listener; both probes use that port.
   - *Consequence if unasserted:* Sinkhole ports bind 0.0.0.0 during test runs, so they
 ARE listening — unlike the 44444 test. A direct sandbox →
 sinkhole connect succeeding here would mean the isolation

@@ -29,6 +29,12 @@ _SMALL_BODY = 2 * 1024 * 1024
 _FORBIDDEN = "key-forbidden"
 
 
+@pytest.fixture(autouse=True)
+def _python_comparator_leg(request):
+    if "python" not in (request.config.getoption("--proxy-backend") or ["rust"]):
+        pytest.skip("Historical Python production check runs in the comparator leg")
+
+
 class _Origin(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -129,6 +135,8 @@ def _port():
 
 @contextmanager
 def _production_proxy(tmp_path: Path):
+    source = Path(os.environ["SAFEYOLO_PYTHON_SOURCE"]).resolve()
+    executable = os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE", sys.executable)
     config = tmp_path / "config"
     data = config / "data"
     logs = tmp_path / "logs"
@@ -139,7 +147,7 @@ def _production_proxy(tmp_path: Path):
     listener = Path(socket_root.name) / "10.0.0.2_alice"
     for directory in (config, data, logs, coord, listener, config / "services"):
         directory.mkdir(parents=True)
-    shutil.copyfile(REPO / "config/addons.yaml", config / "addons.yaml")
+    shutil.copyfile(source / "config/addons.yaml", config / "addons.yaml")
     (config / "policy.toml").write_text(
         'budget = 60000\n[hosts]\n"*" = { egress = "allow", unknown_credentials = "deny" }\n'
         '[[credential_rules]]\nname = "synthetic"\npatterns = ["key-[a-z]+"]\n'
@@ -161,7 +169,7 @@ def _production_proxy(tmp_path: Path):
         }:
             env.pop(name)
     env.update({
-        "PYTHONPATH": os.pathsep.join((str(REPO / "cli/src"), str(REPO))),
+        "PYTHONPATH": os.pathsep.join((str(source / "cli/src"), str(REPO), str(source))),
         "SAFEYOLO_CONFIG_DIR": str(config),
         "SAFEYOLO_DATA_DIR": str(data),
         "SAFEYOLO_LOGS_DIR": str(logs),
@@ -175,14 +183,14 @@ def _production_proxy(tmp_path: Path):
         "SAFEYOLO_VIA_TOKEN": "fixture-credential-stream",
         "SAFEYOLO_DEV_MODE": "1",
         "SAFEYOLO_DEV_SOURCE_ROOTS": json.dumps({
-            "pdp": str(REPO / "pdp"), "safeyolo": str(REPO / "cli/src/safeyolo"),
+            "pdp": str(source / "pdp"), "safeyolo": str(source / "cli/src/safeyolo"),
         }),
         "TERM": "xterm-256color",
     })
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
     process = subprocess.Popen(
-        [sys.executable, "-m", "tests.proxy_migration.full_production", "--launch-config", str(tmp_path / "settings.json")],
+        [executable, "-m", "tests.proxy_migration.full_production", "--launch-config", str(tmp_path / "settings.json")],
         env=env, cwd=REPO, stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
     )
     os.close(slave)

@@ -35,16 +35,23 @@ fn state(owner: &TestContext) -> Value {
 }
 
 #[test]
-fn live_source_producer_oracle_is_unchanged() {
+#[ignore = "historical Python producer; set SAFEYOLO_PYTHON_SOURCE and SAFEYOLO_PYTHON_EXECUTABLE"]
+fn historical_source_producer_matches_frozen_rows() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let output =
-        Command::new(std::env::var_os("SAFEYOLO_PYTHON").unwrap_or_else(|| "python3".into()))
-            .arg(root.join("tests/agent_api_audit_oracle.py"))
-            .arg("--check")
-            .arg(root.join("tests/agent_api_audit_source.json"))
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .output()
-            .unwrap();
+    let source = PathBuf::from(
+        std::env::var_os("SAFEYOLO_PYTHON_SOURCE")
+            .expect("set SAFEYOLO_PYTHON_SOURCE to the pinned pre-cutover checkout"),
+    );
+    let python = std::env::var_os("SAFEYOLO_PYTHON_EXECUTABLE")
+        .expect("set SAFEYOLO_PYTHON_EXECUTABLE to the comparator environment");
+    let output = Command::new(python)
+        .arg(root.join("tests/agent_api_audit_oracle.py"))
+        .arg("--check")
+        .arg(root.join("tests/agent_api_audit_source.json"))
+        .env("SAFEYOLO_SOURCE_ROOT", source)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "source producer oracle failed: {}",

@@ -73,6 +73,8 @@ class Parent(ThreadingHTTPServer):
     def __init__(
         self, upstream_parent: str | None, ca_file: Path | None,
         p2_ssh_port_file: Path | None = None,
+        *, host: str = "127.0.0.1", port: int = 0,
+        request_handler: type[BaseHTTPRequestHandler] | None = None,
     ):
         self.upstream_parent = urlsplit(upstream_parent) if upstream_parent else None
         self.ca_file = ca_file
@@ -96,7 +98,7 @@ class Parent(ThreadingHTTPServer):
             raise ValueError("configured test-instance parent must be an unauthenticated HTTP(S) URL")
         if self.upstream_parent is not None and self.upstream_parent.port == 0:
             raise ValueError("configured test-instance parent has an invalid port")
-        super().__init__(("127.0.0.1", 0), Request)
+        super().__init__((host, port), request_handler or Request)
 
 
 class Request(BaseHTTPRequestHandler):

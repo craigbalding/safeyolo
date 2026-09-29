@@ -416,14 +416,7 @@ mod tests {
                 "circuit_breaker_enabled":true,
             }))
             .unwrap();
-            let runtime = crate::Runtime::new(
-                config,
-                "completion-fixture",
-                Arc::new(tokio::sync::Mutex::new(())),
-                None,
-                None,
-            )
-            .unwrap();
+            let runtime = crate::Runtime::new(config, "completion-fixture", None, None).unwrap();
             Self {
                 directory,
                 state: Arc::new(RwLock::new(Arc::new(runtime))),
@@ -484,14 +477,7 @@ mod tests {
             )
             .unwrap();
             *state = Arc::new(
-                crate::Runtime::new(
-                    config,
-                    "completion-fixture",
-                    old.temporary_policy_lock.clone(),
-                    Some(&old),
-                    None,
-                )
-                .unwrap(),
+                crate::Runtime::new(config, "completion-fixture", Some(&old), None).unwrap(),
             );
         }
     }

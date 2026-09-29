@@ -84,6 +84,14 @@ FAKE_SURFACE = {
 
 
 class TestValidateLine:
+    def test_builtin_help_is_valid_for_groups_and_commands(self):
+        for invocation in (
+            "safeyolo --help",
+            "safeyolo proxy --help",
+            "safeyolo proxy web share --help",
+        ):
+            assert mod._validate_line(invocation, FAKE_SURFACE) is None
+
     def test_valid_flag_passes(self):
         assert mod._validate_line("safeyolo start --dev", FAKE_SURFACE) is None
 

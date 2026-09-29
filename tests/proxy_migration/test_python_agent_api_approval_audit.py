@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from safeyolo.api import AdminAPI
 from safeyolo.core.audit_stream import scan_pending_approvals
 from tests.proxy_migration.harness import launch_proxy, request
@@ -17,6 +19,12 @@ APPROVAL_EVENTS = {
     "agent.desktop_present_requested",
     "plumb.requested",
 }
+
+
+@pytest.fixture(autouse=True)
+def _python_comparator_leg(request):
+    if "python" not in (request.config.getoption("--proxy-backend") or ["rust"]):
+        pytest.skip("Historical Python Agent API check runs in the comparator leg")
 
 
 def _send(proxy, agent, path, body=None):

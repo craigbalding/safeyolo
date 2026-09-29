@@ -1,15 +1,20 @@
 """Regression tests for blackbox harness isolation and backend selection."""
 
+import http.client
 import json
 import os
 import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
+from tests.proxy_migration import harness as migration_harness
 from tests.proxy_migration.harness import REPO, python_proxy_command, python_proxy_environment
 
 
@@ -82,7 +87,7 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert "killall" not in runner
     assert 'SINKHOLE_PID_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.pid"' in runner
     assert (
-        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SCRIPT_DIR/sinkhole/server.py" "$SINKHOLE_ARGV_FILE"'
+        'stop_owned_pid_file "$SINKHOLE_PID_FILE" "$SINKHOLE_SCRIPT" "$SINKHOLE_ARGV_FILE"'
         in runner
     )
     assert 'SINKHOLE_ARGV_FILE="$SAFEYOLO_CONFIG_DIR/sinkhole.argv"' in runner
@@ -90,6 +95,52 @@ def test_runner_cleanup_only_reclaims_owned_sinkhole_processes():
     assert 'kill "$HOST_LISTENER_PID"' in runner
     assert "printf -v quoted_arg '%q' \"$forwarded_arg\"" in runner
     assert 'pytest${PYTEST_FORWARD_SHELL}' in runner
+
+
+def test_vz_fixture_shares_http_origin_parent_and_control_without_losing_capture(tmp_path):
+    """The fixed HTTP listener serves each path and rejects an unknown direct host."""
+    from server import clear_requests, get_requests
+
+    with Parent(None, None, host="127.0.0.1", request_handler=VZRequest) as server:
+        server.https_port = 1
+        server.p2_fixture = P2Fixture(tmp_path)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            clear_requests()
+
+            def get(target, host, **headers):
+                connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
+                try:
+                    connection.request("GET", target, headers={"Host": host, **headers})
+                    response = connection.getresponse()
+                    return response.status, response.read()
+                finally:
+                    connection.close()
+
+            assert get("/health", "127.0.0.1")[0] == 200
+            assert get("/p2/health", "127.0.0.1")[0] == 200
+            assert get("/p4/echo/p4-" + "a" * 32, "failing.test") == (
+                200, b"echo:p4-" + b"a" * 32
+            )
+            assert get("/p4/echo/invalid", "failing.test")[0] == 400
+            assert get("/direct", "httpbin.org")[0] == 200
+            assert get("http://httpbin.org/absolute?x=1", "httpbin.org",
+                       **{"Proxy-Authorization": "Basic fixture"})[0] == 200
+            assert get("/unknown", "unknown.test")[0] == 400
+            assert get(f"http://127.0.0.1:{server.server_port}/health", "127.0.0.1")[0] == 502
+            assert get("http://httpbin.org:bad/path", "httpbin.org")[0] == 400
+            assert get("/requests", "127.0.0.1")[0] == 200
+            captured = get_requests(host="httpbin.org")
+            assert [(item.path, item.raw_target) for item in captured] == [
+                ("/direct", "/direct"),
+                ("/absolute", "/absolute?x=1"),
+            ]
+            assert "Proxy-Authorization" not in captured[1].headers
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            clear_requests()
 
 
 def _runner_cleanup_helpers():
@@ -236,8 +287,9 @@ def test_runner_cleanup_process_identity_behaves_as_owned_only(tmp_path, mode):
         assert "Escalating owned process" not in output
 
 
-def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path):
-    """Forwarded VM arguments survive shell embedding byte-for-byte."""
+@pytest.mark.parametrize("forwarded", [False, True])
+def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_path, forwarded):
+    """Empty and supplied VM arguments work with the host's /bin/bash."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
     start = runner.index('PYTEST_FORWARD_SHELL=""')
     end = runner.index("\n\n# The focused", start)
@@ -265,9 +317,9 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
         "*",
         "quote\"single'",
         "line1\nline2",
-    ]
+    ] if forwarded else []
     result = subprocess.run(
-        [str(probe), str(output), *arguments],
+        ["/bin/bash", str(probe), str(output), *arguments],
         text=True,
         capture_output=True,
         check=False,
@@ -770,10 +822,38 @@ def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path
     assert result.returncode == 2
 
 
-def test_selected_rust_runner_requires_native_policy_provenance():
-    """Release Rust selection opts out of the temporary Python policy adapter."""
+@pytest.mark.parametrize("native_policy", [False, True])
+def test_selected_rust_runner_requires_native_policy_provenance(tmp_path, monkeypatch, native_policy):
+    """Every Rust fixture supplies its policy file and records native ownership."""
     runner = (Path(__file__).parent / "blackbox" / "run-tests.sh").read_text()
-    harness = (Path(__file__).parent / "proxy_migration" / "harness.py").read_text()
-    assert 'export SAFEYOLO_RUST_NATIVE_ONLY=1' in runner
-    assert 'os.environ.get("SAFEYOLO_RUST_NATIVE_ONLY") == "1"' in harness
-    assert '"policy_mode": "native" if use_native_policy else "temporary_adapter"' in harness
+    selector = (Path(__file__).parent / "proxy_migration" / "run.py").read_text()
+    assert "SAFEYOLO_RUST_NATIVE_ONLY" not in runner + selector
+
+    binary = tmp_path / "safeyolo-proxy"
+    binary.write_text("fixture binary")
+    monkeypatch.setenv("SAFEYOLO_RUST_PROXY", str(binary))
+
+    @contextmanager
+    def fake_child_process(command, directory, env):
+        assert command[0] == str(binary)
+        yield object()
+
+    monkeypatch.setattr(migration_harness, "child_process", fake_child_process)
+    monkeypatch.setattr(migration_harness, "wait_ready", lambda *args, **kwargs: None)
+    directory = tmp_path / "fixture"
+    with migration_harness.launch_proxy(
+        "rust", directory, '[hosts]\n"*" = { egress = "deny" }\n',
+        native_policy=native_policy,
+    ):
+        config = json.loads((directory / "proxy.json").read_text())
+        provenance = json.loads((directory / "native-policy-provenance.json").read_text())
+
+    assert config["policy_file"] == str(directory / "policy.toml")
+    assert "temporary_policy_socket" not in config
+    assert provenance == {
+        "backend": "rust",
+        "policy_mode": "native",
+        "policy_file": config["policy_file"],
+        "temporary_policy_socket": None,
+        "temporary_policy_adapter": False,
+    }

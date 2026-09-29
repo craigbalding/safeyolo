@@ -42,8 +42,8 @@ DEFAULT_CONFIG = {
         "upstream_proxy": "",
         # Empty means derive a stable token from this instance's coord ID.
         "via_token": "",
-        # Native Rust is the release backend. Set `backend: python` explicitly
-        # for the retained comparator and operator rollback path.
+        # The current package selects native Rust. Historical comparison and
+        # explicit rollback select a pinned prior package instead.
         "backend": "rust",
         "rust_config": DEFAULT_NATIVE_CONFIG,
     },
@@ -150,6 +150,11 @@ def get_policies_dir() -> Path:
 def get_data_dir() -> Path:
     """Get path to data directory."""
     return get_config_dir() / "data"
+
+
+def command_centre_tailnet_status_file() -> Path:
+    """Get the status file for this host's Command Centre Tailnet share."""
+    return get_data_dir() / "command-centre-tailnet-status.json"
 
 
 def get_agents_dir() -> Path:
@@ -304,15 +309,14 @@ def get_agent_command_supervisor_state_path(name: str) -> Path:
 def get_bridge_sockets_dir() -> Path:
     """Per-agent UDS directories (`<ip>_<agent>/proxy.sock`) live here.
 
-    Owned by mitmproxy's `UnixInstance` (one per agent). Kept as
-    `get_bridge_sockets_dir` rather than renamed to preserve the
-    existing layout for agents carried across the refactor.
+    The native Rust proxy owns the bound sockets. The helper name keeps
+    the existing directory layout for agents carried across the cutover.
     """
     return get_data_dir() / "sockets"
 
 
 def get_proxy_pid_path() -> Path:
-    """Get path to the mitmproxy PID file."""
+    """Get the native proxy PID record path."""
     return get_data_dir() / "proxy.pid"
 
 

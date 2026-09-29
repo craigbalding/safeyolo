@@ -44,16 +44,7 @@ impl Fixture {
             "flow_store_enabled":false,
         }))
         .unwrap();
-        let runtime = Arc::new(
-            Runtime::new(
-                config,
-                "live-producer-fixture",
-                Arc::new(tokio::sync::Mutex::new(())),
-                None,
-                None,
-            )
-            .unwrap(),
-        );
+        let runtime = Arc::new(Runtime::new(config, "live-producer-fixture", None, None).unwrap());
         let state = Arc::new(RwLock::new(runtime.clone()));
         Self {
             _directory: directory,

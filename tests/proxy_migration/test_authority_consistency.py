@@ -19,8 +19,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from mitmproxy.certs import CertStore
 
+from safeyolo.rust_proxy import _ensure_signing_ca
 from tests.proxy_migration.harness import launch_proxy, read_events
 from tests.proxy_migration.test_http2_contract import h2_requests, headers
 
@@ -466,7 +466,7 @@ def test_inner_port_and_root_dot_authorities_do_not_inherit_connect(proxy_backen
     directory = tmp_path / proxy_backend
     with _peers(directory / "peers") as (parent, peers, trust):
         _, _, allowed, forbidden = peers
-        CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "proxy/ca")
         with launch_proxy(proxy_backend, directory / "proxy", POLICY, native_policy=True,
                           credential_head_decision=True, tls=True, upstream_ca=trust,
                           parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
@@ -538,7 +538,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
     directory = tmp_path / proxy_backend
     with _peers(directory / "peers") as (parent, peers, trust):
         _, _, allowed, forbidden = peers
-        CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+        _ensure_signing_ca(directory / "proxy/ca")
         with launch_proxy(proxy_backend, directory / "proxy", POLICY, native_policy=True,
                           credential_head_decision=True, tls=True, upstream_ca=trust,
                           parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
@@ -729,7 +729,7 @@ def test_idna_authority_keeps_credential_on_admitted_route(proxy_backend, tmp_pa
              _server(Origin("idn-tls", tls_context=tls_context)) as idn_tls:
             parent.http[IDN_WIRE] = idn_http
             parent.tls[IDN_WIRE] = idn_tls
-            CertStore.from_store(directory / "proxy/ca", "mitmproxy", 2048)
+            _ensure_signing_ca(directory / "proxy/ca")
             with launch_proxy(proxy_backend, directory / "proxy", POLICY.replace(ALLOWED, IDN_NAME),
                               native_policy=True, credential_head_decision=True, tls=True,
                               upstream_ca=trust,

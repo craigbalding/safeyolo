@@ -155,7 +155,7 @@ def selected_process_environment(args):
     """Bind each capture to an explicit implementation and policy path."""
     names = (
         "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PYTHON_EXECUTABLE",
-        "SAFEYOLO_RUST_PROXY", "SAFEYOLO_RUST_NATIVE_ONLY",
+        "SAFEYOLO_RUST_PROXY",
     )
     previous = {name: os.environ.get(name) for name in names}
     source = Path(args.python_source).expanduser().resolve()
@@ -166,13 +166,10 @@ def selected_process_environment(args):
         # the system interpreter and silently drop the locked dependencies.
         os.environ["SAFEYOLO_PYTHON_EXECUTABLE"] = str(Path(args.python_executable).expanduser())
         os.environ.pop("SAFEYOLO_RUST_PROXY", None)
-        os.environ.pop("SAFEYOLO_RUST_NATIVE_ONLY", None)
     else:
         if binary is None or not binary.is_file():
             raise ValueError("--rust-binary must identify an existing native proxy executable")
         os.environ["SAFEYOLO_RUST_PROXY"] = str(binary)
-        # A resource comparison must not include a Python policy bridge.
-        os.environ["SAFEYOLO_RUST_NATIVE_ONLY"] = "1"
     try:
         yield
     finally:
@@ -230,8 +227,7 @@ def short_connections(backend, directory, count):
 
 def short_https_connections(backend, directory, count):
     """Run fresh HTTP/1.1 requests through the existing CONNECT/TLS fixture."""
-    from mitmproxy.certs import CertStore
-
+    from safeyolo.rust_proxy import _ensure_signing_ca
     from tests.proxy_migration.test_http2_contract import (
         origin_certificate,
         tls_tunnel,
@@ -241,7 +237,7 @@ def short_https_connections(backend, directory, count):
     )
 
     directory.mkdir(parents=True, exist_ok=True)
-    CertStore.from_store(directory / "ca", "mitmproxy", 2048)
+    _ensure_signing_ca(directory / "ca")
     origin_pem, origin_ca = origin_certificate(directory)
     with tls_origin_server(origin_pem, protocols=("http/1.1",)) as origin, launch_proxy(
         backend,
@@ -1176,7 +1172,7 @@ def capture(args):
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
         "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
         "platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
-        "tools": {package: version(package) for package in ("pytest", "mitmproxy", "httpx")},
+        "tools": {package: version(package) for package in ("pytest", "httpx")},
         "command": sys.argv, "candidate": candidate_identity(args),
         "contracts": results, "workloads": workloads,
         "tolerances": {

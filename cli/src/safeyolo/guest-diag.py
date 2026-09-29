@@ -2,17 +2,17 @@
 """SafeYolo guest-side egress chain diagnostic.
 
 Run from inside an agent shell (`safeyolo agent shell <name>`) to walk
-every hop from the agent's perspective out to mitmproxy on the host.
+every hop from the agent's perspective out to the Rust proxy on the host.
 
 Chain (macOS / VZ microVM):
   curl → 127.0.0.1:8080 (guest-proxy-forwarder)
        → vsock:1080 (safeyolo-vm VSockProxyRelay)
-       → host per-agent UDS (mitmproxy UnixInstance)
+       → host per-agent UDS (Rust proxy listener)
 
 Chain (Linux / gVisor):
   curl → 127.0.0.1:8080 (guest-proxy-forwarder)
        → /safeyolo/proxy/proxy.sock UDS (directory-mounted, gVisor --host-uds=open)
-       → host per-agent UDS (mitmproxy UnixInstance)
+       → host per-agent UDS (Rust proxy listener)
 
 Usage:
     python3 /safeyolo/guest-diag
@@ -221,7 +221,7 @@ def check_proxy_env() -> None:
 
 
 def check_end_to_end() -> None:
-    """Send a minimal HTTP request through the forwarder to mitmproxy."""
+    """Send a minimal HTTP request through the forwarder to the Rust proxy."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(5)
     try:
@@ -230,8 +230,8 @@ def check_end_to_end() -> None:
         _print("FAIL", "End-to-end", f"connect to forwarder failed: {e}")
         return
 
-    # Send a proxy-style HTTP request — mitmproxy should answer even
-    # if the destination is unreachable. A 502/503 from mitmproxy still
+    # Send a proxy-style HTTP request — the proxy should answer even
+    # if the destination is unreachable. A 502/503 from the proxy still
     # proves the full chain works.
     req = (
         b"GET http://httpbin.org/status/200 HTTP/1.1\r\n"
