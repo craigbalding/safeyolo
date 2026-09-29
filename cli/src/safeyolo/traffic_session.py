@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .config import get_config_dir, get_data_dir
+from .runtime_identity import process_start_token
 
 SESSION_NAME = "safeyolo-traffic"
 
@@ -97,6 +98,32 @@ def session_process_id(tmux: Path | None = None) -> int | None:
     if len(fields) != 2 or fields[0] != "0":
         return None
     return _parse_pane_pid(fields[1])
+
+
+def interrupt_session_process(process_id: int, start_token: str, tmux: Path | None = None) -> None:
+    """Interrupt the identified pane through its tmux server when direct signals are denied."""
+    base = _base_command(tmux)
+    result = subprocess.run(
+        [*base, "display-message", "-p", "-t", f"{SESSION_NAME}:0.0",
+         "#{pane_dead} #{pane_pid} #{pane_id}"],
+        capture_output=True, text=True, check=True,
+    )
+    fields = result.stdout.split()
+    if (
+        len(fields) != 3 or fields[0] != "0"
+        or _parse_pane_pid(fields[1]) != process_id
+        or not fields[2].startswith("%")
+        or not fields[2][1:].isascii() or not fields[2][1:].isdecimal()
+        or process_start_token(process_id) != start_token
+    ):
+        raise RuntimeError("Cannot verify Rust proxy tmux pane identity; lifetime state has been retained")
+    # The server still has the sandbox identity that launched this pane. A
+    # terminal interrupt reaches that pane even if a later SSH session cannot
+    # signal its process directly under the macOS seatbelt.
+    subprocess.run(
+        [*base, "send-keys", "-t", fields[2], "C-c"],
+        capture_output=True, text=True, check=True,
+    )
 
 
 def _parse_pane_pid(raw_pid: str) -> int | None:

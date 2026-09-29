@@ -7,7 +7,12 @@ from unittest.mock import call, patch
 
 import pytest
 
-from safeyolo.traffic_session import find_private_tmux, session_process_id, start_session
+from safeyolo.traffic_session import (
+    find_private_tmux,
+    interrupt_session_process,
+    session_process_id,
+    start_session,
+)
 
 
 def test_explicit_private_tmux_must_be_executable(tmp_path, monkeypatch):
@@ -190,6 +195,45 @@ def test_session_process_id_reads_live_status_and_pid_in_one_query(tmp_path, mon
         text=True,
         check=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("pane", "token"),
+    [
+        ("1 2468 %4\n", "owned"),
+        ("0 2469 %4\n", "owned"),
+        ("0 2468 %4\n", "replacement"),
+        ("0 2468 invalid\n", "owned"),
+    ],
+)
+def test_tmux_interrupt_refuses_unowned_pane(tmp_path, monkeypatch, pane, token):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    with (
+        patch("safeyolo.traffic_session.process_start_token", return_value=token, autospec=True),
+        patch("safeyolo.traffic_session.subprocess.run",
+              return_value=subprocess.CompletedProcess([], 0, stdout=pane, stderr=""), autospec=True) as run,
+        pytest.raises(RuntimeError, match="Cannot verify Rust proxy tmux pane identity"),
+    ):
+        interrupt_session_process(2468, "owned", tmux=Path("/opt/safeyolo/tmux"))
+    run.assert_called_once()
+
+
+def test_tmux_interrupt_targets_verified_pane_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    tmux = Path("/opt/safeyolo/tmux")
+    with (
+        patch("safeyolo.traffic_session.process_start_token", return_value="owned", autospec=True),
+        patch("safeyolo.traffic_session.subprocess.run", side_effect=[
+            subprocess.CompletedProcess([], 0, stdout="0 2468 %4\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        ], autospec=True) as run,
+    ):
+        interrupt_session_process(2468, "owned", tmux=tmux)
+    assert run.call_count == 2
+    assert run.call_args_list[1].args[0] == [
+        str(tmux), "-S", str(tmp_path / "data" / "traffic-tmux.sock"), "-f", "/dev/null",
+        "send-keys", "-t", "%4", "C-c",
+    ]
 
 
 def test_start_passes_cwd_as_one_tmux_argument_without_shell_quoting(tmp_path, monkeypatch):

@@ -233,6 +233,22 @@ class TestConfig:
         assert f"http: {nr.NATS_LISTEN_HOST}:{nr.NATS_MONITOR_PORT}" in content
         assert nr.client_url() == "nats://127.0.0.1:4222"
 
+    def test_selected_test_ports_and_bad_input(self, isolated_coord, monkeypatch):
+        monkeypatch.setenv("SAFEYOLO_NATS_TEST_PORTS", "46370,46372")
+        content = nr.write_config("safeyolo-test-ports").read_text()
+        assert "listen: 127.0.0.1:46370" in content
+        assert "http: 127.0.0.1:46372" in content
+
+        for selected in ("46370", "46370,46370", "0,46372", "4222,46372", "bad,46372"):
+            monkeypatch.setenv("SAFEYOLO_NATS_TEST_PORTS", selected)
+            with pytest.raises(RuntimeError, match="SAFEYOLO_NATS_TEST_PORTS"):
+                nr.write_config("safeyolo-test-invalid-ports")
+
+        monkeypatch.delenv("SAFEYOLO_NATS_TEST_INSTANCE")
+        monkeypatch.setenv("SAFEYOLO_NATS_TEST_PORTS", "46370,46372")
+        with pytest.raises(RuntimeError, match="requires SAFEYOLO_NATS_TEST_INSTANCE"):
+            nr.write_config("safeyolo-production-override")
+
     def test_config_references_runtime_credential_environment(self, isolated_coord):
         pw = nr.ensure_credentials()
         path = nr.write_config("safeyolo-test")

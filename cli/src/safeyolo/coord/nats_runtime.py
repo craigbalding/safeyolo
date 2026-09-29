@@ -455,9 +455,20 @@ def _new_server_name() -> str:
 
 
 def _configured_ports() -> tuple[int, int]:
-    """Return config ports: fixed in production, kernel-selected in tests."""
+    """Return config ports: fixed in production, selected for test instances."""
     if _test_instance() is not None:
+        selected = os.environ.get("SAFEYOLO_NATS_TEST_PORTS")
+        if selected is not None:
+            try:
+                client, monitor = (int(value) for value in selected.split(","))
+            except ValueError as exc:
+                raise RuntimeError("SAFEYOLO_NATS_TEST_PORTS requires two valid ports") from exc
+            if _validated_test_ports(client, monitor) is None:
+                raise RuntimeError("SAFEYOLO_NATS_TEST_PORTS requires two distinct non-default ports")
+            return client, monitor
         return (_TEST_DYNAMIC_PORT, _TEST_DYNAMIC_PORT)
+    if "SAFEYOLO_NATS_TEST_PORTS" in os.environ:
+        raise RuntimeError("SAFEYOLO_NATS_TEST_PORTS requires SAFEYOLO_NATS_TEST_INSTANCE")
     return (NATS_CLIENT_PORT, NATS_MONITOR_PORT)
 
 
