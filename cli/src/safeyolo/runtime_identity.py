@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import importlib.metadata
 import importlib.resources
@@ -326,6 +327,44 @@ def process_is_alive(process_id: int) -> bool:
     return True
 
 
+class _MacProcessInfo(ctypes.Structure):
+    """Fields through the start time in Darwin's ``proc_bsdinfo``."""
+
+    _fields_ = [
+        ("flags", ctypes.c_uint32),
+        ("status", ctypes.c_uint32),
+        ("exit_status", ctypes.c_uint32),
+        ("pid", ctypes.c_uint32),
+        ("other_ids", ctypes.c_uint32 * 8),
+        ("command", ctypes.c_char * 16),
+        ("name", ctypes.c_char * 32),
+        ("other", ctypes.c_uint32 * 6),
+        ("start_seconds", ctypes.c_uint64),
+        ("start_microseconds", ctypes.c_uint64),
+    ]
+
+
+def _macos_process_start_token(process_id: int) -> str | None:
+    """Read a PID's kernel start time without requiring process-list access."""
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+        proc_pidinfo = libproc.proc_pidinfo
+        proc_pidinfo.argtypes = (
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+        )
+        proc_pidinfo.restype = ctypes.c_int
+        info = _MacProcessInfo()
+        size = ctypes.sizeof(info)
+        # PROC_PIDTBSDINFO is 3 in the macOS proc_info.h system header.
+        if proc_pidinfo(process_id, 3, 0, ctypes.byref(info), size) != size:
+            return None
+    except (AttributeError, OSError):
+        return None
+    if info.pid != process_id or not info.start_seconds or info.start_microseconds >= 1_000_000:
+        return None
+    return f"darwin:{process_id}:{info.start_seconds}:{info.start_microseconds}"
+
+
 def process_start_token(process_id: int) -> str | None:
     """Return an OS-backed token that changes when a PID is reused."""
     if sys.platform.startswith("linux"):
@@ -339,6 +378,11 @@ def process_start_token(process_id: int) -> str | None:
         except (IndexError, OSError):
             return None
         return f"linux:{boot_id}:{process_id}:{start_ticks}"
+
+    if sys.platform == "darwin":
+        token = _macos_process_start_token(process_id)
+        if token is not None:
+            return token
 
     try:
         result = subprocess.run(
