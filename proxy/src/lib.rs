@@ -11,6 +11,7 @@ pub mod approvals;
 pub mod audit;
 mod circuit_runtime;
 pub mod circuits;
+mod command_centre;
 mod config;
 mod connection_tasks;
 pub mod contracts;
@@ -378,7 +379,14 @@ impl Runtime {
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
     ) -> Result<Self, Error> {
-        Self::load(config, default_via, previous, admin_address, &mut None)
+        Self::load(
+            config,
+            default_via,
+            previous,
+            admin_address,
+            None,
+            &mut None,
+        )
     }
 
     fn load(
@@ -386,6 +394,7 @@ impl Runtime {
         default_via: &str,
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
+        event_address: Option<std::net::SocketAddr>,
         service_files: &mut Option<services::CatalogMetadata>,
     ) -> Result<Self, Error> {
         config.validate()?;
@@ -394,6 +403,9 @@ impl Runtime {
             &config.admin_shield_extra_ports,
         )?;
         if let Some(bound) = admin_address {
+            admin_shield.protect_bound_port(bound);
+        }
+        if let Some(bound) = event_address {
             admin_shield.protect_bound_port(bound);
         }
         let tasks = previous
@@ -1321,6 +1333,7 @@ pub struct Proxy {
     runtime: Arc<RwLock<Arc<Runtime>>>,
     listeners: HashMap<PathBuf, RunningListener>,
     admin: Option<admin_listener::Running>,
+    command_centre_share: Option<command_centre::Publication>,
     draining: Vec<JoinHandle<()>>,
     default_via: String,
     readiness_file: PathBuf,
@@ -1337,6 +1350,12 @@ impl Proxy {
         let admin_address = prepared_admin
             .as_ref()
             .map(admin_listener::Prepared::address);
+        let command_centre = prepared_admin
+            .as_ref()
+            .and_then(admin_listener::Prepared::command_centre);
+        let event_address = prepared_admin
+            .as_ref()
+            .and_then(admin_listener::Prepared::event_address);
         let default_via = uuid::Uuid::new_v4().simple().to_string();
         let (runtime, service_files) = {
             let config = config.clone();
@@ -1348,6 +1367,7 @@ impl Proxy {
                     &default_via,
                     None,
                     admin_address,
+                    event_address,
                     &mut service_files,
                 )?;
                 policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
@@ -1360,6 +1380,7 @@ impl Proxy {
             runtime: Arc::new(RwLock::new(runtime)),
             listeners: HashMap::new(),
             admin: None,
+            command_centre_share: None,
             draining: Vec::new(),
             default_via,
             readiness_file: config.readiness_file.clone(),
@@ -1389,6 +1410,12 @@ impl Proxy {
             );
         }
         proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
+        if let (Some(host), Some(admin), Some(events)) =
+            (command_centre.as_ref(), admin_address, event_address)
+        {
+            proxy.command_centre_share =
+                command_centre::Publication::start(host, admin.port(), events.port()).await?;
+        }
         proxy.write_readiness()?;
         if circuit_runtime::state_path(&config).is_some() {
             proxy.circuit_snapshots =
@@ -1662,6 +1689,9 @@ impl Proxy {
             &self.default_via,
             Some(&previous),
             self.admin.as_ref().map(admin_listener::Running::address),
+            self.admin
+                .as_ref()
+                .and_then(admin_listener::Running::event_address),
             &mut service_files,
         )?);
         let additions = self.prepare_listeners(&config)?;
@@ -1755,6 +1785,9 @@ impl Proxy {
         plumb.stop_admission().await;
         service_mutations.stop_admission().await;
         plumb.stop_admission().await;
+        if let Some(share) = self.command_centre_share.take() {
+            share.stop().await;
+        }
         if let Some(listener) = self.admin.take() {
             self.draining.push(listener.stop());
         }

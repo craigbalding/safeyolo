@@ -152,6 +152,11 @@ def get_data_dir() -> Path:
     return get_config_dir() / "data"
 
 
+def command_centre_tailnet_status_file() -> Path:
+    """Get the status file for this host's Command Centre Tailnet share."""
+    return get_data_dir() / "command-centre-tailnet-status.json"
+
+
 def get_agents_dir() -> Path:
     """Get path to agents directory."""
     return get_config_dir() / "agents"

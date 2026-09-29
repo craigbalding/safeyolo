@@ -6,7 +6,6 @@
 //! accepts an agent identity. Other management routes remain unimplemented.
 
 use std::fmt;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -577,6 +576,24 @@ pub(crate) fn unauthorized() -> Outcome {
     );
     outcome.audit = Some(Audit::AuthenticationFailed);
     outcome
+}
+
+pub(crate) fn event_not_found() -> Outcome {
+    response(StatusCode::NOT_FOUND, json!({"error":"not found"}))
+}
+
+fn command_centre_agent_response(value: Value) -> Outcome {
+    if value.get("status_code").is_some() {
+        let status = value
+            .get("status_code")
+            .and_then(Value::as_u64)
+            .and_then(|code| u16::try_from(code).ok())
+            .and_then(|code| StatusCode::from_u16(code).ok())
+            .filter(|status| status.is_client_error() || status.is_server_error())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return response(status, value);
+    }
+    response(StatusCode::OK, value)
 }
 
 fn truthy(value: &Value) -> bool {
@@ -1174,7 +1191,7 @@ pub(crate) struct OperatorContext<'a> {
     pub view: Option<&'a std::sync::Arc<crate::traffic_view::TrafficView>>,
     pub policy_path: Option<&'a std::path::Path>,
     pub instance_id: Option<&'a str>,
-    pub admin_address: Option<SocketAddr>,
+    pub command_centre: Option<&'a crate::command_centre::Host>,
     pub operator_modes: Option<&'a crate::OperatorModes>,
     pub agent_discovery: Option<&'a std::sync::Arc<crate::agent_discovery::AgentDiscovery>>,
     pub listeners: &'a [crate::AgentListener],
@@ -1213,7 +1230,7 @@ where
             view,
             policy_path: None,
             instance_id: None,
-            admin_address: None,
+            command_centre: None,
             operator_modes: None,
             agent_discovery: None,
             listeners: &[],
@@ -1241,7 +1258,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         view,
         policy_path,
         instance_id,
-        admin_address,
+        command_centre,
         operator_modes,
         agent_discovery,
         listeners,
@@ -1371,26 +1388,35 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         return Ok(outcome);
     }
     if method == Method::GET && path == "/admin/instance" {
-        let Some(instance_id) = instance_id else {
+        let Some(host) = command_centre else {
             return Ok(response(
                 StatusCode::SERVICE_UNAVAILABLE,
-                json!({"error":"operator instance identity unavailable"}),
+                json!({"error":"installed operator host identity unavailable"}),
             ));
+        };
+        let stable_id = match host.instance_id() {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"durable operator host identity unavailable"}),
+                ));
+            }
         };
         return Ok(response(
             StatusCode::OK,
             json!({
                 "schema_version":1,
-                "safeyolo_instance_id":instance_id,
-                "host_user":Value::Null,
-                "host_python":Value::Null,
+                "safeyolo_instance_id":stable_id,
+                "host_user":host.user(),
+                "host_python":host.python(),
                 "webmitm_url":Value::Null,
-                "command_centre_events":{"enabled":audit.is_some(),"port":admin_address.map(|address| address.port())},
+                "command_centre_events":{"enabled":host.events_port().is_some(),"port":host.events_port()},
                 "capabilities":{
-                    "agent_inventory":agent_discovery.is_some(),
-                    "agent_lifecycle":false,
+                    "agent_inventory":true,
+                    "agent_lifecycle":true,
                     "approvals":true,
-                    "audit_events":audit.is_some(),
+                    "audit_events":host.events_port().is_some(),
                     "desktop_present":crate::desktop_present::available()
                 }
             }),
@@ -1517,6 +1543,20 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         return Ok(plumb_response(result));
     }
     if method == Method::GET && path == "/admin/agents" {
+        if let Some(host) = command_centre {
+            let result = match host.agents("list", None).await {
+                Ok(value) => value,
+                Err(_) => {
+                    return Ok(response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        json!({"error":"agent inventory unavailable"}),
+                    ));
+                }
+            };
+            return Ok(command_centre_agent_response(result));
+        }
+        // Standalone native development launches retain their listener view.
+        // An installed launch supplies the host inventory used by the Mac app.
         let (Some(discovery), Some(writer)) = (agent_discovery, audit) else {
             return Ok(response(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1565,6 +1605,47 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
             crate::python_json::encode_indented(&json!({"agents":agents})),
             false,
         ));
+    }
+    if method == Method::POST
+        && let Some((agent_id, action)) = path
+            .strip_prefix("/admin/agents/")
+            .and_then(|value| value.rsplit_once('/'))
+        && matches!(action, "start" | "start-interactive" | "stop")
+    {
+        if !crate::desktop_present::valid_agent_id(agent_id) {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"invalid agent id"}),
+            ));
+        }
+        let body = match read_json(request).await? {
+            ParsedBody::Terminal(outcome) => return Ok(outcome),
+            ParsedBody::Absent => Value::Null,
+            ParsedBody::Value(value) => value.0.clone(),
+        };
+        if !matches!(body, Value::Null) && !body.as_object().is_some_and(serde_json::Map::is_empty)
+        {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"Agent lifecycle requests do not accept arguments"}),
+            ));
+        }
+        let Some(host) = command_centre else {
+            return Ok(response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"error":"agent lifecycle unavailable"}),
+            ));
+        };
+        let result = match host.agents(action, Some(agent_id)).await {
+            Ok(value) => value,
+            Err(_) => {
+                return Ok(response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({"error":"agent lifecycle unavailable"}),
+                ));
+            }
+        };
+        return Ok(command_centre_agent_response(result));
     }
     if method == Method::POST
         && let Some(agent_id) = path

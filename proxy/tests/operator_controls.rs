@@ -45,11 +45,7 @@ async fn native_operator_consumer_controls_and_event_stream_are_live() {
     let port = admin_port(&config);
 
     let instance = admin(port, token, "GET", "/admin/instance", b"").await;
-    assert_eq!(instance.status, 200);
-    let instance_json = instance.json();
-    assert_eq!(instance_json["schema_version"], 1);
-    assert!(instance_json["safeyolo_instance_id"].is_string());
-    assert_eq!(instance_json["capabilities"]["approvals"], true);
+    assert_eq!(instance.status, 503);
 
     let identity = admin(port, token, "GET", "/admin/runtime-identity", b"").await;
     assert_eq!(identity.status, 200);

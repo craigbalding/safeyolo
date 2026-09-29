@@ -205,14 +205,18 @@ API is contained separately. Sources are `addons/agent_api.py`,
 
 The host-local admin listener uses bearer authentication except GET `/health`.
 Proxy ingress blocks agent access independently of token authentication.
-Sources are `addons/admin_api.py`, `api.py`, `core/operator_event_server.py`
-and `traffic_master.py`. Preserve configured binding/publication and event
-access; do not substitute an agent-accessible management listener.
+The prior Python sources were `addons/admin_api.py`, `api.py`,
+`core/operator_event_server.py` and `traffic_master.py`. The installed native
+launcher now supplies the durable host identity and fixed agent host operations
+to Rust's loopback Admin listener. The native event listener uses the configured
+loopback event port. Explicit Tailnet publication maps the Admin and event
+ports through the retained host Tailscale Serve helper. Agent ingress remains
+separate from both operator listeners.
 
 | Methods | Routes |
 |---|---|
 | GET | `/health`, `/stats`, `/debug/addons`, `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets`, `/admin/traffic/scope`, `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents`, `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` |
-| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
+| POST | `/admin/policy/validate`, `/admin/policy/baseline/approve`, `/admin/policy/baseline/deny`, `/admin/policy/task/{id}/activate`, `/admin/policy/host/{rate,allow,deny,bypass}`, `/admin/circuit-breaker/reset`, `/admin/budgets/reset`, `/admin/gateway/grant`, `/admin/gateway/contract-binding`, `/admin/plumb/{approve,deny,close}`, `/admin/agents/{agent}/{start,start-interactive,stop}`, `/admin/agents/{agent}/services`, `/admin/agents/{agent}/desktop/present` |
 | PUT | `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/proxy/mode`, `/admin/proxy/ignore-hosts`, `/admin/proxy/web-tailnet`, `/admin/traffic/scope` |
 | DELETE | `/admin/policy/task/{id}`, `/admin/gateway/grants/{id}`, `/admin/agents/{agent}/services/{service}` |
 
@@ -231,10 +235,10 @@ This Linux fixture does not prove a real supported-platform presentation; the
 Tart/macOS guest lane, missing-target and host-operation failure cases remain
 open.
 
-The authenticated WebSocket `/admin/events` streams selected operator audit
-events through `core/operator_event_server.py`. The web application's traffic
-routes expose stock flow operations through the shared master. Compatibility
-concerns the retained user workflows, not every undocumented mitmproxy endpoint.
+The authenticated native WebSocket `/admin/events` streams selected operator
+audit events. The web application's traffic routes exposed stock flow operations
+through the prior shared master. Compatibility concerns the retained user
+workflows, not every undocumented mitmproxy endpoint.
 
 The following is the compact status map for the retained operator operations.
 It records the current native route owner and the remaining owner when Rust
@@ -245,7 +249,8 @@ checked.
 | Operation | Status | Owner or evidence |
 |---|---|---|
 | GET `/health`, `/stats`, `/modes`, `/plugins/{name}/mode` | Implemented | Native `admin_api`; the retained `AdminAPI` mode workflow is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`. |
-| GET `/admin/runtime-identity`, `/admin/instance`, `/admin/approvals`, `/admin/agents` | Implemented | Native `admin_api`; state and audit owners, with the native wire and retained approval workflows exercising identity, approval, and agent reads. |
+| GET `/admin/runtime-identity`, `/admin/approvals` | Implemented | Native `admin_api` keeps the process runtime identity separate from the durable host identity and reads pending approvals from the canonical audit owner. |
+| GET `/admin/instance`, `/admin/agents` | Implemented for installed host use | Native `admin_api` reads the existing `sy-*` Coord identity file and invokes the retained host agent inventory function. The installed loopback witness in `proxy/tests/command_centre_installed.rs` checks the Mac client's required agent fields and a stable host ID across proxy restarts. The physical Mac app journey remains open in #640 B2. |
 | GET `/admin/policy/baseline`, `/admin/policy/task/{id}`, `/admin/budgets` | Implemented | Native policy, task registry and budget owners. |
 | GET/PUT `/admin/traffic/scope` | Implemented | Native traffic-scope owner; traffic effect proof remains with the traffic lane. |
 | GET `/admin/gateway/grants`, `/admin/plumb/pending`, `/admin/plumb/conversations` | Implemented | Native #625 gateway store and retained plumb owner. |
@@ -254,6 +259,7 @@ checked.
 | POST `/admin/gateway/{grant,contract-binding}` and DELETE `/admin/gateway/grants/{id}` | Implemented | Native #625 grant/binding store; resolved-key audit wiring is retained here. |
 | POST `/admin/plumb/{approve,deny,close}` | Implemented | Native retained plumb owner; desktop/coordination host workflows remain separate. |
 | POST `/admin/agents/{agent}/services` | Implemented | Native #624 service persistence owner. |
+| POST `/admin/agents/{agent}/{start,start-interactive,stop}` | Implemented for installed host use | Native Admin authentication and fixed request validation precede the retained host lifecycle functions. The installed loopback witness checks stop, unknown identity, invalid action and invalid arguments; the host helper tests check both start modes and error results. A supported-host start and the physical Mac app journey remain open in #640 B2. |
 | DELETE `/admin/agents/{agent}/services/{service}` | Implemented | Native service mutation owner removes the binding, removes an empty `services` table, emits the canonical revocation audit, and lets the policy watcher publish the complete replacement snapshot; focused observer/control proof is in #627. |
 | POST `/admin/agents/{agent}/desktop/present` and retained agent collaboration routes | Partly implemented | Native route and retained host boundary; the #629 running workflow witness proves pending approval, exact request-ID handoff, listener-derived target binding, fixture helper invocation and truthful unavailable/failure audit. Real supported-platform presentation and the remaining collaboration/persistence cases remain open. |
 | PUT `/modes`, `/plugins/{name}/mode`, `/admin/policy/baseline`, `/admin/policy/task/{id}` | Implemented | Native state owners; task PUT remains registration-only until explicit activation. |
@@ -263,7 +269,7 @@ checked.
 | PUT `/admin/proxy/ignore-hosts` | Delegated | The existing CLI normalizes entries and the live consumer publication is covered by `tests/proxy_migration/test_operator_modes_and_listeners.py`; passthrough matching, reload effect and removal remain owned by #631. |
 | PUT `/admin/proxy/web-tailnet` and traffic flow/editor routes | Deferred | Traffic web inspector and editing are outside the first-release traffic scope. |
 | Add/remove listeners through retained operator consumers | Implemented | `sync_proxy_modes` replaces only conventional managed sockets, preserves custom listeners, signals the native reload owner and confirms the resulting socket set. `tests/proxy_migration/test_operator_modes_and_listeners.py` adds Bob, removes Alice, and sends requests through the resulting sockets. |
-| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`; its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. |
+| GET `/admin/events` | Implemented | Startup-owned native WebSocket stream; authenticated selected audit events, request/agent correlation, reconnect offset handling, and owned shutdown are covered by `proxy/tests/operator_controls.rs`. The installed loopback witness checks the configured event port, an agent event, wrong token, and clean Tailnet mapping stop/restart with a local Tailscale fixture. Its stalled-client case observes bounded write-timeout closure before proving enforcement and origin isolation. Physical Tailnet forwarding and the Mac app remain open in #640 B2. |
 | GET `/debug/addons` | Deferred | Diagnostic addon inventory is not a retained first-release workflow. |
 
 The focused native facade and retained-client workflows are grouped by the

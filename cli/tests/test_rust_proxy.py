@@ -25,6 +25,7 @@ TOKEN = "owned-process-generation"
 def launch(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("SAFEYOLO_COORD_DATA_DIR", str(tmp_path / "data" / "coord"))
     binary = tmp_path / "owned proxy"
     binary.write_text("not an executable program; subprocess is mocked")
     binary.chmod(0o700)
@@ -136,6 +137,47 @@ def test_selected_rust_launch_skips_python_setup_and_publishes_owned_receipt(lau
     assert rust_proxy.read_process().pid == PID
     assert (rust_proxy.get_data_dir() / "proxy.pid").read_text() == f"{PID}\n"
     launch.http.assert_not_called()
+
+
+def test_installed_launch_passes_command_centre_ports_and_durable_host_identity(launch):
+    launch.config["command_centre"] = {
+        "enabled": True,
+        "events_port": 9191,
+        "share": "tailnet",
+        "tailnet_admin_port": 10443,
+        "tailnet_events_port": 10444,
+    }
+
+    def launched(*_args, **kwargs):
+        env = kwargs["env"]
+        assert env["SAFEYOLO_OPERATOR_HOST_PYTHON"] == rust_proxy.sys.executable
+        assert env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] == str(rust_proxy.instance_id_file().absolute())
+        assert Path(env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"]).read_text().startswith("sy-")
+        assert env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] == "9191"
+        assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] == "10443"
+        assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] == "10444"
+        assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] == str(
+            launch.root / "data" / "command-centre-tailnet-status.json"
+        )
+        launch.ready.write_text(json.dumps(marker()))
+        return PID
+
+    launch.begin.side_effect = launched
+    proxy.start_proxy()
+    assert rust_proxy.read_process().pid == PID
+
+
+@pytest.mark.parametrize("options", [
+    {"enabled": "yes"},
+    {"enabled": True, "events_port": True},
+    {"enabled": True, "share": "public"},
+    {"enabled": True, "share": "tailnet", "tailnet_admin_port": 9444, "tailnet_events_port": 9444},
+])
+def test_invalid_command_centre_configuration_fails_before_native_launch(launch, options):
+    launch.config["command_centre"] = options
+    with pytest.raises(ValueError):
+        proxy.start_proxy()
+    launch.begin.assert_not_called()
 
 
 @pytest.mark.parametrize("initial_token", [None, "", " \n", "existing-agent-token"])
