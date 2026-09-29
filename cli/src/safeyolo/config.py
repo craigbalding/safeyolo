@@ -56,6 +56,9 @@ DEFAULT_CONFIG = {
         # "auto" sizes from a local host display when one is detectable and
         # otherwise falls back to SafeYolo's generic 1280x800 geometry.
         "size": "auto",
+        # The retained operator presenter can use a fixed host loopback port
+        # when the host limits which ports its process may bind.
+        "present_host_port": 0,
     },
     "notifications": {
         "method": "none",
@@ -203,6 +206,17 @@ def get_desktop_size(explicit: str | None = None) -> str:
     if not isinstance(size, str):
         raise ValueError("desktop.size must be auto or WIDTHxHEIGHT")
     return size
+
+
+def get_desktop_present_host_port() -> int:
+    """Return the host loopback port for operator-approved desktop previews."""
+    desktop = load_config().get("desktop", {})
+    if not isinstance(desktop, dict):
+        raise ValueError("desktop config must be a mapping")
+    port = desktop.get("present_host_port", 0)
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise ValueError("desktop.present_host_port must be 0 or a port from 1 to 65535")
+    return port
 
 
 def save_config(config: dict[str, Any]) -> None:

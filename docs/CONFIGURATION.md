@@ -49,6 +49,7 @@ proxy:
 
 desktop:
   size: auto           # Persistent host preference: auto or WIDTHxHEIGHT
+  present_host_port: 0  # Host loopback port for operator-approved presentation
 
 modes:
   credential_guard: block
@@ -98,6 +99,12 @@ Persist a preference without editing YAML:
 ```bash
 safeyolo agent desktop <name> --size 1280x1246 --remember-size --open
 ```
+
+If the host permits only selected loopback ports, set
+`desktop.present_host_port` to an available port from 1 to 65535. This setting
+applies when the operator approves an agent's desktop presentation request.
+The default `0` asks the host to choose a free port. The preview remains on
+host loopback and requires its normal unlock code.
 
 Manage the WebMITM interface with `safeyolo proxy web`:
 
