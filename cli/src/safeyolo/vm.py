@@ -474,16 +474,25 @@ def _host_target_arch() -> str:
 
 
 def _guest_src_dir() -> Path:
-    """Return the repo's guest/ directory.
+    """Return the source checkout's guest/ directory.
 
     cli/src/safeyolo/vm.py → parents[3] is the repo root.
     """
     return Path(__file__).resolve().parents[3] / "guest"
 
 
+def _native_guest_src_dir() -> Path:
+    """Use checkout sources in development and bundled sources from a wheel."""
+    module = Path(__file__).resolve()
+    checkout_guest = _guest_src_dir()
+    if module == checkout_guest.parent / "cli" / "src" / "safeyolo" / "vm.py":
+        return checkout_guest
+    return module.parent / "guest"
+
+
 def _guest_sudo_source() -> Path:
     """Return the sudo shim from the wheel or editable source checkout."""
-    bundled = Path(__file__).parent / "safeyolo-sudo"
+    bundled = Path(__file__).parent / "guest" / "rootfs" / "safeyolo-sudo"
     if bundled.is_file():
         return bundled
     source = _guest_src_dir() / "rootfs" / "safeyolo-sudo"
@@ -686,7 +695,7 @@ def _run_rootfs_script_native(
     cache_paths_file: Path,
 ) -> None:
     """Run a private staged copy of the rootfs-script on the Linux host."""
-    guest_src = _guest_src_dir()
+    guest_src = _native_guest_src_dir()
     if not guest_src.is_dir():
         raise VMError(
             f"guest/ directory not found at {guest_src}. "
