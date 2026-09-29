@@ -30,6 +30,9 @@ from prompt_toolkit.widgets import TextArea
 from safeyolo.api import AdminAPI, APIError
 from safeyolo.traffic_inspector import (
     BODY_PREVIEW_BYTES,
+    LAST_ITEM,
+    TAIL_CARDS,
+    TAIL_FETCHES_PER_POLL,
     DetailSyntaxLexer,
     TrafficInspector,
     body_preview,
@@ -1426,3 +1429,378 @@ def test_inflight_page_cannot_replace_new_message_selection():
     assert [call.args for call in api.traffic_websocket_message_body.call_args_list] == [
         ("one", 1, 0), ("one", 2, 0),
     ]
+
+
+def test_live_tail_follows_chronological_cards_and_updates_pending_response_in_place():
+    rows = {
+        "a": flow("a", started=100.0, response_completed=100.5,
+                  request_headers=[["Content-Type", "application/json"]],
+                  response_headers=[["Content-Type", "application/json"]],
+                  request_body={"available": True, "size": 7},
+                  response_body={"available": True, "size": 11}),
+        "b": flow("b", started=101.0, state="pending", status=None,
+                  request_headers=[["Content-Type", "application/json"]],
+                  response_headers=[["Content-Type", "application/json"]],
+                  request_body={"available": True, "size": 7},
+                  response_body={"available": False, "reason": "pending"}),
+    }
+    bodies = {("a", "request"): b'{"n":1}', ("a", "response"): b'{"ok":true}',
+              ("b", "request"): b'{"n":2}', ("b", "response"): b'{"ok":false}'}
+    api = client()
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: (
+        preview(bodies[flow_id, side]) if rows[flow_id][f"{side}_body"].get("available")
+        else {"available": False, "reason": "pending"}
+    )
+    api.traffic_flows.return_value = {"flows": [rows["a"]], "scope": {"agent": "alice"}}
+    view = TrafficInspector(api)
+    view.toggle_tail()
+
+    async def run():
+        await view.refresh()
+        assert view.selected == "a" and "→ request: {\"n\":1}" in view.rows_text()
+        api.traffic_flows.return_value = {"flows": [rows["b"], rows["a"]], "scope": {"agent": "alice"}}
+        await view.refresh()
+        text = view.rows_text()
+        assert text.index("→ request: {\"n\":1}") < text.index("→ request: {\"n\":2}")
+        assert view.selected == "b" and text.count("→ request: {\"n\":2}") == 1
+        assert "← response: [pending]" in text
+        rows["b"].update(state="complete", status=201, response_completed=102.0,
+                         response_body={"available": True, "size": len(bodies["b", "response"])})
+        await view.refresh()
+        text = view.rows_text()
+        assert text.count("→ request: {\"n\":2}") == 1
+        assert "201 complete" in text and "← response: {\"ok\":false}" in text
+        assert view.selected == "b"
+
+    asyncio.run(run())
+    assert all(call.kwargs == {"preview_bytes": BODY_PREVIEW_BYTES} for call in api.traffic_body.call_args_list)
+
+
+def test_live_tail_pause_resume_window_and_visible_snapshot_gaps():
+    rows = [flow(str(index), started=float(index), request_body={"available": False, "reason": "pending"})
+            for index in range(TAIL_CARDS + 5)]
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(reversed(rows)), "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[int(flow_id)]
+    view = TrafficInspector(api)
+    view.toggle_tail()
+
+    async def run():
+        await view.refresh()
+        assert view.selected == str(TAIL_CARDS + 4)
+        assert f"showing {TAIL_CARDS} of {TAIL_CARDS + 5}" in view.rows_text()
+        view.select(-TAIL_CARDS)
+        paused = view.selected
+        assert not view.tail_follow and "PAUSED · End resumes newest" in view.rows_text()
+        rows.append(flow("new", started=1000.0))
+        api.traffic_flows.return_value = {"flows": [rows[-1], *reversed(rows[:-1])], "scope": {"agent": "alice"}}
+        await view.refresh()
+        assert view.selected == paused and "#new " not in view.rows_text()
+        view.resume_tail()
+        await view.refresh()
+        assert view.selected == "new" and view.tail_follow and "FOLLOW newest" in view.rows_text()
+        assert "#new " in view.rows_text()
+        api.traffic_flows.side_effect = APIError("secret\x1b[2J", 503)
+        await view.refresh()
+        assert "secret" not in view.notice
+        api.traffic_flows.side_effect = None
+        api.traffic_flows.return_value = {"flows": [rows[-1]], "scope": {"agent": "alice"}}
+        await view.refresh()
+        text = view.rows_text()
+        assert "polling gap: 1 failed snapshot" in text
+        assert "snapshot gap:" in text and "retention/filter view" in text
+        assert "secret" not in text and "\x1b" not in text
+
+    asyncio.run(run())
+
+
+def test_live_tail_json_picker_last_item_independent_pins_missing_and_changed_chars():
+    request = [
+        b'{"messages":[{"content":"blue"}]}',
+        b'{"messages":[{"content":"old"},{"content":"blues"}]}',
+        b'{"messages":[{"content":"other"}]}',
+        b'{"different":1}',
+    ]
+    response = [b'{"answer":{"value":1}}', b'{"answer":{"value":2}}',
+                b'{"answer":{"value":3}}', b'{"answer":null}']
+    rows = {
+        str(index): flow(str(index), started=float(index + 1),
+                         url="http://owned.invalid/chat?turn=" + str(index) if index != 2
+                         else "http://owned.invalid/other",
+                         request_headers=[["Content-Type", "application/json"]],
+                         response_headers=[["Content-Type", "application/json"]],
+                         request_body={"available": True, "size": len(request[index])},
+                         response_body={"available": True, "size": len(response[index])})
+        for index in range(4)
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(reversed(list(rows.values()))), "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: preview(
+        (request if side == "request" else response)[int(flow_id)]
+    )
+    view = TrafficInspector(api)
+    view.toggle_tail()
+
+    async def run():
+        await view.refresh()
+        view.select(-3)
+        await view.refresh()
+        view.open_pin_picker("request")
+        assert view.pin_picker_side == "request"
+        view.move_pin_picker(1)  # messages
+        view.descend_pin_picker()
+        view.move_pin_picker(1)  # [last], distinct from [0]
+        view.descend_pin_picker()
+        view.move_pin_picker(1)  # content
+        view.pin_picker_selection()
+        assert view.tail_pins["request"] == ("messages", LAST_ITEM, "content")
+        view.open_pin_picker("response")
+        view.move_pin_picker(1)  # answer
+        view.descend_pin_picker()
+        view.move_pin_picker(1)  # value
+        view.pin_picker_selection()
+        assert view.tail_pins["response"] == ("answer", "value")
+        for _ in range(3):
+            await view.refresh()
+        text, _, spans = view._tail_render()
+        assert 'request $["messages"][last]["content"]: "blue"' in text
+        assert 'request $["messages"][last]["content"]: Δ "blues"' in text
+        assert 'response $["answer"]["value"]: 2' in text
+        assert 'request $["messages"][last]["content"]: "other"' in text
+        assert 'request $["messages"][last]["content"]: [missing path]' in text
+        assert 'response $["answer"]["value"]: [missing path]' in text
+        assert text.count("Δ ") == 1  # no comparison across /other or with a missing path
+        assert any(text[start:end] == "s" for start, end in spans)
+        assert any(text[start:end] == "Δ" for start, end in spans)
+        view.tail_syntax.update(text, spans)
+        document = Document(text)
+        fragments = view.tail_syntax.lex_document(document)
+        assert any("ansiyellow" in style and "s" in chunk
+                   for line in range(len(document.lines)) for style, chunk in fragments(line))
+        view.open_pin_picker("response")
+        view.clear_pin_picker()
+        assert view.tail_pins["request"] is not None and view.tail_pins["response"] is None
+
+    asyncio.run(run())
+
+
+def test_live_tail_highlights_changes_in_displayed_pinned_json_for_same_endpoint():
+    # Each request body comes from the Admin API; the TUI must compare what it displays.
+    cases = [
+        (b'1', "POST", "/same?turn=0", True, False),
+        (b'true', "POST", "/same?turn=1", True, True),
+        (b'0', "POST", "/same?turn=2", True, True),
+        (b'false', "POST", "/same?turn=3", True, True),
+        (b'1.0', "POST", "/same?turn=4", True, True),
+        (b'1', "POST", "/same?turn=5", True, True),
+        (b'{"a":1,"b":2}', "POST", "/same?turn=6", True, True),
+        (b'{"b":2,"a":1}', "POST", "/same?turn=7", True, True),
+        (b'{"b":2,"a":1}', "POST", "/same?turn=8", True, False),
+        (b'"other"', "POST", "/other", True, False),
+        (b'"method"', "GET", "/same", True, False),
+        (b'"back"', "POST", "/same", True, False),
+        (b'"next"', "POST", "/same", True, True),
+        (b'9', "POST", "/same", False, False),
+        (b'10', "POST", "/same", True, False),
+    ]
+    bodies = {
+        str(index): b'{"flag":' + value + b'}' if has_pin else b'{"different":9}'
+        for index, (value, _, _, has_pin, _) in enumerate(cases)
+    }
+    bodies["8"] = b'{"flag" : {"b": 2, "a": 1}}'  # different raw bytes, same displayed pin
+    rows = {
+        str(index): flow(str(index), started=float(index), method=method,
+                         url="http://owned.invalid" + endpoint,
+                         request_headers=[["Content-Type", "application/json"]],
+                         request_body={"available": True, "size": len(bodies[str(index)])})
+        for index, (_, method, endpoint, _, _) in enumerate(cases)
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(reversed(list(rows.values()))),
+                                      "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: preview(bodies[flow_id])
+    view = TrafficInspector(api)
+    view.toggle_tail()
+    view.tail_pins["request"] = ("flag",)
+
+    async def run():
+        for _ in range(4):
+            await view.refresh()
+        assert all("request" in view.tail_cards[str(index)].bodies for index in range(len(cases)))
+
+    asyncio.run(run())
+    tail, detail = TextArea(lexer=view.tail_syntax), TextArea()
+    view._show(tail, detail)
+    assert "\x1b" not in tail.text
+    document = Document(tail.text)
+    request_lines = [number for number, line in enumerate(document.lines)
+                     if line.startswith("  → request")]
+    assert len(request_lines) == len(cases)
+    lex_line = view.tail_syntax.lex_document(document)
+    styled_requests = []
+    for line_number, (value, _, _, has_pin, expected_change) in zip(request_lines, cases, strict=True):
+        line = document.lines[line_number]
+        expected_value = value.decode() if has_pin else "[missing path]"
+        assert line.endswith(": " + ("Δ " if expected_change else "") + expected_value)
+        styled = "".join(chunk for style, chunk in lex_line(line_number) if "ansiyellow" in style)
+        styled_requests.append(styled)
+        assert ("Δ" in styled) == expected_change
+        assert any(char not in "Δ " for char in styled) == expected_change
+    assert styled_requests[5] == "Δ1"  # 1.0 → 1 has only a deleted suffix
+
+
+def test_live_tail_fetch_budget_truncated_json_and_terminal_controls():
+    rows = [flow(str(index), started=float(index),
+                 request_headers=[["Content-Type", "application/json"]],
+                 response_headers=[["Content-Type", "application/json"]],
+                 request_body={"available": True, "size": BODY_PREVIEW_BYTES + 1},
+                 response_body={"available": True, "size": BODY_PREVIEW_BYTES + 1})
+            for index in range(20)]
+    api = client()
+    api.traffic_flows.return_value = {"flows": list(reversed(rows)), "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[int(flow_id)]
+    payload = b'{"message":"\x1b[2J\x1b]52;c;secret"}'
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: preview(
+        payload, total=BODY_PREVIEW_BYTES + 1
+    )
+    view = TrafficInspector(api)
+    view.toggle_tail()
+    asyncio.run(view.refresh())
+    assert api.traffic_flow.call_count + api.traffic_body.call_count <= TAIL_FETCHES_PER_POLL + 3
+    assert all(call.kwargs == {"preview_bytes": BODY_PREVIEW_BYTES} for call in api.traffic_body.call_args_list)
+    text = view.rows_text()
+    assert "\\x1b[2J" in text and "\x1b[2J" not in text
+    view.open_pin_picker("request")
+    assert view.pin_picker_side is None
+    assert "no complete JSON preview" in view._notice_hold
+
+
+def test_headless_live_tail_keys_pause_choose_pin_resume_and_drilldown():
+    rows = {
+        "old": flow("old", started=1.0, request_headers=[["Content-Type", "application/json"]],
+                    request_body={"available": True, "size": 7}),
+        "new": flow("new", started=2.0, request_headers=[["Content-Type", "application/json"]],
+                    request_body={"available": True, "size": 7}),
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": [rows["new"], rows["old"]], "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: (
+        preview(b'{"n":1}') if side == "request" else {"available": False, "reason": "streamed_or_unavailable"}
+    )
+    view = TrafficInspector(api)
+
+    async def until(predicate):
+        for _ in range(200):
+            if predicate():
+                return
+            await asyncio.sleep(0.01)
+        pytest.fail("Tail key sequence did not reach the expected state")
+
+    async def run():
+        with create_pipe_input() as keyboard, create_app_session(input=keyboard, output=DummyOutput()):
+            app = view.application()
+            app.ttimeoutlen = 0.01
+
+            async def operator():
+                await until(lambda: view.detail is not None)
+                keyboard.send_text("l")
+                await until(lambda: view.tail_mode and view.selected == "new")
+                keyboard.send_text("\x1b[A")
+                await until(lambda: not view.tail_follow and view.selected == "old")
+                keyboard.send_text("R")
+                await until(lambda: view.pin_picker_side == "request")
+                keyboard.send_text("\x1b[B\r")
+                await until(lambda: view.tail_pins["request"] == ("n",))
+                keyboard.send_text("\x1b[F")
+                await until(lambda: view.tail_follow and view.selected == "new")
+                keyboard.send_text("\t")
+                await until(lambda: view.tail_detail_open and not view.tail_follow)
+                assert "HTTP request" in view.detail_text()
+                keyboard.send_text("\t")
+                await until(lambda: not view.tail_detail_open)
+                keyboard.send_text("q")
+
+            app.pre_run_callables.append(lambda: app.create_background_task(operator()))
+            await asyncio.wait_for(app.run_async(), timeout=4)
+
+    asyncio.run(run())
+
+
+def test_live_tail_discards_inflight_card_body_after_filter_change():
+    rows = {
+        "old": flow("old", started=1.0, request_headers=[["Content-Type", "application/json"]],
+                    request_body={"available": True, "size": 17}),
+        "new": flow("new", started=2.0, request_headers=[["Content-Type", "application/json"]],
+                    request_body={"available": True, "size": 7}),
+    }
+    api = client()
+    api.traffic_flows.return_value = {"flows": [rows["new"], rows["old"]], "scope": {"agent": "alice"}}
+    api.traffic_flow.side_effect = lambda flow_id: rows[flow_id]
+    entered, release = threading.Event(), threading.Event()
+
+    def read(flow_id, side, *, preview_bytes):
+        if flow_id == "old" and side == "request":
+            entered.set()
+            assert release.wait(2)
+            return preview(b'{"private":"old"}')
+        return preview(b'{"n":1}') if side == "request" else {"available": False, "reason": "pending"}
+
+    api.traffic_body.side_effect = read
+    view = TrafficInspector(api)
+    view.toggle_tail()
+
+    async def run():
+        first = asyncio.create_task(view.refresh())
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            view.set_filter("~m POST")
+        finally:
+            release.set()
+            await first
+        assert "old" not in view.tail_cards or "request" not in view.tail_cards["old"].bodies
+        accepted = {"agent": "alice", "user_filter": "~m POST"}
+        api.set_traffic_filter.return_value = accepted
+        api.traffic_flows.return_value = {"flows": [rows["new"]], "scope": accepted}
+        await view.refresh()
+        assert "old" not in view.tail_cards
+        assert "private" not in view.rows_text()
+        assert view.tail_pins == {"request": None, "response": None}
+
+    asyncio.run(asyncio.wait_for(run(), timeout=3))
+
+
+def test_live_tail_root_pin_keeps_null_array_and_object_distinct():
+    payload = [b"null"]
+    row = flow("shape", started=1.0, request_headers=[],
+               request_body={"available": True, "size": len(payload[0])})
+    api = client()
+    api.traffic_flows.return_value = {"flows": [row], "scope": {"agent": "alice"}}
+    api.traffic_flow.return_value = row
+    api.traffic_body.side_effect = lambda flow_id, side, *, preview_bytes: (
+        preview(payload[0]) if side == "request" else {"available": False, "reason": "pending"}
+    )
+    view = TrafficInspector(api)
+    view.toggle_tail()
+
+    async def run():
+        await view.refresh()
+        view.open_pin_picker("request")
+        assert view.pin_picker_side == "request" and "$ = null" in view.detail_text()
+        view.pin_picker_selection()
+        assert view.tail_pins["request"] == ()
+        assert "→ request $: null" in view.rows_text()
+        for body, expected in ((b"[1,2]", "[1,2]"), (b'{"ok":true}', '{"ok":true}')):
+            payload[0] = body
+            row["request_body"] = {"available": True, "size": len(body)}
+            await view.refresh()
+            assert f"→ request $: {expected}" in view.rows_text()
+        payload[0] = b'{"x":"\\u001b[2J"}'
+        row["request_body"] = {"available": True, "size": len(payload[0])}
+        await view.refresh()
+        assert r"\u001b[2J" in view.rows_text() and "\x1b[2J" not in view.rows_text()
+
+    asyncio.run(run())
