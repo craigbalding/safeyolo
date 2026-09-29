@@ -114,6 +114,40 @@ def test_http_body_preview_content_type_charset_encoding_and_availability():
         [["Content-Type", "text/plain"]], pretty=True)
 
 
+def test_http_preview_keeps_text_when_a_character_crosses_the_preview_limit():
+    headers = [["Content-Type", "text/plain; charset=utf-8"]]
+    minimal = http_body_preview(preview(b"\xc3", total=2), headers, pretty=False)
+    assert "retained preview truncated: 1 of 2 retained bytes" in minimal
+    assert "unsupported or undecodable charset" not in minimal
+
+    partial = http_body_preview(preview(b"hello\xc3", total=7), headers, pretty=False)
+    assert partial.startswith("hello")
+    assert "retained preview truncated: 6 of 7 retained bytes" in partial
+    assert "unsupported or undecodable charset" not in partial
+
+    text = b"a" * (BODY_PREVIEW_BYTES - 1) + "é".encode() + b"tail"
+    identity = http_body_preview(preview(text[:BODY_PREVIEW_BYTES], total=len(text)), headers, pretty=False)
+    assert identity.startswith("a")
+    assert "retained preview truncated" in identity
+    assert "unsupported or undecodable charset" not in identity
+
+    compressed = http_body_preview(preview(gzip.compress(text)),
+        [*headers, ["Content-Encoding", "gzip"]], pretty=False)
+    assert compressed.startswith("a")
+    assert "decoded preview truncated at 65536 bytes" in compressed
+    assert "retained preview truncated" not in compressed
+    assert "unsupported or undecodable charset" not in compressed
+
+    assert "unsupported or undecodable charset" in http_body_preview(preview(b"hello\xc3"), headers, pretty=False)
+    assert "unsupported or undecodable charset" in http_body_preview(preview(b"hello\xff", total=7), headers, pretty=False)
+    assert "unsupported or undecodable charset" in http_body_preview(preview(b"hello\xed\xa0", total=8), headers, pretty=False)
+
+    utf16 = http_body_preview(preview(b"A\x00B", total=4),
+        [["Content-Type", "text/plain; charset=utf-16-le"]], pretty=False)
+    assert utf16.startswith("A")
+    assert "retained preview truncated: 3 of 4 retained bytes" in utf16
+
+
 @settings(max_examples=60, deadline=None)
 @given(st.binary(max_size=128), st.text(max_size=50))
 def test_generated_payload_and_header_controls_never_reach_terminal(raw, header):

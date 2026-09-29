@@ -163,6 +163,24 @@ def _http_preview_notes(raw_size: int, total: int, truncated: bool, decode_state
     return "\n" + "\n".join(notes) if notes else ""
 
 
+def _decode_text_preview(decoded: bytes, charset: str, *, incomplete: bool) -> str | None:
+    try:
+        return decoded.decode(charset)
+    except UnicodeDecodeError as exc:
+        # A bounded slice may end inside a valid multibyte character. Earlier
+        # invalid bytes and invalid trailing sequences still fail strictly.
+        if (not incomplete or exc.end != len(decoded) or exc.reason not in {
+                "unexpected end of data", "truncated data", "incomplete multibyte sequence",
+        }):
+            return None
+        try:
+            return decoded[:exc.start].decode(charset)
+        except UnicodeError:
+            return None
+    except (LookupError, UnicodeError, TypeError):
+        return None
+
+
 def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
     """Render one bounded HTTP preview without changing retained or exported bytes."""
     if not value.get("available"):
@@ -185,9 +203,8 @@ def http_body_preview(value: dict, headers: list, *, pretty: bool) -> str:
     if not decoded:
         text = "(present, empty decoded body)" if not truncated and decode_state is None else "(no decoded bytes in retained preview)"
     else:
-        try:
-            content = decoded.decode(charset)
-        except (LookupError, UnicodeError, TypeError):
+        content = _decode_text_preview(decoded, charset, incomplete=truncated or decode_state is not None)
+        if content is None:
             return _binary_fallback(raw, media_type, total, f"unsupported or undecodable charset {charset}")
         if pretty and is_json:
             content = _pretty_json(content)
