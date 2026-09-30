@@ -59,6 +59,19 @@ def latencies(samples):
     }
 
 
+def historical_addon_chain(python_source: Path) -> list[str]:
+    """Read the addon chain from the selected pre-cutover Python checkout."""
+    source = ast.parse((python_source / "cli/src/safeyolo/mitm_addons/__init__.py").read_text())
+    return ast.literal_eval(
+        next(
+            node.value
+            for node in source.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "ADDON_CHAIN" for target in node.targets)
+        )
+    )
+
+
 def launch(settings_path):
     """Reuse the production command builder, then execute its traffic master."""
     from safeyolo.proxy import _build_command
@@ -93,6 +106,7 @@ def main(arguments=None):
         parser.error("--output is required")
     if min(args.approvals, args.api_requests, args.api_workers) < 1:
         parser.error("workload counts must be positive")
+    python_source = Path(os.environ["SAFEYOLO_PYTHON_SOURCE"]).resolve()
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
     config, data, logs = root / "config", root / "config/data", root / "logs"
@@ -112,9 +126,9 @@ def main(arguments=None):
     result = {
         "schema": 1,
         "captured_at": datetime.now(UTC).isoformat(),
-        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=python_source, text=True).strip(),
         "production_source_dirty": bool(
-            subprocess.check_output(["git", "diff", "--", "cli/src/safeyolo", "pdp"], cwd=REPO, text=True)
+            subprocess.check_output(["git", "diff", "--", "cli/src/safeyolo", "pdp"], cwd=python_source, text=True)
         ),
         "platform": platform.platform(),
         "machine": platform.machine(),
@@ -155,14 +169,7 @@ def main(arguments=None):
             "Rust API/approval parity",
         ],
     }
-    source = ast.parse((REPO / "cli/src/safeyolo/mitm_addons/__init__.py").read_text())
-    result["production_chain"] = ast.literal_eval(
-        next(
-            n.value
-            for n in source.body
-            if isinstance(n, ast.Assign) and any(isinstance(x, ast.Name) and x.id == "ADDON_CHAIN" for x in n.targets)
-        )
-    )
+    result["production_chain"] = historical_addon_chain(python_source)
     process = None
     console_master = None
     console_thread = None
@@ -194,7 +201,7 @@ def main(arguments=None):
                     env.pop(key)
             env.update(
                 {
-                    "PYTHONPATH": os.pathsep.join([str(REPO / "cli/src"), str(REPO)]),
+                    "PYTHONPATH": os.pathsep.join([str(python_source / "cli/src"), str(REPO), str(python_source)]),
                     "SAFEYOLO_CONFIG_DIR": str(config),
                     "SAFEYOLO_DATA_DIR": str(data),
                     "SAFEYOLO_LOGS_DIR": str(logs),
@@ -208,7 +215,7 @@ def main(arguments=None):
                     "SAFEYOLO_VIA_TOKEN": "fixture-full-production",
                     "SAFEYOLO_DEV_MODE": "1",
                     "SAFEYOLO_DEV_SOURCE_ROOTS": json.dumps(
-                        {"pdp": str(REPO / "pdp"), "safeyolo": str(REPO / "cli/src/safeyolo")}
+                        {"pdp": str(python_source / "pdp"), "safeyolo": str(python_source / "cli/src/safeyolo")}
                     ),
                     "TERM": "xterm-256color",
                 }

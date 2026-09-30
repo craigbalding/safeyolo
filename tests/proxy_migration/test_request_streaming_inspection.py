@@ -443,7 +443,10 @@ def test_streamed_network_policy_decision_precedes_origin_bytes(proxy_backend, t
     ):
         size = STREAM_LIMIT + 1
         body = b"x" * size
-        with head(proxy, origin, "/network-deny", length=size, first=body[:65536]) as client:
+        # A block can answer and close from the request head alone. Sending a
+        # body after that decision can raise BrokenPipe before we read the 403.
+        first = b"" if block else body[:65536]
+        with head(proxy, origin, "/network-deny", length=size, first=first) as client:
             if not block:
                 partial = origin.wait_for("/network-deny", lambda row: row["bytes"] > 0)
                 assert not partial["complete"] and partial["bytes"] < size

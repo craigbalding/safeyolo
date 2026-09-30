@@ -64,11 +64,11 @@ elif args == ['serve', 'status', '--json']:
 elif len(args) == 4 and args[:2] == ['serve', '--yes'] and args[2].startswith('--https='):
     port = args[2].split('=', 1)[1]
     marker = root / (port + '.target')
-    marker.write_text(args[3])
     def close(_signal, _frame):
         marker.unlink(missing_ok=True)
         sys.exit(0)
     signal.signal(signal.SIGTERM, close)
+    marker.write_text(args[3])
     while True:
         time.sleep(0.1)
 else:
