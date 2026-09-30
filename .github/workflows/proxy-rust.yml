@@ -169,6 +169,16 @@ jobs:
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Prepare pinned Python oracle source
+        env:
+          SAFEYOLO_COMPARATOR_COMMIT: 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
+        run: |
+          git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"
+          git worktree add --detach "$SAFEYOLO_STATE_PYTHON_SOURCE" "$SAFEYOLO_COMPARATOR_COMMIT"
+          cd "$SAFEYOLO_STATE_PYTHON_SOURCE"
+          uv sync --frozen --group dev --python 3.12.14
+
       - name: Start the Python-owned Coord fixture
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
@@ -212,6 +222,8 @@ jobs:
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          SAFEYOLO_POLICY_PYTHON: ${{ runner.temp }}/safeyolo-comparator/.venv/bin/python
+          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
         run: |
           export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
           export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
@@ -255,16 +267,6 @@ jobs:
         run: |
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
-
-      - name: Prepare pinned Python oracle source
-        env:
-          SAFEYOLO_COMPARATOR_COMMIT: 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
-          SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
-        run: |
-          git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"
-          git worktree add --detach "$SAFEYOLO_STATE_PYTHON_SOURCE" "$SAFEYOLO_COMPARATOR_COMMIT"
-          cd "$SAFEYOLO_STATE_PYTHON_SOURCE"
-          uv sync --frozen --group dev --python 3.12.14
 
       - name: Prepare pre-cutover Python HTTP comparator
         env:

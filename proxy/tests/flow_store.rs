@@ -453,7 +453,18 @@ fn source(mode: &str, path: &Path) -> Value {
 }
 
 fn source_rollback(mode: &str, path: &Path) -> Value {
-    let python = std::env::var("SAFEYOLO_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+        .expect("set SAFEYOLO_POLICY_PYTHON to the historical comparator interpreter");
+    let source_root = std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+        .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout");
+    assert_eq!(
+        Path::new(&python).canonicalize().unwrap(),
+        Path::new(&source_root)
+            .join(".venv/bin/python")
+            .canonicalize()
+            .unwrap(),
+        "rollback oracle must use the selected historical comparator interpreter"
+    );
     let output = Command::new(python)
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -461,6 +472,7 @@ fn source_rollback(mode: &str, path: &Path) -> Value {
         ))
         .arg(mode)
         .arg(path)
+        .env("SAFEYOLO_SOURCE_ROOT", source_root)
         .output()
         .unwrap();
     assert!(
