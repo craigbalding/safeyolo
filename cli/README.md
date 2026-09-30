@@ -381,13 +381,13 @@ not apply to these deliberately staged coding-harness credentials.
 
 ### Service Gateway
 
-Authorize agents to access external services through the gateway. Each YAML
-service definition supplies:
+Authorize agents to access external or sandbox-provided services through the
+gateway. A YAML service definition can supply:
 
 - the service host;
 - named capabilities and their allowed routes;
 - risky routes and their MITRE ATT&CK tactics; and
-- the authentication method and injection settings.
+- an optional authentication method and injection settings.
 
 | Command | Description |
 |---------|-------------|
@@ -427,6 +427,11 @@ incomplete and lists the binding names. Have the named agent submit the
 operator-provided values to its Agent API at `POST /gateway/submit-binding`,
 then approve the system-authored contract prompt with `safeyolo watch`. There
 is no host-side binding submission command.
+
+A sandbox-provided service uses a configured provider agent with the same name
+as the service. Its definition can omit `auth`; the caller still needs an
+agent-bound service authorization. See [Service provided by a sandbox](../docs/CONFIGURATION.md#service-provided-by-a-sandbox)
+for the service definition, host mapping, and caller workflow.
 
 ### Vault Management
 

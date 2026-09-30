@@ -152,12 +152,20 @@ fn exact_auth_kind_drives_validated_sensitive_header_replacement() {
         assert_eq!(
             result.metadata["gateway_injected_header"],
             if kind.is_some() {
-                "X-Credential"
+                json!("X-Credential")
             } else {
-                "Authorization"
+                Value::Null
             }
         );
-        assert_eq!(result.stats.injected, 1);
+        assert_eq!(result.stats.injected, u64::from(kind.is_some()));
+        assert_eq!(
+            result.trace.as_ref().unwrap().outcome,
+            if kind.is_some() {
+                "injected"
+            } else {
+                "authorized"
+            }
+        );
         assert_eq!(result.audit.last().unwrap().event, "gateway.allow");
     }
     let mut selected = selection(Some("bearer"));
@@ -200,7 +208,8 @@ fn redirects_vault_denials_and_expiry_follow_the_actual_stage_order() {
             .collect::<Vec<_>>(),
         vec!["gateway.http_injection_allowed", "gateway.allow"]
     );
-    let Start::Blocked(unavailable) = start(selection(None), None, "http").unwrap() else {
+    let Start::Blocked(unavailable) = start(selection(Some("bearer")), None, "http").unwrap()
+    else {
         panic!("expected block")
     };
     assert_eq!(
@@ -208,11 +217,20 @@ fn redirects_vault_denials_and_expiry_follow_the_actual_stage_order() {
         json!(["VAULT_UNAVAILABLE"])
     );
     vault.remove("demo-key").unwrap();
-    let Start::Blocked(missing) = start(selection(None), Some(&vault), "http").unwrap() else {
+    let Start::Blocked(missing) = start(selection(Some("bearer")), Some(&vault), "http").unwrap()
+    else {
         panic!("expected block")
     };
     assert_eq!(missing.response.status, 503);
     assert_eq!(missing.response.body["action"], "self_correct");
+    let mut token_headers = HeaderMap::new();
+    token_headers.insert("authorization", HeaderValue::from_static("sgw_synthetic"));
+    let no_auth = ready(start(selection(None), None, "http").unwrap())
+        .apply(&mut token_headers)
+        .unwrap();
+    assert!(!token_headers.contains_key("authorization"));
+    assert_eq!(no_auth.metadata["gateway_injected_header"], Value::Null);
+    assert_eq!(no_auth.stats.injected, 0);
     let mut c = oauth();
     c.expires_at = Some("2020-01-01T00:00:00".into());
     vault.store(c).unwrap();
@@ -525,6 +543,87 @@ fn is_legacy_failed_provider_refresh(case: &Value, expected: &Value) -> bool {
         && expected["evidence"]["stats"]["injected"] == 1
 }
 
+fn assert_legacy_no_auth_observation(index: usize, case: &Value, actual: &Value, source: &Value) {
+    // The pinned Python gateway still requires a vault credential for a
+    // service without auth. These rows provide one, isolating the later stage.
+    assert!(case["kind"].is_null());
+    assert_eq!(source["failure"], Value::Null, "source case {index}");
+    assert_eq!(source["refresh_calls"], 0, "source case {index}");
+    assert_eq!(source["header_injection"], false, "source case {index}");
+    if case["scheme"] == "http" {
+        assert_eq!(
+            source["headers"],
+            json!([
+                ["after", "two"],
+                ["authorization", "sgw_synthetic"],
+                ["before", "one"]
+            ]),
+            "source case {index}"
+        );
+        assert_eq!(
+            source["response"],
+            json!({
+                "status": 301,
+                "headers": [["Location", "https://api.example:8080/signed/%2F?Q=a%2Bb&Q=%252F"], ["X-SafeYolo-Reason", "credential-injection-requires-https"]],
+                "body_bytes": ""
+            }),
+            "source case {index}"
+        );
+        assert_eq!(
+            source["evidence"]["metadata"],
+            json!({}),
+            "source case {index}"
+        );
+        assert_eq!(source["evidence"]["audit"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            source["evidence"]["audit"][0]["event"],
+            "gateway.https_redirect"
+        );
+        assert!(source["evidence"]["trace"].is_null());
+        assert_eq!(
+            source["evidence"]["stats"],
+            json!({"injected": 0, "refreshed": 0})
+        );
+    } else {
+        assert_eq!(
+            source["headers"],
+            json!([["after", "two"], ["before", "one"]])
+        );
+        assert!(source["response"].is_null());
+        assert_eq!(
+            source["evidence"]["metadata"]["gateway_injected_header"],
+            "Authorization"
+        );
+        assert_eq!(source["evidence"]["audit"].as_array().unwrap().len(), 1);
+        assert_eq!(source["evidence"]["audit"][0]["event"], "gateway.allow");
+        assert_eq!(source["evidence"]["trace"]["outcome"], "injected");
+        assert_eq!(
+            source["evidence"]["stats"],
+            json!({"injected": 1, "refreshed": 0})
+        );
+    }
+    // #882 intentionally removes the vault and plaintext-redirect dependency
+    // for no-auth services. Check the complete native observation, including
+    // the stripped token and evidence, instead of ignoring the source mismatch.
+    assert_eq!(
+        actual,
+        &json!({
+            "headers": [["after", "two"], ["before", "one"]],
+            "response": null,
+            "evidence": {
+                "metadata": {"gateway_service": "demo", "gateway_capability": "reader", "gateway_agent": "alice", "gateway_account": "operator", "gateway_injected_header": null},
+                "audit": [{"event": "gateway.allow", "kind": "gateway", "addon": "service-gateway", "decision": "allow", "severity": "low", "summary": "Gateway GET demo/signed/%2F → authorized (reader)", "host": "api.example", "agent": "alice", "request_id": "req-generated", "details": {"service": "demo", "capability": "reader", "account": "operator", "method": "GET", "path": "/signed/%2F"}}],
+                "trace": {"outcome": "authorized", "details": {"service": "demo", "capability": "reader"}},
+                "stats": {"injected": 0, "refreshed": 0}
+            },
+            "failure": null,
+            "refresh_calls": 0,
+            "header_injection": false
+        }),
+        "native no-auth case {index}: {case}"
+    );
+}
+
 fn observe(case: &Value, vault: &Vault) -> Value {
     vault.remove("demo-key").unwrap();
     let mut c = credential();
@@ -641,6 +740,10 @@ fn assert_python_injection_observation(
     actual: &Value,
     expected: &Value,
 ) -> bool {
+    if case["kind"].is_null() {
+        assert_legacy_no_auth_observation(index, case, actual, expected);
+        return false;
+    }
     if case["repair"] == "crlf_value" {
         assert_eq!(expected["header_injection"], true);
         assert_eq!(expected["evidence"]["stats"]["injected"], 1);
@@ -832,12 +935,17 @@ json.dump(rows,sys.stdout)
     let expected: Value = serde_json::from_slice(&output.stdout).unwrap();
     let (_directory, vault) = vault();
     let mut legacy_failed_refresh_cases = Vec::new();
+    let mut legacy_no_auth_cases = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let actual = observe(case, &vault);
+        if case["kind"].is_null() {
+            legacy_no_auth_cases.push(index);
+        }
         if assert_python_injection_observation(index, case, &actual, &expected[index]) {
             legacy_failed_refresh_cases.push(index);
         }
     }
+    assert_eq!(legacy_no_auth_cases, [20, 21, 22, 23]);
     assert_eq!(legacy_failed_refresh_cases, [31, 35, 45]);
     eprintln!(
         "{} actual Python service-gateway injection cases",

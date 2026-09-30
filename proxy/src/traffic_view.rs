@@ -105,6 +105,7 @@ struct Row {
 pub(crate) enum UpstreamRoute {
     Direct,
     Parent,
+    Provider,
 }
 
 #[derive(Clone)]
@@ -135,6 +136,7 @@ impl UpstreamConnectionObservation {
             "route": match self.route {
                 UpstreamRoute::Direct => "direct",
                 UpstreamRoute::Parent => "parent",
+                UpstreamRoute::Provider => "provider",
             },
             "peer": self.peer.map(|peer| peer.to_string()),
             "started": self.started,

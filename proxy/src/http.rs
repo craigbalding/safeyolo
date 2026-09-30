@@ -1098,6 +1098,7 @@ async fn open_egress_for_flow(
 async fn open_outbound(
     runtime: &Runtime,
     allowed: &AllowedRequest<'_>,
+    provider: Option<&str>,
     offer_http2: bool,
     tunnel: Option<&Tunnel>,
     live: Option<&crate::traffic_view::Exchange>,
@@ -1109,9 +1110,23 @@ async fn open_outbound(
     } else {
         None
     };
-    let connection = match existing {
-        Some(connection) => connection,
-        None => {
+    let connection = match (existing, provider) {
+        (Some(_), Some(_)) => {
+            // A provider route may appear after a CONNECT was admitted under an
+            // earlier policy snapshot. Never reuse that ordinary connection.
+            return Err("provider route cannot reuse an outbound tunnel".into());
+        }
+        (Some(connection), None) => connection,
+        (None, Some(provider)) => Connected {
+            stream: crate::provider_stream::open(provider, destination.port).await?,
+            peer: None,
+            observation: crate::traffic_view::UpstreamConnectionObservation::new(
+                format!("upstream-{}", uuid::Uuid::new_v4().simple()),
+                crate::traffic_view::UpstreamRoute::Provider,
+                Some(crate::circuit_runtime::now()),
+            ),
+        },
+        (None, None) => {
             open_egress_for_flow(
                 runtime,
                 allowed,
@@ -1924,6 +1939,7 @@ async fn execute_refresh(
             identity,
             request_id,
         },
+        None,
         false,
         None,
         None,
@@ -2307,6 +2323,20 @@ where
         return Ok((prior_block(denied), decision.decision));
     }
     if request.method() == Method::CONNECT {
+        if runtime
+            .policy
+            .as_ref()
+            .and_then(crate::policy::Policy::gateway)
+            .and_then(|gateway| gateway.provider_for_host(&destination.policy_host))
+            .is_some()
+        {
+            // CONNECT has no authorized application route yet. Never open a
+            // provider stream (or fall through to DNS) for opaque tunnel bytes.
+            return Ok((
+                prior_block(gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?),
+                "deny".into(),
+            ));
+        }
         if protected_parent {
             return Ok((prior_block(admin_rejection()), "admin_port_access".into()));
         }
@@ -2609,8 +2639,12 @@ where
     let mut gateway_injected_header = None;
     let mut gateway_recording_header = None;
     let mut gateway_evidence = None;
+    let mut provider_route = None;
     if let Some(policy) = runtime.policy.as_ref() {
         let snapshot = policy.gateway();
+        let provider_name = snapshot
+            .and_then(|snapshot| snapshot.provider_for_host(&destination.policy_host))
+            .map(str::to_owned);
         // Gateway token fallback and contract checks need each original field.
         let gateway_headers: Vec<_> = ordered_headers
             .recording_pairs()
@@ -2674,7 +2708,12 @@ where
             }
         };
         match decision {
-            crate::services::GatewayDecision::PassThrough => {}
+            crate::services::GatewayDecision::PassThrough => {
+                if provider_name.is_some() {
+                    let reply = gateway_response(403, "GATEWAY_AUTH_REQUIRED", request_id)?;
+                    return Ok((prior_block(reply), "deny".into()));
+                }
+            }
             crate::services::GatewayDecision::Deny { status, code, .. } => {
                 let reply = gateway_response(status, &code, request_id)?;
                 return Ok((prior_block(reply), "deny".into()));
@@ -2684,6 +2723,17 @@ where
                 return Ok((prior_block(reply), "deny".into()));
             }
             crate::services::GatewayDecision::Selected { credential } => {
+                if let Some(provider) = provider_name {
+                    let caller = identity.request_agent().expect("selected gateway identity");
+                    let Some(caller_id) =
+                        snapshot.and_then(|snapshot| snapshot.configured_agent_id(caller))
+                    else {
+                        let reply =
+                            gateway_response(503, "GATEWAY_IDENTITY_UNAVAILABLE", request_id)?;
+                        return Ok((prior_block(reply), "deny".into()));
+                    };
+                    provider_route = Some((provider, caller_id.to_owned(), caller.to_owned()));
+                }
                 if credential.contract_operation.is_some() && contract_body.is_none() {
                     // A streamed body cannot be checked against a contract
                     // without first owning its complete parser terminal. Do
@@ -2825,7 +2875,9 @@ where
                 // last accepted snapshot; the subsequent snapshot check and
                 // atomic refresh publication still fail closed on a visible
                 // replacement.
-                if let Some(vault) = runtime.vault.as_ref() {
+                if credential.auth_kind.is_some()
+                    && let Some(vault) = runtime.vault.as_ref()
+                {
                     let _ = vault.reload_if_changed();
                 }
                 let start = crate::credential_injection::prepare(
@@ -2926,6 +2978,28 @@ where
                     }
                 }
             }
+        }
+    }
+    if let Some((_, caller_id, caller_name)) = &provider_route {
+        let legacy_name = header::HeaderName::from_static("x-safeyolo-agent");
+        request.headers_mut().remove(&legacy_name);
+        ordered_headers.remove(&legacy_name);
+        for (name, value) in [
+            ("x-safeyolo-agent-id", caller_id.as_str()),
+            ("x-safeyolo-agent-name", caller_name.as_str()),
+        ] {
+            let name = header::HeaderName::from_static(name);
+            let value = match header::HeaderValue::from_str(value) {
+                Ok(value) => value,
+                Err(_) => {
+                    let reply = gateway_response(503, "GATEWAY_IDENTITY_UNAVAILABLE", request_id)?;
+                    return Ok((prior_block(reply), "deny".into()));
+                }
+            };
+            request.headers_mut().remove(&name);
+            ordered_headers.remove(&name);
+            request.headers_mut().insert(&name, value.clone());
+            ordered_headers.replace_value(&name, value.as_bytes());
         }
     }
     // Gateway credentials are materialized only after the first request-hook
@@ -3232,6 +3306,7 @@ where
             identity,
             request_id,
         },
+        provider_route.as_ref().map(|(name, _, _)| name.as_str()),
         request.version() == hyper::Version::HTTP_2,
         tunnel,
         live.as_deref(),

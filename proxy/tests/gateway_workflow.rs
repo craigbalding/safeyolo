@@ -3610,9 +3610,9 @@ target_hosts = ["localhost"]
         .unwrap();
     assert_eq!(
         gateway_event["metadata"]["gateway_injected_header"],
-        "Authorization"
+        serde_json::Value::Null
     );
-    assert_eq!(gateway_event["stats"]["injected"], 1);
+    assert_eq!(gateway_event["stats"]["injected"], 0);
 
     let audit_rows = assert_jsonl_rows_exclude_canaries(&root_path.join("audit.jsonl"), &canaries);
     let gateway_audit = audit_rows

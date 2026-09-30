@@ -383,6 +383,8 @@ fn deserialize_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Resul
 /// API/provisioning callers use the explicit secret-returning views below.
 pub struct GatewaySnapshot {
     registry: Option<Arc<Registry>>,
+    /// A same-named configured agent selects the sandbox transport even when stopped.
+    agents: BTreeMap<String, Option<String>>,
     tokens: Vec<TokenBinding>,
     hosts: HostMap,
     contracts: Vec<ContractBinding>,
@@ -445,6 +447,25 @@ impl GatewaySnapshot {
         // Construct the wiping owner before validating any token-bearing data.
         let mut snapshot = Self {
             registry,
+            agents: document
+                .get("agents")
+                .and_then(Value::as_object)
+                .map(|agents| {
+                    agents
+                        .iter()
+                        .map(|(name, config)| {
+                            (
+                                name.clone(),
+                                config
+                                    .get("agent_id")
+                                    .and_then(Value::as_str)
+                                    .filter(|id| !id.is_empty())
+                                    .map(str::to_owned),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             tokens: Vec::new(),
             hosts: HostMap::new(),
             contracts: Vec::new(),
@@ -595,6 +616,16 @@ impl GatewaySnapshot {
 
     pub fn registry(&self) -> Option<Arc<Registry>> {
         self.registry.clone()
+    }
+
+    pub(crate) fn provider_for_host(&self, host: &str) -> Option<&str> {
+        let name = self.hosts.get(&host.to_lowercase())?;
+        (self.registry.as_ref()?.services.contains_key(name) && self.agents.contains_key(name))
+            .then_some(name.as_str())
+    }
+
+    pub(crate) fn configured_agent_id(&self, name: &str) -> Option<&str> {
+        self.agents.get(name)?.as_deref()
     }
 
     pub fn compiled_routes(&self) -> &[CompiledRoute] {
