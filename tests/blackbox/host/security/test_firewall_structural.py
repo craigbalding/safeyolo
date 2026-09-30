@@ -7,8 +7,10 @@ observable by local users via `ps` or `/proc/PID/cmdline`.
 import json
 import os
 import subprocess
+import sys
 
 import pytest
+from harness.macos_process_argv import process_argv
 
 
 class TestProcessSecrecy:
@@ -51,6 +53,8 @@ class TestProcessSecrecy:
             if os.path.exists(f"/proc/{pid}/cmdline"):
                 cmdline = (Path(f"/proc/{pid}/cmdline").read_bytes()
                            .replace(b"\0", b" ").decode())
+            elif sys.platform == "darwin":
+                cmdline = b" ".join(process_argv(pid)).decode(errors="replace")
             else:
                 result = subprocess.run(
                     ["ps", "-p", str(pid), "-o", "command="],
