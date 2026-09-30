@@ -120,7 +120,9 @@ def sinkhole():
         client.wait_for_ready(timeout=10)
         client.wait_for_receiver_ready(SINKHOLE_RECEIVER, timeout=10)
         client.clear_requests()
-    except Exception:
+    except Exception as exc:
+        if os.environ.get("SAFEYOLO_BLACKBOX_PROXY_BACKEND") == "rust":
+            pytest.fail(f"Selected native sinkhole is unavailable: {exc}")
         pytest.skip("Sinkhole not available")
     yield client
     client.close()

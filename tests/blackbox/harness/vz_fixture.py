@@ -31,6 +31,7 @@ from sinkhole_parent import Parent, Request, _open_peer  # noqa: E402
 from sinkhole_router import SINKHOLE_HOST, SINKHOLE_HOSTS  # noqa: E402
 
 log = logging.getLogger("vz_fixture")
+READINESS_HOST = "__sinkhole_receiver_ready__.test"
 
 
 class VZRequest(Request):
@@ -84,7 +85,10 @@ class VZRequest(Request):
             fixture = True
         elif self.path.startswith("/"):
             host = self.headers.get("Host", "").split(":", 1)[0].rstrip(".").lower()
-            fixture = host in SINKHOLE_HOSTS
+            fixture = host in SINKHOLE_HOSTS or (
+                host == READINESS_HOST
+                and self.path.startswith("/__sinkhole_receiver_ready__/")
+            )
             if not fixture and host not in {"127.0.0.1", "localhost"}:
                 self.send_error(400, "unknown fixture host")
                 return

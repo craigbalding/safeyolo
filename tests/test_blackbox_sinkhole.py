@@ -114,6 +114,39 @@ def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
         control_thread.join(timeout=5)
 
 
+def test_vz_fixture_accepts_readiness_probe_but_rejects_unknown_host():
+    from tests.blackbox.harness.vz_fixture import Parent, VZRequest
+    from tests.blackbox.host.sinkhole_client import SinkholeClient
+
+    fixture = Parent(None, None, host="127.0.0.1", port=0, request_handler=VZRequest)
+    fixture.https_port = 1
+    fixture.p2_fixture = None
+    thread = threading.Thread(target=fixture.serve_forever, daemon=True)
+    thread.start()
+    client = SinkholeClient(f"http://127.0.0.1:{fixture.server_port}")
+    try:
+        client.wait_for_ready(timeout=2)
+        client.clear_requests()
+        client.wait_for_receiver_ready(client.base_url, timeout=2)
+        requests = client.get_requests(host="__sinkhole_receiver_ready__.test")
+        assert len(requests) == 1
+        assert requests[0].path.startswith("/__sinkhole_receiver_ready__/")
+
+        with httpx.Client() as http:
+            denied = http.get(client.base_url + "/unrelated", headers={"Host": "unknown.test"})
+            wrong_probe = http.get(
+                client.base_url + "/unrelated", headers={"Host": "__sinkhole_receiver_ready__.test"}
+            )
+        assert denied.status_code == 400
+        assert wrong_probe.status_code == 400
+        assert len(client.get_requests(host="unknown.test")) == 0
+    finally:
+        client.close()
+        fixture.shutdown()
+        fixture.server_close()
+        thread.join(timeout=5)
+
+
 def test_sinkhole_receiver_readiness_rejects_unrelated_capture():
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 
