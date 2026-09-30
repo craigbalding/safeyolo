@@ -11,7 +11,7 @@ The validator must reject anything that could escape these contexts.
 import pytest
 
 # Import the validator and pattern directly — no subprocess needed.
-from safeyolo.commands.agent import HOSTNAME_PATTERN, _validate_instance_name
+from safeyolo.agent_configuration import HOSTNAME_PATTERN, _validate_instance_name
 
 # typer.Exit → click.exceptions.Exit → RuntimeError (not SystemExit).
 try:

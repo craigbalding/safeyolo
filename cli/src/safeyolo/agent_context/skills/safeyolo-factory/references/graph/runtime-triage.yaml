@@ -49,6 +49,13 @@ nodes:
     keywords: [agent behavior, loops, guesses, poor feedback, unproductive]
     source: authored
 
+  - id: sym.runtime_operator_intervention
+    kind: symptom
+    label: "The operator is considering a live change to recover or improve factory behavior"
+    detail: "Enter here before changing a brief, route, contract, supervisor, capability, or agent direction."
+    keywords: [operator intervention, live change, correction, recovery, factory improvement]
+    source: authored
+
   # ---- Evidence ------------------------------------------------------
   - id: ev.runtime_check_source
     kind: evidence
@@ -68,6 +75,18 @@ nodes:
   - id: ev.runtime_read_brief
     kind: evidence
     label: "Read current brief revision/body when present; distinguish direction from contract responsibility"
+    source: authored
+
+  - id: ev.runtime_establish_authority
+    kind: evidence
+    label: "Establish which exact sources govern the affected behavior"
+    detail: "Use the approved and supervisor-staged contract snapshot for authority and routes. Treat a live brief as subordinate direction. Treat messages, checkpoints, and session output as evidence of runtime state."
+    source: authored
+
+  - id: ev.runtime_model_affected_edge
+    kind: evidence
+    label: "Model the complete affected transition before changing it"
+    detail: "Name the sender, recipient count and identities, required header fields, correlation identity, response recipients, completion owner, and expected downstream checkpoint changes."
     source: authored
 
   - id: ev.runtime_check_coord
@@ -101,6 +120,18 @@ nodes:
     label: "After correction, re-run the smallest representative transition and then check end-to-end progress"
     source: authored
 
+  - id: ev.runtime_define_state_delta
+    kind: evidence
+    label: "Name the single owning layer and the expected before/after state"
+    detail: "Choose one bounded correction at the layer that owns the defect. Do not compensate in a different layer."
+    source: authored
+
+  - id: ev.runtime_record_operator_result
+    kind: evidence
+    label: "Record the graph path, evidence identities, classification, action, and verification"
+    detail: "Keep the record compact and durable so a later operator can reconstruct why the intervention was safe."
+    source: authored
+
   # ---- Classifications -----------------------------------------------
   - id: cls.runtime_snapshot_drift
     kind: classification
@@ -110,6 +141,11 @@ nodes:
   - id: cls.runtime_contract_defect
     kind: classification
     label: "Contract defect: required ownership, authority, context, response, or recovery is absent or contradictory"
+    source: authored
+
+  - id: cls.runtime_brief_contract_conflict
+    kind: classification
+    label: "Brief-contract conflict: live direction changes authority, routing, fields, cardinality, or completion defined by the running contract"
     source: authored
 
   - id: cls.runtime_routing_defect
@@ -151,6 +187,11 @@ nodes:
   - id: con.runtime_fix_contract
     kind: conclusion
     label: "Use the cross-contract review graph and make the smallest coherent contract-set correction"
+    source: authored
+
+  - id: con.runtime_remove_conflicting_direction
+    kind: conclusion
+    label: "Correct only the conflicting live direction; do not rewrite the contract to justify it"
     source: authored
 
   - id: con.runtime_fix_route
@@ -210,12 +251,20 @@ edges:
   - {from: sym.runtime_agent_unproductive, to: ev.runtime_check_contract_edge, kind: next_check}
   - {from: sym.runtime_agent_unproductive, to: ev.runtime_check_capability, kind: next_check}
   - {from: sym.runtime_agent_unproductive, to: ev.runtime_read_brief, kind: next_check, when: "a live brief might be directing the behavior"}
+  - {from: sym.runtime_operator_intervention, to: ev.runtime_establish_authority, kind: next_check}
+  - {from: sym.runtime_bad_handoff, to: ev.runtime_establish_authority, kind: next_check}
+  - {from: sym.runtime_agent_unproductive, to: ev.runtime_establish_authority, kind: next_check}
   - {from: ev.runtime_check_source, to: ev.runtime_compare_snapshot, kind: next_check}
   - {from: ev.runtime_read_brief, to: ev.runtime_check_contract_edge, kind: next_check, when: "compare live direction with the running role responsibility"}
+  - {from: ev.runtime_establish_authority, to: ev.runtime_model_affected_edge, kind: next_check}
+  - {from: ev.runtime_model_affected_edge, to: ev.runtime_check_coord, kind: next_check, when: "runtime delivery or routing evidence is relevant"}
+  - {from: ev.runtime_model_affected_edge, to: ev.runtime_check_contract_edge, kind: next_check}
+  - {from: ev.runtime_model_affected_edge, to: ev.runtime_read_brief, kind: next_check, when: "a live brief directs the transition"}
 
   # Exact evidence identifies the owning layer.
   - {from: ev.runtime_compare_snapshot, to: cls.runtime_snapshot_drift, kind: implies, when: "source, approved, or supervisor-staged hashes differ"}
   - {from: ev.runtime_check_contract_edge, to: cls.runtime_contract_defect, kind: implies, when: "the running contract omits or contradicts the required behavior"}
+  - {from: ev.runtime_check_contract_edge, to: cls.runtime_brief_contract_conflict, kind: implies, when: "the checked brief changes an edge or authority fixed by the running contract"}
   - {from: ev.runtime_check_coord, to: cls.runtime_routing_defect, kind: implies, when: "room/grant/envelope target/attention or TOML route does not match the intended edge"}
   - {from: ev.runtime_doctor, to: cls.runtime_dependency_failure, kind: implies, when: "a concrete runtime component is unhealthy or mismatched"}
   - {from: ev.runtime_check_lifecycle, to: cls.runtime_dependency_failure, kind: implies, when: "the required supervisor/process/MCP path is absent or repeatedly failing"}
@@ -225,25 +274,36 @@ edges:
   - {from: ev.runtime_check_lifecycle, to: cls.runtime_evidence_incomplete, kind: implies, when: "no lifecycle evidence establishes whether the agent is alive or exited"}
   - {from: cls.runtime_evidence_incomplete, to: ask.runtime_offer_observation, kind: escalates_to}
 
-  # One classification, one narrow correction.
-  - {from: cls.runtime_snapshot_drift, to: con.runtime_run_approved_snapshot, kind: implies}
-  - {from: cls.runtime_contract_defect, to: con.runtime_fix_contract, kind: implies}
-  - {from: cls.runtime_routing_defect, to: con.runtime_fix_route, kind: implies}
-  - {from: cls.runtime_dependency_failure, to: con.runtime_fix_dependency, kind: implies}
-  - {from: cls.runtime_recovery_defect, to: con.runtime_fix_recovery, kind: implies}
-  - {from: cls.runtime_capability_mismatch, to: con.runtime_supply_capability, kind: implies}
+  # One classification, one explicitly predicted correction at its owning layer.
+  - {from: cls.runtime_snapshot_drift, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_contract_defect, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_brief_contract_conflict, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_routing_defect, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_dependency_failure, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_recovery_defect, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_capability_mismatch, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: cls.runtime_agent_behavior, to: ev.runtime_define_state_delta, kind: next_check}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_run_approved_snapshot, kind: implies, when: "the classification is snapshot drift"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_fix_contract, kind: implies, when: "the classification is a contract defect"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_remove_conflicting_direction, kind: implies, when: "the classification is a brief-contract conflict"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_fix_route, kind: implies, when: "the classification is a routing defect"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_fix_dependency, kind: implies, when: "the classification is a runtime dependency failure"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_fix_recovery, kind: implies, when: "the classification is a recovery defect"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_supply_capability, kind: implies, when: "the classification is a capability mismatch"}
+  - {from: ev.runtime_define_state_delta, to: con.runtime_improve_agent_guidance, kind: implies, when: "the classification is an agent-behavior defect"}
   - {from: cls.runtime_capability_mismatch, to: ask.runtime_approve_capability, kind: escalates_to, when: "no approved resource can satisfy the responsibility"}
-  - {from: cls.runtime_agent_behavior, to: con.runtime_improve_agent_guidance, kind: implies}
 
   # Retest the corrected edge and its downstream effect.
   - {from: con.runtime_run_approved_snapshot, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_contract, to: ev.runtime_retest_transition, kind: next_check}
+  - {from: con.runtime_remove_conflicting_direction, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_route, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_dependency, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_fix_recovery, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_supply_capability, to: ev.runtime_retest_transition, kind: next_check}
   - {from: con.runtime_improve_agent_guidance, to: ev.runtime_retest_transition, kind: next_check}
   - {from: ev.runtime_retest_transition, to: con.runtime_verify_end_to_end, kind: implies, when: "the direct transition and downstream progress now succeed"}
+  - {from: con.runtime_verify_end_to_end, to: ev.runtime_record_operator_result, kind: next_check}
 
 entries:
   - symptom: sym.runtime_doctor_failure
@@ -252,3 +312,4 @@ entries:
   - symptom: sym.runtime_agent_failure
   - symptom: sym.runtime_edit_ignored
   - symptom: sym.runtime_agent_unproductive
+  - symptom: sym.runtime_operator_intervention

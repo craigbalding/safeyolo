@@ -13,18 +13,24 @@ flowchart TD
     sym.runtime_agent_failure(["A supervised agent exited, trapped, restarted, or emits repeated stderr/errors"])
     sym.runtime_edit_ignored(["A factory TOML or role-contract edit had no effect on running behavior"])
     sym.runtime_agent_unproductive(["The agent is alive and receiving work but repeatedly chooses an unproductive action"])
+    sym.runtime_operator_intervention(["The operator is considering a live change to recover or improve factory behavior"])
     ev.runtime_check_source["Run 'factory check' on the intended source and retain resolved paths, roles, routes, bytes, and hashes"]
     ev.runtime_doctor["Run 'factory doctor' and retain each component result plus the summary"]
     ev.runtime_compare_snapshot["Compare checked source hashes with the approved snapshot and each supervisor-staged snapshot"]
     ev.runtime_read_brief["Read current brief revision/body when present; distinguish direction from contract responsibility"]
+    ev.runtime_establish_authority["Establish which exact sources govern the affected behavior"]
+    ev.runtime_model_affected_edge["Model the complete affected transition before changing it"]
     ev.runtime_check_coord["Check Coord/NATS health, room membership, send/receive grants, canonical sender/target, attention, and retained handoffs"]
     ev.runtime_check_lifecycle["Inspect supervisor checkpoint plus start, exit, trap, restart, and stderr lifecycle evidence"]
     ev.runtime_check_contract_edge["Read the exact supervisor-staged contracts and TOML edge governing the failed transition"]
     ev.runtime_check_capability["Verify the role can access the approved tool, environment, credential, and data its contract requires"]
     ev.runtime_check_agent_session["Inspect the relevant retained agent output/session around the canonical work object"]
     ev.runtime_retest_transition["After correction, re-run the smallest representative transition and then check end-to-end progress"]
+    ev.runtime_define_state_delta["Name the single owning layer and the expected before/after state"]
+    ev.runtime_record_operator_result["Record the graph path, evidence identities, classification, action, and verification"]
     cls.runtime_snapshot_drift{{"Source/approved/running mismatch: the factory uses different contract bytes"}}
     cls.runtime_contract_defect{{"Contract defect: required ownership, authority, context, response, or recovery is absent or contradictory"}}
+    cls.runtime_brief_contract_conflict{{"Brief-contract conflict: live direction changes authority, routing, fields, cardinality, or completion defined by the running contract"}}
     cls.runtime_routing_defect{{"Routing defect: canonical room, membership, grant, target, attention, or declared handoff is wrong"}}
     cls.runtime_dependency_failure{{"Runtime dependency failure: Coord/NATS, proxy, supervisor, process, storage, or MCP path is unhealthy"}}
     cls.runtime_recovery_defect{{"Recovery defect: failure was detected but useful work did not resume or state was lost/duplicated"}}
@@ -33,6 +39,7 @@ flowchart TD
     cls.runtime_evidence_incomplete{{"Current evidence cannot distinguish healthy quiescence, missed work, or process failure"}}
     con.runtime_run_approved_snapshot(["Check and approve the intended snapshot, then run it to update the factory"])
     con.runtime_fix_contract(["Use the cross-contract review graph and make the smallest coherent contract-set correction"])
+    con.runtime_remove_conflicting_direction(["Correct only the conflicting live direction; do not rewrite the contract to justify it"])
     con.runtime_fix_route(["Correct the exact room/grant/target/handoff mismatch and retest that transition"])
     con.runtime_fix_dependency(["Repair the named dependency without changing unrelated contracts or restarting healthy components"])
     con.runtime_fix_recovery(["Correct the recovery boundary that lost, duplicated, or failed to resume canonical work"])
@@ -56,10 +63,18 @@ flowchart TD
     sym.runtime_agent_unproductive -->|"next_check"| ev.runtime_check_contract_edge
     sym.runtime_agent_unproductive -->|"next_check"| ev.runtime_check_capability
     sym.runtime_agent_unproductive -->|"next_check: a live brief might be directing the behavior"| ev.runtime_read_brief
+    sym.runtime_operator_intervention -->|"next_check"| ev.runtime_establish_authority
+    sym.runtime_bad_handoff -->|"next_check"| ev.runtime_establish_authority
+    sym.runtime_agent_unproductive -->|"next_check"| ev.runtime_establish_authority
     ev.runtime_check_source -->|"next_check"| ev.runtime_compare_snapshot
     ev.runtime_read_brief -->|"next_check: compare live direction with the running role responsibility"| ev.runtime_check_contract_edge
+    ev.runtime_establish_authority -->|"next_check"| ev.runtime_model_affected_edge
+    ev.runtime_model_affected_edge -->|"next_check: runtime delivery or routing evidence is relevant"| ev.runtime_check_coord
+    ev.runtime_model_affected_edge -->|"next_check"| ev.runtime_check_contract_edge
+    ev.runtime_model_affected_edge -->|"next_check: a live brief directs the transition"| ev.runtime_read_brief
     ev.runtime_compare_snapshot -->|"implies: source, approved, or supervisor-staged hashes differ"| cls.runtime_snapshot_drift
     ev.runtime_check_contract_edge -->|"implies: the running contract omits or contradicts the required behavior"| cls.runtime_contract_defect
+    ev.runtime_check_contract_edge -->|"implies: the checked brief changes an edge or authority fixed by the running contract"| cls.runtime_brief_contract_conflict
     ev.runtime_check_coord -->|"implies: room/grant/envelope target/attention or TOML route does not match the intended edge"| cls.runtime_routing_defect
     ev.runtime_doctor -->|"implies: a concrete runtime component is unhealthy or mismatched"| cls.runtime_dependency_failure
     ev.runtime_check_lifecycle -->|"implies: the required supervisor/process/MCP path is absent or repeatedly failing"| cls.runtime_dependency_failure
@@ -68,22 +83,33 @@ flowchart TD
     ev.runtime_check_agent_session -->|"implies: the task arrived and feasible contract/capability paths exist, but agent choices remain unproductive"| cls.runtime_agent_behavior
     ev.runtime_check_lifecycle -->|"implies: no lifecycle evidence establishes whether the agent is alive or exited"| cls.runtime_evidence_incomplete
     cls.runtime_evidence_incomplete -->|"escalates_to"| ask.runtime_offer_observation
-    cls.runtime_snapshot_drift -->|"implies"| con.runtime_run_approved_snapshot
-    cls.runtime_contract_defect -->|"implies"| con.runtime_fix_contract
-    cls.runtime_routing_defect -->|"implies"| con.runtime_fix_route
-    cls.runtime_dependency_failure -->|"implies"| con.runtime_fix_dependency
-    cls.runtime_recovery_defect -->|"implies"| con.runtime_fix_recovery
-    cls.runtime_capability_mismatch -->|"implies"| con.runtime_supply_capability
+    cls.runtime_snapshot_drift -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_contract_defect -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_brief_contract_conflict -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_routing_defect -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_dependency_failure -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_recovery_defect -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_capability_mismatch -->|"next_check"| ev.runtime_define_state_delta
+    cls.runtime_agent_behavior -->|"next_check"| ev.runtime_define_state_delta
+    ev.runtime_define_state_delta -->|"implies: the classification is snapshot drift"| con.runtime_run_approved_snapshot
+    ev.runtime_define_state_delta -->|"implies: the classification is a contract defect"| con.runtime_fix_contract
+    ev.runtime_define_state_delta -->|"implies: the classification is a brief-contract conflict"| con.runtime_remove_conflicting_direction
+    ev.runtime_define_state_delta -->|"implies: the classification is a routing defect"| con.runtime_fix_route
+    ev.runtime_define_state_delta -->|"implies: the classification is a runtime dependency failure"| con.runtime_fix_dependency
+    ev.runtime_define_state_delta -->|"implies: the classification is a recovery defect"| con.runtime_fix_recovery
+    ev.runtime_define_state_delta -->|"implies: the classification is a capability mismatch"| con.runtime_supply_capability
+    ev.runtime_define_state_delta -->|"implies: the classification is an agent-behavior defect"| con.runtime_improve_agent_guidance
     cls.runtime_capability_mismatch -->|"escalates_to: no approved resource can satisfy the responsibility"| ask.runtime_approve_capability
-    cls.runtime_agent_behavior -->|"implies"| con.runtime_improve_agent_guidance
     con.runtime_run_approved_snapshot -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_contract -->|"next_check"| ev.runtime_retest_transition
+    con.runtime_remove_conflicting_direction -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_route -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_dependency -->|"next_check"| ev.runtime_retest_transition
     con.runtime_fix_recovery -->|"next_check"| ev.runtime_retest_transition
     con.runtime_supply_capability -->|"next_check"| ev.runtime_retest_transition
     con.runtime_improve_agent_guidance -->|"next_check"| ev.runtime_retest_transition
     ev.runtime_retest_transition -->|"implies: the direct transition and downstream progress now succeed"| con.runtime_verify_end_to_end
+    con.runtime_verify_end_to_end -->|"next_check"| ev.runtime_record_operator_result
 
     class sym.runtime_doctor_failure symptom
     class sym.runtime_factory_quiet symptom
@@ -91,18 +117,24 @@ flowchart TD
     class sym.runtime_agent_failure symptom
     class sym.runtime_edit_ignored symptom
     class sym.runtime_agent_unproductive symptom
+    class sym.runtime_operator_intervention symptom
     class ev.runtime_check_source evidence
     class ev.runtime_doctor evidence
     class ev.runtime_compare_snapshot evidence
     class ev.runtime_read_brief evidence
+    class ev.runtime_establish_authority evidence
+    class ev.runtime_model_affected_edge evidence
     class ev.runtime_check_coord evidence
     class ev.runtime_check_lifecycle evidence
     class ev.runtime_check_contract_edge evidence
     class ev.runtime_check_capability evidence
     class ev.runtime_check_agent_session evidence
     class ev.runtime_retest_transition evidence
+    class ev.runtime_define_state_delta evidence
+    class ev.runtime_record_operator_result evidence
     class cls.runtime_snapshot_drift classification
     class cls.runtime_contract_defect classification
+    class cls.runtime_brief_contract_conflict classification
     class cls.runtime_routing_defect classification
     class cls.runtime_dependency_failure classification
     class cls.runtime_recovery_defect classification
@@ -111,6 +143,7 @@ flowchart TD
     class cls.runtime_evidence_incomplete classification
     class con.runtime_run_approved_snapshot conclusion
     class con.runtime_fix_contract conclusion
+    class con.runtime_remove_conflicting_direction conclusion
     class con.runtime_fix_route conclusion
     class con.runtime_fix_dependency conclusion
     class con.runtime_fix_recovery conclusion
@@ -127,3 +160,4 @@ flowchart TD
     style sym.runtime_agent_failure stroke-width:3px
     style sym.runtime_edit_ignored stroke-width:3px
     style sym.runtime_agent_unproductive stroke-width:3px
+    style sym.runtime_operator_intervention stroke-width:3px
