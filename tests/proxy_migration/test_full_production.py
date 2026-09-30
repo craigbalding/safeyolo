@@ -11,9 +11,15 @@ import sys
 
 import pytest
 
+from tests.proxy_migration.full_production import historical_addon_chain
 from tests.proxy_migration.harness import REPO, python_proxy_environment
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="This baseline capture measures Linux /proc RSS")
+
+
+def test_full_production_chain_requires_historical_source(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        historical_addon_chain(tmp_path)
 
 
 @pytest.fixture(scope="module")

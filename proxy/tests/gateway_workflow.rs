@@ -2934,7 +2934,15 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     let event =
         wait_for_audit_event(&root_path.join("audit.jsonl"), "gateway.request_access").await;
     let approval_started = Instant::now();
-    let approval = approve_service_with_existing_consumer(root_path, &event, "simple-secret");
+    // The installed approval consumer is a synchronous Python subprocess.
+    // Keep it off this test's current-thread runtime so concurrent native
+    // requests can continue while other fixtures approve their services.
+    let approval_root = root_path.to_path_buf();
+    let approval = tokio::task::spawn_blocking(move || {
+        approve_service_with_existing_consumer(&approval_root, &event, "simple-secret")
+    })
+    .await
+    .unwrap();
     let approval_elapsed = approval_started.elapsed();
     assert!(
         approval.status.success(),
