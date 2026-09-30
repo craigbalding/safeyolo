@@ -29,22 +29,23 @@ suite.
 
 The guest isolation and lifecycle suite runs against all three production
 isolation mechanisms. Blackbox tests are intentionally not triggered for every
-pull request. The GitHub-hosted `systrap` lane is the only scheduled lane: its
-nightly run coalesces changes on `master`, also supports trusted manual dispatch, and
-publishes a GitHub Actions artifact. KVM and VZ are manual/on-demand acceptance
+pull request. The nightly GitHub workflow runs the full `systrap` lane, its
+installed P2, P3, and P4 journeys, and a native proxy-only macOS job. Each job
+tests the selected commit and publishes a GitHub Actions artifact. Trusted
+manual dispatch can select a ref. KVM and VZ remain manual/on-demand acceptance
 lanes for high-risk changes and releases.
 
 <!-- blackbox-cadence-contract:start -->
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
 |------|---------------|----------|-----------|-----------------|----------|
-| `systrap` | GitHub-hosted Ubuntu | Full host + gVisor isolation + lifecycle | yes | Nightly and trusted manual dispatch | GitHub Actions artifact |
+| `systrap` | GitHub-hosted Ubuntu | Full host + gVisor isolation + lifecycle; installed P2, P3, and P4 journeys | yes | Nightly and trusted manual dispatch | Per-job GitHub Actions artifacts |
 | `kvm` | Fresh libvirt guest on the KVM VPS via the acceptance harness | Full host + gVisor/KVM isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
 | `vz` | Physical Apple Silicon Mac mini | Full native proxy + Apple VZ isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
 <!-- blackbox-cadence-contract:end -->
 
-The `proxy` lane runs on any supported host, including GitHub macOS, for
-installation smoke tests or focused diagnosis; it is not a full isolation
-acceptance lane.
+The `proxy` lane runs on any supported host. The nightly workflow runs its
+native Rust selection on GitHub macOS. It is not a full isolation acceptance
+lane.
 
 GitHub-hosted macOS is useful for the `proxy` lane and for compiling the Swift
 helper, but it cannot provide VZ isolation evidence because the hosted machine
@@ -407,8 +408,10 @@ and unsupported hardware explicitly for the retained pilot.
 ### Finite installed Linux P2 pilot for issue #637
 
 Run this selection on each operator-owned disposable Ubuntu host: the supported
-systrap host and the fresh libvirt guest on the KVM VPS. Use a clean checkout
-that contains frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`.
+systrap host and the fresh libvirt guest on the KVM VPS. The default pilot
+installs frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`;
+`--install-commit FULL_SHA` selects an exact current source commit instead.
+Use a clean checkout that contains the selected revision.
 The KVM target must expose a usable `/dev/kvm`; the systrap target selects
 software isolation. The host needs `uv`, `git`, `dpkg-deb`, `ssh-keygen`,
 `sshd`, and the normal `run-lane.sh` bootstrap prerequisites. The operator
@@ -428,7 +431,7 @@ guest mechanism:
 ./tests/blackbox/run-p2-linux.sh kvm
 ```
 
-The wrapper installs the locked R source through `install.sh` in an isolated
+The wrapper installs the selected source through `install.sh` in an isolated
 `uv` tool directory. It starts a separate native test proxy and a real guest.
 The guest fetches and installs a disposable Debian package, clones an owned
 read-only repository, receives the first held SSE event before the host

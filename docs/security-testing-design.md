@@ -53,8 +53,9 @@ cd /path/to/safeyolo
 | `vz` | Physical Apple Silicon Mac mini | no | Manual/on-demand for high-risk changes and releases | Harness/operator native macOS/VZ evidence; not continuously published on GitHub |
 <!-- blackbox-cadence-contract:end -->
 
-Blackbox is not a required per-PR check. Only the GitHub-hosted `systrap` lane
-is scheduled: it tests the latest default-branch state once per day and
+Blackbox is not a required per-PR check. The nightly GitHub workflow tests the
+latest default-branch commit with the full `systrap` lane, installed P2, P3,
+and P4 systrap journeys, and a native Rust proxy-only macOS job. Each job
 publishes a GitHub Actions artifact. KVM VPS and Mac mini runs use the same lane
 wrapper manually/on demand for high-risk changes and release acceptance. Those
 manual runs select an exact trusted ref and produce harness/operator evidence,
@@ -64,7 +65,7 @@ All three runtimes must pass against the release commit. That release gate is
 distinct from the current automation cadence; it does not imply that the KVM
 or VZ lanes run nightly.
 
-GitHub macOS can run a proxy-only smoke or compile the Swift helper, but it
+GitHub macOS runs a proxy-only smoke and can compile the Swift helper, but it
 cannot supply VZ runtime evidence. GitHub-hosted nested KVM is not accepted as
 KVM evidence. These boundaries keep a green run from claiming an isolation
 mechanism it did not execute.

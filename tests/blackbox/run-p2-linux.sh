@@ -7,9 +7,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)"
 FROZEN_R=a1f85d90bacdb271fc9681847ad2202b46c0e4ad
 PLATFORM="${1:-}"
+INSTALL_COMMIT="$FROZEN_R"
+if [ "$#" -eq 3 ] && [ "$2" = "--install-commit" ] && [[ "$3" =~ ^[0-9a-f]{40}$ ]]; then
+    INSTALL_COMMIT="$3"
+elif [ "$#" -ne 1 ]; then
+    echo "Usage: $0 {kvm|systrap} [--install-commit FULL_SHA]" >&2
+    exit 2
+fi
 
 if [ "$PLATFORM" != kvm ] && [ "$PLATFORM" != systrap ]; then
-    echo "Usage: $0 {kvm|systrap}" >&2
+    echo "Usage: $0 {kvm|systrap} [--install-commit FULL_SHA]" >&2
     exit 2
 fi
 if [ "$(uname -s)" != Linux ] || { [ "$PLATFORM" = kvm ] && [ "$(uname -m)" != x86_64 ]; }; then
@@ -30,11 +37,16 @@ if [ -n "$(git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all)" ]; 
     echo "ERROR: pilot harness checkout must be clean" >&2
     exit 2
 fi
-if ! git -C "$REPO_ROOT" cat-file -e "$FROZEN_R^{commit}" 2>/dev/null; then
-    timeout --signal=TERM --kill-after=10s 90s \
-        git -C "$REPO_ROOT" fetch origin feat/rust-proxy-620
+if ! git -C "$REPO_ROOT" cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
+    if [ "$INSTALL_COMMIT" = "$FROZEN_R" ]; then
+        timeout --signal=TERM --kill-after=10s 90s \
+            git -C "$REPO_ROOT" fetch origin feat/rust-proxy-620
+    else
+        timeout --signal=TERM --kill-after=10s 90s \
+            git -C "$REPO_ROOT" fetch origin "$INSTALL_COMMIT"
+    fi
 fi
-if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$FROZEN_R" HEAD; then
+if [ "$INSTALL_COMMIT" = "$FROZEN_R" ] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$FROZEN_R" HEAD; then
     echo "ERROR: current harness checkout does not contain frozen R" >&2
     exit 2
 fi
@@ -45,7 +57,7 @@ export UV_TOOL_BIN_DIR="$PILOT_DIR/bin"
 export SAFEYOLO_CONFIG_DIR="$PILOT_DIR/source-instance"
 export SAFEYOLO_TEST_CONFIG_DIR="$PILOT_DIR/test-instance"
 export SAFEYOLO_TEST_AGENT=bbtest
-export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="$PILOT_DIR/observations"
+export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$PILOT_DIR/observations}"
 export CARGO_BUILD_JOBS=1
 unset SAFEYOLO_RUST_PROXY SAFEYOLO_PYTHON_SOURCE SAFEYOLO_TEST_CERT_DIR SAFEYOLO_TEST_KEY_DIR
 mkdir -p "$UV_TOOL_DIR" "$UV_TOOL_BIN_DIR" "$SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
@@ -99,15 +111,15 @@ PY
             result=1
         fi
     fi
-    echo "Linux $PLATFORM P2 result: exit $result; records: $PILOT_DIR/observations"
+    echo "Linux $PLATFORM P2 result: exit $result; records: $SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
     exit "$result"
 }
 trap cleanup EXIT
 
 timeout --signal=TERM --kill-after=10s 60s \
-    git -C "$REPO_ROOT" worktree add --detach "$PILOT_DIR/source-R" "$FROZEN_R"
-if [ "$(git -C "$PILOT_DIR/source-R" rev-parse HEAD)" != "$FROZEN_R" ]; then
-    echo "ERROR: detached install source is not frozen R" >&2
+    git -C "$REPO_ROOT" worktree add --detach "$PILOT_DIR/source-selected" "$INSTALL_COMMIT"
+if [ "$(git -C "$PILOT_DIR/source-selected" rev-parse HEAD)" != "$INSTALL_COMMIT" ]; then
+    echo "ERROR: detached install source is not selected commit $INSTALL_COMMIT" >&2
     exit 2
 fi
 
@@ -115,5 +127,5 @@ fi
 cd "$REPO_ROOT"
 timeout --signal=TERM --kill-after=60s 40m \
     "$REPO_ROOT/tests/blackbox/run-lane.sh" "$PLATFORM" \
-    --install-checkout "$PILOT_DIR/source-R" \
-    --proxy-impl rust --p2
+    --install-checkout "$PILOT_DIR/source-selected" \
+    --proxy-impl rust --p2 --install-commit "$INSTALL_COMMIT"

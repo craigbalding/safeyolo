@@ -269,13 +269,14 @@ def main() -> None:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--platform", choices=("kvm", "systrap"), required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--install-commit", default=FROZEN_R)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == FROZEN_R, f"pilot installed {revision}, expected frozen R"
+    assert revision == args.install_commit, f"pilot installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
-    identity = installed_identity(runtime, install_checkout)
+    identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     assert runtime["host"]["system"] == "Linux"
     substrate = runtime["substrate"]
     assert substrate["status"] == "discovered" and substrate["kind"] == "gvisor"
@@ -315,15 +316,17 @@ def main() -> None:
     finally:
         sinkhole.close()
     report = {
-        "status": "traffic_passed", "frozen_revision": FROZEN_R, "platform": args.platform,
+        "status": "traffic_passed", "source_revision": args.install_commit, "platform": args.platform,
         "host": runtime["host"], "substrate": substrate,
         "installed": identity, "gvisor": gvisor, "guest": {"package_repo": guest, "sse": stream,
         "websocket_ssh": websocket}, "sse_control": stream_control, "origin": origin,
         "runtime_config": {"path": str(config_dir / "data/native.json"),
         "parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
     }
+    if args.install_commit == FROZEN_R:
+        report["frozen_revision"] = FROZEN_R
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"Linux {args.platform} P2: installed R guest package, repository, early SSE, "
+    print(f"Linux {args.platform} P2: installed guest package, repository, early SSE, "
           f"WS/WSS, deny and pinned SSH verified ({args.output})")
 
 
