@@ -268,6 +268,7 @@ esac
     probe.chmod(0o755)
     result = subprocess.run(
         [str(probe), str(target), mode, str(tmp_path / "owned.pid"), str(tmp_path / "owned.argv")],
+        env={**os.environ, "SCRIPT_DIR": str(Path(__file__).parent / "blackbox")},
         text=True,
         capture_output=True,
         check=False,

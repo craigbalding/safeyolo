@@ -600,20 +600,41 @@ try:
 except (IndexError, OSError, ValueError):
     raise SystemExit(1)
 PY
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        python3 - "$pid" <<'PY'
+import sys
+
+from safeyolo.runtime_identity import process_start_token
+
+token = process_start_token(int(sys.argv[1]))
+if token is None:
+    raise SystemExit(1)
+print(token)
+PY
     else
         ps -p "$pid" -o lstart= 2>/dev/null | sed 's/[[:space:]]*$//'
+    fi
+}
+
+process_argv_bytes() {
+    local pid="$1"
+    if [ -r "/proc/$pid/cmdline" ]; then
+        cat "/proc/$pid/cmdline"
+    elif [ "$(uname -s)" = "Darwin" ]; then
+        python3 "$SCRIPT_DIR/harness/macos_process_argv.py" "$pid"
+    else
+        return 1
     fi
 }
 
 capture_process_argv() {
     local pid="$1"
     local output="$2"
-    if [ -r "/proc/$pid/cmdline" ]; then
-        cat "/proc/$pid/cmdline" > "$output"
+    if [ -r "/proc/$pid/cmdline" ] || [ "$(uname -s)" = "Darwin" ]; then
+        process_argv_bytes "$pid" > "$output"
     else
-        # `ps` is the only portable process-argument source on macOS.  The
-        # saved line is compared byte-for-byte below; it is never searched as
-        # a substring.
+        # Retain the portable ps fallback for other Unix hosts. The saved
+        # line is compared byte-for-byte below, not searched as a substring.
         ps -p "$pid" -o command= > "$output"
     fi
 }
@@ -623,11 +644,11 @@ process_script_matches() {
     local executable="$2"
     local expected actual token
     expected="$(canonical_path "$executable")" || return 1
-    if [ -r "/proc/$pid/cmdline" ]; then
+    if [ -r "/proc/$pid/cmdline" ] || [ "$(uname -s)" = "Darwin" ]; then
         local -a argv=()
         while IFS= read -r -d '' token; do
             argv+=("$token")
-        done < "/proc/$pid/cmdline"
+        done < <(process_argv_bytes "$pid")
         [ "${#argv[@]}" -ge 2 ] || return 1
         actual="$(canonical_path "${argv[1]}")" || return 1
     else
@@ -645,11 +666,11 @@ process_argv_matches() {
     local saved_argv="$2"
     local current_file status
     [ -s "$saved_argv" ] || return 1
-    if [ -r "/proc/$pid/cmdline" ]; then
-        # procfs can report a changing pseudo-file size to `cmp`; snapshot it
-        # first so the byte-for-byte argv comparison is deterministic.
+    if [ -r "/proc/$pid/cmdline" ] || [ "$(uname -s)" = "Darwin" ]; then
+        # Snapshot the current arguments before comparing: procfs can report
+        # a changing pseudo-file size to cmp.
         current_file="$(mktemp "${TMPDIR:-/tmp}/safeyolo-argv.XXXXXX")" || return 1
-        if ! cat "/proc/$pid/cmdline" > "$current_file"; then
+        if ! process_argv_bytes "$pid" > "$current_file"; then
             rm -f "$current_file"
             return 1
         fi
