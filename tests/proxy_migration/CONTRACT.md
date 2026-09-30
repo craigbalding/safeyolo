@@ -596,16 +596,20 @@ NetworkGuard approval/audit side effects.
 
 ## Full production API and approval baseline
 
-On Linux, from the repository root with the locked Python test dependencies
-installed, run the following capture. The output directory must not exist.
+On Linux, from the repository root, use the clean pre-cutover checkout and its
+locked Python 3.12.14 test environment prepared under "Run the contracts".
+The output directory must not exist.
 The fixture creates isolated config, data, logs, coordination storage and
 synthetic tokens. It uses private temporary UDS paths and owned ephemeral
 loopback origin, web and admin ports. It preserves the standard proxy and
 certificate-authority environment and removes its private token/key files at
 shutdown.
 
+Run the following capture:
+
 ```sh
-uv run --frozen python -m tests.proxy_migration.full_production \
+SAFEYOLO_PYTHON_SOURCE=/path/to/pre-cutover-checkout \
+/path/to/pre-cutover-checkout/.venv/bin/python -m tests.proxy_migration.full_production \
   --output /tmp/safeyolo-migration/full-production \
   --api-requests 400 --api-workers 4 --approvals 30
 ```
