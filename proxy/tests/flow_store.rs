@@ -434,7 +434,18 @@ fn reads_python_compatible_concatenated_gzip_and_fails_corruption_categorically(
 }
 
 fn source(mode: &str, path: &Path) -> Value {
-    let python = std::env::var("SAFEYOLO_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+        .expect("set SAFEYOLO_POLICY_PYTHON to the historical comparator interpreter");
+    let source_root = std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+        .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout");
+    assert_eq!(
+        Path::new(&python).canonicalize().unwrap(),
+        Path::new(&source_root)
+            .join(".venv/bin/python")
+            .canonicalize()
+            .unwrap(),
+        "rollback oracle must use the selected historical comparator interpreter"
+    );
     let output = Command::new(python)
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -442,30 +453,12 @@ fn source(mode: &str, path: &Path) -> Value {
         ))
         .arg(mode)
         .arg(path)
+        .env("SAFEYOLO_SOURCE_ROOT", source_root)
         .output()
         .unwrap();
     assert!(
         output.status.success(),
         "owned source fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
-}
-
-fn source_rollback(mode: &str, path: &Path) -> Value {
-    let python = std::env::var("SAFEYOLO_PYTHON").unwrap_or_else(|_| "python3".into());
-    let output = Command::new(python)
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/flow_store_oracle.py"
-        ))
-        .arg(mode)
-        .arg(path)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "owned source rollback fixture failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
@@ -477,7 +470,7 @@ fn source_native_source_rollback_preserves_owned_rows_and_tags() {
     let path = directory.path().join("rollback.sqlite3");
 
     // The selected prior Python release authors the durable starting state.
-    let seeded = source_rollback("rollback-seed", &path);
+    let seeded = source("rollback-seed", &path);
     assert_eq!(seeded["flow_id"], 1);
     assert_eq!(
         seeded["summary"],
@@ -545,7 +538,7 @@ fn source_native_source_rollback_preserves_owned_rows_and_tags() {
     drop(store);
 
     // The retained Python release reads the native row and writes a tag.
-    let source_after_native = source_rollback("rollback-after-native", &path);
+    let source_after_native = source("rollback-after-native", &path);
     assert_eq!(
         source_after_native["before"]["source_row"]["request_id"],
         "python-seed"

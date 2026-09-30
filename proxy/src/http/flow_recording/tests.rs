@@ -925,6 +925,11 @@ fn production_container_source_dispatch_stays_reproducible() {
         .arg(tests.join("production_dispatch.py"))
         .arg("--check")
         .arg(tests.join("production_dispatch_source.json"))
+        .env(
+            "SAFEYOLO_SOURCE_ROOT",
+            std::env::var_os("SAFEYOLO_DISPATCH_PYTHON_SOURCE")
+                .expect("set SAFEYOLO_DISPATCH_PYTHON_SOURCE to the pinned dispatch checkout"),
+        )
         .output()
         .unwrap();
     assert!(

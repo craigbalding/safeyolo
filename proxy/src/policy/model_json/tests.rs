@@ -213,7 +213,10 @@ fn live_loaded_models_and_float_bytes_match_pinned_source() {
     .arg(root.join("proxy/tests/policy_model_json_oracle.py"))
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .env("PYTHONHASHSEED", "0")
     .stdin(Stdio::piped())

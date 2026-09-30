@@ -734,9 +734,6 @@ fn injection_protocol_and_expiry_order_match_actual_python_gateway() {
         process::{Command, Stdio},
     };
     let cases = cases();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let script = r#"
 import json,pathlib,sys,tempfile,logging
 from datetime import datetime,UTC
@@ -809,7 +806,11 @@ json.dump(rows,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_STATE_PYTHON_SOURCE")
+                .expect("set SAFEYOLO_STATE_PYTHON_SOURCE")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

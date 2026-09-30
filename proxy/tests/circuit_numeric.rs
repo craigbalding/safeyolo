@@ -182,7 +182,10 @@ fn frozen_numeric_rows_match_actual_python() {
     .arg(root.join("proxy/tests/circuit_numeric_oracle.py"))
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -249,7 +252,10 @@ fn division_and_nonfinite_witnesses_match_actual_python() {
     .arg(root.join("proxy/tests/circuit_numeric_extra_oracle.py"))
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

@@ -7,6 +7,7 @@ import hashlib
 import importlib.metadata
 import json
 import logging
+import os
 import platform
 import socket
 import sys
@@ -16,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path[:0] = [str(REPO), str(REPO / "cli/src")]
 
 from mitmproxy import connection, http

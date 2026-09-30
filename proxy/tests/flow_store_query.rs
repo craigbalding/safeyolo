@@ -244,12 +244,16 @@ fn context_queries_keep_expect_and_ignore_search_only_request_id() {
 #[test]
 #[ignore = "requires the pinned source Python environment; no network"]
 fn actual_source_query_oracle_still_matches() {
-    let python = std::env::var("SAFEYOLO_SOURCE_PYTHON").expect("set SAFEYOLO_SOURCE_PYTHON");
+    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+        .expect("set SAFEYOLO_POLICY_PYTHON to the historical comparator interpreter");
+    let source = std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+        .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let status = std::process::Command::new(python)
         .arg(root.join("tests/flow_store_query_oracle.py"))
         .arg("--check")
         .arg(root.join("tests/flow_store_query_source.json"))
+        .env("SAFEYOLO_SOURCE_ROOT", source)
         .status()
         .unwrap();
     assert!(status.success());

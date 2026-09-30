@@ -160,7 +160,7 @@ def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() 
     )
 
 
-def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> None:
+def test_full_matrix_native_and_ignored_oracles_use_the_pinned_source_and_interpreter() -> None:
     steps = rust_workflow()["jobs"]["http-slice"]["steps"]
     named = {step.get("name"): step for step in steps}
     assert named["Install uv"]["with"]["version"] == "0.12.8"
@@ -175,15 +175,27 @@ def test_full_matrix_ignored_oracles_use_the_pinned_source_and_interpreter() -> 
     assert "git worktree add --detach" in source["run"]
     assert 'cd "$SAFEYOLO_STATE_PYTHON_SOURCE"' in source["run"]
     assert "uv sync --frozen --group dev --python 3.12.14" in source["run"]
+    native = named["Test and build the Rust proxy"]
+    assert steps.index(source) < steps.index(native)
+    assert native["env"]["SAFEYOLO_POLICY_PYTHON"] == (
+        "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
+    )
+    assert native["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"][
+        "SAFEYOLO_STATE_PYTHON_SOURCE"
+    ]
     assert steps.index(source) < steps.index(named["Compare native behavior with the historical implementation"])
 
     oracle = named["Compare native behavior with the historical implementation"]
     env = oracle["env"]
     assert env["SAFEYOLO_POLICY_PYTHON"] == "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
     for key in ("SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
-        assert env[key] == "${{ github.workspace }}/.venv/bin/python"
-    assert env["SAFEYOLO_SOURCE_ROOT"] == "${{ github.workspace }}"
+        assert env[key] == env["SAFEYOLO_PYTHON_EXECUTABLE"]
+    assert env["SAFEYOLO_SOURCE_ROOT"] == env["SAFEYOLO_PYTHON_SOURCE"]
     assert env["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"]
+    dispatch = named["Prepare pinned Python dispatch source"]
+    assert dispatch["env"]["SAFEYOLO_DISPATCH_COMMIT"] == "9aeb55a1fde5a824ae2846068f26afebadd8f2ee"
+    assert steps.index(dispatch) < steps.index(oracle)
+    assert env["SAFEYOLO_DISPATCH_PYTHON_SOURCE"] == dispatch["env"]["SAFEYOLO_DISPATCH_PYTHON_SOURCE"]
     assert env["SAFEYOLO_STATE_EVIDENCE_DIR"] == "${{ runner.temp }}/safeyolo-state-oracle"
     assert f'"$comparator_head" != {comparator}' in oracle["run"]
     assert "status --porcelain" in oracle["run"]

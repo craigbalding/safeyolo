@@ -608,9 +608,6 @@ fn guard_wire_intents_and_budget_state_match_actual_python_pipeline() {
         process::{Command, Stdio},
     };
     let scenarios = oracle_scenarios();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let script = r#"
 import json,pathlib,sys,tempfile,logging
 from unittest.mock import patch
@@ -661,7 +658,7 @@ for scenario in json.load(sys.stdin):
      row={key:kwargs[key] for key in keys};row['event']=event;row['approval']=kwargs['approval'].model_dump(mode='json') if kwargs.get('approval') else None;audits.append(row)
      row['stats_at_submission']=guard.get_stats()
      if r['agent'] not in ('unavailable','conflict') and '\x7f' not in r['agent']:
-      with patch.object(audit_writer,'put_event',side_effect=canonical.append):utils.write_event(event,**kwargs)
+      with patch.object(audit_writer,'put_event',side_effect=canonical.append),patch.object(audit_writer,'put_event_confirmed',side_effect=canonical.append):utils.write_event(event,**kwargs)
     def step(flow,**kwargs):steps.append(kwargs)
     def get_client():
      if r['pdp']=='missing':raise RuntimeError('not configured')
@@ -691,7 +688,10 @@ json.dump(outputs,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

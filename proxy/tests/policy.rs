@@ -583,9 +583,6 @@ fn differential_matrix_matches_existing_python_policy_engine() {
         process::{Command, Stdio},
     };
     let scenarios = scenarios();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
         .expect("set SAFEYOLO_POLICY_PYTHON to the existing Python environment");
     let script = r#"
@@ -631,7 +628,10 @@ json.dump(outputs,sys.stdout)
         .arg(script)
         .env(
             "PYTHONPATH",
-            format!("{}:{}", root.join("cli/src").display(), root.display()),
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -970,9 +970,6 @@ with tempfile.TemporaryDirectory() as directory:
     states.append([evaluate(engine,{'host':host}) for host in list_hosts]);outputs['lists']=states;engine.done()
 json.dump(outputs,sys.stdout)
 "#;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
@@ -980,7 +977,10 @@ json.dump(outputs,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -1546,9 +1546,6 @@ fn credential_risk_and_gateway_matrix_matches_production_engine() {
         process::{Command, Stdio},
     };
     let scenarios = proxy_action_scenarios();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let script = r#"
 import json, pathlib, sys, tempfile
 from unittest.mock import patch
@@ -1598,7 +1595,10 @@ json.dump(outputs,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -1851,9 +1851,6 @@ fn three_addon_enablement_controls_match_shipped_policy_engine() {
         json!({"document":{"addons":{"circuit_breaker":{"enabled":false}}},"task":{"required":["circuit_breaker"],"clients":{"alice":{"bypass":["circuit_breaker"]}},"domains":{"api.example":{"addons":{"circuit_breaker":{"enabled":true}}}}}}),
         json!({"document":{"required":["circuit_breaker"],"addons":{"circuit_breaker":{"enabled":false}}},"task":{"addons":{"circuit_breaker":{}}}}),
     ]);
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let script = r#"
 import json,sys,pathlib,tempfile,logging
 from unittest.mock import patch
@@ -1885,7 +1882,10 @@ json.dump(rows,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

@@ -633,9 +633,6 @@ with tempfile.TemporaryDirectory() as directory:
     output.append({'value':value,'events':copy.deepcopy(events),'snapshot':{'states':copy.deepcopy(cb._state._states),'saved_at':now},'draws':draws[0]})
 json.dump(output,sys.stdout)
 "#;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
@@ -643,7 +640,10 @@ json.dump(output,sys.stdout)
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

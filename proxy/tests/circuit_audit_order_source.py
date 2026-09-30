@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -96,7 +97,7 @@ def run():
                     },
                 }
             )
-    root = Path(__file__).resolve().parents[2]
+    root = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
     paths = [
         "cli/src/safeyolo/mitm_addons/circuit_breaker.py",
         "cli/src/safeyolo/core/utils.py",

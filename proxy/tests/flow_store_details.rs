@@ -176,12 +176,16 @@ fn retained_tags_and_diff_match_frozen_source() {
 #[test]
 #[ignore = "requires actual source Python environment"]
 fn retained_tags_and_diff_match_live_source() {
-    let python = std::env::var("SAFEYOLO_PYTHON").unwrap_or_else(|_| "python3".into());
+    let python = std::env::var_os("SAFEYOLO_POLICY_PYTHON")
+        .expect("set SAFEYOLO_POLICY_PYTHON to the historical comparator interpreter");
+    let source = std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+        .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout");
     let output = Command::new(python)
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/flow_store_details_oracle.py"
         ))
+        .env("SAFEYOLO_SOURCE_ROOT", source)
         .output()
         .unwrap();
     assert!(

@@ -808,7 +808,10 @@ json.dump(rows,sys.stdout)
         .current_dir(root)
         .env(
             "PYTHONPATH",
-            format!("{}/cli/src:{}", root.display(), root.display()),
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1256,7 +1259,10 @@ json.dump(results,sys.stdout)
             .current_dir(root)
             .env(
                 "PYTHONPATH",
-                format!("{}/cli/src:{}", root.display(), root.display()),
+                format!(
+                    "{0}/cli/src:{0}",
+                    std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+                ),
             )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
