@@ -46,7 +46,7 @@ forbidden = ["20% + 50MB headroom", "20%+50MB headroom"]
 
 [[assertion]]
 name = "default-agent-memory-mib"
-source = "cli/src/safeyolo/commands/agent.py"
+source = "cli/src/safeyolo/agent_configuration.py"
 pattern = 'DEFAULT_AGENT_MEMORY_MB = (?P<memory_mb>\d+)'
 docs = ["docs/CONFIGURATION.md"]
 must_contain = "defaults to {memory_mb} MiB"

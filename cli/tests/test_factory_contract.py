@@ -91,12 +91,13 @@ def test_backlog_alert_intake_reuses_issue_flow_and_distinguishes_lookup_failure
 def test_backlog_intake_preserves_requirements_and_starting_revision():
     contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
 
-    assert "issue title and body verbatim" in contract
+    assert "issue title and the affected acceptance text verbatim" in contract
     assert "pull-request title and body" in contract
-    assert "Record each source URL and when Relay read it in UTC." in contract
-    assert "Keep this captured source text separate from Relay's instructions and assessment." in contract
+    assert "other issue text and comments verbatim only when material" in contract
+    assert "full issue URL and record when Relay read it in UTC" in contract
+    assert "Keep the captured source text separate from Relay's instructions and assessment." in contract
     assert "repository, branch and exact starting commit" in contract
-    assert "retain the complete text in Coord messages" in contract
+    assert "retain that text in Coord messages" in contract
     assert "their exact room and message sequences" in contract
     assert "do not silently truncate requirements" in contract
 
@@ -631,14 +632,14 @@ def test_factory_run_executes_staged_worker_commands(
     platform.exec_in_sandbox.side_effect = exec_in_sandbox
 
     monkeypatch.setattr("safeyolo.platform.get_platform", lambda: platform)
-    monkeypatch.setattr("safeyolo.commands.agent.is_proxy_running", lambda: True)
+    monkeypatch.setattr("safeyolo.proxy.is_proxy_running", lambda: True)
     monkeypatch.setattr(
-        "safeyolo.commands.agent.reserve_agent_network_slot",
+        "safeyolo.agents_store.reserve_agent_network_slot",
         lambda name: names.index(name),
     )
-    monkeypatch.setattr("safeyolo.commands.agent._update_agent_map", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.commands.agent.write_event", lambda *args, **kwargs: None)
-    monkeypatch.setattr("safeyolo.commands.agent.prepare_config_share", lambda **kwargs: None)
+    monkeypatch.setattr("safeyolo.vm._update_agent_map", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.agent_lifecycle.write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr("safeyolo.vm.prepare_config_share", lambda **kwargs: None)
     monkeypatch.setattr(
         "safeyolo.sockets.path_for",
         lambda name, _ip: tmp_path / f"{name}.sock",

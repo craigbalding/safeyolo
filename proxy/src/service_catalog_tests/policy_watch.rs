@@ -716,9 +716,10 @@ async fn standalone_policy_checks_retry_newer_failures_and_rearm_without_a_catal
     assert_eq!(fixture.proxy.policy_check_at, retained_check_at);
     advance(Duration::from_secs(3600)).await;
     assert!(!fixture.proxy.reload_policy_if_changed().await.unwrap());
-    assert_eq!(fixture.proxy.policy_check_at, retained_check_at);
+    let rearmed_check_at = Some(Instant::now() + Duration::from_secs(2));
+    assert_eq!(fixture.proxy.policy_check_at, rearmed_check_at);
     fixture.proxy.reload(configured).await.unwrap();
-    assert_eq!(fixture.proxy.policy_check_at, Some(Instant::now()));
+    assert_eq!(fixture.proxy.policy_check_at, rearmed_check_at);
     let retained = fixture.runtime();
     let state = fixture.proxy.runtime.clone();
     let poison = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from .agent_configuration import _resolve_extra_shares, _validate_instance_name
 from .agents_store import get_or_mint_agent_id, load_agent, load_all_agents
 from .config import get_agents_dir, get_config_dir, get_logs_dir, load_config
 from .runtime_identity import process_start_token
@@ -68,10 +69,6 @@ def resolve_launcher(metadata: dict, config: dict, mode: LaunchMode, *, interact
 
 
 def _path(name: str) -> Path:
-    # Reuse the CLI's name contract. This import is deferred to keep CLI startup
-    # lazy; names never come from a script result or guest file.
-    from .commands.agent import _validate_instance_name
-
     _validate_instance_name(name)
     return get_agents_dir() / name / "current-launch.json"
 
@@ -146,7 +143,6 @@ def validate_script(launcher: Launcher) -> None:
         raise RuntimeError(f"Host launcher is missing or not executable: {script}")
     if launcher.kind in PRESETS:
         return  # Installed product resources share the host application's trust.
-    from .commands.agent import _resolve_extra_shares
 
     for name, metadata in load_all_agents().items():
         writable = [get_agents_dir() / name / leaf for leaf in ("home", "status", "cache")]

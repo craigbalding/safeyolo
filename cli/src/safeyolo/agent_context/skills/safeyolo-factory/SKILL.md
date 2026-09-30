@@ -1,6 +1,6 @@
 ---
 name: safeyolo-factory
-description: Design, review, prove, and troubleshoot SafeYolo supervised factories with an operator. Use when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate factory commands or runtime behavior, estimate a nested factory, or test a factory in a controlled nested lab. Apply first-principles questioning, annotated graphs, cross-contract review, and evidence-led diagnosis while avoiding unnecessary gates, fake precision, and factory-specific architecture.
+description: Design, review, prove, and troubleshoot SafeYolo supervised factories with an operator. Use before changing a running factory's brief, contract, routes, supervisor, capabilities, recovery, or agent direction, and when an operator wants to create or revise a factory, define roles and handoffs, review factory TOML or role contracts, investigate runtime behavior, estimate a nested factory, or test a factory in a controlled nested lab. Apply annotated graphs, cross-contract review, and evidence-led diagnosis without unnecessary gates or factory-specific architecture.
 ---
 
 # SafeYolo factory operator copilot
@@ -18,6 +18,10 @@ state, and supervisors remain authoritative.
   [Cross-contract review](references/contract-review.md).
 - For commands, live behavior, failures, recovery, or a nested proving run,
   read [Operations and proving](references/operations.md).
+- Before any change to a running factory, read Operations and enter
+  [`sym.runtime_operator_intervention`](references/graph/runtime-triage.yaml).
+  Complete that graph path before changing a brief, contract, route,
+  supervisor, capability, recovery action, or agent direction.
 - When a controlled tmux lab is appropriate, invoke
   `$safeyolo-lab-controller` for the lab mechanics. Say when that skill changes
   or pauses the work.

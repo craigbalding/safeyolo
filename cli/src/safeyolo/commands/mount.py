@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..config import load_config, save_config
+from ..mount_protection import get_protected_paths
 
 console = Console()
 
@@ -15,29 +16,6 @@ mount_app = typer.Typer(
     help="Manage mount path protections.",
     no_args_is_help=True,
 )
-
-
-def get_protected_paths() -> list[str]:
-    """Load protected paths from config."""
-    config = load_config()
-    return config.get("protected_paths", [])
-
-
-def is_path_protected(host_path: str, protected_paths: list[str] | None = None) -> str | None:
-    """Check if a host path falls under a protected path.
-
-    Returns the matching protected path, or None if not protected.
-    """
-    if protected_paths is None:
-        protected_paths = get_protected_paths()
-
-    check = Path(host_path).resolve()
-    for pp in protected_paths:
-        protected = Path(pp).resolve()
-        # Check exact match or parent
-        if check == protected or protected in check.parents:
-            return str(protected)
-    return None
 
 
 @mount_app.command()

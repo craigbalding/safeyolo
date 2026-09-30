@@ -15,6 +15,7 @@ fn runtime(directory: &std::path::Path) -> Runtime {
     let config = serde_json::from_value(json!({
         "listeners":[{"agent_id":"alice","socket_path":directory.join("unused.sock")}],
         "policy_file":directory.join("policy.json"),
+        "data_dir":directory.join("data"),
         "readiness_file":directory.join("ready"),
         "audit_log_path":directory.join("audit.jsonl"),
         "event_log":directory.join("events.jsonl"),
@@ -76,6 +77,10 @@ fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
                 "memory-monitor",
                 "service-discovery",
                 "policy-engine",
+                "network-guard",
+                "credential-guard",
+                "circuit-breaker",
+                "test-context",
                 "flow-recorder",
                 "request-logger",
                 "metrics"
@@ -85,7 +90,10 @@ fn memory_is_first_in_the_native_lane_and_reports_the_shared_owner() {
             fields["memory-monitor"].render_json(false).unwrap(),
             expected
         );
-        assert_eq!(fields["policy-engine"].render_json(false).unwrap(), "{}");
+        let policy: serde_json::Value =
+            serde_json::from_str(&fields["policy-engine"].render_json(false).unwrap()).unwrap();
+        assert_eq!(policy["engine_version"], "pdp-0.1.0");
+        assert_eq!(policy["task_policies"], 0);
     }
     assert!(!directory.path().join("audit.jsonl").exists());
     assert!(!directory.path().join("unused.sqlite3").exists());
