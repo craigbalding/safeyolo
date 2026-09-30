@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import yaml
@@ -73,17 +72,8 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert step_names.index("Install preview test system dependency") < step_names.index(
         "Test the desktop presenter protocol"
     )
-    producer = steps["Prepare pinned Python Agent API audit producer"]
-    assert producer["env"]["SAFEYOLO_AUDIT_COMPARATOR_COMMIT"] == (
-        "2ca598ce11d7c375a024b38eb3e7b4104a795d84"
-    )
-    assert "uv sync --frozen --group dev --python 3.12.14" in producer["run"]
-    assert step_names.index("Prepare pinned Python Agent API audit producer") < step_names.index(
-        "Test focused native boundaries"
-    )
     native = steps["Test focused native boundaries"]
-    assert native["env"]["SAFEYOLO_PYTHON_SOURCE"] == producer["env"]["SAFEYOLO_PYTHON_SOURCE"]
-    assert "historical_source_producer_matches_frozen_rows -- --ignored --exact" in native["run"]
+    assert "--ignored" not in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
         "cargo_with_space.sh fmt --all -- --check",
@@ -108,17 +98,6 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["http-slice"]["steps"])
     assert "cargo_with_space.sh test --locked" in full_runs
     assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
-    full_steps = {
-        step["name"]: step for step in rust_workflow()["jobs"]["http-slice"]["steps"]
-        if "name" in step
-    }
-    comparator = full_steps["Compare native behavior with the historical implementation"]
-    assert comparator["env"]["SAFEYOLO_PYTHON_SOURCE"] == (
-        full_steps["Run shared HTTP contracts against native Rust"]["env"]["SAFEYOLO_PYTHON_SOURCE"]
-    )
-    assert comparator["env"]["SAFEYOLO_PYTHON_EXECUTABLE"] == (
-        full_steps["Run shared HTTP contracts against native Rust"]["env"]["SAFEYOLO_PYTHON_EXECUTABLE"]
-    )
 
 
 def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
@@ -144,85 +123,30 @@ def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() 
     assert peer["if"] == "matrix.os == 'macos-latest'"
     assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
     assert job["steps"].index(peer) < job["steps"].index(
-        steps["Run shared HTTP contracts against the historical Python comparator"]
+        steps["Run shared HTTP contracts against native Rust"]
     )
-    short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-py' || '' }}"
-    assert steps["Run shared HTTP contracts against the historical Python comparator"]["env"]["PYTEST_ADDOPTS"] == short_tmp
+    short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}"
     assert steps["Run shared HTTP contracts against native Rust"]["env"][
         "PYTEST_ADDOPTS"
-    ] == short_tmp.replace("sy-py", "sy-rs")
-    assert (
-        "--proxy-backend python" in steps["Run shared HTTP contracts against the historical Python comparator"]["run"]
-    )
+    ] == short_tmp
     assert (
         "--proxy-backend rust"
         in steps["Run shared HTTP contracts against native Rust"]["run"]
     )
 
 
-def test_full_matrix_native_and_ignored_oracles_use_the_pinned_source_and_interpreter() -> None:
+def test_full_matrix_uses_only_the_native_proxy() -> None:
     steps = rust_workflow()["jobs"]["http-slice"]["steps"]
     named = {step.get("name"): step for step in steps}
     assert named["Install uv"]["with"]["version"] == "0.12.8"
     installation = named["Install the native CLI test environment"]["run"]
     assert "uv python install 3.12.14" in installation
     assert "uv sync --frozen --group dev --python 3.12.14" in installation
-
-    source = named["Prepare pinned Python oracle source"]
-    comparator = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
-    assert source["env"]["SAFEYOLO_COMPARATOR_COMMIT"] == comparator
-    assert 'git fetch --no-tags --depth=1 origin "$SAFEYOLO_COMPARATOR_COMMIT"' in source["run"]
-    assert "git worktree add --detach" in source["run"]
-    assert 'cd "$SAFEYOLO_STATE_PYTHON_SOURCE"' in source["run"]
-    assert "uv sync --frozen --group dev --python 3.12.14" in source["run"]
-    native = named["Test and build the Rust proxy"]
-    assert steps.index(source) < steps.index(native)
-    assert native["env"]["SAFEYOLO_POLICY_PYTHON"] == (
-        "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
+    assert named["Test and build the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
+        "${{ github.workspace }}/.venv/bin/python"
     )
-    assert native["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"][
-        "SAFEYOLO_STATE_PYTHON_SOURCE"
-    ]
-    assert steps.index(source) < steps.index(named["Compare native behavior with the historical implementation"])
-
-    oracle = named["Compare native behavior with the historical implementation"]
-    env = oracle["env"]
-    assert env["SAFEYOLO_POLICY_PYTHON"] == "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
-    for key in ("SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
-        assert env[key] == env["SAFEYOLO_PYTHON_EXECUTABLE"]
-    assert env["SAFEYOLO_SOURCE_ROOT"] == env["SAFEYOLO_PYTHON_SOURCE"]
-    assert env["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"]
-    dispatch = named["Prepare pinned Python dispatch source"]
-    assert dispatch["env"]["SAFEYOLO_DISPATCH_COMMIT"] == "9aeb55a1fde5a824ae2846068f26afebadd8f2ee"
-    assert steps.index(dispatch) < steps.index(oracle)
-    assert env["SAFEYOLO_DISPATCH_PYTHON_SOURCE"] == dispatch["env"]["SAFEYOLO_DISPATCH_PYTHON_SOURCE"]
-    assert env["SAFEYOLO_STATE_EVIDENCE_DIR"] == "${{ runner.temp }}/safeyolo-state-oracle"
-    assert f'"$comparator_head" != {comparator}' in oracle["run"]
-    assert "status --porcelain" in oracle["run"]
-    assert "platform.python_version(), unicodedata.unidata_version" in oracle["run"]
-    assert "('3.12.14', '15.0.0')" in oracle["run"]
-    assert "set -e -o pipefail" in oracle["run"]
-    assert "cargo_with_space.sh test --locked -- --ignored --nocapture" in oracle["run"]
-
-
-def test_full_matrix_ignored_oracle_summary_fails_closed() -> None:
-    steps = rust_workflow()["jobs"]["http-slice"]["steps"]
-    oracle = next(
-        step for step in steps if step.get("name") == "Compare native behavior with the historical implementation"
-    )
-    assert (
-        subprocess.run(["bash", "-n"], input=oracle["run"], text=True, capture_output=True, check=False).returncode == 0
-    )
-    assert "2>&1 | tee" in oracle["run"]
-    awk_script = oracle["run"].split("awk '", 1)[1].rsplit("' \"$RUNNER_TEMP", 1)[0]
-
-    def summary_exits_zero(summary: str) -> bool:
-        return (
-            subprocess.run(["awk", awk_script], input=summary, text=True, capture_output=True, check=False).returncode
-            == 0
-        )
-
-    assert summary_exits_zero("test result: ok. 3 passed; 0 failed; 0 ignored; 5 filtered out\n")
-    assert not summary_exits_zero("")
-    assert not summary_exits_zero("test result: ok. 0 passed; 0 failed; 0 ignored; 8 filtered out\n")
-    assert not summary_exits_zero("test result: ok. 3 passed; 0 failed; 1 ignored; 4 filtered out\n")
+    rendered = str(steps)
+    assert "--proxy-backend python" not in rendered
+    assert "-- --ignored" not in rendered
+    assert "git fetch --no-tags --depth=1 origin" not in rendered
+    assert "SAFEYOLO_PYTHON_SOURCE" not in rendered

@@ -121,4 +121,5 @@ def test_native_migration_lane_has_no_policy_adapter() -> None:
     assert "--proxy-backend rust" in workflow
     assert "temporary_policy_socket" not in config
     assert not (REPO_ROOT / "tools" / "proxy_migration" / "temporary_policy.py").exists()
-    assert "SAFEYOLO_PYTHON_SOURCE" in workflow
+    assert "SAFEYOLO_PYTHON_SOURCE" not in workflow
+    assert "--proxy-backend python" not in workflow
