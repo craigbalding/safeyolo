@@ -1,0 +1,136 @@
+{
+  "rows": [
+    {
+      "case": "unconfigured",
+      "source": null,
+      "format": "json",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "omitted",
+      "source": "{}",
+      "format": "json",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "direct",
+      "source": "{\"addons\":{\"test_context\":{\"declared_ttl_max\":23,\"inject_declared\":false}}}",
+      "format": "json",
+      "settings": {
+        "ttl": 23,
+        "inject": false
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "disabled-still-declarable",
+      "source": "{\"addons\":{\"test_context\":{\"enabled\":false,\"declared_ttl_max\":23,\"inject_declared\":true}}}",
+      "format": "json",
+      "settings": {
+        "ttl": 23,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "nested-ignored",
+      "source": "{\"addons\":{\"test_context\":{\"settings\":{\"declared_ttl_max\":23,\"inject_declared\":false}}}}",
+      "format": "json",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "huge-integer",
+      "source": "{\"addons\":{\"test_context\":{\"declared_ttl_max\":10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000}}}",
+      "format": "json",
+      "settings": {
+        "ttl": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "typed-yaml-fields",
+      "source": "addons:\n  test_context:\n    declared_ttl_max: 2030-01-02\n    inject_declared: 2030-01-02T03:04:05Z\n",
+      "format": "yaml",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": false
+    },
+    {
+      "case": "quoted-yaml-fields",
+      "source": "addons:\n  test_context:\n    declared_ttl_max: \"2030-01-02\"\n    inject_declared: \"2030-01-02T03:04:05Z\"\n",
+      "format": "yaml",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "typed-toml-fields",
+      "source": "[addons.test_context]\ndeclared_ttl_max=2030-01-02\ninject_declared=2030-01-02T03:04:05Z\n",
+      "format": "toml",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": false
+    },
+    {
+      "case": "unrelated-temporals",
+      "source": "addons:\n  test_context:\n    declared_ttl_max: 23\n    inject_declared: false\n    target_hosts: [2030-01-02]\n    unrelated: {2030-01-02: ignored}\n  another:\n    settings: {created: 2030-01-02}\n",
+      "format": "yaml",
+      "settings": {
+        "ttl": 23,
+        "inject": false
+      },
+      "sensor_json_ok": false
+    },
+    {
+      "case": "nested-temporal-key-ignored",
+      "source": "addons:\n  test_context:\n    unrelated: {2030-01-02: 999}\n    declared_ttl_max: 23\n    inject_declared: false\n",
+      "format": "yaml",
+      "settings": {
+        "ttl": 23,
+        "inject": false
+      },
+      "sensor_json_ok": false
+    },
+    {
+      "case": "false-and-float-fallback",
+      "source": "{\"addons\":{\"test_context\":{\"declared_ttl_max\":1.0,\"inject_declared\":\"false\"}}}",
+      "format": "json",
+      "settings": {
+        "ttl": 11,
+        "inject": true
+      },
+      "sensor_json_ok": true
+    },
+    {
+      "case": "task-addon-ignored",
+      "source": "{\"addons\":{\"test_context\":{\"declared_ttl_max\":23,\"inject_declared\":false}}}",
+      "format": "json",
+      "task": "{\"addons\":{\"test_context\":{\"declared_ttl_max\":99,\"inject_declared\":true}}}",
+      "settings": {
+        "ttl": 23,
+        "inject": false
+      },
+      "sensor_json_ok": true
+    }
+  ],
+  "case_count": 13
+}

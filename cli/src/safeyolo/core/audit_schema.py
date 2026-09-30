@@ -5,10 +5,9 @@ Defines the structured envelope that any PEP (Policy Enforcement Point) must
 produce and that consumers (watch, alerting, agent API) can rely on.
 
 This is a leaf module: depends only on pydantic + stdlib. Importable by
-addons, CLI, and any future PEP.
+the CLI and the native policy compiler.
 
-Canonical home of `sanitize_for_log` — `utils.py` and `pdp/core.py` import
-from here rather than maintaining their own copies.
+Canonical home of `sanitize_for_log` for the retained Python CLI.
 """
 
 from __future__ import annotations

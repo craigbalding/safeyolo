@@ -1,0 +1,2748 @@
+{
+  "rows": [
+    {
+      "case": "list-wildcards",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "*.target.invalid",
+                  "literal*"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "DEEP.TARGET.INVALID",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "evil-target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "literal*",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "literalx",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "*.target.invalid",
+            "literal*"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "string-characters",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": "aé"
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "a",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "A",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "é",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "aé",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "aé",
+          "hash": "a",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "string-domain-is-characters",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": "target.invalid"
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "t",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": ".",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": "target.invalid",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 14,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": "target.invalid",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "target.invalid",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "target.invalid",
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "target.invalid",
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "mapping-keys-only",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": {
+                  "*.target.invalid": null,
+                  "other.invalid": [
+                    false
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "OTHER.INVALID",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "else.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": {
+            "*.target.invalid": null,
+            "other.invalid": [
+              false
+            ]
+          },
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": {
+            "*.target.invalid": null,
+            "other.invalid": [
+              false
+            ]
+          },
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": {
+            "*.target.invalid": null,
+            "other.invalid": [
+              false
+            ]
+          },
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": {
+            "*.target.invalid": null,
+            "other.invalid": [
+              false
+            ]
+          },
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": {
+            "*.target.invalid": null,
+            "other.invalid": [
+              false
+            ]
+          },
+          "hash": "a",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-lazy-error",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid",
+                  false,
+                  "later.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "later.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid",
+            false,
+            "later.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 3,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid",
+            false,
+            "later.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid",
+            false,
+            "later.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid",
+            false,
+            "later.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid",
+            false,
+            "later.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-leading-error",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  false,
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            false,
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [
+            false,
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            false,
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-nested-error",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  [],
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            [],
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [
+            [],
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            [],
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-object-error",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  {
+                    "target.invalid": true
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            {
+              "target.invalid": true
+            }
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [
+            {
+              "target.invalid": true
+            }
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            {
+              "target.invalid": true
+            }
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "empty-list",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": []
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "empty-string",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": ""
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": "",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": "",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": "",
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "empty-map",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": {}
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": {},
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": {},
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": {},
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "null",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": null
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": null,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": null,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": null,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "false",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": false
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": false,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": false,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": false,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "zero",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": 0
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": 0,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 0,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": 0,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "true",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": true
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": true,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": true,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": true,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "integer",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": 7
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 7,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 7,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": 7,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "float",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": 1.5
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 1.5,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 1.5,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": 1.5,
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "initial-empty-hash-skips",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "unchanged-skips-new-targets",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": null
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": {}
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": {},
+          "hash": "b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": {},
+          "hash": "b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "omitted-target-clears",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {}
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "unavailable-retains",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": null
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "nested-not-flattened",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "settings": {
+                  "target_hosts": [
+                    "target.invalid"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "assignment-before-log-error",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": 1
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "c",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 1,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": 1,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "TypeError",
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": 1,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 0,
+          "targets": 1,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "c",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 428,
+          "header_retained": false,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "c",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "request-error-before-header-removal",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  null
+                ]
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": "",
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": "broken",
+          "prior": false
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            null
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": true,
+          "declaration_records": 0,
+          "targets": [
+            null
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": true,
+          "declaration_records": 0,
+          "targets": [
+            null
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": "AttributeError",
+          "status": 0,
+          "header_retained": true,
+          "declaration_records": 0,
+          "targets": [
+            null
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 200,
+          "header_retained": true,
+          "declaration_records": 0,
+          "targets": [
+            null
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "declared-options-without-target-refresh",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ],
+                "declared_ttl_max": 10
+              }
+            }
+          }
+        },
+        {
+          "action": "declare",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": [],
+                "declared_ttl_max": 2,
+                "inject_declared": true
+              }
+            }
+          }
+        },
+        {
+          "action": "stats"
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": [],
+                "declared_ttl_max": 2,
+                "inject_declared": true
+              }
+            }
+          }
+        },
+        {
+          "action": "request",
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "declare",
+          "error": null,
+          "ttl": 2,
+          "declaration_records": 1,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "declaration_records": 1,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 1,
+          "targets": [],
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 1,
+          "targets": [],
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "request",
+          "error": null,
+          "status": 0,
+          "header_retained": false,
+          "declaration_records": 1,
+          "targets": [],
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "stats-error-before-declaration-expiry-cleanup",
+      "steps": [
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ],
+                "declared_ttl_max": 2
+              }
+            }
+          }
+        },
+        {
+          "action": "declare",
+          "sensor": {
+            "policy_hash": "a",
+            "addons": {
+              "test_context": {
+                "target_hosts": [
+                  "target.invalid"
+                ],
+                "declared_ttl_max": 2
+              }
+            }
+          }
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "b",
+            "addons": {
+              "test_context": {
+                "target_hosts": null
+              }
+            }
+          }
+        },
+        {
+          "action": "stats",
+          "now": 3
+        },
+        {
+          "action": "configure",
+          "sensor": {
+            "policy_hash": "c",
+            "addons": {
+              "test_context": {
+                "target_hosts": []
+              }
+            }
+          }
+        },
+        {
+          "action": "stats",
+          "now": 3
+        }
+      ],
+      "observations": [
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 0,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "declare",
+          "error": null,
+          "ttl": 2,
+          "declaration_records": 1,
+          "targets": [
+            "target.invalid"
+          ],
+          "hash": "a",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 1,
+          "targets": null,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": "TypeError",
+          "declaration_records": 1,
+          "targets": null,
+          "hash": "b",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "configure",
+          "error": null,
+          "declaration_records": 1,
+          "targets": [],
+          "hash": "c",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "action": "stats",
+          "error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "declaration_records": 0,
+          "targets": [],
+          "hash": "c",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    }
+  ],
+  "trace_count": 26,
+  "operation_count": 106
+}

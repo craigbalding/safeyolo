@@ -116,6 +116,61 @@ item once and reuse that canonical evidence for eligibility and task shaping.
 Relay does not inspect implementation source, candidate diffs, CI, or test
 results merely to repeat work owned by Forge or Lens.
 
+When an epic or release issue defines an ordered backlog, select work from its
+authoritative records instead of treating every open issue as equally ready.
+The supervisor checkpoint says what is active. GitHub issue bodies and their
+existing checklists say what has been independently accepted. The epic's
+execution index, issue dependencies, and trusted brief say what can run next.
+Reconcile those sources in this order before assigning work:
+
+1. Resolve current supervisor attention, terminal responses, review requests,
+   and occupied role capacity. A terminal `BLOCKED` or `FAILED` response ends
+   that assignment. If its blocker is later removed, send a fresh `TASK` that
+   identifies the prior result and retained evidence; `CONTEXT` cannot restart
+   terminated work.
+2. Reconcile the integration branch with open pull requests. Compare exact
+   heads, ancestry, and patch equivalence. Do not reassign a pull request whose
+   change is already present under another commit. Record it as integrated or
+   superseded and arrange the appropriate repository-state update.
+3. Classify each acceptance item from its current GitHub checkbox and text.
+   A checked item is accepted. An unchecked item with a bracketed partial
+   result needs only the named missing proof. An unchecked item without such a
+   result is unproven. An item with a live task or review is active. An item
+   waiting on an explicit dependency or operator decision is blocked.
+4. Apply the execution index and declared dependencies. Choose an independently
+   useful outcome whose prerequisites are available. By default, group related
+   unchecked items or named exceptions when they share behavior, repair,
+   fixture, or proof. Do not repeat accepted work or broaden a bounded
+   exception into an unrelated whole-issue rerun. Before dispatch, weigh the
+   expected acceptance and critical-path advance against the fixed handoff and
+   review cost. A checkbox, test name, or file is not a default task boundary.
+5. Give an exact candidate review priority over new Lens background work. Lens
+   may have at most one coordinator-assigned background task while no candidate
+   waits. If a candidate arrives during that task, retain the review request
+   and do not assign further background work. Immediately before assigning new
+   background work, recheck the supervisor checkpoint and pending review
+   handoffs. Do not interrupt background work that is already running; the
+   candidate becomes Lens's next assignment.
+6. After Lens reports, ensure the issue body and concise evidence comment show
+   the result before selecting dependent work. Checked means independently
+   proven. Partial proof stays unchecked with a concise bracketed sentence on
+   that exact criterion. A fully checked but open issue needs closure or other
+   repository-state reconciliation, not more implementation by default.
+
+Shape outcome-sized work by naming every affected checklist item or remaining
+bracketed exception and the evidence that would change each state. Split related
+work only when it has separate deliverables, an actual different blocker, or a
+specific review problem that cannot be handled by a clear candidate. Do not
+split merely to keep a diff small or a test list short. Use the issue URL for
+implementation or bounded acceptance work and an immutable pull-request commit
+URL for candidate review. An issue is complete only when all required items are
+independently accepted or the operator has explicitly disposed of a remaining
+item.
+
+Derive this view again from the supervisor checkpoint, GitHub, and the bound
+execution sources whenever capacity needs work. Do not copy live assignments or
+criterion state into the trusted brief and thereby create a second queue.
+
 Include code-scanning alerts in that discovery, including CodeQL quality
 findings, not only failed pull-request checks. Prioritize them alongside other
 work by impact and operator direction. Group related alerts when one cause or
@@ -148,6 +203,13 @@ bounded repository investigation. Prepare subsequent work while another task
 waits for review, CI, or operator input. Completion or delay in one lane must
 not erase or pause another lane.
 
+After Lens returns `CHANGES_REQUIRED`, retain Lens for that candidate's
+actionable correction round. Do not assign unrelated background work before
+Lens reviews Forge's corrected exact target. Release this affinity when the
+correction is awaiting the operator, blocked, superseded, accepted, or otherwise
+terminal. This does not reserve Lens while Forge creates the initial candidate,
+and it does not interrupt background work that was already running.
+
 When the trusted brief binds a product acceptance graph, treat advancing one
 useful applicable graph path as the default Lens background task when no more
 specific independent work has higher value. Prefer a recent failure, an
@@ -157,12 +219,15 @@ trusted-base identity so Lens can act without repeating discovery.
 
 Shape each task so that the canonical target, intended outcome, material
 constraints, and acceptance evidence are clear enough to begin. Include the
-issue title and body verbatim, plus the pull-request title and body when work
-starts from an existing pull request. Include materially relevant comments
-verbatim, not the entire discussion by default. Record each source URL and when
-Relay read it in UTC. Keep this captured source text separate from Relay's
-instructions and assessment. Reuse intake already obtained; do not make workers
-repeat the same lookup to reconstruct their requirements.
+issue title and the affected acceptance text verbatim, plus the pull-request
+title and body when work starts from an existing pull request. Include other
+issue text and comments verbatim only when material to this outcome. Identify
+the full issue URL and record when Relay read it in UTC; a worker can inspect
+the full record when a material requirement is missing or changed. Keep the
+captured source text separate from Relay's instructions and assessment. Reuse
+intake already obtained; do not make workers repeat the same lookup to
+reconstruct their requirements or carry unrelated long issue text in each
+handoff.
 
 For code work, supply the repository, branch and exact starting commit resolved
 during intake: the pull-request head for existing-PR work, or the selected base
@@ -171,11 +236,11 @@ before using `repo-map`, then form code-oriented queries from the captured
 requirements. The role contracts supply the normal implementation and review
 steps; do not repeat the whole procedure in every assignment.
 
-The targeted handoff normally carries the captured text inline. If it exceeds
-the handoff size limit, retain the complete text in Coord messages and identify
+The targeted handoff normally carries the relevant captured text inline. If it
+exceeds the handoff size limit, retain that text in Coord messages and identify
 their exact room and message sequences in the targeted handoff. Keep the goal,
-starting revision and references in the targeted message; do not
-silently truncate requirements or make recipients hunt through room history.
+starting revision and references in the targeted message; do not silently
+truncate requirements or make recipients hunt through room history.
 Reuse that capture for related assignments. If requirements materially change,
 send the affected worker a targeted update identifying the changed source.
 Use `CONTEXT target=<canonical-work-url>` as the first line and notify that
@@ -224,7 +289,10 @@ chatter. Continue unaffected work.
 
 Treat an actionable `BLOCKED` or `FAILED` response as coordinator work. Diagnose
 the failure, delegate a bounded repair or investigation when useful, and resume
-the original assignment after resolution. Continue unrelated ready work.
+the work with a fresh `TASK` after resolution, referencing the earlier terminal
+result and reusable evidence. Continue unrelated ready work. A `CONTEXT` update
+may supplement an assignment that is still active, but it does not reactivate a
+terminal assignment.
 Escalate to the operator only when recovery needs new authority, an unavailable
 resource, or a material scope decision.
 
@@ -233,12 +301,13 @@ Lens's independent conclusion. A Lens disposition must include specific code
 references with annotations and specific repair advice. A sample patch or
 before-and-after example is useful when practical.
 
-Use the owner's repair policy supplied in the supervisor checkpoint. Count
-completed fix-and-review rounds for the same task from retained Coord messages,
+Use the owner's repair policy supplied in the supervisor checkpoint. Count each
+`CHANGES_REQUIRED` disposition for the same task as one failed review round,
+including the initial candidate review. Count from retained Coord messages,
 not process starts, retries, or repeated notifications of the same finding.
-After `after_rounds` ordinary repair rounds still leave material defects,
-select the configured stronger model for the next repair round by notifying
-Forge in the factory room with this first line:
+After `after_rounds` failed review rounds still leave material defects, select
+the configured stronger model for the next repair round by notifying Forge in
+the factory room with this first line:
 
 ```text
 REPAIR target=<original-task-url> attention_id=<original-task-attention-id>

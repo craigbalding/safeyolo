@@ -1,0 +1,316 @@
+{
+  "source_sha256": "8f7584272b175093f6da4b8e398dc1cd3c540790f175910a88b3b8e3bbb8ebfc",
+  "rows": [
+    {
+      "input": {
+        "name": "terminal_before_message_trim",
+        "max_flows": 10,
+        "max_bytes": 16,
+        "flows": [
+          {
+            "id": "open",
+            "http_end": 2,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 3,
+                "hex": "6f6c642d626f6479",
+                "dropped": true
+              },
+              {
+                "timestamp": 4,
+                "hex": "6e65772d626f6479",
+                "dropped": false
+              }
+            ]
+          },
+          {
+            "id": "terminal",
+            "http_end": 6,
+            "response": "7465726d696e616c"
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "open"
+        ],
+        "messages": {
+          "open": [
+            0,
+            1
+          ]
+        },
+        "retained_bytes": 16,
+        "pruned": 1,
+        "trimmed": 0
+      }
+    },
+    {
+      "input": {
+        "name": "global_timestamp_id_position",
+        "max_flows": 1,
+        "max_bytes": 12,
+        "flows": [
+          {
+            "id": "a",
+            "http_end": 3,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 5,
+                "hex": "61626364",
+                "dropped": true
+              },
+              {
+                "timestamp": 5,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 9,
+                "hex": "61626364",
+                "dropped": false
+              }
+            ]
+          },
+          {
+            "id": "b",
+            "http_end": 3,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 1,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 5,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 8,
+                "hex": "61626364",
+                "dropped": false
+              }
+            ]
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "a",
+          "b"
+        ],
+        "messages": {
+          "a": [
+            2
+          ],
+          "b": [
+            1,
+            2
+          ]
+        },
+        "retained_bytes": 12,
+        "pruned": 0,
+        "trimmed": 3
+      }
+    },
+    {
+      "input": {
+        "name": "latest_empty_and_old_empty",
+        "max_flows": 10,
+        "max_bytes": 1,
+        "flows": [
+          {
+            "id": "open",
+            "http_end": 2,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 3,
+                "hex": "",
+                "dropped": false
+              },
+              {
+                "timestamp": 4,
+                "hex": "6f6c642d626f6479",
+                "dropped": false
+              },
+              {
+                "timestamp": 5,
+                "hex": "6e65772d626f6479",
+                "dropped": false
+              },
+              {
+                "timestamp": 6,
+                "hex": "",
+                "dropped": false
+              }
+            ]
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "open"
+        ],
+        "messages": {
+          "open": [
+            0,
+            3
+          ]
+        },
+        "retained_bytes": 0,
+        "pruned": 0,
+        "trimmed": 2
+      }
+    },
+    {
+      "input": {
+        "name": "latest_oversized_soft_target",
+        "max_flows": 10,
+        "max_bytes": 1,
+        "flows": [
+          {
+            "id": "open",
+            "http_end": 2,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 3,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 4,
+                "hex": "6c617267652d6e6577657374",
+                "dropped": false
+              }
+            ]
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "open"
+        ],
+        "messages": {
+          "open": [
+            1
+          ]
+        },
+        "retained_bytes": 12,
+        "pruned": 0,
+        "trimmed": 1
+      }
+    },
+    {
+      "input": {
+        "name": "websocket_close_priority",
+        "max_flows": 1,
+        "max_bytes": 1000,
+        "flows": [
+          {
+            "id": "later-ws",
+            "http_end": 2,
+            "ws_end": 30,
+            "messages": [
+              {
+                "timestamp": 4,
+                "hex": "6f6e65",
+                "dropped": false
+              },
+              {
+                "timestamp": 5,
+                "hex": "74776f",
+                "dropped": false
+              }
+            ]
+          },
+          {
+            "id": "earlier-http",
+            "http_end": 20
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "later-ws"
+        ],
+        "messages": {
+          "later-ws": [
+            0,
+            1
+          ]
+        },
+        "retained_bytes": 6,
+        "pruned": 1,
+        "trimmed": 0
+      }
+    },
+    {
+      "input": {
+        "name": "count_pressure_does_not_trim_open_messages",
+        "max_flows": 1,
+        "max_bytes": 1000,
+        "flows": [
+          {
+            "id": "a",
+            "http_end": 2,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 3,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 4,
+                "hex": "61626364",
+                "dropped": false
+              }
+            ]
+          },
+          {
+            "id": "b",
+            "http_end": 2,
+            "ws_end": null,
+            "messages": [
+              {
+                "timestamp": 3,
+                "hex": "61626364",
+                "dropped": false
+              },
+              {
+                "timestamp": 4,
+                "hex": "61626364",
+                "dropped": false
+              }
+            ]
+          }
+        ]
+      },
+      "result": {
+        "retained": [
+          "a",
+          "b"
+        ],
+        "messages": {
+          "a": [
+            0,
+            1
+          ],
+          "b": [
+            0,
+            1
+          ]
+        },
+        "retained_bytes": 16,
+        "pruned": 0,
+        "trimmed": 0
+      }
+    }
+  ]
+}

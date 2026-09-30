@@ -47,6 +47,8 @@ def test_start_agent_uses_only_fixed_configured_options():
             autospec=True,
         ),
         patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+        patch("safeyolo.agent_launchers.observe_launch",
+              return_value={"agent_state": "stopped"}, autospec=True),
         patch(
             "safeyolo.agent_lifecycle._run_agent",
             return_value=0,
@@ -81,6 +83,24 @@ def test_start_agent_rejects_unknown_identity():
     assert caught.value.status_code == 404
 
 
+@pytest.mark.parametrize("state", ["starting", "running", "stopping", "unknown"])
+def test_start_agent_rejects_state_the_operator_client_cannot_start(state):
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = True
+    with (
+        patch("safeyolo.agent_lifecycle.get_agent_by_id",
+              return_value=("probe", {"agent_id": "ag-probe"}), autospec=True),
+        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+        patch("safeyolo.agent_launchers.observe_launch",
+              return_value={"agent_state": state}, autospec=True),
+        patch("safeyolo.commands.agent._run_agent", autospec=True) as run,
+        pytest.raises(AgentLifecycleError, match=f"Agent cannot start while {state}") as caught,
+    ):
+        start_agent("ag-probe")
+    assert caught.value.status_code == 409
+    run.assert_not_called()
+
+
 def test_start_agent_preserves_failure_detail_for_operator(caplog):
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.return_value = False
@@ -91,6 +111,8 @@ def test_start_agent_preserves_failure_detail_for_operator(caplog):
             autospec=True,
         ),
         patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+        patch("safeyolo.agent_launchers.observe_launch",
+              return_value={"agent_state": "stopped"}, autospec=True),
         patch(
             "safeyolo.agent_lifecycle._run_agent",
             side_effect=RuntimeError("configured workspace is unavailable"),

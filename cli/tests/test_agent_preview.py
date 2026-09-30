@@ -577,6 +577,32 @@ def test_managed_preview_can_issue_a_fresh_code_after_unlock(monkeypatch):
         session.close()
 
 
+def test_managed_preview_failure_after_start_reclaims_listener(monkeypatch):
+    servers = []
+    events = []
+
+    def capture_server(*args, **kwargs):
+        server = start_preview_server(*args, **kwargs)
+        servers.append(server)
+        return server
+
+    def fail_open_event(event, *_args, **_kwargs):
+        events.append(event)
+        if event == "agent.preview_open":
+            raise RuntimeError("preview audit unavailable")
+
+    monkeypatch.setattr("safeyolo.preview.start_preview_server", capture_server)
+    monkeypatch.setattr("safeyolo.preview.write_event", fail_open_event)
+
+    with pytest.raises(RuntimeError, match="preview audit unavailable"):
+        start_managed_preview(PreviewConfig(agent="failed-present", guest_port=6080), NoRelayPlatform())
+
+    assert len(servers) == 1
+    assert servers[0].socket.fileno() == -1
+    assert not any(thread.name == "preview-failed-present" for thread in threading.enumerate())
+    assert events == ["agent.preview_open", "agent.preview_close"]
+
+
 def test_preview_server_unlocks_behind_tailnet_https(monkeypatch):
     monkeypatch.setattr("safeyolo.preview.write_event", lambda *args, **kwargs: None)
     server = start_preview_server(

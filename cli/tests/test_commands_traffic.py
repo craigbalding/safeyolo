@@ -10,6 +10,7 @@ from safeyolo.cli import app
 
 def test_traffic_updates_scope_before_attaching():
     api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.is_native = False
     api.set_traffic_scope.return_value = {"effective_filter": "agent cody"}
 
     with (
@@ -36,6 +37,7 @@ def test_traffic_updates_scope_before_attaching():
 
 def test_traffic_can_update_scope_without_terminal_attach():
     api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.is_native = False
     api.set_traffic_scope.return_value = {"effective_filter": ""}
 
     with (
@@ -55,3 +57,46 @@ def test_agent_and_unattributed_are_rejected():
     )
 
     assert result.exit_code == 2
+
+
+def test_native_traffic_uses_inspector_after_scope_without_tmux():
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.is_native = True
+    api.set_traffic_scope.return_value = {"effective_filter": ""}
+    with (
+        patch("safeyolo.commands.traffic.get_api", return_value=api, autospec=True),
+        patch("safeyolo.commands.traffic.inspect_traffic", autospec=True) as inspect,
+        patch("safeyolo.commands.traffic.attach_session", autospec=True) as attach,
+        patch("safeyolo.commands.traffic.session_exists", autospec=True) as exists,
+    ):
+        inspect.side_effect = lambda client: api.set_traffic_scope.assert_called_once()
+        result = CliRunner().invoke(app, ["traffic", "--agent", "alice"])
+    assert result.exit_code == 0
+    inspect.assert_called_once_with(api)
+    attach.assert_not_called()
+    exists.assert_not_called()
+
+
+def test_native_no_attach_does_not_open_inspector():
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.is_native = True
+    api.set_traffic_scope.return_value = {"effective_filter": ""}
+    with (
+        patch("safeyolo.commands.traffic.get_api", return_value=api, autospec=True),
+        patch("safeyolo.commands.traffic.inspect_traffic", autospec=True) as inspect,
+    ):
+        result = CliRunner().invoke(app, ["traffic", "--no-attach"])
+    assert result.exit_code == 0
+    inspect.assert_not_called()
+
+
+def test_native_headless_reports_no_attach_and_escapes_scope():
+    api = create_autospec(AdminAPI, instance=True, spec_set=True)
+    api.is_native = True
+    api.set_traffic_scope.return_value = {"effective_filter": "[bold]agent\x1b]52;payload\x07"}
+    with patch("safeyolo.commands.traffic.get_api", return_value=api, autospec=True):
+        result = CliRunner().invoke(app, ["traffic"])
+    assert result.exit_code == 1
+    assert "--no-attach" in result.output
+    assert "[bold]agent\\x1b]52;payload\\x07" in result.output
+    assert "\x1b]52" not in result.output

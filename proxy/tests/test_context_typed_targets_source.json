@@ -1,0 +1,2586 @@
+{
+  "rows": [
+    {
+      "case": "root-date",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: 2030-01-02\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "root-datetime",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: 2030-01-02T03:04:05Z\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "quoted-root-date",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: \"2030-01-02\"\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 10,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 10,
+            "checks_total": 1,
+            "allowed_total": 1,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 1,
+            "allowed": 1,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 10,
+            "checks_total": 1,
+            "allowed_total": 1,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 1,
+            "allowed": 1,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 10,
+            "checks_total": 2,
+            "allowed_total": 1,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 2,
+            "allowed": 1,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-match-before-date",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: [\"target.invalid\", 2030-01-02]\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-date-before-match",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: [2030-01-02, \"target.invalid\"]\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "list-quoted-date",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: [\"2030-01-02\", \"target.invalid\"]\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 2,
+            "allowed_total": 1,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 2,
+            "allowed": 1,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 3,
+            "allowed_total": 1,
+            "blocked_total": 2,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 3,
+            "allowed": 1,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 3,
+            "allowed_total": 1,
+            "blocked_total": 2,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:a402104c26fe4a53",
+          "counts": {
+            "checks": 3,
+            "allowed": 1,
+            "blocked": 2,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-temporal-values-ignored",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {\"target.invalid\": 2030-01-02, \"later.invalid\": 2030-01-02T03:04:05Z}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:eb0655913a9a5de7",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 2,
+            "allowed_total": 1,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:eb0655913a9a5de7",
+          "counts": {
+            "checks": 2,
+            "allowed": 1,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 2,
+            "allowed_total": 1,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:eb0655913a9a5de7",
+          "counts": {
+            "checks": 2,
+            "allowed": 1,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 2,
+            "allowed_total": 1,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:eb0655913a9a5de7",
+          "counts": {
+            "checks": 2,
+            "allowed": 1,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-match-before-date",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {\"target.invalid\": false, 2030-01-02: ignored}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:dfe2f023a070640b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:dfe2f023a070640b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:dfe2f023a070640b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:dfe2f023a070640b",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-date-before-match",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {2030-01-02: ignored, \"target.invalid\": false}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:f8dcec10931e39d3",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:f8dcec10931e39d3",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:f8dcec10931e39d3",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:f8dcec10931e39d3",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-quoted-before-typed-key",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {\"2030-01-02\": false, 2030-01-02: ignored}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:6de361346bb333c1",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:6de361346bb333c1",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:6de361346bb333c1",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:6de361346bb333c1",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-typed-before-quoted-key",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {2030-01-02: ignored, \"2030-01-02\": false}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d75af4f30281db8e",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:d75af4f30281db8e",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d75af4f30281db8e",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d75af4f30281db8e",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "map-datetime-key",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {2030-01-02T03:04:05Z: ignored, \"target.invalid\": true}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": "run=r;agent=a",
+          "prior": true
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": "run=r;agent=a",
+          "prior": false
+        },
+        {
+          "host": "2030-01-02",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "2",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": true,
+          "hash": "",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:efde45009d4d184d",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": true,
+          "hash": "sha256:efde45009d4d184d",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:efde45009d4d184d",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:efde45009d4d184d",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "toml-root-datetime",
+      "format": "toml",
+      "source": "[addons.test_context]\ntarget_hosts=2030-01-02T03:04:05Z\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:1181d7a6af5aa0d5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "toml-list-date",
+      "format": "toml",
+      "source": "[addons.test_context]\ntarget_hosts=[\"target.invalid\", 2030-01-02]\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:31fe0fd5bbfd269a",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "alias-merge-order",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    ignored: &targets {target.invalid: true, 2030-01-02: ignored}\n    target_hosts:\n      <<: *targets\n      target.invalid: false\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:0304ad695d3b33cb",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:0304ad695d3b33cb",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "temporal-alias-value",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    ignored: &date 2030-01-02\n    target_hosts: [target.invalid, *date]\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:117c5dfc30c2be51",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:117c5dfc30c2be51",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "unrelated-temporal-fields",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: [target.invalid]\n    ignored: {2030-01-02: [2030-01-02T03:04:05Z]}\n  another:\n    settings: {created: 2030-01-02}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:dd7d6a220912387c",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:dd7d6a220912387c",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "nested-target-ignored",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    settings: {target_hosts: 2030-01-02}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:f32b03c84e85f9cc",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "task-addon-ignored",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: [target.invalid]\n",
+      "task": "{\"addons\":{\"test_context\":{\"target_hosts\":true}}}",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:369132e5f60cc9f6",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:369132e5f60cc9f6",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "reload-and-unavailable",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: 2030-01-02\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false,
+          "source": "addons:\n  test_context:\n    target_hosts: [target.invalid]\n"
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false,
+          "source": "addons:\n  test_context:\n    target_hosts: {target.invalid: 2030-01-02}\n"
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": true,
+          "source": "addons: {test_context: {}}"
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false,
+          "available": false
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": "TypeError",
+          "stats_error": "TypeError",
+          "stats": null,
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:d3a6d3e5166678f5",
+          "counts": {
+            "checks": 0,
+            "allowed": 0,
+            "blocked": 0,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:64eb0cec5965df30",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 2,
+            "allowed_total": 0,
+            "blocked_total": 2,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:89d4d092ac6107e3",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 2,
+            "allowed_total": 0,
+            "blocked_total": 2,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 200,
+          "header_retained": false,
+          "hash": "sha256:89d4d092ac6107e3",
+          "counts": {
+            "checks": 2,
+            "allowed": 0,
+            "blocked": 2,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 3,
+            "allowed_total": 0,
+            "blocked_total": 3,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:89d4d092ac6107e3",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 3,
+            "allowed_total": 0,
+            "blocked_total": 3,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:943391ffd2719163",
+          "counts": {
+            "checks": 3,
+            "allowed": 0,
+            "blocked": 3,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "authored-date-shaped-object",
+      "format": "json",
+      "source": "{\"addons\":{\"test_context\":{\"target_hosts\":{\"yaml_date\":\"2030-01-02\"}}}}",
+      "steps": [
+        {
+          "host": "yaml_date",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:7c65d005d36d7dd2",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 1,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:7c65d005d36d7dd2",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "integer-key",
+      "native_gap": "nonstring YAML mapping keys are not admitted by the existing frontend",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {target.invalid: false, 7: ignored}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:c59eae47b2e2673e",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:c59eae47b2e2673e",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "boolean-key",
+      "native_gap": "nonstring YAML mapping keys are not admitted by the existing frontend",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {target.invalid: false, true: ignored}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:59f5acfd91570477",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:59f5acfd91570477",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    },
+    {
+      "case": "null-key",
+      "native_gap": "nonstring YAML mapping keys are not admitted by the existing frontend",
+      "format": "yaml",
+      "source": "addons:\n  test_context:\n    target_hosts: {target.invalid: false, null: ignored}\n",
+      "steps": [
+        {
+          "host": "target.invalid",
+          "header": null,
+          "prior": false
+        },
+        {
+          "host": "other.invalid",
+          "header": null,
+          "prior": false
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 428,
+          "header_retained": false,
+          "hash": "sha256:8240a02ce88dd929",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        },
+        {
+          "error": "AttributeError",
+          "stats_error": null,
+          "stats": {
+            "active": true,
+            "target_hosts": 2,
+            "checks_total": 1,
+            "allowed_total": 0,
+            "blocked_total": 1,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "status": 0,
+          "header_retained": false,
+          "hash": "sha256:8240a02ce88dd929",
+          "counts": {
+            "checks": 1,
+            "allowed": 0,
+            "blocked": 1,
+            "warned": 0
+          }
+        }
+      ]
+    }
+  ],
+  "trace_count": 24,
+  "operation_count": 88
+}

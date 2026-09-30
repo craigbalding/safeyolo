@@ -91,12 +91,13 @@ def test_backlog_alert_intake_reuses_issue_flow_and_distinguishes_lookup_failure
 def test_backlog_intake_preserves_requirements_and_starting_revision():
     contract = " ".join(BACKLOG_COORDINATOR_CONTRACT.read_text().split())
 
-    assert "issue title and body verbatim" in contract
+    assert "issue title and the affected acceptance text verbatim" in contract
     assert "pull-request title and body" in contract
-    assert "Record each source URL and when Relay read it in UTC." in contract
-    assert "Keep this captured source text separate from Relay's instructions and assessment." in contract
+    assert "other issue text and comments verbatim only when material" in contract
+    assert "full issue URL and record when Relay read it in UTC" in contract
+    assert "Keep the captured source text separate from Relay's instructions and assessment." in contract
     assert "repository, branch and exact starting commit" in contract
-    assert "retain the complete text in Coord messages" in contract
+    assert "retain that text in Coord messages" in contract
     assert "their exact room and message sequences" in contract
     assert "do not silently truncate requirements" in contract
 

@@ -8,14 +8,17 @@ private final class StubEventSocket: EventSocket {
     var receiveError: Error?
     var cancelled = false
     var receiving = false
+    var onResume: (() -> Void)?
+    var messages: [URLSessionWebSocketTask.Message] = []
 
-    func resume() {}
+    func resume() { onResume?() }
     func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void) { pongReceiveHandler(pingError) }
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) { cancelled = true }
     func receive() async throws -> URLSessionWebSocketTask.Message {
         receiving = true
         while !cancelled {
             if let receiveError { throw receiveError }
+            if !messages.isEmpty { return messages.removeFirst() }
             try await Task.sleep(for: .milliseconds(5))
         }
         throw CancellationError()
@@ -43,11 +46,15 @@ extension ModelTests {
     @MainActor
     static func testConnectionDiagnostics() async throws {
         try testDiagnosticRedaction()
+        try await testMultiplePendingApprovals()
+        try await testApprovalInSubscriptionGapAndReconnect()
+        try await testFailedHandshakeSnapshotRetriesPendingApproval()
+        try await testAgentInventoryFailureDoesNotBlockApprovals()
         try await testDisabledEventsAndRecovery()
         try await testSocketFailurePacingAndRecovery()
         try await testRealSocketRefusalPacing()
         try await testRemoteDisabledGuidance()
-        print("connection-tests: PASS disabled, legacy, retry pacing, stable snapshots, recovery, cancellation, redaction")
+        print("connection-tests: PASS approvals, disabled, legacy, retry pacing, stable snapshots, recovery, cancellation, redaction")
     }
 
     @MainActor
@@ -73,6 +80,172 @@ extension ModelTests {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
         return URLSession(configuration: config)
+    }
+
+    private static func pendingApprovals(_ keys: [String]) -> Data {
+        let approvals: [[String: Any]] = keys.map { key in
+            [
+                "event": "security.credential_guard", "summary": "Credential needs approval",
+                "agent": "forge", "host": "api.example.com",
+                "approval": [
+                    "required": true, "approval_type": "credential",
+                    "key": key, "target": "api.example.com",
+                ],
+            ]
+        }
+        return try! JSONSerialization.data(withJSONObject: ["approvals": approvals])
+    }
+
+    private static var approvalEvent: URLSessionWebSocketTask.Message {
+        .string(#"{"event":"security.credential_guard","kind":"security","severity":"high","summary":"Credential needs approval","approval":{"required":true}}"#)
+    }
+
+    private static var agentEvent: URLSessionWebSocketTask.Message {
+        .string(#"{"event":"agent.started","kind":"admin","severity":"info","summary":"Agent started"}"#)
+    }
+
+    @MainActor
+    private static func testMultiplePendingApprovals() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["one", "two"]))
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(
+            adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(),
+            makeEventSocket: { _ in socket }
+        )
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { socket.receiving }
+        precondition(presented == ["one:api.example.com", "two:api.example.com"])
+        precondition(client.approvals.map(\.id) == presented, "Every presentation callback must have a pending menu item")
+
+        socket.messages.append(approvalEvent)
+        try await until { !client.diagnosticReport.contains("Last live event received: Never") }
+        precondition(presented.count == 2, "An unchanged snapshot must not reopen windows")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["two"]))
+        socket.messages.append(approvalEvent)
+        try await until { client.approvals.count == 1 }
+        precondition(client.approvals[0].id == "two:api.example.com" && presented.count == 2,
+                     "A resolved approval must leave the menu without another window")
+    }
+
+    @MainActor
+    private static func testApprovalInSubscriptionGapAndReconnect() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let gate = RetryGate()
+        let first = StubEventSocket()
+        first.onResume = {
+            // The server starts streaming at the handshake audit offset. This
+            // approval is absent from the earlier HTTP snapshot and stream.
+            StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["gap"]))
+        }
+        let second = StubEventSocket()
+        let third = StubEventSocket()
+        var sockets = 0
+        let client = try SafeYoloClient(
+            adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(),
+            makeEventSocket: { _ in
+                sockets += 1
+                return sockets == 1 ? first : sockets == 2 ? second : third
+            },
+            retryPause: { try await gate.pause() }
+        )
+        defer { client.stop(); gate.release() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { first.receiving }
+        precondition(presented == ["gap:api.example.com"] && client.approvals.map(\.id) == presented,
+                     "A pending approval in the subscribe gap must be presented and appear in the menu")
+
+        first.receiveError = URLError(.networkConnectionLost)
+        try await until { gate.waits == 1 }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals([]))
+        gate.release()
+        try await until { second.receiving }
+        precondition(client.approvals.isEmpty && presented.count == 1,
+                     "Reconnect must remove resolved approvals without replaying their windows")
+        second.receiveError = URLError(.networkConnectionLost)
+        try await until { gate.waits == 2 }
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["during-outage"]))
+        gate.release()
+        try await until { third.receiving }
+        precondition(presented == ["gap:api.example.com", "during-outage:api.example.com"],
+                     "Reconnect must present a still-pending approval missed during the outage")
+    }
+
+    @MainActor
+    private static func testFailedHandshakeSnapshotRetriesPendingApproval() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        let gate = RetryGate()
+        let first = StubEventSocket()
+        first.onResume = {
+            StubURLProtocol.responsesByPath["/admin/approvals"] = (503, Data(#"{"error":"temporarily unavailable"}"#.utf8))
+        }
+        let second = StubEventSocket()
+        var sockets = 0
+        let client = try SafeYoloClient(
+            adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(),
+            makeEventSocket: { _ in sockets += 1; return sockets == 1 ? first : second },
+            retryPause: { try await gate.pause() }
+        )
+        defer { client.stop(); gate.release() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { gate.waits == 1 }
+        precondition(first.cancelled && client.connectionState == .reconnecting && presented.isEmpty)
+        precondition(client.requestErrors["Pending approvals"] != nil)
+
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["recovered"]))
+        gate.release()
+        try await until { second.receiving }
+        precondition(client.connectionState == .connected)
+        precondition(presented == ["recovered:api.example.com"] && client.approvals.map(\.id) == presented)
+        precondition(client.requestErrors["Pending approvals"] == nil && client.requestErrors["Live events"] == nil)
+    }
+
+    @MainActor
+    private static func testAgentInventoryFailureDoesNotBlockApprovals() async throws {
+        snapshot()
+        defer { StubURLProtocol.responsesByPath = [:] }
+        // Native Rust's configured-listener inventory lacks the Mac client's
+        // richer agent fields. Its decode error must not suppress approvals.
+        StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(
+            #"{"agents":[{"agent_id":"alice","socket_path":"/tmp/alice.sock","status":"configured"}]}"#.utf8
+        ))
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["first"]))
+        let socket = StubEventSocket()
+        let client = try SafeYoloClient(
+            adminURL: "http://127.0.0.1:19090", eventsURL: "ws://127.0.0.1:19091/admin/events",
+            token: "fixture-secret", expectedInstanceID: "sy-connection-test", session: stubSession(),
+            makeEventSocket: { _ in socket }
+        )
+        defer { client.stop() }
+        var presented: [String] = []
+        client.onNewApproval = { presented.append($0.id) }
+        client.start()
+        try await until { socket.receiving }
+        precondition(client.connectionState == .connected && presented == ["first:api.example.com"])
+        precondition(client.requestErrors["Agent status"] != nil && client.requestErrors["Live events"] == nil)
+
+        socket.messages.append(agentEvent)
+        try await until { !client.diagnosticReport.contains("Last live event received: Never") }
+        precondition(client.connectionState == .connected && client.requestErrors["Agent status"] != nil,
+                     "An agent refresh failure must keep the approval event stream open")
+        StubURLProtocol.responsesByPath["/admin/approvals"] = (200, pendingApprovals(["first", "second"]))
+        socket.messages.append(approvalEvent)
+        try await until { presented.count == 2 }
+        precondition(presented == ["first:api.example.com", "second:api.example.com"])
+        precondition(client.approvals.map(\.id) == presented)
     }
 
     @MainActor

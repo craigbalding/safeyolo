@@ -1,0 +1,409 @@
+{
+  "rows": [
+    {
+      "input": {
+        "name": "POST_False_False",
+        "method": "POST",
+        "prime": false,
+        "source_id": null,
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"set\", \"agent\": \"alice\", \"expires_in\": 7, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}}",
+        "before": null,
+        "after": {
+          "context": {
+            "run": "R",
+            "agent": "claimed",
+            "test": "T"
+          },
+          "expires_in": 7
+        },
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_declared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Declared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"declared_agent\": \"claimed\", \"test_agent_match\": false, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}, \"requested_ttl\": 7, \"granted_ttl\": 7}}\n",
+            "state": {
+              "context": {
+                "run": "R",
+                "agent": "claimed",
+                "test": "T"
+              },
+              "expires_in": 7
+            },
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "POST_False_True",
+        "method": "POST",
+        "prime": false,
+        "source_id": "trusted-source-metadata-fixture",
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"set\", \"agent\": \"alice\", \"expires_in\": 7, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}}",
+        "before": null,
+        "after": {
+          "context": {
+            "run": "R",
+            "agent": "claimed",
+            "test": "T"
+          },
+          "expires_in": 7
+        },
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_declared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Declared test context for agent alice\", \"request_id\": \"trusted-source-metadata-fixture\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"declared_agent\": \"claimed\", \"test_agent_match\": false, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}, \"requested_ttl\": 7, \"granted_ttl\": 7}}\n",
+            "state": {
+              "context": {
+                "run": "R",
+                "agent": "claimed",
+                "test": "T"
+              },
+              "expires_in": 7
+            },
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": "trusted-source-metadata-fixture"
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_True_False",
+        "method": "DELETE",
+        "prime": true,
+        "source_id": null,
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"cleared\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": true}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_True_True",
+        "method": "DELETE",
+        "prime": true,
+        "source_id": "trusted-source-metadata-fixture",
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"cleared\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"request_id\": \"trusted-source-metadata-fixture\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": true}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": "trusted-source-metadata-fixture"
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_False_False",
+        "method": "DELETE",
+        "prime": false,
+        "source_id": null,
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"cleared\"}",
+        "before": null,
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": false}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_False_True",
+        "method": "DELETE",
+        "prime": false,
+        "source_id": "trusted-source-metadata-fixture",
+        "failure": null,
+        "guard": false
+      },
+      "result": {
+        "status": 200,
+        "body": "{\"status\": \"cleared\"}",
+        "before": null,
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"request_id\": \"trusted-source-metadata-fixture\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": false}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": "trusted-source-metadata-fixture"
+      }
+    },
+    {
+      "input": {
+        "name": "POST_RuntimeError",
+        "method": "POST",
+        "prime": true,
+        "source_id": null,
+        "failure": "RuntimeError",
+        "guard": false
+      },
+      "result": {
+        "status": 500,
+        "body": "{\"error\": \"Internal error: RuntimeError\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": {
+          "context": {
+            "run": "R",
+            "agent": "claimed",
+            "test": "T"
+          },
+          "expires_in": 7
+        },
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_declared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Declared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"declared_agent\": \"claimed\", \"test_agent_match\": false, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}, \"requested_ttl\": 7, \"granted_ttl\": 7}}\n",
+            "state": {
+              "context": {
+                "run": "R",
+                "agent": "claimed",
+                "test": "T"
+              },
+              "expires_in": 7
+            },
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "POST_OSError",
+        "method": "POST",
+        "prime": true,
+        "source_id": null,
+        "failure": "OSError",
+        "guard": false
+      },
+      "result": {
+        "status": 500,
+        "body": "{\"error\": \"Internal error: OSError\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": {
+          "context": {
+            "run": "R",
+            "agent": "claimed",
+            "test": "T"
+          },
+          "expires_in": 7
+        },
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_declared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Declared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"declared_agent\": \"claimed\", \"test_agent_match\": false, \"context\": {\"run\": \"R\", \"agent\": \"claimed\", \"test\": \"T\"}, \"requested_ttl\": 7, \"granted_ttl\": 7}}\n",
+            "state": {
+              "context": {
+                "run": "R",
+                "agent": "claimed",
+                "test": "T"
+              },
+              "expires_in": 7
+            },
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_RuntimeError",
+        "method": "DELETE",
+        "prime": true,
+        "source_id": null,
+        "failure": "RuntimeError",
+        "guard": false
+      },
+      "result": {
+        "status": 500,
+        "body": "{\"error\": \"Internal error: RuntimeError\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": true}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "DELETE_OSError",
+        "method": "DELETE",
+        "prime": true,
+        "source_id": null,
+        "failure": "OSError",
+        "guard": false
+      },
+      "result": {
+        "status": 500,
+        "body": "{\"error\": \"Internal error: OSError\"}",
+        "before": {
+          "context": {
+            "run": "prior",
+            "agent": "alice"
+          },
+          "expires_in": 9
+        },
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.test_context_cleared\", \"kind\": \"security\", \"severity\": \"low\", \"summary\": \"Cleared test context for agent alice\", \"agent\": \"alice\", \"addon\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"source_id\": \"10.0.0.2\", \"trusted_agent\": \"alice\", \"had_declaration\": true}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": null
+      }
+    },
+    {
+      "input": {
+        "name": "wrong_auth",
+        "method": "GET",
+        "prime": false,
+        "source_id": "trusted-source-metadata-fixture",
+        "failure": null,
+        "guard": false,
+        "wrong_auth": true
+      },
+      "result": {
+        "status": 401,
+        "body": "{\"error\": \"Invalid agent token\"}",
+        "before": null,
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.agent_auth_failed\", \"kind\": \"security\", \"severity\": \"high\", \"summary\": \"Agent API auth failed from 10.0.0.2\", \"addon\": \"agent-api\", \"decision\": \"deny\", \"details\": {\"client_ip\": \"10.0.0.2\", \"path\": \"/api/test-context/current\"}}\n",
+            "state": null,
+            "response_already_present": false
+          }
+        ],
+        "request_id_after": "trusted-source-metadata-fixture"
+      }
+    },
+    {
+      "input": {
+        "name": "guard_None",
+        "method": "POST",
+        "prime": false,
+        "source_id": "native-backstop-fixture",
+        "failure": null,
+        "guard": true
+      },
+      "result": {
+        "status": 503,
+        "body": "{\"error\": \"SafeYolo Agent API handler unavailable\", \"reason_code\": \"agent_api_unavailable\", \"handler\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"path\": \"/api/test-context/current///\", \"request_id\": \"native-backstop-fixture\"}",
+        "before": null,
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.agent_api_unavailable\", \"kind\": \"security\", \"severity\": \"high\", \"summary\": \"Agent API handler unavailable; request contained locally\", \"request_id\": \"native-backstop-fixture\", \"agent\": \"alice\", \"addon\": \"agent-api-request-guard\", \"decision\": \"deny\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"reason_code\": \"agent_api_unavailable\", \"handler\": \"agent-api\", \"method\": \"POST\", \"path\": \"/api/test-context/current///\"}}\n",
+            "state": null,
+            "response_already_present": true
+          }
+        ],
+        "request_id_after": "native-backstop-fixture"
+      }
+    },
+    {
+      "input": {
+        "name": "guard_RuntimeError",
+        "method": "POST",
+        "prime": false,
+        "source_id": "native-backstop-fixture",
+        "failure": "RuntimeError",
+        "guard": true
+      },
+      "result": {
+        "status": 503,
+        "body": "{\"error\": \"SafeYolo Agent API handler unavailable\", \"reason_code\": \"agent_api_unavailable\", \"handler\": \"agent-api\", \"host\": \"_safeyolo.proxy.internal\", \"path\": \"/api/test-context/current///\", \"request_id\": \"native-backstop-fixture\"}",
+        "before": null,
+        "after": null,
+        "attempts": [
+          {
+            "line": "{\"schema_version\": 1, \"ts\": \"2026-01-02T03:04:05.123456Z\", \"event\": \"security.agent_api_unavailable\", \"kind\": \"security\", \"severity\": \"high\", \"summary\": \"Agent API handler unavailable; request contained locally\", \"request_id\": \"native-backstop-fixture\", \"agent\": \"alice\", \"addon\": \"agent-api-request-guard\", \"decision\": \"deny\", \"host\": \"_safeyolo.proxy.internal\", \"details\": {\"reason_code\": \"agent_api_unavailable\", \"handler\": \"agent-api\", \"method\": \"POST\", \"path\": \"/api/test-context/current///\"}}\n",
+            "state": null,
+            "response_already_present": true
+          }
+        ],
+        "request_id_after": "native-backstop-fixture"
+      }
+    }
+  ]
+}

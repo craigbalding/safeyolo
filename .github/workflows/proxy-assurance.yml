@@ -1,0 +1,77 @@
+name: Proxy assurance drift
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  source-drift:
+    name: Proxy assurance drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      # The base supplies the checker, rules, map, snapshot and locked tools.
+      # Candidate files are copied only as parser input. Nothing from the
+      # candidate checkout is built, imported or run in this job.
+      - name: Check out trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Check out exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify both revisions and trusted controls
+        env:
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git -C trusted rev-parse HEAD)" = "$EXPECTED_BASE"
+          test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -f trusted/tools/assurance/check.py
+          test -f trusted/tools/assurance/accepted.json
+
+      - name: Install pinned analysis tools from trusted base
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Set up Python and Semgrep
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group static --project trusted/tools/acceptance --python 3.12
+
+      - name: Analyze the candidate as source data
+        run: |
+          set +e
+          trusted/tools/acceptance/.venv/bin/python -I trusted/tools/assurance/check.py check \
+            --trusted-root trusted --candidate candidate \
+            --json "$RUNNER_TEMP/proxy-assurance.json" \
+            --markdown "$RUNNER_TEMP/proxy-assurance.md"
+          result=$?
+          if test -f "$RUNNER_TEMP/proxy-assurance.md"; then
+            cat "$RUNNER_TEMP/proxy-assurance.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$result"
+
+      - name: Publish the drift report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: proxy-assurance-${{ github.event.pull_request.head.sha }}
+          path: |
+            ${{ runner.temp }}/proxy-assurance.json
+            ${{ runner.temp }}/proxy-assurance.md
+          retention-days: 14
+          if-no-files-found: warn

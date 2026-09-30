@@ -4,6 +4,9 @@ This file governs agents working on the SafeYolo repository. It complements,
 and does not replace, the [sandbox baseline](docs/AGENTS.md) that SafeYolo host
 scripts stage into running agents.
 
+Keep `/tmp` for small, throwaway files; use disk-backed storage for repositories
+and large build or test artifacts, then clean them up.
+
 ## Security boundaries and operator policy
 
 Follow the existing [security model](SECURITY.md#security-model): the host and
@@ -135,6 +138,10 @@ instructions, and SafeYolo sandbox instructions still apply. Identify the exact
 branch and commit, and the PR when one exists, for work implemented or reviewed.
 
 ## Technical writing
+
+For releases and other multi-issue work, follow the
+[issue-planning guide](docs/issue-planning.md). Keep acceptance evidence in
+issues and comments. Use Project fields to show estimates and progress.
 
 For README, quickstart, and onboarding work, use the
 [readme-usability skill](cli/src/safeyolo/agent_context/skills/readme-usability/SKILL.md).

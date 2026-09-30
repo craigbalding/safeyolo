@@ -1,4 +1,4 @@
-# SafeYolo Architecture
+# SafeYolo architecture and historical Python proxy
 
 This document describes the software architecture of SafeYolo, an egress control proxy for AI coding agents.
 
@@ -8,86 +8,46 @@ durable `agent_id` plus runtime `run_id` are documented in the
 
 ## Overview
 
-SafeYolo is built as a mitmproxy addon stack with a centralized Policy Decision Point (PDP). The architecture separates concerns into:
+The current host CLI launches the packaged Rust proxy. The native process
+handles network policy, credential and pattern inspection, local Agent and
+Admin APIs, flow evidence, and the read-only terminal inspector. The CLI owns
+host setup and sandbox lifecycle. See [developer architecture](DEVELOPERS.md#architecture-overview)
+for current source locations and [configuration](CONFIGURATION.md) for operator
+settings.
 
-- **Sensors (Addons)**: Observe HTTP traffic, detect security-relevant events, request policy decisions
-- **PDP**: Evaluates events against policy, returns allow/deny decisions
-- **Policy**: Single source of truth for all security configuration
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        mitmproxy                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │ request_id   │  │network_guard │  │credential_   │  ...     │
-│  │              │  │              │  │guard         │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-│         │                 │                 │                   │
-│         └─────────────────┼─────────────────┘                   │
-│                           ▼                                     │
-│                   ┌───────────────┐                             │
-│                   │ PolicyClient  │                             │
-│                   └───────────────┘                             │
-│                           │                                     │
-└───────────────────────────┼─────────────────────────────────────┘
-                            ▼
-                   ┌───────────────┐
-                   │   PDPCore     │
-                   │  (in-process  │
-                   │   or HTTP)    │
-                   └───────────────┘
-                            │
-                            ▼
-                   ┌───────────────┐
-                   │ PolicyEngine  │
-                   │               │
-                   │ UnifiedPolicy │
-                   └───────────────┘
-```
+The policy, Policy Decision Point (PDP), and addon sections below document the
+former Python implementation. They explain the source behavior used for migration
+comparison; their module paths and custom-addon instructions do not apply to
+the current package. The [capability inventory](proxy-parity.md) records
+accepted differences and first-release traffic scope.
 
 ## Sandbox runtime and networking
 
-Each agent runs in an isolated Linux sandbox with **no external network interface**. The only egress path is a per-agent socket bound to a host-side bridge, which routes through SafeYolo's mitmproxy:
+Each agent runs in an isolated Linux sandbox without an external network
+interface. Requests go through the guest forwarder and a host-owned,
+per-agent Unix domain socket (UDS) to the native Rust proxy:
 
-```
-Agent sandbox (loopback-only; no eth0)
-    │
-    │  HTTP_PROXY → in-guest forwarder → Unix domain socket (AF_UNIX)
-    │                                  or virtual socket (AF_VSOCK)
-    ▼
-Per-agent bridge socket (one per agent, host-owned)
-    │
-    │  bridge connects on a per-agent port;
-    │  mitmproxy attributes every request to the right agent
-    ▼
-SafeYolo mitmproxy (host process)
-    │  policy, credential guard, rate limits, audit
-    ▼
-Internet
+```text
+Agent sandbox -> guest forwarder -> per-agent UDS -> Rust proxy -> upstream
 ```
 
-On macOS, the sandbox is a hardware-backed microVM that uses Apple
-Virtualization.framework and virtual sockets. On Linux, it is a rootless gVisor
-container that runs `runsc` in an unprivileged user namespace with
-`--network=sandbox` and `--host-uds=open`.
+The host-controlled listener and agent map establish request identity. A
+request header cannot select another agent. The proxy applies the configured
+network, credential, and inspection controls at their respective request
+stages; streamed bodies and TLS passthrough have narrower inspection and
+capture coverage. The [networking reference](networking-vsock-uds.md)
+describes the platform bridges and their limits.
 
-Both platforms omit an external network interface. Unsetting the proxy
-variables therefore does not create another egress path. Raw external TCP has
-no interface, and external Domain Name System (DNS) resolution has no reachable
-resolver. **The egress boundary is structural:** it does not depend on host
-firewall rules.
+On macOS, the sandbox is a hardware-backed microVM using Apple
+Virtualization.framework and virtual sockets. On Linux, it is a rootless
+gVisor sandbox using `runsc` in an unprivileged user namespace. The guest has
+no direct external interface; removing proxy environment variables does not
+create an external network route. See [security verification](security-verification.md)
+for tests of the isolation boundary.
 
-Agent identity uses a per-agent Unix domain socket (UDS) on both platforms.
-Each agent connects to the host-owned `<ip>_<agent>/proxy.sock`. At bind time,
-mitmproxy's `UnixMode` listener parses that path and stamps
-`client.peername = (ip, 0)` on every accepted connection. SafeYolo uses no
-per-agent `lo0` aliases and no host `sudo` at runtime.
-
-See [networking reference](networking-vsock-uds.md) for hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
-
-
-Agents have full PTYs with resize: a vsock PTY bridge on macOS and `runsc exec`
-on Linux. Guest init is served from a writable status share and a read-only
-configuration share, so it can change without rebuilding the rootfs.
+Agents have full pseudo-terminals (PTYs): a virtual-socket PTY bridge on macOS
+and `runsc exec` on Linux. Guest init is served from a writable status share
+and a read-only configuration share.
 
 ### Linux runtime and storage
 
@@ -105,7 +65,15 @@ configuration share, so it can change without rebuilding the rootfs.
 See the [macOS microVM architecture](microvm-architecture.md) and
 [historical Linux port design](linux-port-design.md) for platform design context.
 
-## Policy Model
+## Historical Python policy model
+
+All sections below, including policy, PDP, sensors,
+reload, gateway, and file structure, describe the former Python
+implementation unless a section explicitly says otherwise. They are migration
+reference, not current configuration or extension instructions. Use
+[configuration](CONFIGURATION.md) and the [Rust source](../proxy/src/) for the
+current implementation.
+
 
 ### UnifiedPolicy
 

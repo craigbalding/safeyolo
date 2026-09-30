@@ -1,5 +1,10 @@
 # Policy Assurance Experiments
 
+These sources describe the pre-cutover Python policy engine. Use the pinned
+checkout `2ca598ce11d7c375a024b38eb3e7b4104a795d84` and its locked
+environment to run the commands below. The current Rust cutover tree does not
+run these experiments or its retired `tools.policy_chaos` wrapper.
+
 These experiments evaluate which testing techniques genuinely detect policy
 security failures under SafeYolo's documented threat model. They are not part of
 the normal pytest collection and do not assume that the current implementation

@@ -31,7 +31,9 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ```
 
 - **Host** is the trust root. You run the CLI, own config, and control the sandbox runtime (Apple Virtualization.framework on macOS, gVisor on Linux).
-- **SafeYolo** enforces your policy — a host mitmproxy process, no privileged runtime, no host filesystem access beyond your explicit mounts, runs as your uid.
+- **SafeYolo** enforces your policy through an unprivileged host Rust proxy
+  process that runs as your user ID. Agent sandboxes cannot read arbitrary host
+  files; they see only the host paths mounted into them.
 - **Agent sandboxes** have no direct internet access. Their only route to the outside world is through SafeYolo's policy enforcement.
 - **External services** are reachable only if policy explicitly permits the destination.
 
@@ -40,23 +42,27 @@ describes platform namespaces, UID mappings, storage, and the proxy route.
 ### Minimize trust
 
 Grant the minimum access required. Agents run in isolated sandboxes with no
-external network interface. SafeYolo runs mitmproxy as an unprivileged host
-process. The Admin API binds directly to `127.0.0.1` and does not perform
-hostname or reverse-DNS resolution. The host-local boundary and proxy readiness
-therefore do not depend on the host resolver. The Admin API also requires a
-bearer token and compares it with `secrets.compare_digest`. Host processes run
-as the operator's user ID. On Linux, `safeyolo agent run` does not use host
-`sudo`.
+external network interface. SafeYolo runs the packaged Rust proxy as an
+unprivileged host process. The Admin API binds directly to `127.0.0.1` and
+does not perform hostname or reverse-DNS resolution. The host-local boundary
+and proxy readiness therefore do not depend on the host resolver. Protected
+Admin API routes require a bearer token and check it with Rust's
+`subtle::ConstantTimeEq`.
+Host processes run as the operator's user ID. On Linux, `safeyolo agent run`
+does not use host `sudo`.
 
 ### Fail closed
 
-When uncertain, block. Unknown credentials trigger an approval workflow, not silent passthrough. Destination mismatches return HTTP 428 with actionable feedback. Invalid policies are rejected at load time. The startup script verifies block mode before accepting traffic.
+When uncertain, block. Unknown credentials trigger an approval workflow, not
+silent passthrough. Credential requests that require approval return HTTP 428;
+explicit denials return HTTP 403. The Rust proxy loads and validates policy
+before it binds agent listeners or publishes readiness.
 The Agent API virtual hostname is also contained independently of its handler.
-An adjacent request guard runs before policy, credential, and observability
-addons, so a missing, disabled, import-failed, or uncaught handler receives a
-local diagnostic 5xx without exposing its bearer token or query downstream. A
-separate final transport guard refuses the reserved destination before DNS or
-an upstream connection.
+The native request path dispatches that hostname to the local handler before
+network and credential checks. If the handler is disabled or returns an error,
+the proxy returns a local diagnostic 5xx. The bearer token and query stay local.
+A separate final transport guard refuses the reserved destination
+before DNS or an upstream connection.
 
 ### Human-governed access
 
@@ -101,22 +107,27 @@ interface. Its only egress path is a host-owned, per-agent Unix domain socket
 that routes through SafeYolo. No host firewall rule participates in this
 boundary.
 
-The host owns the socket directory named `<ip>_<agent>`. At bind time,
-mitmproxy's `UnixMode` listener derives the agent identity from that path and
-stamps the accepted connection. The agent cannot choose another agent's socket
-path. On Linux, a synthetic loopback address supplies the `<ip>` attribution
-value. It is not an external interface or a direct egress path.
+The host owns the socket directory named `<ip>_<agent>`. The CLI uses the agent
+map to configure each managed Rust listener with its socket path, agent
+identity, and source address. When the listener accepts a connection, it
+assigns the configured agent identity to that connection. The agent cannot
+choose another agent's socket path. On Linux, a synthetic loopback address
+supplies the `<ip>` attribution value. It is not an external interface or a
+direct egress path.
 
-SafeYolo rejects noncanonical paths, duplicate security-sensitive headers, and
-invalid encodings before policy evaluation. Homoglyph detection catches
-mixed-script domain spoofing. Generic Cell Rate Algorithm (GCRA) rate limits
-contain runaway request loops.
+For a resolved service-gateway token, SafeYolo rejects a path spelling if
+service route normalization changes it. This includes dot segments, encoded
+separators, encoded unreserved characters, doubled slashes, and a trailing
+slash on a non-root path. Bound service contracts also reject duplicate
+headers and ambiguous encodings before contract enforcement.
+Homoglyph detection catches mixed-script domain spoofing. Generic Cell Rate
+Algorithm (GCRA) rate limits contain runaway request loops.
 
 **Audit trail.**
 Structured JSONL with unique request IDs, `blocked_by` attribution, credential fingerprints, and full decision reasoning. Designed for grep/jq analysis, not just human reading.
 
 **Credential detection.**
-As a safety net, SafeYolo also detects credentials in transit via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256 — only the fingerprint is stored or logged, never the raw value. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
+As a safety net, the credential guard detects credentials in request headers via pattern matching for known formats (OpenAI, Anthropic, GitHub, etc.) and Shannon entropy analysis for unknown high-entropy secrets. Detected credentials are fingerprinted via HMAC-SHA256. Routine credential events store the fingerprint, not the detected raw value. Stored flows can retain request and response content, including credentials in ordinary headers and bodies. Authorized operator views and exports can expose that retained content. The flow store redacts the gateway-injected credential header. Policy is destination-first: it defines what credentials can reach each endpoint, preventing one service's approval from accidentally authorising another.
 
 ## Out of Scope
 
@@ -125,8 +136,8 @@ As a safety net, SafeYolo also detects credentials in transit via pattern matchi
 | **Prompt injection** | SafeYolo reduces prompt injection risk — through agent reflection prompts and limiting risky routes to prevent account takeover and credential theft — but doesn't eliminate it. |
 | **Non-HTTP exfiltration** | DNS is resolved by SafeYolo (no direct DNS from the sandbox) and raw sockets are unavailable, blocking most non-HTTP channels. Exotic covert channels (e.g. steganography in allowed HTTP traffic) are not addressed. |
 | **Host compromise** | If an attacker controls your host or `~/.safeyolo/`, all bets are off. |
-| **Credentials in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned. |
-| **Credentials in query/body** | Off by default. Enable with `--set credguard_scan_urls=true` / `credguard_scan_bodies=true`. |
+| **Credential guard in URL paths** | `/api/sk-proj-abc123/resource` — rare pattern, not currently scanned by the credential guard. |
+| **Credential guard in query/body** | The credential guard scans request headers, not URL query parameters or request bodies. The native proxy has no options to enable these scans. |
 
 ## Reporting Security Issues
 

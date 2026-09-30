@@ -1,0 +1,248 @@
+{
+  "python": "3.12.14",
+  "source_sha256": "1cafe8bb23daf6c39dff725a8de7943e7d3f7dc3dde32b69288ec4593810f90a",
+  "ipaddress_sha256": "ba8d3389ff084fcb232b48204ec04f2b3ea4bd0eadf7b18c814947d185de2c64",
+  "rows": [
+    {
+      "input": "alpha.invalid",
+      "result": [
+        "alpha.invalid",
+        null
+      ]
+    },
+    {
+      "input": "alpha.invalid:443",
+      "result": [
+        "alpha.invalid",
+        443
+      ]
+    },
+    {
+      "input": "alpha.invalid:000443",
+      "result": [
+        "alpha.invalid",
+        443
+      ]
+    },
+    {
+      "input": "alpha.invalid:0",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "alpha.invalid:65536",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "alpha.invalid:+443",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "alpha.invalid:\u0664\u0664\u0663",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": ":443",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "alpha.invalid:",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "bad:port",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "2001:0DB8:0:0:0:0:0:1",
+      "result": [
+        "2001:db8::1",
+        null
+      ]
+    },
+    {
+      "input": "[2001:0DB8:0:0:0:0:0:1]:443",
+      "result": [
+        "2001:db8::1",
+        443
+      ]
+    },
+    {
+      "input": "2001:db8::1",
+      "result": [
+        "2001:db8::1",
+        null
+      ]
+    },
+    {
+      "input": "::",
+      "result": [
+        "::",
+        null
+      ]
+    },
+    {
+      "input": "::1",
+      "result": [
+        "::1",
+        null
+      ]
+    },
+    {
+      "input": "::ffff:192.0.2.1",
+      "result": [
+        "::ffff:192.0.2.1",
+        null
+      ]
+    },
+    {
+      "input": "::FFFF:C000:201",
+      "result": [
+        "::ffff:192.0.2.1",
+        null
+      ]
+    },
+    {
+      "input": "[::FFFF:C000:201]:8443",
+      "result": [
+        "::ffff:192.0.2.1",
+        8443
+      ]
+    },
+    {
+      "input": "1:2:3:4:5:6:192.168.0.1",
+      "result": [
+        "1:2:3:4:5:6:c0a8:1",
+        null
+      ]
+    },
+    {
+      "input": "FE80:0:0:0:0:0:0:1%eth0",
+      "result": [
+        "fe80::1%eth0",
+        null
+      ]
+    },
+    {
+      "input": "[FE80:0:0:0:0:0:0:1%eth0]:443",
+      "result": [
+        "fe80::1%eth0",
+        443
+      ]
+    },
+    {
+      "input": "fe80::1%3",
+      "result": [
+        "fe80::1%3",
+        null
+      ]
+    },
+    {
+      "input": "fe80::1%25eth0",
+      "result": [
+        "fe80::1%25eth0",
+        null
+      ]
+    },
+    {
+      "input": "fe80::1%scope:name",
+      "result": [
+        "fe80::1%scope:name",
+        null
+      ]
+    },
+    {
+      "input": "fe80::1%*",
+      "result": [
+        "fe80::1%*",
+        null
+      ]
+    },
+    {
+      "input": "fe80::1%scope name",
+      "result": [
+        "fe80::1%scope name",
+        null
+      ]
+    },
+    {
+      "input": "fe80::1%",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "fe80::1%%eth0",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "fe80::1%eth/0",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "[::1]",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "[::1]:",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "[::1]:443:1",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "::1/128",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "bad::host",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": ":::1",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "1:2:3:4:5:6:7:8:9",
+      "result": {
+        "error": "ValueError"
+      }
+    },
+    {
+      "input": "::ffff:192.168.001.1",
+      "result": {
+        "error": "ValueError"
+      }
+    }
+  ]
+}

@@ -1,0 +1,2080 @@
+{
+  "rows": [
+    {
+      "case": "missing-body",
+      "actions": [
+        {
+          "method": "POST",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "Invalid JSON body"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "null-body",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "null",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "Invalid JSON body"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "array-body",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "[]",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "Invalid JSON body"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "missing-context",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "context must be a string",
+            "format": "run=<run_id>;agent=<agent_id>;test=<test_id>"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "typed-context-before-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":NaN,\"ttl\":NaN}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "context must be a string",
+            "format": "run=<run_id>;agent=<agent_id>;test=<test_id>"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "parse-context-before-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"broken\",\"ttl\":NaN}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "Invalid test context",
+            "detail": "context field has no '=' separator: 'broken'",
+            "format": "run=<run_id>;agent=<agent_id>;test=<test_id>",
+            "example": "run=sec1;agent=idor;test=IDOR-003;intent=probe;expect=blocked"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "null-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":null}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 900
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 900,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 900
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "boolean-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":true}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "zero-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":0}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "negative-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":-1}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "float-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":1.0}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "exponent-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":1e0}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "nan-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":NaN}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "infinity-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":Infinity}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "string-ttl",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":\"1\"}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 400,
+          "body": {
+            "error": "ttl must be a positive integer (seconds)"
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "unused-nonfinite",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"unused\":{\"a\":NaN,\"b\":[Infinity,-Infinity]}}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 900
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 900,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 900
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "unused-deep",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"unused\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[NaN]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 900
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 900,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 900
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "huge-request-capped",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000}",
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+              "granted_ttl": 900
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 900,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 900
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "408c200000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "integer-conversion-overflow",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "0",
+          "limit": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        }
+      ],
+      "observations": [
+        {
+          "error": "OverflowError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "maximum-integer-float",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "0",
+          "limit": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        }
+      ]
+    },
+    {
+      "case": "rounding-below-overflow",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "0",
+          "limit": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497791
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497791
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497791
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497791,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        }
+      ]
+    },
+    {
+      "case": "rounding-at-overflow",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "0",
+          "limit": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 179769313486231580793728971405303415079934132710037826936173778980444968292764750946649017977587207096330286416692887910946555547851940402630657488671505820681908902000708383676273854845817711531764475730270069855571366959622842914819860834936475292719074168444365510704342711559699508093042880177904174497792
+        }
+      ],
+      "observations": [
+        {
+          "error": "OverflowError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "finite-addition-infinity",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "1e308",
+          "limit": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        },
+        {
+          "error": "OverflowError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "nan-clock",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "nan",
+          "limit": 2
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 2
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 2
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 2,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff8000000000000"
+          }
+        },
+        {
+          "error": "ValueError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff8000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff8000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "positive-infinite-clock",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "inf",
+          "limit": 2
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 2
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 2
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 2,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        },
+        {
+          "error": "OverflowError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7ff0000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "negative-infinite-clock",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "-inf",
+          "limit": 2
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        },
+        {
+          "method": "stats",
+          "now": "0",
+          "limit": 2
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 2
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 2,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "fff0000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": null
+          },
+          "record": null
+        },
+        {
+          "error": null,
+          "audit": null,
+          "stats": {
+            "active": false,
+            "target_hosts": 0,
+            "checks_total": 0,
+            "allowed_total": 0,
+            "blocked_total": 0,
+            "warned_total": 0,
+            "declared_injections_total": 0,
+            "declared_active": 0
+          },
+          "record": null
+        }
+      ]
+    },
+    {
+      "case": "huge-limit-small-request",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\",\"ttl\":1}",
+          "now": "0",
+          "limit": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": 1,
+              "granted_ttl": 1
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 1,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "3ff0000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expires_in": 1
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "3ff0000000000000"
+          }
+        }
+      ]
+    },
+    {
+      "case": "remaining-float-subtraction-overflow",
+      "actions": [
+        {
+          "method": "POST",
+          "body": "{\"context\":\"run=R;agent=claimed\"}",
+          "now": "1.7976931348623157e+308",
+          "limit": 1
+        },
+        {
+          "method": "GET",
+          "body": null,
+          "now": "-1.7976931348623157e+308",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_declared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "declared_agent": "claimed",
+              "test_agent_match": false,
+              "context": {
+                "run": "R",
+                "agent": "claimed"
+              },
+              "requested_ttl": null,
+              "granted_ttl": 1
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "set",
+            "agent": "alice",
+            "expires_in": 1,
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            }
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        },
+        {
+          "error": "OverflowError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "R",
+              "agent": "claimed"
+            },
+            "expiry_bits": "7fefffffffffffff"
+          }
+        }
+      ]
+    },
+    {
+      "case": "nan-remaining-then-delete",
+      "actions": [
+        {
+          "method": "GET",
+          "body": null,
+          "now": "nan",
+          "limit": 900
+        },
+        {
+          "method": "DELETE",
+          "body": null,
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": "ValueError",
+          "audit": null,
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        },
+        {
+          "error": null,
+          "audit": {
+            "event": "security.test_context_cleared",
+            "source_id": "owned-source",
+            "trusted_agent": "alice",
+            "details": {
+              "source_id": "owned-source",
+              "trusted_agent": "alice",
+              "had_declaration": true
+            }
+          },
+          "status": 200,
+          "body": {
+            "status": "cleared"
+          },
+          "record": null
+        }
+      ]
+    },
+    {
+      "case": "get-ignores-body",
+      "actions": [
+        {
+          "method": "GET",
+          "body": "{\"context\":NaN,\"ttl\":Infinity}",
+          "now": "0",
+          "limit": 900
+        }
+      ],
+      "observations": [
+        {
+          "error": null,
+          "audit": null,
+          "status": 200,
+          "body": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expires_in": 7
+          },
+          "record": {
+            "agent": "alice",
+            "context": {
+              "run": "prior",
+              "agent": "alice"
+            },
+            "expiry_bits": "401c000000000000"
+          }
+        }
+      ]
+    }
+  ],
+  "trace_count": 30,
+  "operation_count": 67
+}

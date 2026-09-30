@@ -2,6 +2,12 @@
 
 Date: 2026-08-26
 
+Historical Python-policy record: the commands and recurring-workflow descriptions
+below apply to the pinned pre-cutover checkout
+`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. The Rust cutover retired
+the `tools.policy_chaos` wrapper and its scheduled workflow. These results do
+not establish current native policy assurance.
+
 These are ground-truth measurements from the initial experiment implementation,
 not claims that every policy defect class is solved. Commands ran in the project
 `uv` environment on the development container. Full machine-readable reports

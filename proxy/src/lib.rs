@@ -1,0 +1,1860 @@
+//! Development proxy: trusted UDS ingress, HTTP/TLS and admitted CONNECT streams.
+//! Network policy runs natively or through an explicitly configured temporary
+//! Python bridge. The development pipeline does not yet have production parity.
+
+pub mod admin_api;
+mod admin_listener;
+pub mod admin_shield;
+pub mod agent_api;
+pub mod agent_discovery;
+pub mod approvals;
+pub mod audit;
+mod circuit_runtime;
+pub mod circuits;
+mod command_centre;
+mod config;
+mod connection_tasks;
+pub mod contracts;
+pub mod credential_guard;
+mod credential_hmac;
+pub mod credential_injection;
+mod credential_text;
+pub mod credentials;
+pub(crate) mod desktop_present;
+mod flow_recorder;
+#[cfg(test)]
+mod flow_runtime_tests;
+pub mod flow_store;
+mod flow_writer;
+pub mod grants;
+pub mod host_names;
+mod http;
+pub mod http_content;
+pub mod ignored_host_logger;
+pub mod inspection;
+pub mod memory_monitor;
+mod memory_runtime;
+pub mod metrics;
+pub mod network_guard;
+pub mod oauth;
+mod operator_stats;
+pub mod policy;
+mod policy_runtime;
+mod python_json;
+mod python_text;
+mod request_headers;
+mod request_logger;
+mod request_trace;
+#[cfg(test)]
+mod service_catalog_tests;
+pub mod services;
+pub mod tasks;
+pub mod test_context;
+#[cfg(test)]
+pub(crate) mod test_owned_endpoint;
+pub mod tls;
+pub mod trace;
+pub(crate) mod traffic_view;
+#[cfg(test)]
+mod traffic_view_runtime_tests;
+mod tunnels;
+pub mod websocket;
+mod websocket_relay;
+
+pub use config::{AgentListener, Config, Inspection, PlumbConfig};
+
+use std::{
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    io::Write,
+    os::unix::fs::{FileTypeExt, MetadataExt},
+    os::unix::io::AsRawFd,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
+
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
+use ring::digest::{SHA256, digest};
+use serde_json::{Value, json};
+use tokio::{
+    net::{UnixListener, UnixStream},
+    sync::watch,
+    task::{JoinHandle, JoinSet},
+};
+
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type RuntimeState = Arc<RwLock<Arc<Runtime>>>;
+pub(crate) type UpgradeTasks = Arc<connection_tasks::ConnectionTasks>;
+
+/// Errors returned while preparing a task overlay for the process-owned
+/// runtime snapshot. The registry is changed only after policy and detector
+/// preparation have succeeded.
+pub(crate) enum TaskPolicyActivationError {
+    Unavailable,
+    Invalid,
+    Registry(tasks::Error),
+}
+
+/// Register a raw document through the same process state lock used by task
+/// activation. Registration alone intentionally leaves the active generation
+/// unchanged.
+pub(crate) fn register_task(
+    state: &RuntimeState,
+    task_id: &str,
+    document: Value,
+) -> Result<tasks::Upsert, TaskPolicyActivationError> {
+    let current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    current
+        .tasks
+        .upsert(task_id, document)
+        .map_err(TaskPolicyActivationError::Registry)
+}
+
+/// Owns the process boundary at which a newly persisted vault snapshot becomes
+/// active. Refresh publication is rejected after shutdown begins, while the
+/// vault rollback callback remains allowed to restore the prior active view.
+#[derive(Clone, Default)]
+struct CredentialActivation {
+    closing: Arc<AtomicBool>,
+    active: Arc<Mutex<Vec<credentials::CredentialMetadata>>>,
+}
+
+/// Process-owned operator mode switches.  The native admin facade mutates this
+/// shared snapshot so a mode change reaches existing agent connections and
+/// survives ordinary Runtime publications/reloads.
+#[derive(Clone)]
+pub(crate) struct OperatorModes {
+    network_block: Arc<AtomicBool>,
+    credential_block: Arc<AtomicBool>,
+    pattern_request: Arc<AtomicBool>,
+    pattern_response: Arc<AtomicBool>,
+    pattern_websocket_request: Arc<AtomicBool>,
+    pattern_websocket_response: Arc<AtomicBool>,
+}
+
+impl OperatorModes {
+    fn from_config(config: &Config) -> Self {
+        let inspection = config.inspection.as_ref();
+        Self {
+            network_block: Arc::new(AtomicBool::new(config.network_guard_block)),
+            credential_block: Arc::new(AtomicBool::new(config.credential_guard_block())),
+            pattern_request: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_request),
+            )),
+            pattern_response: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_response),
+            )),
+            pattern_websocket_request: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_websocket_request),
+            )),
+            pattern_websocket_response: Arc::new(AtomicBool::new(
+                inspection.is_some_and(|value| value.block_websocket_response),
+            )),
+        }
+    }
+
+    pub(crate) fn set(&self, addon: &str, block: bool) -> Option<()> {
+        match addon {
+            "network-guard" => self.network_block.store(block, Ordering::Release),
+            "credential-guard" => self.credential_block.store(block, Ordering::Release),
+            "pattern-scanner" => {
+                self.pattern_request.store(block, Ordering::Release);
+                self.pattern_response.store(block, Ordering::Release);
+                self.pattern_websocket_request
+                    .store(block, Ordering::Release);
+                self.pattern_websocket_response
+                    .store(block, Ordering::Release);
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+
+    pub(crate) fn network_block(&self) -> bool {
+        self.network_block.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn credential_block(&self) -> bool {
+        self.credential_block.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn options(&self, addon: &str) -> Option<Vec<(&'static str, bool)>> {
+        Some(match addon {
+            "network-guard" => vec![("network_guard_block", self.network_block())],
+            "credential-guard" => vec![("credguard_block", self.credential_block())],
+            "pattern-scanner" => {
+                let flags = self.flags();
+                vec![
+                    ("pattern_block_request", flags[0]),
+                    ("pattern_block_response", flags[1]),
+                    ("pattern_block_websocket_request", flags[2]),
+                    ("pattern_block_websocket_response", flags[3]),
+                ]
+            }
+            _ => return None,
+        })
+    }
+
+    fn flags(&self) -> [bool; 4] {
+        [
+            self.pattern_request.load(Ordering::Acquire),
+            self.pattern_response.load(Ordering::Acquire),
+            self.pattern_websocket_request.load(Ordering::Acquire),
+            self.pattern_websocket_response.load(Ordering::Acquire),
+        ]
+    }
+}
+impl CredentialActivation {
+    fn activate(
+        &self,
+        phase: credentials::ActivationPhase,
+        metadata: &[credentials::CredentialMetadata],
+    ) -> std::result::Result<(), ()> {
+        if phase == credentials::ActivationPhase::Candidate && self.closing.load(Ordering::Acquire)
+        {
+            // Every candidate is independently transactional. Rollback is
+            // allowed for each rejected candidate, including concurrent ones.
+            return Err(());
+        }
+        let Ok(mut active) = self.active.lock() else {
+            return Err(());
+        };
+        *active = metadata.to_vec();
+        Ok(())
+    }
+    fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ConnectionIdentity {
+    agent_id: String,
+    connection_id: String,
+    source_id: Option<String>,
+    /// The immutable request-boundary reconciliation, when this identity is
+    /// being consumed by request hooks. Listener accept identities leave this
+    /// empty and are reconciled once for each request.
+    reconciled: Option<Arc<agent_discovery::ReconciledIdentity>>,
+}
+
+impl ConnectionIdentity {
+    fn request_agent(&self) -> Option<&str> {
+        self.reconciled
+            .as_deref()
+            .map(|identity| identity.agent.as_deref())
+            .unwrap_or(Some(&self.agent_id))
+            .filter(|agent| !agent.is_empty())
+    }
+
+    /// Preserve the accepted listener label for diagnostic records. This is
+    /// transport provenance only; scoped consumers use `request_agent`, which
+    /// remains empty for unavailable or conflicting snapshots.
+    fn transport_agent(&self) -> Option<&str> {
+        self.reconciled
+            .as_deref()
+            .and_then(|identity| identity.uds_agent.as_deref())
+            .or_else(|| {
+                self.reconciled
+                    .as_deref()
+                    .filter(|identity| {
+                        identity.status == agent_discovery::IdentityStatus::Unavailable
+                    })
+                    .map(|_| self.agent_id.as_str())
+            })
+            .or_else(|| self.reconciled.is_none().then_some(self.agent_id.as_str()))
+            .filter(|agent| !agent.is_empty())
+    }
+
+    fn request_identity(&self) -> network_guard::Identity<'_> {
+        match self.reconciled.as_deref() {
+            Some(identity) => match identity.status {
+                agent_discovery::IdentityStatus::Resolved => network_guard::Identity::Resolved(
+                    identity.agent.as_deref().expect("resolved identity owner"),
+                ),
+                agent_discovery::IdentityStatus::Conflict => network_guard::Identity::Conflict,
+                agent_discovery::IdentityStatus::Unavailable => {
+                    network_guard::Identity::Unavailable
+                }
+            },
+            None => network_guard::Identity::Resolved(&self.agent_id),
+        }
+    }
+
+    fn with_reconciled(mut self, identity: agent_discovery::ReconciledIdentity) -> Self {
+        self.reconciled = Some(Arc::new(identity));
+        self
+    }
+
+    fn reconciled_snapshot(&self) -> Option<Arc<agent_discovery::ReconciledIdentity>> {
+        self.reconciled.clone()
+    }
+
+    fn audit_attribution(&self) -> audit::Attribution {
+        if let Some(identity) = self.reconciled.as_deref() {
+            return identity.audit_attribution();
+        }
+        audit::Attribution {
+            evidence_owner: Some(self.agent_id.clone()),
+            trusted_transport_identity: Some(self.agent_id.clone()),
+            initiator: Some(audit::Initiator::Unknown),
+            status: Some(audit::AttributionStatus::Resolved),
+            provenance: Some(
+                serde_json::json!({
+                    "transport_source": "uds",
+                    "uds_agent": self.agent_id.chars().take(128).collect::<String>(),
+                })
+                .into(),
+            ),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Runtime {
+    config: Config,
+    parent: Option<config::ParentProxy>,
+    tls: Option<Arc<rustls::ClientConfig>>,
+    certificate_authority: Option<Arc<tls::CertificateAuthority>>,
+    /// Live operator updates replace this set without rebuilding listeners.
+    /// A connection copies its match before relaying, so later updates do not
+    /// change an already-admitted session.
+    passthrough: Arc<RwLock<tunnels::Passthrough>>,
+    scanner: inspection::Scanner,
+    policy: Option<policy::Policy>,
+    /// The encrypted credential snapshot is retained across policy reloads;
+    /// gateway selection consumes only the authorized vault reference.
+    vault: Option<credentials::Vault>,
+    /// One process-owned refresh coordinator shares flights across requests.
+    /// Its vault clone is the same state used for credential injection.
+    oauth: Option<oauth::OAuthRefresh>,
+    credential_activation: CredentialActivation,
+    operator_modes: Arc<OperatorModes>,
+    /// Durable identity of the loaded vault. The key fingerprint is only used
+    /// to decide whether a reload may retain the existing Vault/coordinator;
+    /// it is never included in Runtime diagnostics.
+    vault_identity: Option<VaultIdentity>,
+    /// One process-owned store for contract bindings and risky grants. Clones
+    /// share reservations; reloads reconcile its durable view before publish.
+    gateway_grants: Option<grants::Store>,
+    credential_guard: Option<credential_guard::CredentialGuard>,
+    credential_key_empty: bool,
+    tasks: tasks::Registry,
+    service_mutations: admin_api::ServiceMutationOwner,
+    plumb: Arc<agent_api::plumb::PlumbOwner>,
+    admin_address: Option<std::net::SocketAddr>,
+    admin_shield: admin_shield::AdminShield,
+    network_guard: network_guard::NetworkGuard,
+    circuits: circuits::CircuitBreaker,
+    test_context: test_context::TestContext,
+    flow_recorder: Arc<flow_recorder::FlowRecorder>,
+    traffic_view: Arc<traffic_view::TrafficView>,
+    audit: Arc<audit::Writer>,
+    request_logger: Arc<request_logger::RequestLogger>,
+    agent_discovery: Arc<agent_discovery::AgentDiscovery>,
+    metrics: Arc<metrics::Metrics>,
+    traces: Arc<trace::TraceStore>,
+    memory_monitor: Arc<memory_monitor::MemoryMonitor>,
+    /// Runtime-scoped facade over the process-owned SQLite/NATS coordination
+    /// substrate. Runtime reloads replace this facade while its owner,
+    /// transport, namespace, and cleanup remain stable.
+    pub(crate) coord: Arc<agent_api::CoordClient>,
+    via_token: String,
+    events: Arc<Mutex<File>>,
+    instance_id: String,
+}
+
+impl Runtime {
+    #[cfg(test)]
+    fn new(
+        config: Config,
+        default_via: &str,
+        previous: Option<&Runtime>,
+        admin_address: Option<std::net::SocketAddr>,
+    ) -> Result<Self, Error> {
+        Self::load(
+            config,
+            default_via,
+            previous,
+            admin_address,
+            None,
+            &mut None,
+        )
+    }
+
+    fn load(
+        config: Config,
+        default_via: &str,
+        previous: Option<&Runtime>,
+        admin_address: Option<std::net::SocketAddr>,
+        event_address: Option<std::net::SocketAddr>,
+        service_files: &mut Option<services::CatalogMetadata>,
+    ) -> Result<Self, Error> {
+        config.validate()?;
+        let mut admin_shield = admin_shield::AdminShield::new(
+            config.admin_port.unwrap_or(9090),
+            &config.admin_shield_extra_ports,
+        )?;
+        if let Some(bound) = admin_address {
+            admin_shield.protect_bound_port(bound);
+        }
+        if let Some(bound) = event_address {
+            admin_shield.protect_bound_port(bound);
+        }
+        let tasks = previous
+            .map(|runtime| runtime.tasks.clone())
+            .unwrap_or_default();
+        let service_mutations = previous
+            .map(|runtime| runtime.service_mutations.clone())
+            .unwrap_or_default();
+        let plumb = previous
+            .map(|runtime| runtime.plumb.clone())
+            .unwrap_or_else(|| {
+                Arc::new(agent_api::plumb::PlumbOwner::for_data_dir(
+                    &config.data_dir(),
+                ))
+            });
+        let audit = match previous {
+            Some(runtime) => runtime.audit.clone(),
+            None => Arc::new(audit::Writer::new(
+                config.audit_log_path.clone().unwrap_or_else(|| {
+                    std::env::var_os("SAFEYOLO_LOG_PATH")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| PathBuf::from("/app/logs/safeyolo.jsonl"))
+                }),
+                audit::Settings::from_env()?,
+            )),
+        };
+        let result = (|| {
+            let registry = load_service_catalog(&config, &audit, service_files)?;
+            let mut policy = config
+                .policy_file
+                .as_ref()
+                .map(|path| {
+                    policy_runtime::load(
+                        path,
+                        registry,
+                        previous.and_then(|runtime| runtime.policy.as_ref()),
+                        &audit,
+                    )
+                })
+                .transpose()?;
+            // The registry is process-owned across Runtime reloads. Reapply
+            // its selected task only after the new baseline has compiled;
+            // failure rejects the candidate and retains the prior snapshot.
+            if let Some(policy) = policy.as_mut()
+                && let Some((_, task)) = tasks.active().map_err(|error| Box::new(error) as Error)?
+            {
+                let candidate = policy
+                    .with_task_document(task.document())
+                    .map_err(|error| Box::new(error) as Error)?;
+                *policy = candidate;
+            }
+            // A reload with the same vault path and key material must retain
+            // the old state object: its OAuth flight table is part of the
+            // process-owned attempt domain. A changed key/path starts a fresh
+            // domain; an invalid replacement is therefore unavailable rather
+            // than silently sharing the old coordinator.
+            let vault_material = gateway_vault_material(&config);
+            let retained = previous.and_then(|runtime| {
+                vault_material
+                    .as_ref()
+                    .filter(|material| runtime.vault_identity.as_ref() == Some(&material.identity))
+                    .map(|_| runtime)
+            });
+            let loaded = if retained.is_some() {
+                None
+            } else {
+                load_gateway_vault(vault_material.as_ref())?
+            };
+            let (vault, oauth, vault_identity) = if let Some(runtime) = retained {
+                (
+                    runtime.vault.clone(),
+                    runtime.oauth.clone(),
+                    runtime.vault_identity.clone(),
+                )
+            } else if let Some(loaded) = loaded {
+                let oauth = Some(oauth::OAuthRefresh::new(loaded.vault.clone()));
+                (Some(loaded.vault), oauth, Some(loaded.identity))
+            } else {
+                (None, None, None)
+            };
+            let credential_activation = previous
+                .map(|runtime| runtime.credential_activation.clone())
+                .unwrap_or_default();
+            let operator_modes = previous
+                .map(|runtime| runtime.operator_modes.clone())
+                .unwrap_or_else(|| Arc::new(OperatorModes::from_config(&config)));
+            if let Some(vault) = vault.as_ref() {
+                let metadata = vault.metadata()?;
+                credential_activation
+                    .activate(credentials::ActivationPhase::Candidate, &metadata)
+                    .map_err(|_| "vault credential activation unavailable")?;
+            }
+            let gateway_grants = if let Some(previous_store) = previous
+                .filter(|runtime| runtime.config.policy_file == config.policy_file)
+                .and_then(|runtime| runtime.gateway_grants.as_ref())
+            {
+                let store = previous_store.clone();
+                store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
+                Some(store)
+            } else if let Some(path) = config
+                .policy_file
+                .as_ref()
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+                && config.gateway_builtin_services_dir.is_some()
+            {
+                Some(grants::Store::open(path, time::OffsetDateTime::now_utc())?)
+            } else {
+                None
+            };
+            // Initial startup has no live admin writer. Store::open may
+            // normalize legacy grant metadata, so observe its durable result.
+            // During a live config reload, keep the candidate's earlier
+            // watermark so an authorization committed after compilation is
+            // picked up by the policy watcher.
+            if let Some(policy) = policy.as_mut()
+                && gateway_grants.is_some()
+                && previous.is_none()
+            {
+                policy
+                    .observe_baseline_files(previous.and_then(|runtime| runtime.policy.as_ref()))?;
+            }
+            // CredentialGuard is a native generation owned by the same Runtime
+            // publication as the accepted Policy. Reuse the key on ordinary
+            // reloads; an empty environment key deliberately retries loading
+            // the configured source, matching the source lifecycle contract.
+            let (credential_guard, credential_key_empty) = if let Some(policy) = policy.as_ref() {
+                let previous_guard = previous.and_then(|runtime| runtime.credential_guard.as_ref());
+                let key = if previous_guard.is_none()
+                    || previous.is_some_and(|runtime| runtime.credential_key_empty)
+                {
+                    let environment = std::env::var_os("CREDGUARD_HMAC_SECRET").map(|value| {
+                        zeroize::Zeroizing::new(std::os::unix::ffi::OsStringExt::into_vec(value))
+                    });
+                    Some(credential_hmac::load(
+                        &config.data_dir().join("hmac_secret"),
+                        environment
+                            .as_ref()
+                            .map(|value| std::os::unix::ffi::OsStrExt::from_bytes(value)),
+                    )?)
+                } else {
+                    None
+                };
+                let seed = previous_guard
+                    .cloned()
+                    .unwrap_or_else(|| credential_guard::CredentialGuard::new(&[]));
+                let (guard, _) = seed.prepare_policy_with_key(
+                    policy,
+                    key.as_ref().map(credential_hmac::HmacSecret::as_bytes),
+                )?;
+                (
+                    Some(guard),
+                    key.as_ref()
+                        .is_some_and(credential_hmac::HmacSecret::is_empty),
+                )
+            } else {
+                (
+                    previous.and_then(|runtime| runtime.credential_guard.clone()),
+                    previous.is_none_or(|runtime| runtime.credential_key_empty),
+                )
+            };
+            let network_guard = previous
+                .map(|runtime| runtime.network_guard.clone())
+                .unwrap_or_default();
+            let circuits = previous
+                .map(|runtime| runtime.circuits.clone())
+                .unwrap_or_default();
+            let test_context = previous
+                .map(|runtime| runtime.test_context.clone())
+                .unwrap_or_default();
+            let request_logger = previous
+                .map(|runtime| runtime.request_logger.clone())
+                .unwrap_or_default();
+            let agent_discovery = previous
+                .map(|runtime| runtime.agent_discovery.clone())
+                .unwrap_or_else(|| Arc::new(agent_discovery::AgentDiscovery::new()));
+            let metrics = previous
+                .map(|runtime| runtime.metrics.clone())
+                .unwrap_or_else(|| Arc::new(metrics::Metrics::new(circuit_runtime::now)));
+            let traces = previous
+                .map(|runtime| runtime.traces.clone())
+                .unwrap_or_else(|| Arc::new(trace::TraceStore::new(trace::Settings::from_env())));
+            let memory_monitor = previous
+                .map(|runtime| runtime.memory_monitor.clone())
+                .unwrap_or_else(|| Arc::new(memory_monitor::MemoryMonitor::new()));
+            let coord = previous
+                .map(|runtime| {
+                    Arc::new(agent_api::CoordClient::with_owner(
+                        runtime.coord.owner(),
+                        config.policy_file.clone(),
+                    ))
+                })
+                .unwrap_or_else(|| {
+                    Arc::new(agent_api::CoordClient::new(config.policy_file.clone()))
+                });
+            let flow_recorder = match previous {
+                Some(runtime) => runtime.flow_recorder.clone(),
+                None => Arc::new(flow_recorder::FlowRecorder::start(
+                    config.flow_store_enabled,
+                    &config.flow_store_db_path,
+                    policy.as_ref(),
+                )),
+            };
+            let traffic_view = previous
+                .map(|runtime| runtime.traffic_view.clone())
+                .unwrap_or_else(|| {
+                    Arc::new(traffic_view::TrafficView::new(
+                        config.flow_pruner_max,
+                        config.flow_pruner_max_body_bytes,
+                    ))
+                });
+            let scanner = inspection::Scanner::default();
+            if let Some(inspection) = &config.inspection {
+                let source = std::fs::read_to_string(&inspection.policy_file)?;
+                let format = match inspection
+                    .policy_file
+                    .extension()
+                    .and_then(|value| value.to_str())
+                {
+                    Some("toml") => policy::Format::Toml,
+                    Some("yaml" | "yml") => policy::Format::Yaml,
+                    _ => policy::Format::Json,
+                };
+                let document = policy::parse_document(&source, format)?;
+                scanner.load_policy_config(&Value::Object(document))?;
+            }
+            let passthrough = Arc::new(RwLock::new(tunnels::Passthrough::new(
+                &config.ignore_hosts,
+                &std::env::var("SAFEYOLO_IGNORE_CIDRS").unwrap_or_default(),
+            )?));
+            let parent = config.parent()?;
+            let certificate_authority = config
+                .tls_ca_file
+                .as_deref()
+                .map(tls::CertificateAuthority::load)
+                .transpose()?
+                .map(Arc::new);
+            let tls = if parent.as_ref().is_some_and(|parent| parent.tls)
+                || certificate_authority.is_some()
+                || config.upstream_ca_file.is_some()
+            {
+                Some(http::parent_tls(&config)?)
+            } else {
+                None
+            };
+            let mut startup_transitions = Vec::new();
+            if previous.is_none()
+                && let Some(path) = circuit_runtime::state_path(&config)
+            {
+                match circuits.load_file(path, circuit_runtime::now(), &mut rand::random::<f64>) {
+                    Ok(outcome) => startup_transitions = outcome.events,
+                    Err(_) => eprintln!("Circuit state load failed"),
+                }
+            }
+            let runtime = Self {
+                parent,
+                tls,
+                certificate_authority,
+                passthrough,
+                scanner,
+                policy,
+                vault,
+                oauth,
+                credential_activation,
+                operator_modes,
+                vault_identity,
+                gateway_grants,
+                credential_guard,
+                credential_key_empty,
+                tasks,
+                service_mutations,
+                plumb,
+                admin_address,
+                admin_shield,
+                network_guard,
+                circuits,
+                test_context,
+                flow_recorder,
+                traffic_view,
+                audit: audit.clone(),
+                request_logger,
+                agent_discovery,
+                metrics,
+                traces,
+                memory_monitor,
+                coord,
+                via_token: config
+                    .via_token
+                    .clone()
+                    .unwrap_or_else(|| default_via.to_owned()),
+                events: Arc::new(Mutex::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&config.event_log)?,
+                )),
+                config,
+                instance_id: default_via.to_owned(),
+            };
+            if circuit_runtime::record_transitions(&runtime, &startup_transitions, None) {
+                eprintln!("Circuit startup evidence write failed");
+            }
+            if previous.is_none() {
+                runtime.configure_declarations()?;
+            }
+            if !runtime
+                .agent_discovery
+                .matches_path(&runtime.config.agent_map_file)?
+                && let Err(error) = runtime
+                    .agent_discovery
+                    .configure(&runtime.config.agent_map_file, &runtime.audit)
+            {
+                // The source addon dispatcher logs configuration exceptions and
+                // keeps running. Reporting metadata is not a startup requirement.
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Agent discovery configuration failed: {error}"
+                );
+            }
+            Ok(runtime)
+        })();
+        // Catalog errors can start the writer before a Runtime exists. Drain
+        // that startup owner's diagnostics; a rejected reload keeps its writer.
+        if previous.is_none()
+            && result.is_err()
+            && !matches!(audit.shutdown(Duration::from_secs(5)), Ok(true))
+        {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Startup audit writer shutdown did not complete"
+            );
+        }
+        result
+    }
+
+    fn configure_declarations(&self) -> Result<(), Error> {
+        let options = test_context::Options {
+            block: self.config.test_context_block,
+            inject_declared: self.config.test_context_inject_declared,
+            declared_ttl: self.config.test_context_declared_ttl.clone(),
+        };
+        match &self.policy {
+            Some(policy) => {
+                policy.configure_test_context_declarations(&self.test_context, options)?
+            }
+            None => self.test_context.configure_declarations(None, options)?,
+        }
+        Ok(())
+    }
+
+    fn record(&self, event: Value) -> Result<(), Error> {
+        self.record_bytes(serde_json::to_vec(&event)?)
+    }
+
+    fn record_bytes(&self, mut bytes: Vec<u8>) -> Result<(), Error> {
+        bytes.push(b'\n');
+        let mut events = self.events.lock().map_err(|_| "event log lock poisoned")?;
+        events.write_all(&bytes)?;
+        Ok(())
+    }
+}
+
+/// Compile and publish an already registered task at the explicit activation
+/// boundary. The outer RuntimeState lock makes enforcement, `/config`, hash,
+/// and operator reads switch to one immutable generation together.
+pub(crate) fn activate_registered_task(
+    state: &RuntimeState,
+    task_id: &str,
+) -> Result<usize, TaskPolicyActivationError> {
+    let mut current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    let task = current
+        .tasks
+        .get(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?
+        .ok_or(TaskPolicyActivationError::Registry(tasks::Error::NotFound))?;
+    let policy = current
+        .policy
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let candidate = policy
+        .with_task_document(task.document())
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let previous_guard = current
+        .credential_guard
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let (credential_guard, _) = previous_guard
+        .prepare_policy(&candidate)
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let runtime = Arc::new(Runtime {
+        policy: Some(candidate),
+        credential_guard: Some(credential_guard),
+        ..current.as_ref().clone()
+    });
+    runtime
+        .configure_declarations()
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    current
+        .tasks
+        .activate(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?;
+    let permission_count = runtime
+        .policy
+        .as_ref()
+        .and_then(policy::Policy::task_permissions_count)
+        .unwrap_or(0);
+    *current = runtime;
+    Ok(permission_count)
+}
+
+/// Clear a registered task. When that task is active, prepare the baseline
+/// generation first and then publish it with the registry removal.
+pub(crate) fn clear_registered_task(
+    state: &RuntimeState,
+    task_id: &str,
+) -> Result<bool, TaskPolicyActivationError> {
+    let mut current = state
+        .write()
+        .map_err(|_| TaskPolicyActivationError::Unavailable)?;
+    let active = current
+        .tasks
+        .active()
+        .map_err(TaskPolicyActivationError::Registry)?
+        .is_some_and(|(active_id, _)| active_id == task_id);
+    if !active {
+        return current
+            .tasks
+            .clear(task_id)
+            .map_err(TaskPolicyActivationError::Registry);
+    }
+    let policy = current
+        .policy
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let candidate = policy.without_task();
+    let previous_guard = current
+        .credential_guard
+        .as_ref()
+        .ok_or(TaskPolicyActivationError::Unavailable)?;
+    let (credential_guard, _) = previous_guard
+        .prepare_policy(&candidate)
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let runtime = Arc::new(Runtime {
+        policy: Some(candidate),
+        credential_guard: Some(credential_guard),
+        ..current.as_ref().clone()
+    });
+    runtime
+        .configure_declarations()
+        .map_err(|_| TaskPolicyActivationError::Invalid)?;
+    let removed = current
+        .tasks
+        .clear(task_id)
+        .map_err(TaskPolicyActivationError::Registry)?;
+    if removed {
+        *current = runtime;
+    }
+    Ok(removed)
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct VaultIdentity {
+    vault_path: PathBuf,
+    key_path: PathBuf,
+    key_fingerprint: [u8; 32],
+}
+
+struct VaultMaterial {
+    identity: VaultIdentity,
+    passphrase: credentials::Secret,
+}
+
+fn gateway_vault_material(config: &Config) -> Option<VaultMaterial> {
+    let data_dir = config.data_dir();
+    let vault_path = data_dir.join("vault.yaml.enc");
+    let key_path = data_dir.join("vault.key");
+    let passphrase = std::fs::read_to_string(&key_path).ok()?.trim().to_owned();
+    if passphrase.is_empty() {
+        return None;
+    }
+    let fingerprint = digest(&SHA256, passphrase.as_bytes());
+    let mut key_fingerprint = [0; 32];
+    key_fingerprint.copy_from_slice(fingerprint.as_ref());
+    Some(VaultMaterial {
+        identity: VaultIdentity {
+            vault_path,
+            key_path,
+            key_fingerprint,
+        },
+        passphrase: credentials::Secret::new(passphrase),
+    })
+}
+
+struct LoadedGatewayVault {
+    vault: credentials::Vault,
+    identity: VaultIdentity,
+}
+
+/// Load the existing Python-compatible vault material when both files are
+/// present. The passphrase is process-local configuration and is never copied
+/// into Runtime diagnostics. A missing or unusable vault leaves the gateway
+/// unavailable so a selected request fails closed at the injection boundary.
+fn load_gateway_vault(
+    material: Option<&VaultMaterial>,
+) -> Result<Option<LoadedGatewayVault>, Error> {
+    let Some(material) = material else {
+        return Ok(None);
+    };
+    if !material.identity.vault_path.exists() {
+        return Ok(None);
+    }
+    match credentials::Vault::unlock(&material.identity.vault_path, &material.passphrase) {
+        Ok(vault) => Ok(Some(LoadedGatewayVault {
+            vault,
+            identity: material.identity.clone(),
+        })),
+        Err(error) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Gateway vault unavailable: {error}"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn load_service_catalog(
+    config: &Config,
+    writer: &audit::Writer,
+    service_files: &mut Option<services::CatalogMetadata>,
+) -> Result<Option<Arc<services::Registry>>, Error> {
+    match (
+        &config.gateway_builtin_services_dir,
+        &config.gateway_services_dir,
+    ) {
+        (Some(builtin), Some(user)) => {
+            let load = services::Registry::load_directories(builtin, user, &mut |problem| {
+                record_service_problem(writer, problem);
+            })?;
+            *service_files = Some(load.metadata);
+            Ok(Some(Arc::new(load.result?)))
+        }
+        _ => {
+            *service_files = None;
+            Ok(None)
+        }
+    }
+}
+
+fn record_service_problem(writer: &audit::Writer, problem: &services::ServiceLoadProblem) {
+    let filename = problem
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut event = audit::Event::new(
+        "ops.config_error",
+        audit::Kind::Ops,
+        audit::Severity::Medium,
+        format!("Service definition {filename} failed to load"),
+    );
+    event.addon = Some("service-loader".into());
+    event.details = json!({
+        "file": filename,
+        "error_type": problem.kind.error_type(),
+        "error": network_guard::sanitize(&problem.message),
+    })
+    .into();
+    if writer.emit(event).is_err() {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Service config-error audit submission failed"
+        );
+    }
+}
+
+pub(crate) const PROBE_HOST: &str = "_safeyolo.probe.internal";
+
+pub(crate) fn is_probe_host(host: &str) -> bool {
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .eq_ignore_ascii_case(PROBE_HOST)
+}
+
+pub(crate) fn is_reserved(host: &str) -> bool {
+    // A DNS root dot denotes the same endpoint. Classify that spelling locally
+    // too, so a parent proxy never receives a reserved API request or token.
+    host.strip_suffix('.')
+        .unwrap_or(host)
+        .eq_ignore_ascii_case("_safeyolo.proxy.internal")
+        || is_probe_host(host)
+}
+
+fn clear_readiness(path: &Path, instance_id: &str) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    let Ok(marker) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    if marker["instance_id"] == instance_id {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Removes only this process's socket inode, including during partial startup failure.
+struct SocketPath {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl SocketPath {
+    fn is_current(&self) -> std::io::Result<bool> {
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(metadata) => Ok(metadata.dev() == self.device && metadata.ino() == self.inode),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn bind(path: &Path) -> Result<(UnixListener, Self), Error> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_socket() => {
+                match std::os::unix::net::UnixStream::connect(path) {
+                    Ok(_) => {
+                        return Err(format!("listener already active: {}", path.display()).into());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                        let current = std::fs::symlink_metadata(path)?;
+                        if current.dev() != metadata.dev() || current.ino() != metadata.ino() {
+                            return Err("socket changed during stale listener cleanup".into());
+                        }
+                        std::fs::remove_file(path)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Ok(_) => return Err(format!("socket path is not a socket: {}", path.display()).into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let listener = UnixListener::bind(path)?;
+        let metadata = std::fs::symlink_metadata(path)?;
+        let owned = Self {
+            path: path.to_owned(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        Ok((listener, owned))
+    }
+}
+
+impl Drop for SocketPath {
+    fn drop(&mut self) {
+        if let Ok(metadata) = std::fs::symlink_metadata(&self.path)
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct RunningListener {
+    listener: Arc<UnixListener>,
+    agent_id: String,
+    source_id: Option<String>,
+    stop: Arc<watch::Sender<bool>>,
+    task: JoinHandle<()>,
+    socket: SocketPath,
+}
+
+impl RunningListener {
+    fn start(
+        listener: impl Into<Arc<UnixListener>>,
+        socket: SocketPath,
+        agent_id: String,
+        source_id: Option<String>,
+        runtime: Arc<RwLock<Arc<Runtime>>>,
+    ) -> Self {
+        let listener = listener.into();
+        let (stop, receiver) = watch::channel(false);
+        let stop = Arc::new(stop);
+        let task = tokio::spawn(accept_agents(
+            listener.clone(),
+            agent_id.clone(),
+            source_id.clone(),
+            runtime,
+            Arc::downgrade(&stop),
+            receiver,
+        ));
+        Self {
+            listener,
+            agent_id,
+            source_id,
+            stop,
+            task,
+            socket,
+        }
+    }
+
+    fn retire(self) -> (Arc<UnixListener>, SocketPath, JoinHandle<()>) {
+        let _ = self.stop.send(true);
+        (self.listener, self.socket, self.task)
+    }
+
+    fn stop(self) -> JoinHandle<()> {
+        let (listener, socket, task) = self.retire();
+        drop(listener);
+        drop(socket);
+        task
+    }
+}
+
+async fn accept_agents(
+    listener: Arc<UnixListener>,
+    agent_id: String,
+    source_id: Option<String>,
+    runtime: Arc<RwLock<Arc<Runtime>>>,
+    stop_signal: std::sync::Weak<watch::Sender<bool>>,
+    mut stop: watch::Receiver<bool>,
+) {
+    let mut connections = JoinSet::new();
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.changed() => break,
+            accepted = listener.accept() => match accepted {
+                Ok((socket, _)) => {
+                    let identity = ConnectionIdentity {
+                        agent_id: agent_id.clone(),
+                        connection_id: format!("conn-{}", uuid::Uuid::new_v4().simple()),
+                        source_id: source_id.clone(),
+                        reconciled: None,
+                    };
+                    // Register before spawning so even an unpolled canceled
+                    // task owns cleanup. One guard spans all inner upgrades.
+                    let memory = match runtime.read() {
+                        Ok(runtime) => Some(memory_runtime::Client::new(&runtime, &identity.connection_id)),
+                        Err(_) => {
+                            let _ = writeln!(std::io::stderr().lock(), "Memory monitor runtime unavailable");
+                            None
+                        }
+                    };
+                    let connection_runtime = runtime.clone();
+                    let connection_stop = stop.clone();
+                    connections.spawn(async move {
+                        let _memory = memory;
+                        let tasks = connection_tasks::ConnectionTasks::new(connection_stop.clone());
+                        let disconnect_monitor = monitor_agent_disconnect(&socket, &tasks);
+                        let driver_tasks = tasks.clone();
+                        tasks.run(serve_connection(socket, identity, connection_runtime, connection_stop, driver_tasks)).await;
+                        if let Some(disconnect_monitor) = disconnect_monitor {
+                            disconnect_monitor.abort();
+                            let _ = disconnect_monitor.await;
+                        }
+                    });
+                }
+                Err(error) => {
+                    eprintln!("listener accept failed: {error}");
+                    // A failed listener cannot leave a healthy readiness marker behind.
+                    if let Ok(snapshot) = runtime.read() {
+                        clear_readiness(&snapshot.config.readiness_file, &snapshot.instance_id);
+                    }
+                    break;
+                }
+            },
+            Some(result) = connections.join_next(), if !connections.is_empty() => {
+                if let Err(error) = result { eprintln!("agent connection task failed: {error}"); }
+            }
+        }
+    }
+    drop(listener);
+    // Cleanup supervisors are never aborted: they cancel transport tasks after
+    // the existing grace and join tracked transport tasks before dropping the client.
+    if let Some(stop_signal) = stop_signal.upgrade() {
+        stop_signal.send_replace(true);
+    }
+    while connections.join_next().await.is_some() {}
+}
+
+/// Hyper cannot poll an HTTP/1 read side while the current service future is
+/// pending. Keep a duplicated descriptor solely for peer-close notification so
+/// a long coordination wait observes a client that abandoned its connection.
+/// The duplicate never consumes request bytes. Some Unix platforms report a
+/// closed peer as readable rather than with POLLHUP, so a readable event is
+/// confirmed with a non-consuming peek before cancellation.
+fn peer_closed_after_readable_event(descriptor: libc::c_int) -> bool {
+    let mut byte = 0_u8;
+    unsafe {
+        libc::recv(
+            descriptor,
+            std::ptr::addr_of_mut!(byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        ) == 0
+    }
+}
+
+fn poll_agent_disconnect(descriptor: libc::c_int) -> std::io::Result<bool> {
+    let close_events = libc::POLLHUP | libc::POLLERR;
+    let readable_event = libc::POLLIN;
+    let mut descriptor_poll = libc::pollfd {
+        fd: descriptor,
+        events: readable_event,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor_poll, 1, 100) };
+    if result < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let peer_closed =
+        descriptor_poll.revents & close_events != 0 || peer_closed_after_readable_event(descriptor);
+    if !peer_closed && descriptor_poll.revents & readable_event != 0 {
+        // Hyper may leave a request byte unread while its service future is
+        // pending. Preserve the poll timeout's cadence instead of spinning on
+        // the byte, while continuing to request POLLIN so macOS reports a
+        // later peer close that follows buffered data.
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(peer_closed)
+}
+
+fn monitor_agent_disconnect(
+    socket: &UnixStream,
+    tasks: &Arc<connection_tasks::ConnectionTasks>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let descriptor = unsafe { libc::dup(socket.as_raw_fd()) };
+    if descriptor < 0 {
+        return None;
+    }
+    struct PollDescriptor(libc::c_int);
+    impl Drop for PollDescriptor {
+        fn drop(&mut self) {
+            unsafe {
+                libc::close(self.0);
+            }
+        }
+    }
+    let descriptor = PollDescriptor(descriptor);
+    let cancellation = tasks.cancellation_sender();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let worker_stopped = stopped.clone();
+    Some(tokio::spawn(async move {
+        struct StopMonitor(Arc<AtomicBool>);
+        impl Drop for StopMonitor {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop_monitor = StopMonitor(stopped);
+        let _ = tokio::task::spawn_blocking(move || {
+            // Move the guard itself into the blocking closure. Capturing only
+            // its raw field would drop the duplicate before poll starts.
+            let descriptor = descriptor;
+            loop {
+                if worker_stopped.load(Ordering::Acquire) {
+                    break;
+                }
+                match poll_agent_disconnect(descriptor.0) {
+                    Ok(true) => {
+                        cancellation.send_replace(true);
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+        .await;
+    }))
+}
+
+async fn serve_connection(
+    socket: UnixStream,
+    identity: ConnectionIdentity,
+    runtime: Arc<RwLock<Arc<Runtime>>>,
+    mut stop: watch::Receiver<bool>,
+    upgrades: UpgradeTasks,
+) -> Result<(), Error> {
+    let request_upgrades = upgrades.clone();
+    let service = service_fn(move |request| {
+        http::serve_request(
+            runtime.clone(),
+            identity.clone(),
+            request,
+            None,
+            request_upgrades.clone(),
+            true,
+        )
+    });
+    let connection = hyper::server::conn::http1::Builder::new()
+        .preserve_header_case(true)
+        .serve_connection(TokioIo::new(socket), service)
+        .with_upgrades();
+    tokio::pin!(connection);
+    if *stop.borrow() {
+        connection.as_mut().graceful_shutdown();
+    }
+    let result = tokio::select! {
+        result = &mut connection => result,
+        _ = stop.changed() => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    };
+    if let Err(error) = &result {
+        eprintln!("agent HTTP connection: {error}");
+    }
+    result.map_err(Into::into)
+}
+
+type PreparedListeners = HashMap<PathBuf, (Arc<UnixListener>, SocketPath)>;
+
+/// Owns listening sockets. Identity is fixed at accept, never taken from client bytes.
+pub struct Proxy {
+    runtime: Arc<RwLock<Arc<Runtime>>>,
+    listeners: HashMap<PathBuf, RunningListener>,
+    admin: Option<admin_listener::Running>,
+    command_centre_share: Option<command_centre::Publication>,
+    draining: Vec<JoinHandle<()>>,
+    default_via: String,
+    readiness_file: PathBuf,
+    circuit_snapshots: Option<circuit_runtime::Snapshots>,
+    service_files: Option<services::CatalogMetadata>,
+    service_check_at: Option<tokio::time::Instant>,
+    policy_check_at: Option<tokio::time::Instant>,
+}
+
+impl Proxy {
+    pub async fn start(config: Config) -> Result<Self, Error> {
+        config.validate()?;
+        let prepared_admin = admin_listener::Prepared::bind(&config).await?;
+        let admin_address = prepared_admin
+            .as_ref()
+            .map(admin_listener::Prepared::address);
+        let command_centre = prepared_admin
+            .as_ref()
+            .and_then(admin_listener::Prepared::command_centre);
+        let event_address = prepared_admin
+            .as_ref()
+            .and_then(admin_listener::Prepared::event_address);
+        let default_via = uuid::Uuid::new_v4().simple().to_string();
+        let (runtime, service_files) = {
+            let config = config.clone();
+            let default_via = default_via.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut service_files = None;
+                let runtime = Runtime::load(
+                    config,
+                    &default_via,
+                    None,
+                    admin_address,
+                    event_address,
+                    &mut service_files,
+                )?;
+                policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+                memory_runtime::running(&runtime);
+                Ok::<_, Error>((Arc::new(runtime), service_files))
+            })
+            .await??
+        };
+        let mut proxy = Self {
+            runtime: Arc::new(RwLock::new(runtime)),
+            listeners: HashMap::new(),
+            admin: None,
+            command_centre_share: None,
+            draining: Vec::new(),
+            default_via,
+            readiness_file: config.readiness_file.clone(),
+            circuit_snapshots: None,
+            service_check_at: service_files.as_ref().map(|_| tokio::time::Instant::now()),
+            service_files,
+            policy_check_at: config
+                .policy_file
+                .as_ref()
+                .map(|_| tokio::time::Instant::now()),
+        };
+        // A readiness marker is useful only after all configured sockets have bound.
+        // Keep the prepared operator socket locally owned until agent binds succeed.
+        let additions = proxy.prepare_listeners(&config)?;
+        proxy.commit_listeners(&config, additions);
+        {
+            let runtime = proxy
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            runtime.plumb.configure_limits(
+                runtime.config.plumb.max_participants,
+                runtime.config.plumb.max_message_bytes,
+                runtime.config.plumb.message_page_limit,
+                runtime.config.plumb.default_ttl_seconds,
+            );
+        }
+        proxy.admin = prepared_admin.map(|listener| listener.start(proxy.runtime.clone()));
+        if let (Some(host), Some(admin), Some(events)) =
+            (command_centre.as_ref(), admin_address, event_address)
+        {
+            proxy.command_centre_share =
+                command_centre::Publication::start(host, admin.port(), events.port()).await?;
+        }
+        proxy.write_readiness()?;
+        if circuit_runtime::state_path(&config).is_some() {
+            proxy.circuit_snapshots =
+                Some(circuit_runtime::Snapshots::start(proxy.runtime.clone())?);
+        }
+        Ok(proxy)
+    }
+
+    fn write_readiness(&self) -> Result<(), Error> {
+        let temporary = self
+            .readiness_file
+            .with_extension(format!("{}.tmp", std::process::id()));
+        let mut marker = json!({
+            "ready": true, "pid": std::process::id(), "backend": "rust-m2",
+            "instance_id": self.default_via, "listeners": self.listeners.len(),
+        });
+        if let Some(reload_id) = &self
+            .runtime
+            .read()
+            .map_err(|_| "runtime read lock poisoned")?
+            .config
+            .reload_id
+        {
+            marker["reload_id"] = Value::from(reload_id.clone());
+        }
+        if let Some(listener) = &self.admin {
+            marker["admin_port"] = Value::from(listener.address().port());
+        }
+        std::fs::write(&temporary, serde_json::to_vec(&marker)?)?;
+        std::fs::rename(temporary, &self.readiness_file)?;
+        Ok(())
+    }
+
+    fn prepare_listeners(&self, config: &Config) -> Result<PreparedListeners, Error> {
+        // Bind every new path before changing active identities or readiness.
+        let mut additions = HashMap::new();
+        for entry in &config.listeners {
+            let reusable = self
+                .listeners
+                .get(&entry.socket_path)
+                .map(|listener| listener.socket.is_current())
+                .transpose()?
+                .unwrap_or(false);
+            if !reusable {
+                let (listener, socket) = SocketPath::bind(&entry.socket_path)?;
+                additions.insert(entry.socket_path.clone(), (Arc::new(listener), socket));
+            }
+        }
+        Ok(additions)
+    }
+
+    fn commit_listeners(&mut self, config: &Config, mut additions: PreparedListeners) {
+        let removed: Vec<PathBuf> = self
+            .listeners
+            .iter()
+            .filter(|(path, listener)| {
+                additions.contains_key(*path)
+                    || listener.task.is_finished()
+                    || !config.listeners.iter().any(|entry| {
+                        &entry.socket_path == *path
+                            && entry.agent_id == listener.agent_id
+                            && entry.source_id() == listener.source_id
+                    })
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in removed {
+            let previous = self.listeners.remove(&path).unwrap();
+            if config
+                .listeners
+                .iter()
+                .any(|entry| entry.socket_path == path)
+                && !additions.contains_key(&path)
+            {
+                // Transfer the existing socket and its inode owner. Existing
+                // clients drain with their accepted identity; only future
+                // accepts use the replacement identity/source configuration.
+                let (listener, socket, task) = previous.retire();
+                self.draining.push(task);
+                additions.insert(path, (listener, socket));
+            } else {
+                self.draining.push(previous.stop());
+            }
+        }
+        for entry in &config.listeners {
+            if let Some((listener, socket)) = additions.remove(&entry.socket_path) {
+                self.listeners.insert(
+                    entry.socket_path.clone(),
+                    RunningListener::start(
+                        listener,
+                        socket,
+                        entry.agent_id.clone(),
+                        entry.source_id(),
+                        self.runtime.clone(),
+                    ),
+                );
+            }
+        }
+    }
+
+    async fn reap_listeners(&mut self) {
+        let mut index = 0;
+        while index < self.draining.len() {
+            if self.draining[index].is_finished() {
+                if let Err(error) = self.draining.swap_remove(index).await {
+                    eprintln!("draining listener failed: {error}");
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// Wait for the next process-owned catalog check. With no configured
+    /// catalog this stays pending. The caller can cancel this wait on shutdown
+    /// or explicit reload, then arm it again with the accepted configuration.
+    pub async fn wait_for_service_catalog_check(&self) {
+        match self.service_check_at {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    /// Check configured service files and publish one complete candidate when
+    /// their metadata changed. Embedded callers must drive this check; the
+    /// native executable does so in its sole configuration control loop.
+    pub async fn reload_services_if_changed(&mut self) -> Result<bool, Error> {
+        let result = (|| {
+            let previous = self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            self.reload_service_policy(&previous)
+        })();
+        // Source waits after every attempt, including rejection. Missed checks
+        // never produce a burst of catch-up loads.
+        self.service_check_at = self
+            .service_files
+            .as_ref()
+            .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
+        result
+    }
+
+    fn reload_service_policy(&mut self, previous: &Runtime) -> Result<bool, Error> {
+        let config = &previous.config;
+        match (
+            &config.gateway_builtin_services_dir,
+            &config.gateway_services_dir,
+        ) {
+            (Some(builtin), Some(user)) => {
+                let files = services::scan_service_files(builtin, user)?;
+                if self.service_files.as_ref() == Some(&files) {
+                    Ok(false)
+                } else {
+                    // A reached load consumes its pre-read metadata, including
+                    // when a later policy compile rejects the candidate.
+                    let registry =
+                        load_service_catalog(config, &previous.audit, &mut self.service_files)?;
+                    let policy = policy_runtime::load(
+                        config
+                            .policy_file
+                            .as_ref()
+                            .ok_or("service catalog requires policy_file")?,
+                        registry,
+                        Some(
+                            previous
+                                .policy
+                                .as_ref()
+                                .ok_or("service catalog requires native policy")?,
+                        ),
+                        &previous.audit,
+                    )?;
+                    self.publish_policy(previous, policy)?;
+                    Ok(true)
+                }
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Wait for the next baseline/addons/list check. Without a configured native
+    /// policy this remains pending; the control loop can cancel it on shutdown.
+    pub async fn wait_for_policy_check(&self) {
+        match self.policy_check_at {
+            Some(deadline) => tokio::time::sleep_until(deadline).await,
+            None => std::future::pending::<()>().await,
+        }
+    }
+
+    /// Reload a changed baseline against the accepted service registry. Keep
+    /// file observation and publication separate from catalog change detection.
+    pub async fn reload_policy_if_changed(&mut self) -> Result<bool, Error> {
+        let result = (|| {
+            let previous = self
+                .runtime
+                .read()
+                .map_err(|_| "runtime read lock poisoned")?
+                .clone();
+            let Some(policy) = previous.policy.as_ref() else {
+                return Ok(false);
+            };
+            if !policy.baseline_files_changed()? {
+                return Ok(false);
+            }
+            let candidate = policy_runtime::load(
+                previous
+                    .config
+                    .policy_file
+                    .as_ref()
+                    .ok_or("native policy requires policy_file")?,
+                policy.gateway().and_then(|gateway| gateway.registry()),
+                Some(policy),
+                &previous.audit,
+            )?;
+            self.publish_policy(&previous, candidate)?;
+            Ok(true)
+        })();
+        // Every reached attempt owns its next deadline, including a poisoned
+        // Runtime lock or rejected candidate. Catalog checks have their own wait.
+        self.policy_check_at = self
+            .policy_check_at
+            .map(|_| tokio::time::Instant::now() + Duration::from_secs(2));
+        result
+    }
+
+    fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
+        let previous_guard = previous
+            .credential_guard
+            .as_ref()
+            .ok_or("native credential guard is unavailable")?;
+        let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
+        let gateway_grants = if let Some(store) = previous.gateway_grants.as_ref() {
+            let store = store.clone();
+            store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
+            Some(store)
+        } else {
+            None
+        };
+        // The candidate observed the policy file when it was compiled. Keep
+        // that watermark: an admin authorization can commit while the grant
+        // store reloads, and the next watcher check must see that later write.
+        let runtime = Arc::new(Runtime {
+            policy: Some(policy),
+            credential_guard: Some(credential_guard),
+            gateway_grants,
+            credential_key_empty: previous.credential_key_empty,
+            ..previous.clone()
+        });
+        {
+            let mut current = self
+                .runtime
+                .write()
+                .map_err(|_| "runtime write lock poisoned")?;
+            runtime.configure_declarations()?;
+            *current = runtime.clone();
+        }
+        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        Ok(())
+    }
+
+    pub async fn reload(&mut self, config: Config) -> Result<(), Error> {
+        let previous = self
+            .runtime
+            .read()
+            .map_err(|_| "runtime read lock poisoned")?
+            .clone();
+        let mut service_files = None;
+        let runtime = Arc::new(Runtime::load(
+            config.clone(),
+            &self.default_via,
+            Some(&previous),
+            self.admin.as_ref().map(admin_listener::Running::address),
+            self.admin
+                .as_ref()
+                .and_then(admin_listener::Running::event_address),
+            &mut service_files,
+        )?);
+        let additions = self.prepare_listeners(&config)?;
+        if self.circuit_snapshots.is_none() && circuit_runtime::state_path(&config).is_some() {
+            self.circuit_snapshots = Some(circuit_runtime::Snapshots::start(self.runtime.clone())?);
+        }
+        {
+            // Completion, admission and snapshots all retain this same lock
+            // through their state operation. Publish the selected file's state
+            // and configuration together, preserving counters and settings.
+            let state = self.runtime.clone();
+            let mut current = state.write().map_err(|_| "runtime write lock poisoned")?;
+            let old_path = circuit_runtime::state_path(&current.config);
+            let new_path = circuit_runtime::state_path(&runtime.config);
+            if old_path != new_path {
+                let changed = runtime.circuits.replace_state_file(
+                    old_path,
+                    new_path,
+                    circuit_runtime::now(),
+                    &mut rand::random::<f64>,
+                )?;
+                if changed.previous_save_failed {
+                    eprintln!("Circuit previous state snapshot failed");
+                }
+                if changed.load_failed {
+                    eprintln!("Circuit state load failed");
+                }
+            }
+            // Publish current declaration defaults on the process owner. A
+            // POST whose body spans this reload uses these latest settings;
+            // existing declarations retain their original expiry and context.
+            runtime.configure_declarations()?;
+            runtime.flow_recorder.set_enabled(config.flow_store_enabled);
+            runtime
+                .traffic_view
+                .configure(config.flow_pruner_max, config.flow_pruner_max_body_bytes);
+            // No fallible preparation remains before topology/runtime publication.
+            clear_readiness(&self.readiness_file, &self.default_via);
+            self.commit_listeners(&config, additions);
+            runtime.plumb.configure_limits(
+                runtime.config.plumb.max_participants,
+                runtime.config.plumb.max_message_bytes,
+                runtime.config.plumb.message_page_limit,
+                runtime.config.plumb.default_ttl_seconds,
+            );
+            *current = runtime.clone();
+        }
+        policy_runtime::accepted(runtime.policy.as_ref(), &runtime.audit);
+        self.service_check_at = service_files.as_ref().map(|_| tokio::time::Instant::now());
+        self.service_files = service_files;
+        if previous.config.policy_file != config.policy_file {
+            self.policy_check_at = config
+                .policy_file
+                .as_ref()
+                .map(|_| tokio::time::Instant::now());
+        }
+        if self.readiness_file != config.readiness_file {
+            clear_readiness(&self.readiness_file, &self.default_via);
+            self.readiness_file = config.readiness_file;
+        }
+        let result = self.write_readiness();
+        self.reap_listeners().await;
+        result
+    }
+
+    pub async fn shutdown(mut self) {
+        clear_readiness(&self.readiness_file, &self.default_via);
+        let credential_activation = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .credential_activation
+            .clone();
+        credential_activation.close();
+        let service_mutations = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .service_mutations
+            .clone();
+        let plumb = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .plumb
+            .clone();
+        // Close every process-owned admission point before listeners begin
+        // draining. Plumb wakes long polls here; its blocking store calls and
+        // the service mutation owner are joined after accepted connections
+        // have stopped producing work.
+        plumb.stop_admission().await;
+        service_mutations.stop_admission().await;
+        plumb.stop_admission().await;
+        if let Some(share) = self.command_centre_share.take() {
+            share.stop().await;
+        }
+        if let Some(listener) = self.admin.take() {
+            self.draining.push(listener.stop());
+        }
+        for (_, listener) in self.listeners.drain() {
+            self.draining.push(listener.stop());
+        }
+        for task in self.draining.drain(..) {
+            if let Err(error) = task.await {
+                eprintln!("listener shutdown failed: {error}");
+            }
+        }
+        service_mutations.drain().await;
+        plumb.drain().await;
+        let coord = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .coord
+            .clone();
+        coord.shutdown().await;
+        let recorder = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .flow_recorder
+            .clone();
+        if !tokio::task::spawn_blocking(move || recorder.shutdown())
+            .await
+            .unwrap_or(false)
+        {
+            eprintln!("Flow writer shutdown did not complete");
+        }
+        if let Some(snapshots) = self.circuit_snapshots.take()
+            && tokio::task::spawn_blocking(move || snapshots.stop())
+                .await
+                .is_err()
+        {
+            eprintln!("Circuit snapshot shutdown failed");
+        }
+        let audit = self
+            .runtime
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .audit
+            .clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || audit.shutdown(Duration::from_secs(5))).await,
+            Ok(Ok(true))
+        ) {
+            eprintln!("Audit writer shutdown did not complete");
+        }
+        desktop_present::shutdown();
+    }
+}
+
+impl Drop for Proxy {
+    fn drop(&mut self) {
+        clear_readiness(&self.readiness_file, &self.default_via);
+        desktop_present::shutdown();
+        for (_, listener) in self.listeners.drain() {
+            drop(listener.stop());
+        }
+    }
+}
+
+#[cfg(test)]
+mod audit_runtime_tests;
+
+#[cfg(test)]
+mod listener_reload_tests;

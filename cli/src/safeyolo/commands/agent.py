@@ -17,6 +17,7 @@ from rich.table import Table
 
 from ..agent_configuration import (
     DEFAULT_AGENT_MEMORY_MB,
+    GUEST_PROXY_PORT,
     _parse_mount,
     _validate_instance_name,
 )
@@ -589,8 +590,9 @@ def add(  # DOC: README.md, docs/AGENTS.md
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    cfg = load_config()
-    panel_lines.append(f"Proxy: http://127.0.0.1:{cfg.get('proxy', {}).get('port', 8080)} (via in-guest forwarder)")
+    panel_lines.append(
+        f"Proxy: http://127.0.0.1:{GUEST_PROXY_PORT} (via in-guest forwarder)"
+    )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     event_details: dict = {"folder": folder_str}
@@ -744,7 +746,7 @@ def remove(
     # plain shutil.rmtree can't clean up.
     plat.remove_agent_dir(name)
     _store_remove_agent(name)
-    # Drop the per-agent UnixInstance if mitmproxy is running.
+    # Remove the CLI-managed native listener if the proxy is running.
     config = load_config()
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
     from ..proxy import sync_proxy_modes
@@ -1345,10 +1347,10 @@ def diag(
 ) -> None:
     """Probe agent egress and, on macOS, the shell and VM helper control paths.
 
-    Runs through the hops from the agent out to mitmproxy and back,
+    Runs through the hops from the agent out to the Rust proxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → command supervisor → proxy transport →
+        Rust proxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
     On macOS, also require a bounded SSH banner and inspect the running helper's

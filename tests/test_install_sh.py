@@ -1,11 +1,21 @@
 """Hermetic acceptance tests for the source checkout installer."""
 
 import os
+import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 from textwrap import dedent
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def make_install_checkout(tmp_path: Path) -> Path:
+    checkout = tmp_path / "checkout"
+    (checkout / "proxy").mkdir(parents=True)
+    for relative in ("install.sh", "pyproject.toml", "proxy/Cargo.toml"):
+        shutil.copy2(REPO_ROOT / relative, checkout / relative)
+    return checkout
 
 
 def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -58,21 +68,6 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
             fi
 
             if [[ "${1:-}" == tool && "${2:-}" == install ]]; then
-                override_file=
-                while [[ $# -gt 0 ]]; do
-                    if [[ "$1" == --overrides ]]; then
-                        override_file="$2"
-                        break
-                    fi
-                    shift
-                done
-                if [[ -z "$override_file" || ! -r "$override_file" ]]; then
-                    echo "fake uv cannot open the overrides file" >&2
-                    exit 25
-                fi
-                while IFS= read -r pin; do
-                    printf 'override: %s\n' "$pin" >> "$FAKE_UV_LOG"
-                done < "$override_file"
                 if [[ "${FAKE_UV_TOOL_MODE:-ok}" == fail ]]; then
                     echo "${FAKE_UV_DIAGNOSTIC:-fake tool failure}" >&2
                     exit 23
@@ -91,6 +86,14 @@ def make_fake_uv(tmp_path: Path) -> tuple[Path, Path, Path]:
         + "\n",
     )
     fake_uv.chmod(0o755)
+    fake_cargo = fake_bin / "cargo"
+    fake_cargo.write_text(
+        "#!/bin/bash\n"
+        "mkdir -p proxy/target/release\n"
+        'printf "#!/bin/sh\\nexit 0\\n" > proxy/target/release/safeyolo-proxy\n'
+        "chmod +x proxy/target/release/safeyolo-proxy\n"
+    )
+    fake_cargo.chmod(0o755)
     return fake_bin, log, state
 
 
@@ -109,6 +112,7 @@ def run_installer(
             "BASH_ENV": "/dev/null",
             "FAKE_UV_LOG": str(log),
             "FAKE_UV_STATE": str(state),
+            # The fake cargo executable creates the expected release artifact.
             **settings,
         }
     )
@@ -127,9 +131,10 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
 ) -> None:
     """Both tool-environment paths pass uv a supported interpreter."""
     fake_bin, log, state = make_fake_uv(tmp_path)
+    checkout = make_install_checkout(tmp_path)
 
     install = run_installer(
-        REPO_ROOT,
+        checkout,
         fake_bin,
         log,
         state,
@@ -138,7 +143,7 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
         FAKE_HOST_DEFAULT="3.14",
     )
     reinstall = run_installer(
-        REPO_ROOT,
+        checkout,
         fake_bin,
         log,
         state,
@@ -158,16 +163,17 @@ def test_install_and_reinstall_select_supported_python_for_tool_environment(
     tool_lines = [line for line in lines if "[tool] [install]" in line]
     assert len(tool_lines) == 2
     assert all("[--python] [/fake/python-3.13]" in line for line in tool_lines)
-    assert all("[--editable]" in line and "[--overrides]" in line for line in tool_lines)
+    assert all("[--editable]" not in line and "[--overrides]" not in line for line in tool_lines)
+    assert all(f"[{checkout}]" in line for line in tool_lines)
     assert "[--reinstall]" not in tool_lines[0]
     assert "[--reinstall]" in tool_lines[1]
-    assert lines.count("override: h2==4.4.1") == 2
 
 
 def test_install_preserves_lookup_invocation_error_without_acquiring_python(tmp_path: Path) -> None:
     fake_bin, log, state = make_fake_uv(tmp_path)
+    checkout = make_install_checkout(tmp_path)
     result = run_installer(
-        REPO_ROOT, fake_bin, log, state, FAKE_UV_FIND_MODE="invocation-error",
+        checkout, fake_bin, log, state, FAKE_UV_FIND_MODE="invocation-error",
     )
 
     assert result.returncode != 0
@@ -182,9 +188,10 @@ def test_install_acquires_supported_python_when_system_lookup_fails(
 ) -> None:
     """uv may acquire the declared range before creating the tool environment."""
     fake_bin, log, state = make_fake_uv(tmp_path)
+    checkout = make_install_checkout(tmp_path)
 
     result = run_installer(
-        REPO_ROOT,
+        checkout,
         fake_bin,
         log,
         state,
@@ -207,10 +214,11 @@ def test_install_preserves_acquisition_failure_details(
 ) -> None:
     """Acquisition failures retain the cause alongside the suggested action."""
     fake_bin, log, state = make_fake_uv(tmp_path)
+    checkout = make_install_checkout(tmp_path)
     diagnostic = "error: Python download failed: no space left on device"
 
     result = run_installer(
-        REPO_ROOT,
+        checkout,
         fake_bin,
         log,
         state,
@@ -229,6 +237,8 @@ def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path
     """Changing project metadata changes the uv request without installer edits."""
     checkout = tmp_path / "checkout"
     checkout.mkdir()
+    (checkout / "proxy").mkdir()
+    (checkout / "proxy/Cargo.toml").write_text("[package]\nname = 'fixture'\n")
     (checkout / "install.sh").write_text((REPO_ROOT / "install.sh").read_text())
     project = (REPO_ROOT / "pyproject.toml").read_text()
     project = project.replace('requires-python = ">=3.12,<3.14"', 'requires-python = ">=3.11,<3.13"')
@@ -254,10 +264,11 @@ def test_install_derives_changed_python_boundaries_from_pyproject(tmp_path: Path
 def test_install_tool_failure_preserves_uv_diagnostics(tmp_path: Path) -> None:
     """Tool-resolution failures preserve uv's explanation of the conflict."""
     fake_bin, log, state = make_fake_uv(tmp_path)
+    checkout = make_install_checkout(tmp_path)
     diagnostic = "error: no solution found when resolving dependencies"
 
     result = run_installer(
-        REPO_ROOT,
+        checkout,
         fake_bin,
         log,
         state,
@@ -277,3 +288,64 @@ def test_install_avoids_empty_nounset_array_expansion() -> None:
     assert "reinstall_args=()" not in source
     assert 'local tool_args=(--python)' in source
     assert 'uv tool install "${tool_args[@]}"' in source
+
+
+def test_install_builds_native_proxy_without_factory_disk_reserve(tmp_path: Path) -> None:
+    """A source install can start its native build below the factory's reserve."""
+    checkout = tmp_path / "checkout"
+    (checkout / "proxy").mkdir(parents=True)
+    (checkout / "scripts").mkdir()
+    for relative in (
+        "install.sh",
+        "pyproject.toml",
+        "proxy/Cargo.toml",
+        "scripts/cargo_with_space.sh",
+    ):
+        shutil.copy2(REPO_ROOT / relative, checkout / relative)
+
+    fake_bin, log, state = make_fake_uv(tmp_path)
+    cargo_log = tmp_path / "cargo.log"
+    fake_cargo = fake_bin / "cargo"
+    fake_cargo.write_text(
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" >> "$FAKE_CARGO_LOG"\n'
+        "mkdir -p proxy/target/release\n"
+        'printf "#!/bin/sh\\nexit 0\\n" > proxy/target/release/safeyolo-proxy\n'
+        "chmod +x proxy/target/release/safeyolo-proxy\n"
+    )
+    fake_cargo.chmod(0o755)
+    fake_df = fake_bin / "df"
+    fake_df.write_text(
+        "#!/bin/bash\n"
+        "printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'\n"
+        "printf 'testfs 2097152 1048576 1048576 50%% /tmp\\n'\n"
+    )
+    fake_df.chmod(0o755)
+
+    result = run_installer(
+        checkout,
+        fake_bin,
+        log,
+        state,
+        FAKE_CARGO_LOG=str(cargo_log),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert cargo_log.read_text() == "build --locked --release --manifest-path proxy/Cargo.toml\n"
+    assert (checkout / "proxy/target/release/safeyolo-proxy").is_file()
+
+
+def test_wheel_maps_the_built_native_proxy_into_the_runtime_package() -> None:
+    """A normal wheel carries the executable selected by the native default."""
+    source = (REPO_ROOT / "hatch_build.py").read_text()
+
+    assert '"proxy" / "target" / "release" / "safeyolo-proxy"' in source
+    assert 'safeyolo/bin/safeyolo-proxy' in source
+
+
+def test_wheel_excludes_the_obsolete_python_policy_package() -> None:
+    """The native wheel does not ship the old policy decision point."""
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+    packages = project["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+
+    assert "pdp" not in packages

@@ -1,13 +1,7 @@
 #!/bin/bash
 # SafeYolo install helper.
 #
-# Wraps `uv tool install --editable .` with security-pin overrides not yet
-# adopted by mitmproxy's dependency metadata (see pyproject `[tool.uv]`).
-# `uv tool install` does not apply that block, so pass the pins on the CLI.
-#
-# Keeps the "scary" overrides line out of the user's shell history and
-# doesn't require `make` (Ubuntu 24.04 cloud image and other minimal
-# distros don't ship it by default; `bash` is universal).
+# Builds and packages the native Rust proxy, then installs the Python CLI.
 #
 # Usage:
 #   ./install.sh           first install
@@ -18,19 +12,30 @@
 
 set -euo pipefail
 
-# Security-pin overrides — MUST stay in sync with pyproject.toml
-# [tool.uv] override-dependencies.
-UV_OVERRIDES=(
-  "h2==4.4.1"
-  "flask>=3.1.3"
-  "pygments>=2.20.0"
-  "cryptography>=50.0.0"
-  "msgpack>=1.2.1"
-  "pyopenssl>=26.0.0"
-  "tornado>=6.5.5"
-)
-
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+build_native_proxy() {
+  if [[ ! -f "$REPO_ROOT/proxy/Cargo.toml" ]]; then
+    echo "install.sh: native proxy source is missing: $REPO_ROOT/proxy/Cargo.toml" >&2
+    return 1
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "install.sh: cargo is required to build safeyolo-proxy" >&2
+    return 1
+  fi
+  echo "install.sh: building the release Rust proxy" >&2
+  if ! (
+    cd "$REPO_ROOT"
+    cargo build --locked --release --manifest-path proxy/Cargo.toml
+  ); then
+    echo "install.sh: Rust proxy build failed; the Python CLI was not installed" >&2
+    return 1
+  fi
+  if [[ ! -x "$REPO_ROOT/proxy/target/release/safeyolo-proxy" ]]; then
+    echo "install.sh: Cargo completed without proxy/target/release/safeyolo-proxy" >&2
+    return 1
+  fi
+}
 
 read_python_requirement() {
   local requirement
@@ -112,16 +117,15 @@ install_tool() {
   local python_interpreter
   local tool_args=(--python)
 
+  build_native_proxy || return 1
   python_requirement="$(read_python_requirement)" || return 1
   python_interpreter="$(select_supported_python "$python_requirement")" || return 1
-  tool_args+=("$python_interpreter" --editable "$REPO_ROOT")
+  tool_args+=("$python_interpreter" "$REPO_ROOT")
 
   if [[ "$action" == "reinstall" ]]; then
     tool_args+=(--reinstall)
   fi
-  # Open the overrides for this command, not during an earlier assignment:
-  # Bash closes a process-substitution descriptor when its command finishes.
-  if ! uv tool install "${tool_args[@]}" --overrides <(printf '%s\n' "${UV_OVERRIDES[@]}"); then
+  if ! uv tool install "${tool_args[@]}"; then
     echo "install.sh: uv tool $action failed with a Python interpreter satisfying $python_requirement" >&2
     echo "install.sh: check uv package-index access and dependency resolution, then retry" >&2
     return 1

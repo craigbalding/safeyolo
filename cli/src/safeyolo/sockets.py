@@ -1,10 +1,9 @@
-"""Per-agent UDS path conventions.
+"""Host-side per-agent UDS path conventions.
 
-Directory `<ip>_<agent>` is the single source of truth for agent
-identity. Every downstream use (hostname, log field, attribution IP)
-derives from this at parse-time — never stored or passed as a parallel
-value. If you find yourself threading `(ip, agent)` through multiple
-layers, re-parse the socket path instead.
+The CLI builds `<ip>_<agent>/proxy.sock` from its agent map and passes
+that path with the agent and source IDs to the native listener. Rust binds
+the path and attaches the configured identity when it accepts a connection.
+The CLI mounts or relays only that agent's socket into its sandbox.
 
 The directory-name layout is unambiguous because SafeYolo agent names are
 validated as RFC 1123 hostnames (lowercase alphanumeric + hyphens,

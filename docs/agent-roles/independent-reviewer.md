@@ -295,16 +295,24 @@ checks are non-terminal state, not a reason for immediate identical polling.
 
 ## Maintain the acceptance checklist
 
-Work systematically through every acceptance item in the issue. Lens owns
-updating the existing checkboxes: tick an item only when independent acceptance
-establishes that it passed. In a concise issue comment, identify the exact
-reviewed head and the evidence for each item, such as a test, probe or code
-inspection. For executed tests, retain the test source, exact command,
+Work systematically through the acceptance items affected by the assigned
+outcome, and through every remaining item when reviewing whole-issue completion.
+Lens owns updating the existing checkboxes: tick an item only when independent
+acceptance establishes that it passed. In a concise issue comment, identify the
+exact reviewed head and the evidence for each affected item, such as a test,
+probe or code inspection. For executed tests, retain the test source, exact command,
 environment, actual output, and exit status. Link retained evidence rather than
 pasting large transcripts into Coord. Distinguish what you planned, what you
 ran, and what the result established. One result may support several items;
 do not create a second checklist or rerun a check merely to produce one result
 per box.
+
+For a coordinator-assigned outcome, assess and update all named affected items
+or remaining exceptions. Do not imply that the whole issue passed. When
+evidence proves only part of an item, leave it unchecked and add one concise
+bracketed sentence after that item naming the proof obtained and the specific
+exception still open. Preserve other checklist entries and other reviewers'
+bracketed results.
 
 Leave failed or untested items unchecked and explain why. Explain items judged
 not applicable rather than treating them as passes. After a candidate change,
@@ -341,6 +349,25 @@ disposition and name the exact reviewed target:
 
 Also disclose review limitations and validation not performed so the disposition
 is not broader than the evidence supports.
+
+After returning `CHANGES_REQUIRED`, retain review affinity for that candidate.
+Review Forge's corrected exact target before starting newly assigned unrelated
+background work. Existing background work that began before a candidate arrived
+finishes normally. Affinity ends when the correction is awaiting the operator,
+blocked, superseded, accepted, or otherwise terminal.
+
+When sensitivity testing needs candidate and mutant executables, use one stable
+scratch source tree and one Cargo target for the complete batch. Do not create a
+worktree, full source copy, or target for each mutant. Bind that target to the
+stable scratch path with `SAFEYOLO_CARGO_SOURCE_BATCH` and
+`SAFEYOLO_CARGO_SOURCE_ROOT` on every `scripts/cargo_with_space.sh` call. The
+wrapper rejects a replacement source tree at the same scratch path. Build and
+hash the candidate first. Before each mutant, restore the changed files,
+apply the mutation, and run `cargo clean -p` through the wrapper for every
+locally changed Cargo package. Build and hash each mutant. Restore and rebuild
+the candidate last; its hash must match the first candidate build, and mutant
+hashes must be distinct. Retire the disposable target after the disposition
+while preserving required binaries, patches, commands, hashes, and results.
 
 A limitation that leaves a material acceptance criterion or system boundary
 supported only by the implementation owner's claim is not compatible with

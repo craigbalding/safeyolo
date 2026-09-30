@@ -1,0 +1,119 @@
+{
+  "source_sample_rows": 13,
+  "rows": [
+    {
+      "name": "empty",
+      "result": {
+        "values": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "ordinary",
+      "result": {
+        "values": [
+          2048,
+          4096
+        ]
+      }
+    },
+    {
+      "name": "missing_peak_ignored_unit",
+      "result": {
+        "values": [
+          2048,
+          2048
+        ]
+      }
+    },
+    {
+      "name": "peak_lower_bound",
+      "result": {
+        "values": [
+          8,
+          8
+        ]
+      }
+    },
+    {
+      "name": "negative",
+      "result": {
+        "values": [
+          -2,
+          -2
+        ]
+      }
+    },
+    {
+      "name": "exact_prefix_repeated",
+      "result": {
+        "values": [
+          4,
+          4
+        ]
+      }
+    },
+    {
+      "name": "value_partial",
+      "result": {
+        "values": [
+          8,
+          8
+        ]
+      }
+    },
+    {
+      "name": "unicode_integer_newlines",
+      "result": {
+        "values": [
+          24,
+          30
+        ]
+      }
+    },
+    {
+      "name": "missing_token",
+      "result": {
+        "exception": "IndexError"
+      }
+    },
+    {
+      "name": "decode_before_lines",
+      "result": {
+        "values": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "name": "decode_after_reached_chunk",
+      "result": {
+        "values": [
+          8,
+          8
+        ]
+      }
+    },
+    {
+      "name": "read_failure_after_partial",
+      "result": {
+        "values": [
+          8,
+          8
+        ]
+      }
+    },
+    {
+      "name": "pending_cr_before_read_failure",
+      "result": {
+        "values": [
+          0,
+          0
+        ]
+      }
+    }
+  ]
+}

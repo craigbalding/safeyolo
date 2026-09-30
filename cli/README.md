@@ -9,10 +9,14 @@ Follow the [main quickstart](../README.md#quick-start) for a first installation.
 The commands in this section run on the host, as your usual user, from the
 SafeYolo checkout root.
 
-`./install.sh` installs the CLI through uv, normally at `~/.local/bin/safeyolo`.
-That directory must be on your shell's `PATH`. The installer reads the project's
-Python requirement, currently `>=3.12,<3.14`, and asks uv to select or acquire a
-matching interpreter. A newer host default does not change that requirement.
+`./install.sh` builds the Rust proxy with Cargo, then installs the CLI and
+that executable through uv, normally at `~/.local/bin/safeyolo`. Install and
+select Rust 1.94.0, as recorded in
+[`proxy/rust-toolchain.toml`](../proxy/rust-toolchain.toml), before running the
+installer. Both `cargo` and uv's tool directory must be on `PATH`. The
+installer reads the project's Python requirement, currently `>=3.12,<3.14`,
+and asks uv to select or acquire a matching interpreter. A newer host default
+does not change that requirement.
 
 For source installs on macOS, you need Command Line Tools, Lima for building
 guest images, and tmux for the host proxy session. Lima can be installed with
@@ -70,11 +74,84 @@ checks Apple Silicon and the Swift helper.
 | Plain text without color or wrapping | `safeyolo doctor --raw` |
 | Machine-readable JSON | `safeyolo doctor --json` |
 
-If `mitmdump` is missing from the installed tool environment, the optional pipx
-fallback installs mitmproxy and injects SafeYolo's addon dependencies:
+If `safeyolo start` reports that the Rust proxy executable is missing, run the
+repository installer again from the same checkout. It builds the native proxy
+and reinstalls the CLI package:
 
 ```sh
-./scripts/install-mitmproxy-pipx.sh
+./install.sh reinstall
+```
+
+### Return to the prior Python package
+
+The explicit rollback target for this cutover is source commit
+`7e934a5470f1aa9b74052fea08c6bae9b5f32e8a`, not a tagged release or a
+prebuilt wheel. Keep a separate checkout of that exact commit: its installer
+uses an editable uv tool installation, and its Python proxy imports `pdp/`
+from the checkout. Its installer resolves dependencies when it runs. The
+[Linux B4 result](https://github.com/craigbalding/safeyolo/pull/828) is
+preparatory; installed macOS return and final-F acceptance are still pending.
+Use the selected checkpoint on
+an instance whose state you intend to reuse; test changes first in a
+disposable instance. The current package cannot run the Python backend.
+
+On the host, from the current release checkout, record its path, fetch the
+selected commit, and prepare the separate prior checkout. Keep both
+checkouts available until you return to Rust:
+
+```sh
+export SAFEYOLO_RUST_CHECKOUT="$PWD"
+git fetch origin 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
+git worktree add --detach ../safeyolo-python-rollback 7e934a5470f1aa9b74052fea08c6bae9b5f32e8a
+```
+
+Stop the Rust proxy with the currently installed CLI. Confirm it has stopped
+before replacing the tool:
+
+```sh
+safeyolo stop
+safeyolo status
+```
+
+Now edit `~/.safeyolo/config.yaml` (or the active
+`$SAFEYOLO_CONFIG_DIR/config.yaml`) so `proxy.backend` is `python`. Preserve
+the policy, vault, certificate authority, HMAC key, and other instance state.
+This state-preserving package swap does not call `safeyolo init` or
+`bootstrap`; both can change instance or host setup. From the same host
+shell, install and start the selected prior checkout:
+
+```sh
+cd ../safeyolo-python-rollback
+./install.sh reinstall
+export SAFEYOLO_PDP_DIR="$PWD/pdp"
+safeyolo start
+safeyolo status
+```
+
+The running process must identify the prior Python package. If startup fails,
+inspect its error and leave the Rust proxy stopped; there is no automatic
+fallback. The prior package has its own security and compatibility limits,
+recorded in [state compatibility](../docs/state-compatibility.md).
+
+To return, stop the prior proxy with its installed CLI and confirm it has
+stopped:
+
+```sh
+safeyolo stop
+safeyolo status
+```
+
+Edit the same `config.yaml` so `proxy.backend` is `rust`. From the saved Rust
+checkout, reinstall the current package. Its installer rebuilds and packages
+the Rust executable. Check readiness and the executable before resuming agents:
+
+```sh
+cd "$SAFEYOLO_RUST_CHECKOUT"
+./install.sh reinstall
+unset SAFEYOLO_PDP_DIR
+safeyolo start
+safeyolo status
+safeyolo doctor
 ```
 
 ## Commands
@@ -86,7 +163,7 @@ fallback installs mitmproxy and injects SafeYolo's addon dependencies:
 | `safeyolo init` | Initialize configuration with interactive wizard |
 | `safeyolo start` | Start the host proxy process |
 | `safeyolo stop` | Stop the host proxy process |
-| `safeyolo status` | Show proxy status, addon stats, and memory usage |
+| `safeyolo status` | Show native proxy readiness, executable, and agents |
 | `safeyolo build` | Build platform-specific guest artifacts from source |
 | `safeyolo check` | Verify setup is working correctly |
 | `safeyolo doctor` | Run diagnostic cascade (config, proxy, addons, sandbox runtime) |
@@ -131,12 +208,19 @@ for the experiment workflow.
 
 #### Start options
 
+Normal startup uses the Rust proxy and its generated instance configuration.
+The old Python backend and source/test start flags are unavailable. Historical
+comparisons run from a pinned prior checkout with their own environment; see
+[the migration contract](../tests/proxy_migration/CONTRACT.md).
+
 ```bash
-safeyolo start              # Normal start
-safeyolo start --dev        # Dev mode: run proxy from local repo checkout
-safeyolo start --test       # Enable sinkhole routing + test certificate authority (CA)
-safeyolo start --no-wait    # Skip waiting for healthy status
+safeyolo start
+safeyolo status
+safeyolo start --no-wait
 ```
+
+`safeyolo status` reports the selected Rust executable and readiness. The
+`--no-wait` option returns after launch without waiting for the health check.
 
 Build guest artifacts separately with `safeyolo build`. Linux uses an unpacked
 rootfs tree. macOS uses a kernel, initramfs, and ext4 rootfs image. See the
@@ -156,34 +240,16 @@ safeyolo doctor             # Report host prerequisites, runtime, agents
 | `safeyolo logs -f` | Follow logs in real-time |
 | `safeyolo logs --event security` | Show structured security events |
 | `safeyolo logs --raw` | Output raw JSONL |
-| `tail -n 50 ~/.local/state/safeyolo/mitmproxy.log` | Show raw mitmproxy/upstream failures (default log path) |
+| `safeyolo logs --tail 50` | Show recent native proxy events and failures |
 
-### WebMITM interface
+### Traffic inspection
 
-WebMITM listens only on host loopback at `127.0.0.1:8081`. For a remote
-SafeYolo host, it can be persistently exposed to the tailnet without opening a
-public listener:
-
-```bash
-safeyolo proxy web share --tailnet          # Fixed HTTPS port 443
-safeyolo proxy web share --tailnet --port 8446
-safeyolo proxy web status
-safeyolo proxy web open
-safeyolo proxy web unshare
-```
-
-The mapping follows the SafeYolo proxy lifecycle and is restored after a
-restart; it has no daily TTL. Port collisions fail without replacing existing
-Tailscale Serve mappings, so per-agent desktop previews can coexist on their
-own ports. Funnel is never enabled. WebMITM still requires the existing host
-admin credential. Enabling, changing, or disabling the mapping on a running
-host is applied live without restarting the proxy or interrupting agents.
-
-Remote WebMITM access is an administrative capability: a logged-in operator
-can inspect and manipulate proxied traffic. Restrict the URL with Tailnet
-ACLs/grants and do not distribute the admin credential. If Tailscale reports
-`serve config denied`, run `sudo tailscale set --operator=$USER` once on the
-host, then retry the SafeYolo command.
+The first Rust proxy release provides the read-only terminal inspector and
+selected exports. WebMITM and its tailnet sharing commands remain registered
+but are unavailable with the native proxy. Run `safeyolo traffic --help` for
+the supported inspection and export commands. The view contains retained
+observations, so streamed or pruned bodies may be unavailable. See
+[inspection, export, and retention limits](../docs/DEVELOPERS.md#live-traffic-inspection).
 
 ### Approval Workflow
 
@@ -488,7 +554,7 @@ project-local `./safeyolo/` directory.
 ├── policy.toml          # Host-centric policy (hosts, credentials, rate limits)
 ├── addons.yaml          # Addon tuning (credential_guard, circuit_breaker, etc.)
 ├── services/            # User service definitions (one YAML per service)
-├── certs/               # mitmproxy CA certificate
+├── certs/               # Retained TLS interception CA certificate and key
 ├── agents/              # Agent metadata, persistent homes, and overlays
 ├── policies/            # Reserved policy-data directory
 ├── share/               # Installed guest artifacts
@@ -578,8 +644,6 @@ When a credential is blocked:
 |----------|-------------|
 | `SAFEYOLO_ADMIN_TOKEN` | Admin API authentication token |
 | `SAFEYOLO_CONFIG_DIR` | Override config directory location |
-| `SAFEYOLO_TUI` | Set to `true` for mitmproxy terminal user interface (TUI) mode (default: headless) |
-| `SAFEYOLO_BLOCK` | Set to `true` to enable blocking for all security addons |
 
 ## License
 

@@ -119,6 +119,7 @@ def deny(event: dict, api: AdminAPI) -> None:
             destination=event.get("host", approval.get("target", "")),
             cred_id=approval.get("key", details.get("fingerprint", "")),
             reason="user_denied",
+            approval_request_id=event.get("request_id"),
         )
         return
 

@@ -1,0 +1,1055 @@
+{
+  "source": {
+    "python": "3.12.14",
+    "codec": "big5",
+    "license": "Python Software Foundation License 2.0",
+    "comparison_sha256": "0988787bca646a157c6b0cf1a1f8d3aeca0605be3273be22c958fab457569833",
+    "compared": 65792,
+    "python_valid": 30222,
+    "backend_differences": 5144,
+    "mapping_corrections": 260
+  },
+  "encoding_rs": "0.8.41",
+  "corrections": [
+    {
+      "bytes": "a145",
+      "codepoint": "U+2022"
+    },
+    {
+      "bytes": "a14e",
+      "codepoint": "U+FF64"
+    },
+    {
+      "bytes": "a1c2",
+      "codepoint": "U+203E"
+    },
+    {
+      "bytes": "a1e3",
+      "codepoint": "U+223C"
+    },
+    {
+      "bytes": "a1f2",
+      "codepoint": "U+2641"
+    },
+    {
+      "bytes": "a1f3",
+      "codepoint": "U+2609"
+    },
+    {
+      "bytes": "a241",
+      "codepoint": "U+FF0F"
+    },
+    {
+      "bytes": "a242",
+      "codepoint": "U+FF3C"
+    },
+    {
+      "bytes": "a244",
+      "codepoint": "U+A5"
+    },
+    {
+      "bytes": "a246",
+      "codepoint": "U+A2"
+    },
+    {
+      "bytes": "a247",
+      "codepoint": "U+A3"
+    },
+    {
+      "bytes": "c6a1",
+      "codepoint": "U+30FE"
+    },
+    {
+      "bytes": "c6a2",
+      "codepoint": "U+309D"
+    },
+    {
+      "bytes": "c6a3",
+      "codepoint": "U+309E"
+    },
+    {
+      "bytes": "c6a4",
+      "codepoint": "U+3005"
+    },
+    {
+      "bytes": "c6a5",
+      "codepoint": "U+3041"
+    },
+    {
+      "bytes": "c6a6",
+      "codepoint": "U+3042"
+    },
+    {
+      "bytes": "c6a7",
+      "codepoint": "U+3043"
+    },
+    {
+      "bytes": "c6a8",
+      "codepoint": "U+3044"
+    },
+    {
+      "bytes": "c6a9",
+      "codepoint": "U+3045"
+    },
+    {
+      "bytes": "c6aa",
+      "codepoint": "U+3046"
+    },
+    {
+      "bytes": "c6ab",
+      "codepoint": "U+3047"
+    },
+    {
+      "bytes": "c6ac",
+      "codepoint": "U+3048"
+    },
+    {
+      "bytes": "c6ad",
+      "codepoint": "U+3049"
+    },
+    {
+      "bytes": "c6ae",
+      "codepoint": "U+304A"
+    },
+    {
+      "bytes": "c6af",
+      "codepoint": "U+304B"
+    },
+    {
+      "bytes": "c6b0",
+      "codepoint": "U+304C"
+    },
+    {
+      "bytes": "c6b1",
+      "codepoint": "U+304D"
+    },
+    {
+      "bytes": "c6b2",
+      "codepoint": "U+304E"
+    },
+    {
+      "bytes": "c6b3",
+      "codepoint": "U+304F"
+    },
+    {
+      "bytes": "c6b4",
+      "codepoint": "U+3050"
+    },
+    {
+      "bytes": "c6b5",
+      "codepoint": "U+3051"
+    },
+    {
+      "bytes": "c6b6",
+      "codepoint": "U+3052"
+    },
+    {
+      "bytes": "c6b7",
+      "codepoint": "U+3053"
+    },
+    {
+      "bytes": "c6b8",
+      "codepoint": "U+3054"
+    },
+    {
+      "bytes": "c6b9",
+      "codepoint": "U+3055"
+    },
+    {
+      "bytes": "c6ba",
+      "codepoint": "U+3056"
+    },
+    {
+      "bytes": "c6bb",
+      "codepoint": "U+3057"
+    },
+    {
+      "bytes": "c6bc",
+      "codepoint": "U+3058"
+    },
+    {
+      "bytes": "c6bd",
+      "codepoint": "U+3059"
+    },
+    {
+      "bytes": "c6be",
+      "codepoint": "U+305A"
+    },
+    {
+      "bytes": "c6bf",
+      "codepoint": "U+305B"
+    },
+    {
+      "bytes": "c6c0",
+      "codepoint": "U+305C"
+    },
+    {
+      "bytes": "c6c1",
+      "codepoint": "U+305D"
+    },
+    {
+      "bytes": "c6c2",
+      "codepoint": "U+305E"
+    },
+    {
+      "bytes": "c6c3",
+      "codepoint": "U+305F"
+    },
+    {
+      "bytes": "c6c4",
+      "codepoint": "U+3060"
+    },
+    {
+      "bytes": "c6c5",
+      "codepoint": "U+3061"
+    },
+    {
+      "bytes": "c6c6",
+      "codepoint": "U+3062"
+    },
+    {
+      "bytes": "c6c7",
+      "codepoint": "U+3063"
+    },
+    {
+      "bytes": "c6c8",
+      "codepoint": "U+3064"
+    },
+    {
+      "bytes": "c6c9",
+      "codepoint": "U+3065"
+    },
+    {
+      "bytes": "c6ca",
+      "codepoint": "U+3066"
+    },
+    {
+      "bytes": "c6cb",
+      "codepoint": "U+3067"
+    },
+    {
+      "bytes": "c6cc",
+      "codepoint": "U+3068"
+    },
+    {
+      "bytes": "c6cd",
+      "codepoint": "U+3069"
+    },
+    {
+      "bytes": "c6ce",
+      "codepoint": "U+306A"
+    },
+    {
+      "bytes": "c6cf",
+      "codepoint": "U+306B"
+    },
+    {
+      "bytes": "c6d0",
+      "codepoint": "U+306C"
+    },
+    {
+      "bytes": "c6d1",
+      "codepoint": "U+306D"
+    },
+    {
+      "bytes": "c6d2",
+      "codepoint": "U+306E"
+    },
+    {
+      "bytes": "c6d3",
+      "codepoint": "U+306F"
+    },
+    {
+      "bytes": "c6d4",
+      "codepoint": "U+3070"
+    },
+    {
+      "bytes": "c6d5",
+      "codepoint": "U+3071"
+    },
+    {
+      "bytes": "c6d6",
+      "codepoint": "U+3072"
+    },
+    {
+      "bytes": "c6d7",
+      "codepoint": "U+3073"
+    },
+    {
+      "bytes": "c6d8",
+      "codepoint": "U+3074"
+    },
+    {
+      "bytes": "c6d9",
+      "codepoint": "U+3075"
+    },
+    {
+      "bytes": "c6da",
+      "codepoint": "U+3076"
+    },
+    {
+      "bytes": "c6db",
+      "codepoint": "U+3077"
+    },
+    {
+      "bytes": "c6dc",
+      "codepoint": "U+3078"
+    },
+    {
+      "bytes": "c6dd",
+      "codepoint": "U+3079"
+    },
+    {
+      "bytes": "c6de",
+      "codepoint": "U+307A"
+    },
+    {
+      "bytes": "c6df",
+      "codepoint": "U+307B"
+    },
+    {
+      "bytes": "c6e0",
+      "codepoint": "U+307C"
+    },
+    {
+      "bytes": "c6e1",
+      "codepoint": "U+307D"
+    },
+    {
+      "bytes": "c6e2",
+      "codepoint": "U+307E"
+    },
+    {
+      "bytes": "c6e3",
+      "codepoint": "U+307F"
+    },
+    {
+      "bytes": "c6e4",
+      "codepoint": "U+3080"
+    },
+    {
+      "bytes": "c6e5",
+      "codepoint": "U+3081"
+    },
+    {
+      "bytes": "c6e6",
+      "codepoint": "U+3082"
+    },
+    {
+      "bytes": "c6e7",
+      "codepoint": "U+3083"
+    },
+    {
+      "bytes": "c6e8",
+      "codepoint": "U+3084"
+    },
+    {
+      "bytes": "c6e9",
+      "codepoint": "U+3085"
+    },
+    {
+      "bytes": "c6ea",
+      "codepoint": "U+3086"
+    },
+    {
+      "bytes": "c6eb",
+      "codepoint": "U+3087"
+    },
+    {
+      "bytes": "c6ec",
+      "codepoint": "U+3088"
+    },
+    {
+      "bytes": "c6ed",
+      "codepoint": "U+3089"
+    },
+    {
+      "bytes": "c6ee",
+      "codepoint": "U+308A"
+    },
+    {
+      "bytes": "c6ef",
+      "codepoint": "U+308B"
+    },
+    {
+      "bytes": "c6f0",
+      "codepoint": "U+308C"
+    },
+    {
+      "bytes": "c6f1",
+      "codepoint": "U+308D"
+    },
+    {
+      "bytes": "c6f2",
+      "codepoint": "U+308E"
+    },
+    {
+      "bytes": "c6f3",
+      "codepoint": "U+308F"
+    },
+    {
+      "bytes": "c6f4",
+      "codepoint": "U+3090"
+    },
+    {
+      "bytes": "c6f5",
+      "codepoint": "U+3091"
+    },
+    {
+      "bytes": "c6f6",
+      "codepoint": "U+3092"
+    },
+    {
+      "bytes": "c6f7",
+      "codepoint": "U+3093"
+    },
+    {
+      "bytes": "c6f8",
+      "codepoint": "U+30A1"
+    },
+    {
+      "bytes": "c6f9",
+      "codepoint": "U+30A2"
+    },
+    {
+      "bytes": "c6fa",
+      "codepoint": "U+30A3"
+    },
+    {
+      "bytes": "c6fb",
+      "codepoint": "U+30A4"
+    },
+    {
+      "bytes": "c6fc",
+      "codepoint": "U+30A5"
+    },
+    {
+      "bytes": "c6fd",
+      "codepoint": "U+30A6"
+    },
+    {
+      "bytes": "c6fe",
+      "codepoint": "U+30A7"
+    },
+    {
+      "bytes": "c740",
+      "codepoint": "U+30A8"
+    },
+    {
+      "bytes": "c741",
+      "codepoint": "U+30A9"
+    },
+    {
+      "bytes": "c742",
+      "codepoint": "U+30AA"
+    },
+    {
+      "bytes": "c743",
+      "codepoint": "U+30AB"
+    },
+    {
+      "bytes": "c744",
+      "codepoint": "U+30AC"
+    },
+    {
+      "bytes": "c745",
+      "codepoint": "U+30AD"
+    },
+    {
+      "bytes": "c746",
+      "codepoint": "U+30AE"
+    },
+    {
+      "bytes": "c747",
+      "codepoint": "U+30AF"
+    },
+    {
+      "bytes": "c748",
+      "codepoint": "U+30B0"
+    },
+    {
+      "bytes": "c749",
+      "codepoint": "U+30B1"
+    },
+    {
+      "bytes": "c74a",
+      "codepoint": "U+30B2"
+    },
+    {
+      "bytes": "c74b",
+      "codepoint": "U+30B3"
+    },
+    {
+      "bytes": "c74c",
+      "codepoint": "U+30B4"
+    },
+    {
+      "bytes": "c74d",
+      "codepoint": "U+30B5"
+    },
+    {
+      "bytes": "c74e",
+      "codepoint": "U+30B6"
+    },
+    {
+      "bytes": "c74f",
+      "codepoint": "U+30B7"
+    },
+    {
+      "bytes": "c750",
+      "codepoint": "U+30B8"
+    },
+    {
+      "bytes": "c751",
+      "codepoint": "U+30B9"
+    },
+    {
+      "bytes": "c752",
+      "codepoint": "U+30BA"
+    },
+    {
+      "bytes": "c753",
+      "codepoint": "U+30BB"
+    },
+    {
+      "bytes": "c754",
+      "codepoint": "U+30BC"
+    },
+    {
+      "bytes": "c755",
+      "codepoint": "U+30BD"
+    },
+    {
+      "bytes": "c756",
+      "codepoint": "U+30BE"
+    },
+    {
+      "bytes": "c757",
+      "codepoint": "U+30BF"
+    },
+    {
+      "bytes": "c758",
+      "codepoint": "U+30C0"
+    },
+    {
+      "bytes": "c759",
+      "codepoint": "U+30C1"
+    },
+    {
+      "bytes": "c75a",
+      "codepoint": "U+30C2"
+    },
+    {
+      "bytes": "c75b",
+      "codepoint": "U+30C3"
+    },
+    {
+      "bytes": "c75c",
+      "codepoint": "U+30C4"
+    },
+    {
+      "bytes": "c75d",
+      "codepoint": "U+30C5"
+    },
+    {
+      "bytes": "c75e",
+      "codepoint": "U+30C6"
+    },
+    {
+      "bytes": "c75f",
+      "codepoint": "U+30C7"
+    },
+    {
+      "bytes": "c760",
+      "codepoint": "U+30C8"
+    },
+    {
+      "bytes": "c761",
+      "codepoint": "U+30C9"
+    },
+    {
+      "bytes": "c762",
+      "codepoint": "U+30CA"
+    },
+    {
+      "bytes": "c763",
+      "codepoint": "U+30CB"
+    },
+    {
+      "bytes": "c764",
+      "codepoint": "U+30CC"
+    },
+    {
+      "bytes": "c765",
+      "codepoint": "U+30CD"
+    },
+    {
+      "bytes": "c766",
+      "codepoint": "U+30CE"
+    },
+    {
+      "bytes": "c767",
+      "codepoint": "U+30CF"
+    },
+    {
+      "bytes": "c768",
+      "codepoint": "U+30D0"
+    },
+    {
+      "bytes": "c769",
+      "codepoint": "U+30D1"
+    },
+    {
+      "bytes": "c76a",
+      "codepoint": "U+30D2"
+    },
+    {
+      "bytes": "c76b",
+      "codepoint": "U+30D3"
+    },
+    {
+      "bytes": "c76c",
+      "codepoint": "U+30D4"
+    },
+    {
+      "bytes": "c76d",
+      "codepoint": "U+30D5"
+    },
+    {
+      "bytes": "c76e",
+      "codepoint": "U+30D6"
+    },
+    {
+      "bytes": "c76f",
+      "codepoint": "U+30D7"
+    },
+    {
+      "bytes": "c770",
+      "codepoint": "U+30D8"
+    },
+    {
+      "bytes": "c771",
+      "codepoint": "U+30D9"
+    },
+    {
+      "bytes": "c772",
+      "codepoint": "U+30DA"
+    },
+    {
+      "bytes": "c773",
+      "codepoint": "U+30DB"
+    },
+    {
+      "bytes": "c774",
+      "codepoint": "U+30DC"
+    },
+    {
+      "bytes": "c775",
+      "codepoint": "U+30DD"
+    },
+    {
+      "bytes": "c776",
+      "codepoint": "U+30DE"
+    },
+    {
+      "bytes": "c777",
+      "codepoint": "U+30DF"
+    },
+    {
+      "bytes": "c778",
+      "codepoint": "U+30E0"
+    },
+    {
+      "bytes": "c779",
+      "codepoint": "U+30E1"
+    },
+    {
+      "bytes": "c77a",
+      "codepoint": "U+30E2"
+    },
+    {
+      "bytes": "c77b",
+      "codepoint": "U+30E3"
+    },
+    {
+      "bytes": "c77c",
+      "codepoint": "U+30E4"
+    },
+    {
+      "bytes": "c77d",
+      "codepoint": "U+30E5"
+    },
+    {
+      "bytes": "c77e",
+      "codepoint": "U+30E6"
+    },
+    {
+      "bytes": "c7a1",
+      "codepoint": "U+30E7"
+    },
+    {
+      "bytes": "c7a2",
+      "codepoint": "U+30E8"
+    },
+    {
+      "bytes": "c7a3",
+      "codepoint": "U+30E9"
+    },
+    {
+      "bytes": "c7a4",
+      "codepoint": "U+30EA"
+    },
+    {
+      "bytes": "c7a5",
+      "codepoint": "U+30EB"
+    },
+    {
+      "bytes": "c7a6",
+      "codepoint": "U+30EC"
+    },
+    {
+      "bytes": "c7a7",
+      "codepoint": "U+30ED"
+    },
+    {
+      "bytes": "c7a8",
+      "codepoint": "U+30EE"
+    },
+    {
+      "bytes": "c7a9",
+      "codepoint": "U+30EF"
+    },
+    {
+      "bytes": "c7aa",
+      "codepoint": "U+30F0"
+    },
+    {
+      "bytes": "c7ab",
+      "codepoint": "U+30F1"
+    },
+    {
+      "bytes": "c7ac",
+      "codepoint": "U+30F2"
+    },
+    {
+      "bytes": "c7ad",
+      "codepoint": "U+30F3"
+    },
+    {
+      "bytes": "c7ae",
+      "codepoint": "U+30F4"
+    },
+    {
+      "bytes": "c7af",
+      "codepoint": "U+30F5"
+    },
+    {
+      "bytes": "c7b0",
+      "codepoint": "U+30F6"
+    },
+    {
+      "bytes": "c7b1",
+      "codepoint": "U+414"
+    },
+    {
+      "bytes": "c7b2",
+      "codepoint": "U+415"
+    },
+    {
+      "bytes": "c7b3",
+      "codepoint": "U+401"
+    },
+    {
+      "bytes": "c7b4",
+      "codepoint": "U+416"
+    },
+    {
+      "bytes": "c7b5",
+      "codepoint": "U+417"
+    },
+    {
+      "bytes": "c7b6",
+      "codepoint": "U+418"
+    },
+    {
+      "bytes": "c7b7",
+      "codepoint": "U+419"
+    },
+    {
+      "bytes": "c7b8",
+      "codepoint": "U+41A"
+    },
+    {
+      "bytes": "c7b9",
+      "codepoint": "U+41B"
+    },
+    {
+      "bytes": "c7ba",
+      "codepoint": "U+41C"
+    },
+    {
+      "bytes": "c7bb",
+      "codepoint": "U+423"
+    },
+    {
+      "bytes": "c7bc",
+      "codepoint": "U+424"
+    },
+    {
+      "bytes": "c7bd",
+      "codepoint": "U+425"
+    },
+    {
+      "bytes": "c7be",
+      "codepoint": "U+426"
+    },
+    {
+      "bytes": "c7bf",
+      "codepoint": "U+427"
+    },
+    {
+      "bytes": "c7c0",
+      "codepoint": "U+428"
+    },
+    {
+      "bytes": "c7c1",
+      "codepoint": "U+429"
+    },
+    {
+      "bytes": "c7c2",
+      "codepoint": "U+42A"
+    },
+    {
+      "bytes": "c7c3",
+      "codepoint": "U+42B"
+    },
+    {
+      "bytes": "c7c4",
+      "codepoint": "U+42C"
+    },
+    {
+      "bytes": "c7c5",
+      "codepoint": "U+42D"
+    },
+    {
+      "bytes": "c7c6",
+      "codepoint": "U+42E"
+    },
+    {
+      "bytes": "c7c7",
+      "codepoint": "U+42F"
+    },
+    {
+      "bytes": "c7c8",
+      "codepoint": "U+430"
+    },
+    {
+      "bytes": "c7c9",
+      "codepoint": "U+431"
+    },
+    {
+      "bytes": "c7ca",
+      "codepoint": "U+432"
+    },
+    {
+      "bytes": "c7cb",
+      "codepoint": "U+433"
+    },
+    {
+      "bytes": "c7cc",
+      "codepoint": "U+434"
+    },
+    {
+      "bytes": "c7cd",
+      "codepoint": "U+435"
+    },
+    {
+      "bytes": "c7ce",
+      "codepoint": "U+451"
+    },
+    {
+      "bytes": "c7cf",
+      "codepoint": "U+436"
+    },
+    {
+      "bytes": "c7d0",
+      "codepoint": "U+437"
+    },
+    {
+      "bytes": "c7d1",
+      "codepoint": "U+438"
+    },
+    {
+      "bytes": "c7d2",
+      "codepoint": "U+439"
+    },
+    {
+      "bytes": "c7d3",
+      "codepoint": "U+43A"
+    },
+    {
+      "bytes": "c7d4",
+      "codepoint": "U+43B"
+    },
+    {
+      "bytes": "c7d5",
+      "codepoint": "U+43C"
+    },
+    {
+      "bytes": "c7d6",
+      "codepoint": "U+43D"
+    },
+    {
+      "bytes": "c7d7",
+      "codepoint": "U+43E"
+    },
+    {
+      "bytes": "c7d8",
+      "codepoint": "U+43F"
+    },
+    {
+      "bytes": "c7d9",
+      "codepoint": "U+440"
+    },
+    {
+      "bytes": "c7da",
+      "codepoint": "U+441"
+    },
+    {
+      "bytes": "c7db",
+      "codepoint": "U+442"
+    },
+    {
+      "bytes": "c7dc",
+      "codepoint": "U+443"
+    },
+    {
+      "bytes": "c7dd",
+      "codepoint": "U+444"
+    },
+    {
+      "bytes": "c7de",
+      "codepoint": "U+445"
+    },
+    {
+      "bytes": "c7df",
+      "codepoint": "U+446"
+    },
+    {
+      "bytes": "c7e0",
+      "codepoint": "U+447"
+    },
+    {
+      "bytes": "c7e1",
+      "codepoint": "U+448"
+    },
+    {
+      "bytes": "c7e2",
+      "codepoint": "U+449"
+    },
+    {
+      "bytes": "c7e3",
+      "codepoint": "U+44A"
+    },
+    {
+      "bytes": "c7e4",
+      "codepoint": "U+44B"
+    },
+    {
+      "bytes": "c7e5",
+      "codepoint": "U+44C"
+    },
+    {
+      "bytes": "c7e6",
+      "codepoint": "U+44D"
+    },
+    {
+      "bytes": "c7e7",
+      "codepoint": "U+44E"
+    },
+    {
+      "bytes": "c7e8",
+      "codepoint": "U+44F"
+    },
+    {
+      "bytes": "c7e9",
+      "codepoint": "U+2460"
+    },
+    {
+      "bytes": "c7ea",
+      "codepoint": "U+2461"
+    },
+    {
+      "bytes": "c7eb",
+      "codepoint": "U+2462"
+    },
+    {
+      "bytes": "c7ec",
+      "codepoint": "U+2463"
+    },
+    {
+      "bytes": "c7ed",
+      "codepoint": "U+2464"
+    },
+    {
+      "bytes": "c7ee",
+      "codepoint": "U+2465"
+    },
+    {
+      "bytes": "c7ef",
+      "codepoint": "U+2466"
+    },
+    {
+      "bytes": "c7f0",
+      "codepoint": "U+2467"
+    },
+    {
+      "bytes": "c7f1",
+      "codepoint": "U+2468"
+    },
+    {
+      "bytes": "c7f2",
+      "codepoint": "U+2469"
+    },
+    {
+      "bytes": "c7f3",
+      "codepoint": "U+2474"
+    },
+    {
+      "bytes": "c7f4",
+      "codepoint": "U+2475"
+    },
+    {
+      "bytes": "c7f5",
+      "codepoint": "U+2476"
+    },
+    {
+      "bytes": "c7f6",
+      "codepoint": "U+2477"
+    },
+    {
+      "bytes": "c7f7",
+      "codepoint": "U+2478"
+    },
+    {
+      "bytes": "c7f8",
+      "codepoint": "U+2479"
+    },
+    {
+      "bytes": "c7f9",
+      "codepoint": "U+247A"
+    },
+    {
+      "bytes": "c7fa",
+      "codepoint": "U+247B"
+    },
+    {
+      "bytes": "c7fb",
+      "codepoint": "U+247C"
+    },
+    {
+      "bytes": "c7fc",
+      "codepoint": "U+247D"
+    }
+  ]
+}

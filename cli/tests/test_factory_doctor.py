@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -632,7 +633,7 @@ def test_factory_doctor_accepts_the_mise_npm_codex_shim_tree(cli_runner, factory
     command = (
         f"{supervisor} 1 {supervisor} /home/agent/.safeyolo/venv/bin/python "
         "/home/agent/.safeyolo/codex-coord-supervisor.py --\n"
-        f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js exec resume thread\n"
+        f"{codex} {supervisor} {codex} node /home/agent/.mise/installs/npm-openai-codex/0.152.0/node_modules/@openai/codex/bin/codex.js --dangerously-bypass-approvals-and-sandbox -c model=x exec resume thread\n"
         f"{mcp} {codex} {codex} /home/agent/.safeyolo/venv/bin/python /home/agent/.safeyolo/safeyolo-coord-mcp.py\n"
     )
     executables = {
@@ -936,6 +937,71 @@ def test_factory_doctor_rejects_noop_staged_command_and_artifacts(cli_runner, fa
     assert result.exit_code == 1
     assert "FAIL component=staging role=owner agent=forge" in result.output
     assert "staged command does not match" in result.output
+
+
+def test_factory_doctor_accepts_boot_observation_wrapper_for_owned_payload(cli_runner, factory_runtime):
+    home = factory_runtime["homes"]["forge"]
+    command = home / ".safeyolo-command"
+    payload = home / ".safeyolo-command.payload"
+    command.replace(payload)
+    command.write_text(
+        "#!/bin/sh\n"
+        "# SafeYolo configured-command observation\n"
+        'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+    )
+    command.chmod(0o755)
+    info = payload.lstat()
+    assert stat.S_ISREG(info.st_mode)
+    share = home.parent / "config-share"
+    share.mkdir()
+    (share / "host-launch-context.json").write_text(
+        json.dumps(
+            {
+                "generation": "test-generation",
+                "command_payloads": {command.name: [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns]},
+                "workspace": str(home),
+                "writable_mounts": [],
+            }
+        )
+        + "\n"
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 0, result.output
+    assert "PASS component=staging role=owner agent=forge" in result.output
+
+
+def test_factory_doctor_rejects_unowned_observation_payload(cli_runner, factory_runtime):
+    home = factory_runtime["homes"]["forge"]
+    command = home / ".safeyolo-command"
+    payload = home / ".safeyolo-command.payload"
+    command.replace(payload)
+    command.write_text(
+        "#!/bin/sh\n"
+        "# SafeYolo configured-command observation\n"
+        'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+    )
+    command.chmod(0o755)
+    share = home.parent / "config-share"
+    share.mkdir()
+    (share / "host-launch-context.json").write_text(
+        json.dumps(
+            {
+                "generation": "test-generation",
+                "command_payloads": {command.name: [0, 0, 0, 0]},
+                "workspace": str(home),
+                "writable_mounts": [],
+            }
+        )
+        + "\n"
+    )
+
+    result = cli_runner.invoke(app, ["factory", "doctor", "backlog"])
+
+    assert result.exit_code == 1
+    assert "FAIL component=staging role=owner agent=forge" in result.output
+    assert "staged files are unreadable (ValueError)" in result.output
 
 
 @pytest.mark.parametrize(

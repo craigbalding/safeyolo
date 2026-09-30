@@ -4,7 +4,7 @@ Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**104 tests across 38 threat categories.**
+**105 tests across 39 threat categories.**
 
 ## Host-side
 
@@ -97,6 +97,18 @@ returns 200 from the same running sandbox.
   - *Consequence if unasserted:* A recreated token or Unix socket must remain reachable from
 the same sandbox. File-binding the old socket inode made every
 reconnect fail even though the host pathname had been recreated.
+
+### `tests/blackbox/host/native/test_installed_native.py`
+
+#### TestInstalledNative — The installed native listener serves real host requests during the guest run.
+
+**Threat:** An isolation pass cannot name a native proxy if its host requests ran
+through a different process or never reached an origin.
+
+- **`test_controlled_origin_and_protected_admin`** — The selected agent reaches an owned origin and cannot proxy to admin.
+  - *Probe:* Send one ordinary request to the controlled sinkhole, then one
+to the protected management listener through the same agent socket.
+  - *Consequence if unasserted:* A response alone cannot show origin delivery or admin containment.
 
 ### `tests/blackbox/host/proxy/test_credential_guard.py`
 
@@ -403,9 +415,9 @@ the mitmdump invocation, a non-root user on the host (or a
 process that escaped the sandbox) can read them and gain full
 admin control. Tokens must be passed via file or env var instead.
 
-- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the mitmdump cmdline.
-  - *Probe:* `pgrep -a -f mitmdump` to get the cmdline string; assert
-the admin and agent token contents are not substrings of it.
+- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the selected proxy cmdline.
+  - *Probe:* Inspect the native receipt's PID or the retained mitmdump
+process command line; assert neither token is a substring.
   - *Consequence if unasserted:* A token in the cmdline is readable by any local user —
 full admin access leaks to anyone with shell on the host.
 
@@ -783,9 +795,10 @@ configuration (whatever isn't explicitly blocked is reachable)
 would let an agent pivot to local-only services assumed safe
 because they're bound to loopback or LAN.
 
-- **`test_admin_api_unreachable`** — SafeYolo admin API ports (9090, 9190) are unreachable.
-  - *Probe:* TCP connect to host:9090 and host:9190 from inside the
-sandbox; assert both fail.
+- **`test_admin_api_unreachable`** — The host admin API listeners are unreachable from the sandbox.
+  - *Probe:* TCP connect to the admin ports named by the harness. The
+default Linux lane checks both production 9090 and test 9190;
+the physical VZ lane checks its assigned live test port.
   - *Consequence if unasserted:* The admin API can change policy modes (block → warn),
 add allowlist entries, or approve credentials. Agent access
 to it would defeat every other control SafeYolo enforces —
@@ -824,9 +837,9 @@ loopback. If one agent could reach another's attribution
 IP, cross-agent lateral movement would be possible — an
 agent compromised by the user's content could pivot to a
 neighbouring agent's workspace.
-- **`test_sinkhole_direct_unreachable`** — Sinkhole ports 18080/18443/19999 unreachable direct from sandbox.
-  - *Probe:* TCP connect to host:18080, :18443, :19999 (sinkhole
-HTTP, HTTPS, control API); assert all fail.
+- **`test_sinkhole_direct_unreachable`** — The live sinkhole HTTP, HTTPS, and control paths are unreachable.
+  - *Probe:* TCP connect to each harness origin and control path. On VZ,
+HTTP and control share one listener; both probes use that port.
   - *Consequence if unasserted:* Sinkhole ports bind 0.0.0.0 during test runs, so they
 ARE listening — unlike the 44444 test. A direct sandbox →
 sinkhole connect succeeding here would mean the isolation

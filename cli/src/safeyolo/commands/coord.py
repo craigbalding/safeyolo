@@ -1521,7 +1521,7 @@ def mcp_config() -> None:
     The MCP server is a standalone one-file adapter shipped at
     `contrib/safeyolo-coord-mcp.py`. It only depends on `mcp` and `httpx` and
     calls the coord Agent API via `http://_safeyolo.proxy.internal`, so the
-    agent sandbox does NOT need SafeYolo (and mitmproxy) installed.
+    agent sandbox does not need the SafeYolo package installed.
 
     Identity is transport-derived: whichever sandbox the MCP server runs in
     is attributed to that agent by the SafeYolo proxy. Same config works for

@@ -24,6 +24,7 @@ upstream-cert-validation test suite):
     18449 Hostname/SAN mismatch   (wrong-san.test)        [MUST fail]
     18450 Self-signed leaf        (self-signed.test)      [MUST fail]
     18451 AIA-only (leaf alone)   (aia-only.test)         [MUST fail]
+    18452 Future leaf             (future-leaf.test)      [MUST fail]
 """
 
 import logging
@@ -53,6 +54,7 @@ SINKHOLE_SELF_SIGNED_PORT = int(
     os.environ.get("SAFEYOLO_SINKHOLE_SELF_SIGNED_PORT", "18450"),
 )
 SINKHOLE_AIA_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_AIA_PORT", "18451"))
+SINKHOLE_FUTURE_PORT = int(os.environ.get("SAFEYOLO_SINKHOLE_FUTURE_PORT", "18452"))
 
 # Only redirect these hostnames — must match sinkhole cert SANs.
 # All other traffic passes through to real upstreams.
@@ -73,6 +75,7 @@ SINKHOLE_HOSTS = {
     "wrong-san.test",
     "self-signed.test",
     "aia-only.test",
+    "future-leaf.test",
 }
 
 # Hostnames that get their HTTPS traffic steered to a non-default sinkhole
@@ -87,6 +90,7 @@ SINKHOLE_HOST_HTTPS_PORTS = {
     "wrong-san.test": SINKHOLE_WRONG_SAN_PORT,
     "self-signed.test": SINKHOLE_SELF_SIGNED_PORT,
     "aia-only.test": SINKHOLE_AIA_PORT,
+    "future-leaf.test": SINKHOLE_FUTURE_PORT,
 }
 
 

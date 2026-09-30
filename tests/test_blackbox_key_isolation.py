@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+# The guest scanner reads this source too, so assemble its fixture marker.
+OPENSSH_KEY_FIXTURE = "-----BEGIN OPENSSH PRIVATE " + "KEY-----\nfixture\n"
+
 
 def _load_key_isolation():
     module_path = (
@@ -35,7 +38,7 @@ def test_private_key_scanner_allows_expected_sshd_host_keys(tmp_path, key_name):
     key_isolation = _load_key_isolation()
     key_path = tmp_path / "etc" / "ssh" / key_name
     key_path.parent.mkdir(parents=True)
-    key_path.write_text("-----BEGIN OPENSSH " + "PRIVATE KEY-----\nfixture\n")
+    key_path.write_text(OPENSSH_KEY_FIXTURE)
 
     assert key_isolation._find_unexpected_private_keys(tmp_path) == []
 
@@ -52,8 +55,16 @@ def test_private_key_scanner_rejects_every_other_path(tmp_path, relative_path):
     key_isolation = _load_key_isolation()
     key_path = tmp_path / relative_path
     key_path.parent.mkdir(parents=True)
-    key_path.write_text("-----BEGIN OPENSSH " + "PRIVATE KEY-----\nfixture\n")
+    key_path.write_text(OPENSSH_KEY_FIXTURE)
 
     assert key_isolation._find_unexpected_private_keys(tmp_path) == [
         f"/{relative_path}"
     ]
+
+
+def test_private_key_scanner_does_not_flag_fixture_source(tmp_path):
+    key_isolation = _load_key_isolation()
+    source_path = tmp_path / Path(__file__).name
+    source_path.write_bytes(Path(__file__).read_bytes())
+
+    assert key_isolation._find_unexpected_private_keys(tmp_path) == []

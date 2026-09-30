@@ -62,7 +62,7 @@ if [ -z "$MITMDUMP" ] || [ ! -x "$MITMDUMP" ]; then
     if [ -x "$HOME_DIR/.local/bin/mitmdump" ]; then
         MITMDUMP="$HOME_DIR/.local/bin/mitmdump"
     else
-        echo "ERROR: mitmdump not installed (run ./scripts/install-mitmproxy-pipx.sh from the repository root)"
+        echo "ERROR: this historical Python test requires mitmdump from the pinned prior package"
         exit 2
     fi
 fi

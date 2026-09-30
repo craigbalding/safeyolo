@@ -1,0 +1,385 @@
+[
+  {
+    "name": "default_case",
+    "scope": {
+      "agent": "alice"
+    },
+    "metadata": [
+      {
+        "agent": "ALICE"
+      },
+      {
+        "agent": "alice"
+      },
+      {
+        "agent": "bob"
+      }
+    ],
+    "stats": {
+      "agent": "alice",
+      "unattributed": false,
+      "test_id": null,
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "~meta \"^agent:\\ alice$\""
+    },
+    "matches": [
+      true,
+      true,
+      false
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "ALICE",
+          "count": 1
+        },
+        {
+          "value": "alice",
+          "count": 1
+        },
+        {
+          "value": "bob",
+          "count": 1
+        }
+      ],
+      "test_id": [],
+      "test_intent": [],
+      "test_role": [],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "unattributed_presence",
+    "scope": {
+      "unattributed": [
+        1
+      ]
+    },
+    "metadata": [
+      {},
+      {
+        "agent": ""
+      },
+      {
+        "agent": null
+      },
+      {
+        "agent": "alice"
+      }
+    ],
+    "stats": {
+      "agent": null,
+      "unattributed": [
+        1
+      ],
+      "test_id": null,
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "!(~meta ^agent:)"
+    },
+    "matches": [
+      true,
+      false,
+      false,
+      false
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "",
+          "count": 1
+        },
+        {
+          "value": "alice",
+          "count": 1
+        }
+      ],
+      "test_id": [],
+      "test_intent": [],
+      "test_role": [],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "multiline_metadata",
+    "scope": {
+      "test_id": "CASE-1"
+    },
+    "metadata": [
+      {
+        "agent": "alice",
+        "note": "first\ntest_id: CASE-1\nlast"
+      },
+      {
+        "test_id": "CASE-1\nother"
+      }
+    ],
+    "stats": {
+      "agent": null,
+      "unattributed": false,
+      "test_id": "CASE-1",
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "~meta \"^test_id:\\ CASE\\-1$\""
+    },
+    "matches": [
+      true,
+      true
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "alice",
+          "count": 1
+        }
+      ],
+      "test_id": [
+        {
+          "value": "CASE-1\nother",
+          "count": 1
+        }
+      ],
+      "test_intent": [],
+      "test_role": [],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "literal_scope",
+    "scope": {
+      "agent": "a.b[0]\" x"
+    },
+    "metadata": [
+      {
+        "agent": "a.b[0]\" x"
+      },
+      {
+        "agent": "aXb0\" x"
+      }
+    ],
+    "stats": {
+      "agent": "a.b[0]\" x",
+      "unattributed": false,
+      "test_id": null,
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "~meta \"^agent:\\ a\\.b\\[0\\]\\\"\\ x$\""
+    },
+    "matches": [
+      false,
+      true
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "a.b[0]\" x",
+          "count": 1
+        },
+        {
+          "value": "aXb0\" x",
+          "count": 1
+        }
+      ],
+      "test_id": [],
+      "test_intent": [],
+      "test_role": [],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "newline_scope",
+    "scope": {
+      "test_id": "a\nb"
+    },
+    "metadata": [
+      {
+        "test_id": "a\nb"
+      },
+      {
+        "test_id": "a\nb\nc"
+      },
+      {
+        "test_id": "a"
+      }
+    ],
+    "error_type": "OptionsError",
+    "error": "Invalid filter expression: '~meta \"^test_id:\\\\ a\\\\\\nb$\"'"
+  },
+  {
+    "name": "empty_unattributed",
+    "scope": {
+      "agent": "alice",
+      "unattributed": []
+    },
+    "metadata": [
+      {
+        "agent": "alice"
+      },
+      {}
+    ],
+    "stats": {
+      "agent": "alice",
+      "unattributed": [],
+      "test_id": null,
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "~meta \"^agent:\\ alice$\""
+    },
+    "matches": [
+      true,
+      false
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "alice",
+          "count": 1
+        }
+      ],
+      "test_id": [],
+      "test_intent": [],
+      "test_role": [],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "numeric_facets",
+    "scope": {},
+    "metadata": [
+      {
+        "agent": "alice",
+        "test_id": true,
+        "test_role": [
+          1,
+          "x"
+        ]
+      },
+      {
+        "agent": "bob",
+        "test_id": 17,
+        "test_intent": {
+          "a": null
+        }
+      }
+    ],
+    "stats": {
+      "agent": null,
+      "unattributed": false,
+      "test_id": null,
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": ""
+    },
+    "matches": [
+      true,
+      true
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "alice",
+          "count": 1
+        },
+        {
+          "value": "bob",
+          "count": 1
+        }
+      ],
+      "test_id": [
+        {
+          "value": "17",
+          "count": 1
+        },
+        {
+          "value": "True",
+          "count": 1
+        }
+      ],
+      "test_intent": [
+        {
+          "value": "{'a': None}",
+          "count": 1
+        }
+      ],
+      "test_role": [
+        {
+          "value": "[1, 'x']",
+          "count": 1
+        }
+      ],
+      "test_expect": []
+    }
+  },
+  {
+    "name": "exact_facet_parent",
+    "scope": {
+      "agent": "alice",
+      "test_id": "case"
+    },
+    "metadata": [
+      {
+        "agent": "ALICE",
+        "test_id": "CASE",
+        "test_role": "caps"
+      },
+      {
+        "agent": "alice",
+        "test_id": "case",
+        "test_role": "exact"
+      }
+    ],
+    "stats": {
+      "agent": "alice",
+      "unattributed": false,
+      "test_id": "case",
+      "intent": null,
+      "role": null,
+      "expect": null,
+      "user_filter": "",
+      "effective_filter": "~meta \"^agent:\\ alice$\" & ~meta \"^test_id:\\ case$\""
+    },
+    "matches": [
+      true,
+      true
+    ],
+    "facets": {
+      "agent": [
+        {
+          "value": "ALICE",
+          "count": 1
+        },
+        {
+          "value": "alice",
+          "count": 1
+        }
+      ],
+      "test_id": [
+        {
+          "value": "case",
+          "count": 1
+        }
+      ],
+      "test_intent": [],
+      "test_role": [
+        {
+          "value": "exact",
+          "count": 1
+        }
+      ],
+      "test_expect": []
+    }
+  }
+]

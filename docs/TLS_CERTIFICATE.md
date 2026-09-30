@@ -15,17 +15,21 @@ For this to work without SSL errors, your client must trust the Certificate Auth
 
 ## The SafeYolo CA
 
-On first run, SafeYolo generates a **unique, local CA** stored in `~/.safeyolo/certs/`:
+On first start, SafeYolo creates a **unique, local CA** in
+`~/.safeyolo/certs/` if one does not exist. The Rust proxy reuses the existing
+CA. The filenames retain their historical names so installed agents keep the
+same trust root:
 
 ```
 ~/.safeyolo/certs/
 ├── mitmproxy-ca-cert.pem    # Public certificate
-├── mitmproxy-ca-cert.cer    # Same cert in DER format
-├── mitmproxy-ca.pem         # Private key (NEVER share this)
-└── mitmproxy-ca.p12         # PKCS12 bundle
+└── mitmproxy-ca.pem         # Private key plus CA certificate (NEVER share this)
 ```
 
-This CA is unique to your installation. Only someone with access to the private key could abuse it.
+Older installations may also retain `mitmproxy-ca-cert.cer` and
+`mitmproxy-ca.p12`. A fresh Rust start does not create those files. The CA is
+unique to your installation. Only someone with access to the private key could
+abuse it.
 
 ## Per-Process CA Trust (Recommended)
 
@@ -159,13 +163,7 @@ safeyolo cert show
 
 Shows certificate location, fingerprint, and file size.
 
-## Reference
+## Implementation reference
 
-This is the same approach used by:
-- mitmproxy (SafeYolo is built on this)
-- Fiddler
-- Charles Proxy
-- OWASP ZAP
-
-For deeper technical details, see mitmproxy's documentation:
-https://docs.mitmproxy.org/stable/concepts-certificates/
+The CLI [prepares the signing CA](../cli/src/safeyolo/rust_proxy.py). The Rust
+proxy [loads that CA and issues leaf certificates](../proxy/src/tls.rs).

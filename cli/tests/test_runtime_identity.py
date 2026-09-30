@@ -24,11 +24,31 @@ from safeyolo.runtime_identity import (
     fingerprint_source_roots,
     get_runtime_identity,
     initialize_runtime_identity,
+    process_start_token,
 )
 
 pytestmark = pytest.mark.assurance_boundary
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS process identity boundary")
+def test_macos_start_token_identifies_an_owned_child_without_ps(monkeypatch):
+    def ps_unavailable(*args, **kwargs):
+        pytest.fail("macOS process identity required ps")
+
+    child = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(5)"])
+    try:
+        monkeypatch.setattr(subprocess, "run", ps_unavailable)
+        own_token = process_start_token(os.getpid())
+        child_token = process_start_token(child.pid)
+        assert own_token.startswith(f"darwin:{os.getpid()}:")
+        assert child_token.startswith(f"darwin:{child.pid}:")
+        assert process_start_token(child.pid) == child_token
+        assert own_token != child_token
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
 
 
 def _source_roots(tmp_path: Path) -> dict[str, Path]:
@@ -285,27 +305,22 @@ def test_real_subprocess_restart_converges_to_changed_source(tmp_path):
 def test_safe_path_subprocess_imports_the_recorded_roots_not_launch_cwd(tmp_path):
     shadow = tmp_path / "shadow"
     (shadow / "safeyolo").mkdir(parents=True)
-    (shadow / "pdp").mkdir()
     (shadow / "safeyolo" / "__init__.py").write_text("SHADOW = True\n")
-    (shadow / "pdp" / "__init__.py").write_text("SHADOW = True\n")
 
     safeyolo_root = REPO_ROOT / "cli" / "src" / "safeyolo"
-    pdp_root = REPO_ROOT / "pdp"
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(safeyolo_root.parent), str(pdp_root.parent)]
-    )
+    environment["PYTHONPATH"] = str(safeyolo_root.parent)
     environment["SAFEYOLO_DEV_MODE"] = "1"
     environment["SAFEYOLO_DEV_SOURCE_ROOTS"] = json.dumps(
-        {"safeyolo": str(safeyolo_root), "pdp": str(pdp_root)}
+        {"safeyolo": str(safeyolo_root)}
     )
     script = (
-        "import json, pathlib, pdp, safeyolo; "
+        "import json, safeyolo; "
         "from safeyolo.runtime_identity import "
         "initialize_runtime_identity_from_environment as init; "
         "identity = init(); "
         "print(json.dumps({'safeyolo': safeyolo.__file__, "
-        "'pdp': pdp.__file__, 'roots': identity.source.roots}))"
+        "'roots': identity.source.roots}))"
     )
 
     result = subprocess.run(
@@ -321,9 +336,7 @@ def test_safe_path_subprocess_imports_the_recorded_roots_not_launch_cwd(tmp_path
     assert Path(imported["safeyolo"]).resolve().is_relative_to(
         Path(imported["roots"]["safeyolo"])
     )
-    assert Path(imported["pdp"]).resolve().is_relative_to(
-        Path(imported["roots"]["pdp"])
-    )
+    assert set(imported["roots"]) == {"safeyolo"}
 
 
 def test_isolated_wheel_carries_stamped_identity_without_git(tmp_path):

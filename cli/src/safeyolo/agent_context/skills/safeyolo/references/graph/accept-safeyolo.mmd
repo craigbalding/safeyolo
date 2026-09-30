@@ -26,8 +26,7 @@ flowchart TD
     sym.accept_dependency_security(["The exact locked Python runtime dependency closure needs vulnerability review"])
     ev.accept_select_boundary["Choose one material affected, stale, failed, or currently unproven boundary"]
     ev.accept_python_lane["Use focused pytest, pytest-cov, and Hypothesis for Python behavior"]
-    ev.accept_policy_chaos_lane["Use the Hypothesis-backed policy transaction chaos runner"]
-    ev.accept_proxy_lane["Use real mitmproxy, per-agent UDS, sinkhole, curl/TLS, and host pytest through the proxy blackbox lane"]
+    ev.accept_proxy_lane["Use the installed Rust proxy, per-agent UDS, sinkhole, curl/TLS, and host pytest through the proxy blackbox lane"]
     ev.accept_runsc_lane["Use real runsc/gVisor with systrap or KVM through the full isolation blackbox lane"]
     ev.accept_vz_lane["Use safeyolo-vm on physical Apple Silicon for VZ isolation and snapshot acceptance"]
     ev.accept_coord_lane["Use the focused real-NATS Coord retention and two-revision upgrade acceptance"]
@@ -60,8 +59,8 @@ flowchart TD
     sym.accept_candidate -->|"next_check: identify the candidate's material claims and affected boundaries"| ev.accept_select_boundary
     sym.accept_background -->|"next_check: choose one recent, stale, failed, or unproven useful boundary"| ev.accept_select_boundary
     ev.accept_select_boundary -->|"next_check: a focused Python behavior or regression is material"| ev.accept_python_lane
-    ev.accept_select_boundary -->|"next_check: generated policy sequences, concurrency, or failure stages are material"| ev.accept_policy_chaos_lane
-    ev.accept_select_boundary -->|"next_check: install, mitmproxy, policy enforcement, credentials, HTTP, or TLS is material"| ev.accept_proxy_lane
+    ev.accept_select_boundary -->|"implies: the claim needs generated native policy sequences; the Python chaos lane was retired at cutover"| cls.accept_coverage_gap
+    ev.accept_select_boundary -->|"next_check: install, native proxy, policy enforcement, credentials, HTTP, or TLS is material"| ev.accept_proxy_lane
     ev.accept_select_boundary -->|"next_check: Linux runsc, systrap, KVM, guest-root, isolation, or lifecycle is material"| ev.accept_runsc_lane
     ev.accept_select_boundary -->|"next_check: Apple VZ, safeyolo-vm, or snapshot behavior is material"| ev.accept_vz_lane
     ev.accept_select_boundary -->|"next_check: Coord retention, JetStream, or schema upgrade is material"| ev.accept_coord_lane
@@ -79,7 +78,7 @@ flowchart TD
     ev.accept_select_boundary -->|"next_check: security, taint, or data-flow analysis is material"| ev.accept_codeql_lane
     sym.accept_install_proxy -->|"next_check: exercise the installed real proxy and sinkhole boundary"| ev.accept_proxy_lane
     sym.accept_python_behavior -->|"next_check: reuse or write a focused pytest or Hypothesis test"| ev.accept_python_lane
-    sym.accept_policy_assurance -->|"next_check: generated transaction sequences or concurrency are material"| ev.accept_policy_chaos_lane
+    sym.accept_policy_assurance -->|"implies: generated native policy sequences or concurrency are material; the old Python chaos tool is retired"| cls.accept_coverage_gap
     sym.accept_policy_assurance -->|"next_check: the claim is actual loaded-proxy enforcement rather than the policy transaction engine"| ev.accept_proxy_lane
     sym.accept_agent_isolation -->|"next_check: the affected production platform is Linux/gVisor"| ev.accept_runsc_lane
     sym.accept_agent_isolation -->|"next_check: the affected production platform is physical Apple Silicon/VZ"| ev.accept_vz_lane
@@ -103,13 +102,12 @@ flowchart TD
     sym.accept_security_analysis -->|"next_check: the risk is in the locked runtime dependency closure"| ev.accept_dependency_audit_lane
     sym.accept_security_analysis -->|"implies: only a platform without a pinned native CodeQL bundle is available"| cls.accept_resource_missing
     sym.accept_state_integrity -->|"next_check: challenge impossible or confused states at Python interfaces"| ev.accept_mypy_lane
-    sym.accept_state_integrity -->|"next_check: state transitions need generated dynamic sequences"| ev.accept_policy_chaos_lane
+    sym.accept_state_integrity -->|"implies: generated native state transitions are needed and no bound tool exercises them"| cls.accept_coverage_gap
     sym.accept_state_integrity -->|"next_check: a focused state-transition regression can be exercised directly"| ev.accept_python_lane
     sym.accept_race_risk -->|"next_check: bounded repeated or multi-process stress can expose the suspected coupling"| ev.accept_concurrency_stress_lane
-    sym.accept_race_risk -->|"next_check: policy transaction interleavings or crash stages are material"| ev.accept_policy_chaos_lane
+    sym.accept_race_risk -->|"implies: native policy transaction interleavings or crash stages need a new probe"| cls.accept_coverage_gap
     sym.accept_dependency_security -->|"next_check: audit the exact locked product runtime closure"| ev.accept_dependency_audit_lane
     ev.accept_python_lane -->|"next_check: focused tests complete or fail"| ev.accept_classify_result
-    ev.accept_policy_chaos_lane -->|"next_check: the chaos report completes or records a finding/infrastructure error"| ev.accept_classify_result
     ev.accept_proxy_lane -->|"next_check: the real proxy lane completes or fails"| ev.accept_classify_result
     ev.accept_runsc_lane -->|"next_check: the asserted runsc platform lane completes or fails"| ev.accept_classify_result
     ev.accept_vz_lane -->|"next_check: the physical VZ probe completes or fails"| ev.accept_classify_result
@@ -160,7 +158,6 @@ flowchart TD
     class sym.accept_dependency_security symptom
     class ev.accept_select_boundary evidence
     class ev.accept_python_lane evidence
-    class ev.accept_policy_chaos_lane evidence
     class ev.accept_proxy_lane evidence
     class ev.accept_runsc_lane evidence
     class ev.accept_vz_lane evidence

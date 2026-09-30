@@ -1,0 +1,1515 @@
+{
+  "rows": [
+    {
+      "case": "initial_omitted_empty",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "raw": {
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 99
+                }
+              }
+            }
+          },
+          "error": null,
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "format": "json",
+            "source": null
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:e3b0c44298fc1c14",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "format": "json",
+            "source": "{}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:917ea0d8c9828d33",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 3,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:aefd67b401b4433a",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "ordered_values_nested_ignored_retention",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": 7, \"use_exponential_backoff\": false, \"timeout_seconds\": 11, \"excluded_domains\": [\"custom.invalid\"], \"settings\": {\"failure_threshold\": 99}}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:43b39657d0786e65",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 11,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "custom.invalid",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"settings\": {\"failure_threshold\": 31}, \"excluded_domains\": []}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:cb10158708dd10d4",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 11,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "custom.invalid",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "format": "json",
+            "source": "{}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:917ea0d8c9828d33",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 11,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "custom.invalid",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "same_hash_skips_changed_and_malformed_payload",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "raw": {
+              "policy_hash": "same",
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 7
+                }
+              }
+            }
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "same",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "raw": {
+              "policy_hash": "same",
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 99
+                }
+              }
+            }
+          },
+          "error": null,
+          "changed": false,
+          "last_hash": "same",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "raw": {
+              "policy_hash": "same",
+              "addons": false
+            }
+          },
+          "error": null,
+          "changed": false,
+          "last_hash": "same",
+          "settings": {
+            "failure_threshold": 7,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "partial_failure_retry_and_commit",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "raw": {
+              "policy_hash": "good",
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 2
+                }
+              }
+            }
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "good",
+          "settings": {
+            "failure_threshold": 2,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "raw": {
+              "policy_hash": "next",
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 9,
+                  "success_threshold": 8,
+                  "timeout_seconds": 7,
+                  "half_open_max_requests": 6,
+                  "use_exponential_backoff": [],
+                  "max_timeout_seconds": 5,
+                  "backoff_multiplier": 4,
+                  "jitter_factor": 3,
+                  "streak_decay_seconds": 2,
+                  "excluded_domains": [
+                    "first.invalid",
+                    [],
+                    "never.invalid"
+                  ]
+                }
+              }
+            }
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "good",
+          "settings": {
+            "failure_threshold": 9,
+            "success_threshold": 8,
+            "timeout_seconds": 7,
+            "half_open_max_requests": 6,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 5,
+            "backoff_multiplier": 4,
+            "jitter_factor": 3,
+            "streak_decay_seconds": 2
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "first.invalid",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "raw": {
+              "policy_hash": "next",
+              "addons": {
+                "circuit_breaker": {
+                  "failure_threshold": 10,
+                  "excluded_domains": [
+                    "second.invalid",
+                    {}
+                  ]
+                }
+              }
+            }
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "good",
+          "settings": {
+            "failure_threshold": 10,
+            "success_threshold": 8,
+            "timeout_seconds": 7,
+            "half_open_max_requests": 6,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 5,
+            "backoff_multiplier": 4,
+            "jitter_factor": 3,
+            "streak_decay_seconds": 2
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "first.invalid",
+            "localhost",
+            "second.invalid"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 3,
+          "input": {
+            "raw": {
+              "policy_hash": "next",
+              "addons": {
+                "circuit_breaker": {
+                  "excluded_domains": [
+                    "last.invalid"
+                  ]
+                }
+              }
+            }
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "next",
+          "settings": {
+            "failure_threshold": 10,
+            "success_threshold": 8,
+            "timeout_seconds": 7,
+            "half_open_max_requests": 6,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 5,
+            "backoff_multiplier": 4,
+            "jitter_factor": 3,
+            "streak_decay_seconds": 2
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "first.invalid",
+            "last.invalid",
+            "localhost",
+            "second.invalid"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "nonnumeric_values_load_then_consumption_fails",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": \"bad\", \"success_threshold\": null, \"timeout_seconds\": [], \"half_open_max_requests\": {}, \"use_exponential_backoff\": true, \"max_timeout_seconds\": false, \"backoff_multiplier\": 2, \"jitter_factor\": \"bad\", \"streak_decay_seconds\": -1}}}",
+            "operation": "failure"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:484d44759efb505d",
+          "settings": {
+            "failure_threshold": "bad",
+            "success_threshold": null,
+            "timeout_seconds": [],
+            "half_open_max_requests": {
+              "mapping": []
+            },
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": false,
+            "backoff_multiplier": 2,
+            "jitter_factor": "bad",
+            "streak_decay_seconds": -1
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": null,
+            "error": "TypeError"
+          },
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "date_threshold",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons: {circuit_breaker: {failure_threshold: 2001-02-03, jitter_factor: 0}}\n",
+            "operation": "failure"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:d50ba688ec8e45e0",
+          "settings": {
+            "failure_threshold": {
+              "temporal": "2001-02-03"
+            },
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": null,
+            "error": "TypeError"
+          },
+          "stats_json_error": "TypeError"
+        }
+      ]
+    },
+    {
+      "case": "datetime_timeout",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons: {circuit_breaker: {timeout_seconds: 2001-02-03T04:05:06Z, jitter_factor: 0}}\n",
+            "operation": "timeout0"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:4df811b770250cb9",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": {
+              "temporal": "2001-02-03 04:05:06+00:00"
+            },
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": {
+              "temporal": "2001-02-03 04:05:06+00:00"
+            },
+            "error": null
+          },
+          "stats_json_error": "TypeError"
+        }
+      ]
+    },
+    {
+      "case": "datetime_timeout_consumed",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons: {circuit_breaker: {timeout_seconds: 2001-02-03T04:05:06Z, jitter_factor: 0}}\n",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:4df811b770250cb9",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": {
+              "temporal": "2001-02-03 04:05:06+00:00"
+            },
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": null,
+            "error": "TypeError"
+          },
+          "stats_json_error": "TypeError"
+        }
+      ]
+    },
+    {
+      "case": "temporal_backoff_truth",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons: {circuit_breaker: {use_exponential_backoff: 2001-02-03, jitter_factor: 0}}\n",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:e9da01e31fe345a9",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": 120.0,
+            "error": null
+          },
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "time_timeout",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "toml",
+            "source": "[addons.circuit_breaker]\ntimeout_seconds=04:05:06.123456789\n",
+            "operation": "timeout0"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:89e274acbc4e8580",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": {
+              "temporal": "04:05:06.123456"
+            },
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": {
+              "temporal": "04:05:06.123456"
+            },
+            "error": null
+          },
+          "stats_json_error": "TypeError"
+        }
+      ]
+    },
+    {
+      "case": "authored_lookalike_is_ordinary_object",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": {\"yaml_date\": \"2001-02-03\"}, \"timeout_seconds\": \"2001-02-03\"}}}",
+            "operation": "failure"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:f5293e52dc7c6b88",
+          "settings": {
+            "failure_threshold": {
+              "mapping": [
+                {
+                  "key": "yaml_date",
+                  "value": "2001-02-03"
+                }
+              ]
+            },
+            "success_threshold": 2,
+            "timeout_seconds": "2001-02-03",
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": null,
+            "error": "TypeError"
+          },
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "temporal_descendants_and_keys_retained",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons:\n  circuit_breaker:\n    failure_threshold: {2001-02-03: [2001-02-04], '2001-02-03': 'ordinary'}\n",
+            "operation": "failure"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:5430e333eb82030e",
+          "settings": {
+            "failure_threshold": {
+              "mapping": [
+                {
+                  "key": {
+                    "temporal": "2001-02-03"
+                  },
+                  "value": [
+                    {
+                      "temporal": "2001-02-04"
+                    }
+                  ]
+                },
+                {
+                  "key": "2001-02-03",
+                  "value": "ordinary"
+                }
+              ]
+            },
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": null,
+            "error": "TypeError"
+          },
+          "stats_json_error": "TypeError"
+        }
+      ]
+    },
+    {
+      "case": "string_exclusions_iterate_codepoints",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": \"a\\u00e9\\ud83d\\ude42a\"}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:10d43fac2982beb8",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "a",
+            "localhost",
+            "é",
+            "🙂"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "mapping_exclusions_consume_keys_only",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": {\"map.invalid\": [[], {}], \"other.invalid\": null}}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:24c52e6fb8b09177",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost",
+            "map.invalid",
+            "other.invalid"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "list_hashable_scalars_and_temporal_then_unhashable",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons:\n  circuit_breaker:\n    failure_threshold: 17\n    excluded_domains: [2001-02-03, '2001-02-03', null, false, true, 1, 1.5, 'prefix.invalid', {nested: 2001-02-04}, 'never.invalid']\n"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 17,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "2001-02-03",
+            "_safeyolo.probe.internal",
+            "localhost",
+            "prefix.invalid"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "temporal_mapping_key_is_not_string",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons:\n  circuit_breaker:\n    excluded_domains:\n      2001-02-03: ignored\n      '2001-02-03': [[], {}]\n      2001-02-04: ignored\n"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:00195b89572c2e90",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "2001-02-03",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "temporal_exclusion_scalar_is_not_iterable",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "yaml",
+            "source": "addons: {circuit_breaker: {failure_threshold: 19, excluded_domains: 2001-02-03}}\n"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 19,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "false_exclusions_skip_noniterable_consumption",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": null, \"use_exponential_backoff\": null}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:1e93040629e624dd",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": false, \"use_exponential_backoff\": false}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:ff0a073680c3068d",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": 0, \"use_exponential_backoff\": 0}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:2782d1ef787d98b6",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 3,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": -0.0, \"use_exponential_backoff\": -0.0}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:d11fd641d9791f7f",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 4,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": \"\", \"use_exponential_backoff\": \"\"}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:568ab83c89177321",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 5,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": [], \"use_exponential_backoff\": []}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:227e1b35313e9648",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 6,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"excluded_domains\": {}, \"use_exponential_backoff\": {}}}}"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:cbc0a71e73d821b2",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "true_noniterable_exclusions_fail_after_fields",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": 31, \"excluded_domains\": true}}}"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 31,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": 32, \"excluded_domains\": 1}}}"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 32,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": 33, \"excluded_domains\": -2}}}"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 33,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 3,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"failure_threshold\": 34, \"excluded_domains\": 1.5}}}"
+          },
+          "error": "TypeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 34,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "backoff_truth_follows_container_not_entries",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"use_exponential_backoff\": \"false\", \"jitter_factor\": 0}}}",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:1ea9ef2f81a872ae",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": 120.0,
+            "error": null
+          },
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"use_exponential_backoff\": [false], \"jitter_factor\": 0}}}",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:73f26a964ddf175f",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": 120.0,
+            "error": null
+          },
+          "stats_json_error": null
+        },
+        {
+          "index": 2,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"use_exponential_backoff\": {\"unused\": null}, \"jitter_factor\": 0}}}",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:5d72667a54c49ac6",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": 120.0,
+            "error": null
+          },
+          "stats_json_error": null
+        },
+        {
+          "index": 3,
+          "input": {
+            "format": "json",
+            "source": "{\"addons\": {\"circuit_breaker\": {\"use_exponential_backoff\": 0.0, \"jitter_factor\": 0}}}",
+            "operation": "timeout1"
+          },
+          "error": null,
+          "changed": true,
+          "last_hash": "sha256:a3b383bb948bab1b",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": false,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": {
+            "value": 60,
+            "error": null
+          },
+          "stats_json_error": null
+        }
+      ]
+    },
+    {
+      "case": "raw_structural_checks_are_separate",
+      "steps": [
+        {
+          "index": 0,
+          "input": {
+            "raw": {
+              "policy_hash": "bad",
+              "addons": false
+            },
+            "structural_gap": true
+          },
+          "error": "AttributeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        },
+        {
+          "index": 1,
+          "input": {
+            "raw": {
+              "policy_hash": "bad",
+              "addons": {
+                "circuit_breaker": null
+              }
+            },
+            "structural_gap": true
+          },
+          "error": "AttributeError",
+          "changed": false,
+          "last_hash": "",
+          "settings": {
+            "failure_threshold": 5,
+            "success_threshold": 2,
+            "timeout_seconds": 60,
+            "half_open_max_requests": 3,
+            "use_exponential_backoff": true,
+            "max_timeout_seconds": 3600,
+            "backoff_multiplier": 2.0,
+            "jitter_factor": 0.3,
+            "streak_decay_seconds": 3600
+          },
+          "excluded_strings": [
+            "127.0.0.1",
+            "_safeyolo.probe.internal",
+            "localhost"
+          ],
+          "operation": null,
+          "stats_json_error": null
+        }
+      ]
+    }
+  ],
+  "network_attempts": 0
+}

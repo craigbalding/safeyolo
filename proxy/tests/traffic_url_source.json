@@ -1,0 +1,1280 @@
+[
+  {
+    "name": "destination_fallback",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": null,
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": null,
+    "pretty_url": "http://Destination.INVALID:8123/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "destination.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "empty_host_fallback",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "",
+    "pretty_url": "http://Destination.INVALID:8123/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "destination.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "h1_ignores_authority",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": null,
+      "authority": "ignored.invalid:443",
+      "http2": false
+    },
+    "selected_header": null,
+    "pretty_url": "http://Destination.INVALID:8123/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "destination.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "h2_authority_priority",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "ignored.invalid",
+      "authority": "Authority.INVALID:9000",
+      "http2": true
+    },
+    "selected_header": "Authority.INVALID:9000",
+    "parsed_authority": [
+      "Authority.INVALID",
+      9000
+    ],
+    "pretty_url": "http://Authority.INVALID:9000/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "authority.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "h2_empty_authority_fallback",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID",
+      "authority": "",
+      "http2": true
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "h2_missing_both",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": null,
+      "authority": null,
+      "http2": true
+    },
+    "selected_header": null,
+    "pretty_url": "http://Destination.INVALID:8123/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "destination.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "https_default",
+    "input": {
+      "scheme": "https",
+      "host": "Destination.INVALID",
+      "port": 443,
+      "path": "/",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "https://Host.INVALID/",
+    "result": {
+      "host": "host.invalid",
+      "path": "/"
+    }
+  },
+  {
+    "name": "unknown_scheme",
+    "input": {
+      "scheme": "custom",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/x;y",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "custom://Host.INVALID:443/x;y",
+    "result": {
+      "host": "host.invalid",
+      "path": "/x;y"
+    }
+  },
+  {
+    "name": "ordinary",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:1234",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:1234",
+    "parsed_authority": [
+      "Host.INVALID",
+      1234
+    ],
+    "pretty_url": "http://Host.INVALID:1234/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_zero",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:0",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:0",
+    "parsed_authority": [
+      "Host.INVALID",
+      0
+    ],
+    "pretty_url": "http://Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_unicode",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:\uff18\uff10",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:\uff18\uff10",
+    "parsed_authority": [
+      "Host.INVALID",
+      80
+    ],
+    "pretty_url": "http://Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_overflow",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:65536",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:65536",
+    "parsed_authority": [
+      "Host.INVALID:65536",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID:65536/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_empty",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:",
+    "parsed_authority": [
+      "Host.INVALID:",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID:/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_negative",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:-1",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:-1",
+    "parsed_authority": [
+      "Host.INVALID:-1",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID:-1/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_noninteger",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:bad",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:bad",
+    "parsed_authority": [
+      "Host.INVALID:bad",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID:bad/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipv6_brackets",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[2001:DB8::1]:8080",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[2001:DB8::1]:8080",
+    "parsed_authority": [
+      "2001:DB8::1",
+      8080
+    ],
+    "pretty_url": "http://2001:DB8::1:8080/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "2001",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipv6_unbracketed",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "2001:DB8::1",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "2001:DB8::1",
+    "parsed_authority": [
+      "2001:DB8::1",
+      null
+    ],
+    "pretty_url": "http://2001:DB8::1/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "2001",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipv6_loopback",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[::1]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[::1]",
+    "parsed_authority": [
+      "::1",
+      null
+    ],
+    "pretty_url": "http://::1/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipv6_scope",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[FE80::1%ZoneABC]:80",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[FE80::1%ZoneABC]:80",
+    "parsed_authority": [
+      "FE80::1%ZoneABC",
+      80
+    ],
+    "pretty_url": "http://FE80::1%ZoneABC/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "fe80",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipv6_bad_scope",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[fe80::1%]:80",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[fe80::1%]:80",
+    "parsed_authority": [
+      "[fe80::1%]:80",
+      null
+    ],
+    "pretty_url": "http://[fe80::1%]:80/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "bracket_ipv4",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[127.0.0.1]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[127.0.0.1]",
+    "parsed_authority": [
+      "127.0.0.1",
+      null
+    ],
+    "pretty_url": "http://127.0.0.1/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "127.0.0.1",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "bracket_name",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[owned.invalid]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[owned.invalid]",
+    "parsed_authority": [
+      "owned.invalid",
+      null
+    ],
+    "pretty_url": "http://owned.invalid/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "owned.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipvfuture",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[v1.future]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[v1.future]",
+    "parsed_authority": [
+      "v1.future",
+      null
+    ],
+    "pretty_url": "http://v1.future/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "v1.future",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "ipvfuture_bad",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[vQ.future]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[vQ.future]",
+    "parsed_authority": [
+      "vQ.future",
+      null
+    ],
+    "pretty_url": "http://vQ.future/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "vq.future",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "bracket_open",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[::1",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[::1",
+    "parsed_authority": [
+      "[::1",
+      null
+    ],
+    "pretty_url": "http://[::1/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "bracket_close",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "::1]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "::1]",
+    "parsed_authority": [
+      "::1]",
+      null
+    ],
+    "pretty_url": "http://::1]/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "bracket_prefix",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "before[::1]",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "before[::1]",
+    "parsed_authority": [
+      "before[::1]",
+      null
+    ],
+    "pretty_url": "http://before[::1]/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "bracket_suffix",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "[::1]tail",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "[::1]tail",
+    "parsed_authority": [
+      "[::1]tail",
+      null
+    ],
+    "pretty_url": "http://[::1]tail/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "userinfo",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "user@Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "user@Host.INVALID",
+    "parsed_authority": [
+      "user@Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://user@Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "userinfo_multiple",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "a@b@Host.INVALID:80",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "a@b@Host.INVALID:80",
+    "parsed_authority": [
+      "a@b@Host.INVALID:80",
+      null
+    ],
+    "pretty_url": "http://a@b@Host.INVALID:80/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "slash_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "left.invalid/injected",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "left.invalid/injected",
+    "parsed_authority": [
+      "left.invalid/injected",
+      null
+    ],
+    "pretty_url": "http://left.invalid/injected/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "left.invalid",
+      "path": "/injected/a;b/c"
+    }
+  },
+  {
+    "name": "query_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "left.invalid?injected",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "left.invalid?injected",
+    "parsed_authority": [
+      "left.invalid?injected",
+      null
+    ],
+    "pretty_url": "http://left.invalid?injected/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "left.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "fragment_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "left.invalid#injected",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "left.invalid#injected",
+    "parsed_authority": [
+      "left.invalid#injected",
+      null
+    ],
+    "pretty_url": "http://left.invalid#injected/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "left.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "space_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": " Host.INVALID ",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": " Host.INVALID ",
+    "parsed_authority": [
+      " Host.INVALID ",
+      null
+    ],
+    "pretty_url": "http:// Host.INVALID /a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": " host.invalid ",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "tab_crlf_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Ho\tst.IN\rVAL\nID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Ho\tst.IN\rVAL\nID",
+    "parsed_authority": [
+      "Ho\tst.IN\rVAL\nID",
+      null
+    ],
+    "pretty_url": "http://Ho\tst.IN\rVAL\nID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "port_terminal_lf",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "Host.INVALID:80\n",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID:80\n",
+    "parsed_authority": [
+      "Host.INVALID",
+      80
+    ],
+    "pretty_url": "http://Host.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "unicode_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "B\u00dcCHER.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "B\u00dcCHER.INVALID",
+    "parsed_authority": [
+      "B\u00dcCHER.INVALID",
+      null
+    ],
+    "pretty_url": "http://B\u00dcCHER.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "b\u00fccher.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "unicode_sigma",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "\u039f\u03a3.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "\u039f\u03a3.INVALID",
+    "parsed_authority": [
+      "\u039f\u03a3.INVALID",
+      null
+    ],
+    "pretty_url": "http://\u039f\u03a3.INVALID/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "\u03bf\u03c3.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "percent_zone",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "HOST%ZoneABC",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "HOST%ZoneABC",
+    "parsed_authority": [
+      "HOST%ZoneABC",
+      null
+    ],
+    "pretty_url": "http://HOST%ZoneABC/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "host%ZoneABC",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "nfkc_slash",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "owned\uff0finvalid",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "owned\uff0finvalid",
+    "parsed_authority": [
+      "owned\uff0finvalid",
+      null
+    ],
+    "pretty_url": "http://owned\uff0finvalid/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "nfkc_colon",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "owned\uff1a80",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "owned\uff1a80",
+    "parsed_authority": [
+      "owned\uff1a80",
+      null
+    ],
+    "pretty_url": "http://owned\uff1a80/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "nfkc_at",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "owned\uff20invalid",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "owned\uff20invalid",
+    "parsed_authority": [
+      "owned\uff20invalid",
+      null
+    ],
+    "pretty_url": "http://owned\uff20invalid/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "nfkc_account",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "\u2100.invalid",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "\u2100.invalid",
+    "parsed_authority": [
+      "\u2100.invalid",
+      null
+    ],
+    "pretty_url": "http://\u2100.invalid/a;b/c;d?query=yes#fragment",
+    "error": "Parse"
+  },
+  {
+    "name": "nfkc_benign",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "\uff23\uff21\uff26\u00c9.invalid",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "\uff23\uff21\uff26\u00c9.invalid",
+    "parsed_authority": [
+      "\uff23\uff21\uff26\u00c9.invalid",
+      null
+    ],
+    "pretty_url": "http://\uff23\uff21\uff26\u00c9.invalid/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "\uff43\uff41\uff46\u00e9.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "duplicate_joined_host",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "one.invalid, two.invalid",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "one.invalid, two.invalid",
+    "parsed_authority": [
+      "one.invalid, two.invalid",
+      null
+    ],
+    "pretty_url": "http://one.invalid, two.invalid/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "one.invalid, two.invalid",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "star",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "*",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID",
+    "result": {
+      "host": "host.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "empty_path",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID",
+    "result": {
+      "host": "host.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "relative_path",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "relative;x",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALIDrelative;x",
+    "result": {
+      "host": "host.invalidrelative;x",
+      "path": ""
+    }
+  },
+  {
+    "name": "semicolon_last",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/one;p/two;q;rest",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/one;p/two;q;rest",
+    "result": {
+      "host": "host.invalid",
+      "path": "/one;p/two"
+    }
+  },
+  {
+    "name": "semicolon_earlier",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/one;p/two",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/one;p/two",
+    "result": {
+      "host": "host.invalid",
+      "path": "/one;p/two"
+    }
+  },
+  {
+    "name": "query_first",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "?q=/x;y#frag",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID?q=/x;y#frag",
+    "result": {
+      "host": "host.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "fragment_first",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "#frag?query",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID#frag?query",
+    "result": {
+      "host": "host.invalid",
+      "path": ""
+    }
+  },
+  {
+    "name": "unsafe_path",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a\tb\rc\nd;param?x=y",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/a\tb\rc\nd;param?x=y",
+    "result": {
+      "host": "host.invalid",
+      "path": "/abcd"
+    }
+  },
+  {
+    "name": "no_percent_decode",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/%3B/%2F;drop",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/%3B/%2F;drop",
+    "result": {
+      "host": "host.invalid",
+      "path": "/%3B/%2F"
+    }
+  },
+  {
+    "name": "unicode_path",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/\u00e9/\u4e2d\u6587;drop",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/\u00e9/\u4e2d\u6587;drop",
+    "result": {
+      "host": "host.invalid",
+      "path": "/\u00e9/\u4e2d\u6587"
+    }
+  },
+  {
+    "name": "trailing_space",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/path ",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/path ",
+    "result": {
+      "host": "host.invalid",
+      "path": "/path "
+    }
+  },
+  {
+    "name": "control_path",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a\u0000b\u001fc",
+      "host_header": "Host.INVALID",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "Host.INVALID",
+    "parsed_authority": [
+      "Host.INVALID",
+      null
+    ],
+    "pretty_url": "http://Host.INVALID/a\u0000b\u001fc",
+    "result": {
+      "host": "host.invalid",
+      "path": "/a\u0000b\u001fc"
+    }
+  },
+  {
+    "name": "unicode_final_sigma",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "\u039f\u03a3",
+      "authority": null,
+      "http2": false
+    },
+    "selected_header": "\u039f\u03a3",
+    "parsed_authority": [
+      "\u039f\u03a3",
+      null
+    ],
+    "pretty_url": "http://\u039f\u03a3/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "\u03bf\u03c2",
+      "path": "/a;b/c"
+    }
+  },
+  {
+    "name": "unicode_version_gap",
+    "input": {
+      "scheme": "http",
+      "host": "Destination.INVALID",
+      "port": 8123,
+      "path": "/a;b/c;d?query=yes#fragment",
+      "host_header": "\ua7cb.invalid",
+      "authority": null,
+      "http2": false
+    },
+    "native_gap": "Compatibility",
+    "selected_header": "\ua7cb.invalid",
+    "parsed_authority": [
+      "\ua7cb.invalid",
+      null
+    ],
+    "pretty_url": "http://\ua7cb.invalid/a;b/c;d?query=yes#fragment",
+    "result": {
+      "host": "\ua7cb.invalid",
+      "path": "/a;b/c"
+    }
+  }
+]

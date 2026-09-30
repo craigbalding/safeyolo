@@ -41,8 +41,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
-      - name: Run addon tests
-        run: uv run pytest tests/ -v --tb=short --ignore=tests/blackbox/
+      # The migration suite starts a native process and is owned by the
+      # Rust proxy workflow, which builds that executable at its selected head.
+      - name: Run Python tests
+        run: uv run pytest tests/ -v --tb=short --ignore=tests/blackbox/ --ignore=tests/proxy_migration/
 
   test-cli:
     name: Test CLI

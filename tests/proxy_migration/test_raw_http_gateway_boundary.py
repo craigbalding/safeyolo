@@ -1,0 +1,574 @@
+"""Raw HTTP parsing at the service gateway's real Python/Rust proxy boundary."""
+
+import http.client
+import json
+import socket
+import socketserver
+import threading
+from contextlib import contextmanager
+from urllib.parse import urlsplit
+
+from tests.proxy_migration.harness import launch_proxy, read_events
+from tests.proxy_migration.scenarios import origin_server
+from tests.proxy_migration.test_gateway_redirect import (
+    VAULT_CREDENTIAL,
+    VAULT_NAME,
+    _authorization,
+    _fixture_state,
+    _gateway_token,
+)
+from tests.proxy_migration.test_te_gzip_handoff import _Wire
+
+ALLOWED = "allowed.invalid"
+FORBIDDEN = "forbidden.invalid"
+SIGNED_TARGET = b"/v1/signed?part=one&part=two%2Fthree&empty="
+ORDINARY_SIGNED_TARGET = b"/signed/%2F?part=one&part=two%2Fthree&empty="
+SIGNED_BODY = b"part=one%2Ftwo&part=three\x00signed"
+SERVICE = f"""\
+schema_version: 1
+name: redirect
+default_host: {ALLOWED}
+auth:
+  type: bearer
+  header: Authorization
+  scheme: Bearer
+  allow_http: true
+capabilities:
+  reader:
+    routes:
+      - methods: [POST]
+        path: /v1/signed
+      - methods: [GET]
+        path: /v1/read
+"""
+POLICY = f'''budget = 12000
+[hosts."{ALLOWED}"]
+service = "redirect"
+egress = "allow"
+[hosts."{FORBIDDEN}"]
+egress = "deny"
+[hosts."*"]
+egress = "deny"
+[agents.alice]
+[agents.alice.services.redirect]
+capability = "reader"
+token = "{VAULT_NAME}"
+[agents.bob]
+'''
+
+
+def _read_exact(stream, count):
+    result = bytearray()
+    while len(result) < count:
+        part = stream.recv(count - len(result))
+        assert part, "request ended inside its framed body"
+        result.extend(part)
+    return bytes(result)
+
+
+def _read_line(stream):
+    line = bytearray()
+    while not line.endswith(b"\r\n"):
+        line.extend(_read_exact(stream, 1))
+        assert len(line) < 65536, "line exceeded fixture limit"
+    return bytes(line)
+
+
+def _read_request(stream):
+    head = bytearray()
+    while not head.endswith(b"\r\n\r\n"):
+        head.extend(_read_exact(stream, 1))
+        assert len(head) < 65536, "head exceeded fixture limit"
+    head = bytes(head)
+    fields = [(name.lower(), value.strip()) for line in head.split(b"\r\n")[1:-2]
+              for name, separator, value in [line.partition(b":")] if separator]
+    lengths = [int(value) for name, value in fields if name == b"content-length"]
+    transfers = [value.lower() for name, value in fields if name == b"transfer-encoding"]
+    wire_body = bytearray()
+    body = bytearray()
+    if transfers and transfers[-1].endswith(b"chunked"):
+        while True:
+            size_line = _read_line(stream)
+            wire_body.extend(size_line)
+            size = int(size_line[:-2].split(b";", 1)[0], 16)
+            if size == 0:
+                while True:
+                    trailer = _read_line(stream)
+                    wire_body.extend(trailer)
+                    if trailer == b"\r\n":
+                        break
+                break
+            chunk = _read_exact(stream, size)
+            body.extend(chunk)
+            delimiter = _read_exact(stream, 2)
+            assert delimiter == b"\r\n", "chunk delimiter was not CRLF"
+            wire_body.extend(chunk + delimiter)
+    elif lengths:
+        wire_body.extend(_read_exact(stream, lengths[0]))
+        body.extend(wire_body)
+    return {"head": head, "wire_body": bytes(wire_body), "body": bytes(body),
+            "lengths": lengths, "transfers": transfers}
+
+
+class _WireServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, name, handler):
+        self.name = name
+        self.accepts = 0
+        self.requests = []
+        self.errors = []
+        self.lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), handler)
+
+    def get_request(self):
+        result = super().get_request()
+        with self.lock:
+            self.accepts += 1
+        return result
+
+
+class _OriginRequest(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.settimeout(5)
+            observed = _read_request(self.request)
+            with self.server.lock:
+                self.server.requests.append(observed)
+            payload = self.server.name.encode()
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: "
+                                 + str(len(payload)).encode()
+                                 + b"\r\nConnection: close\r\n\r\n" + payload)
+        except Exception as error:
+            self.server.errors.append(error)
+
+
+class _ParentRequest(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.settimeout(5)
+            observed = _read_request(self.request)
+            first = observed["head"].split(b"\r\n", 1)[0]
+            observed["target"] = first.split(b" ", 2)[1]
+            hosts = [line.split(b":", 1)[1].strip() for line in observed["head"].split(b"\r\n")
+                     if line.lower().startswith(b"host:")]
+            assert len(hosts) == 1, hosts
+            host = urlsplit("http://" + hosts[0].decode("ascii")).hostname
+            origin = self.server.origins[host]
+            observed["route"] = origin.name
+            with self.server.lock:
+                self.server.requests.append(observed)
+            absolute_target = observed["target"].decode("utf-8")
+            path = urlsplit(absolute_target)
+            target = (path.path + ("?" + path.query if "?" in absolute_target
+                                   else "")).encode("utf-8")
+            forwarded = first.split(b" ", 1)[0] + b" " + target + b" HTTP/1.1\r\n"
+            forwarded += observed["head"].split(b"\r\n", 1)[1] + observed["wire_body"]
+            with socket.create_connection(origin.server_address, timeout=5) as upstream:
+                upstream.sendall(forwarded)
+                while part := upstream.recv(65536):
+                    self.request.sendall(part)
+        except Exception as error:
+            self.server.errors.append(error)
+
+
+@contextmanager
+def _servers():
+    peers = [_WireServer("allowed", _OriginRequest), _WireServer("forbidden", _OriginRequest)]
+    parent = _WireServer("parent", _ParentRequest)
+    parent.origins = dict(zip((ALLOWED, FORBIDDEN), peers, strict=True))
+    threads = [threading.Thread(target=peer.serve_forever, daemon=True)
+               for peer in (*peers, parent)]
+    for thread in threads:
+        thread.start()
+    try:
+        yield parent, *peers
+    finally:
+        for peer in (*peers, parent):
+            peer.shutdown()
+            peer.server_close()
+        for thread in threads:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+        for peer in (*peers, parent):
+            assert peer.errors == [], (peer.name, peer.errors)
+
+
+def _send(path, target, fields, body=b"", method=b"GET", authority=ALLOWED):
+    with socket.socket(socket.AF_UNIX) as stream:
+        stream.settimeout(5)
+        stream.connect(path)
+        head = method + b" http://" + authority.encode() + target + b" HTTP/1.1\r\n"
+        head += b"".join(name + b": " + value + b"\r\n" for name, value in fields)
+        stream.sendall(head + b"\r\n" + body)
+        response = http.client.HTTPResponse(stream)
+        response.begin()
+        return response.status, dict(response.getheaders()), response.read()
+
+
+def test_raw_headers_framing_and_gateway_route_agree_with_forwarded_bytes(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _fixture_state(directory)
+    (directory / "services/redirect.yaml").write_text(SERVICE)
+    with _servers() as (parent, allowed, forbidden):
+        with launch_proxy(proxy_backend, directory, POLICY, native_policy=True, agent_api=True,
+                          gateway_services_dir=directory / "services",
+                          gateway_builtin_services_dir=directory / "builtin",
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            token = _gateway_token(proxy).encode()
+            auth = (b"Authorization", b"Bearer " + token)
+            path = proxy.paths["alice"]
+
+            signed = _send(path, SIGNED_TARGET,
+                           [(b"Host", ALLOWED.encode()), auth,
+                            (b"Content-Length", str(len(SIGNED_BODY)).encode())],
+                           SIGNED_BODY, b"POST")
+            assert signed[0] == 200 and signed[2] == b"allowed", signed
+            assert parent.requests[-1]["target"] == b"http://" + ALLOWED.encode() + SIGNED_TARGET
+            assert parent.requests[-1]["body"] == SIGNED_BODY
+            assert parent.requests[-1]["lengths"] == [len(SIGNED_BODY)]
+            assert parent.requests[-1]["transfers"] == []
+            assert allowed.requests[-1]["head"].split(b"\r\n", 1)[0] == b"POST " + SIGNED_TARGET + b" HTTP/1.1"
+            assert allowed.requests[-1]["body"] == SIGNED_BODY
+            auth_values = [line.partition(b":")[2].strip()
+                           for line in allowed.requests[-1]["head"].split(b"\r\n")
+                           if line.lower().startswith(b"authorization:")]
+            assert auth_values == [b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert token not in allowed.requests[-1]["head"]
+
+            read = _send(path, b"/v1/read", [(b"Host", ALLOWED.encode()), auth])
+            assert read[0] == 200 and read[2] == b"allowed", read
+            assert parent.requests[-1]["target"] == b"http://allowed.invalid/v1/read"
+            assert b"Bearer " + VAULT_CREDENTIAL.encode() in allowed.requests[-1]["head"]
+
+            # The gateway restriction does not alter an ordinary signed URL.
+            ordinary = _send(path, ORDINARY_SIGNED_TARGET,
+                             [(b"Host", ALLOWED.encode()),
+                              (b"Content-Length", str(len(SIGNED_BODY)).encode())],
+                             SIGNED_BODY, b"POST")
+            assert ordinary[0] == 200 and ordinary[2] == b"allowed", ordinary
+            assert parent.requests[-1]["target"] == b"http://" + ALLOWED.encode() + ORDINARY_SIGNED_TARGET
+            assert allowed.requests[-1]["head"].split(b"\r\n", 1)[0] == (
+                b"POST " + ORDINARY_SIGNED_TARGET + b" HTTP/1.1")
+            assert parent.requests[-1]["body"] == allowed.requests[-1]["body"] == SIGNED_BODY
+            assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
+
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            denied = _send(path, b"/v1/read", [(b"Host", FORBIDDEN.encode()), auth],
+                           authority=FORBIDDEN)
+            assert denied[0] in (403, 503), denied
+            denied = _send(proxy.paths["bob"], b"/v1/read",
+                           [(b"Host", ALLOWED.encode()), auth])
+            assert denied[0] == 403, denied
+            assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+            separator_cases = (
+                ("raw-nel", b"\x85"),
+                ("raw-nbsp", b"\xa0"),
+                ("utf8-line-separator", b"\xe2\x80\xa8"),
+                ("utf8-paragraph-separator", b"\xe2\x80\xa9"),
+            )
+            ambiguous_header_cases = (
+                ("gateway-token-first", [(b"Host", ALLOWED.encode()), auth,
+                                         (b"authorization", b"Bearer harmless-second-value")]),
+                ("gateway-token-second", [(b"Host", ALLOWED.encode()),
+                                          (b"authorization", b"Bearer harmless-first-value"), auth]),
+                ("gateway-token-in-another-header", [(b"Host", ALLOWED.encode()), auth,
+                                                     (b"X-Api-Key", token)]),
+                ("combined-authorization-value", [(b"Host", ALLOWED.encode()),
+                                                  (b"Authorization", b"Bearer harmless-first-value, Bearer "
+                                                   + token)]),
+                ("tab-separated-gateway-token", [(b"Host", ALLOWED.encode()),
+                                                 (b"Authorization", b"Bearer\t" + token)]),
+                ("forbidden-host-second", [(b"Host", ALLOWED.encode()),
+                                           (b"hOst", FORBIDDEN.encode()), auth]),
+                ("forbidden-host-first", [(b"hOst", FORBIDDEN.encode()),
+                                          (b"Host", ALLOWED.encode()), auth]),
+            ) + tuple((name, [(b"Host", ALLOWED.encode()),
+                              (b"Authorization", b"Bearer" + separator + token)])
+                      for name, separator in separator_cases)
+            for name, fields in ambiguous_header_cases:
+                before = (parent.accepts, allowed.accepts, forbidden.accepts)
+                status, _, _ = _send(path, b"/v1/read", fields)
+                assert status >= 400, (name, status)
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+            # Ordinary Authorization values do not acquire a new gateway rule.
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            ordinary_auth = _send(path, b"/ordinary", [
+                (b"Host", ALLOWED.encode()),
+                (b"Authorization", b"Bearer harmless-first-value"),
+                (b"authorization", b"Bearer harmless-second-value"),
+            ])
+            assert ordinary_auth[0] == 200 and ordinary_auth[2] == b"allowed", ordinary_auth
+            assert (parent.accepts, allowed.accepts, forbidden.accepts) == (
+                before[0] + 1, before[1] + 1, before[2])
+            assert b"harmless-first-value" in allowed.requests[-1]["head"]
+            assert b"harmless-second-value" in allowed.requests[-1]["head"]
+            assert token not in allowed.requests[-1]["head"]
+            assert VAULT_CREDENTIAL.encode() not in allowed.requests[-1]["head"]
+
+            before = (parent.accepts, allowed.accepts)
+            ordinary_extra = _send(path, b"/v1/read", [
+                (b"Host", ALLOWED.encode()), auth,
+                (b"X-Api-Key", b"harmless-extra-value"),
+            ])
+            assert ordinary_extra[0] == 200 and ordinary_extra[2] == b"allowed", ordinary_extra
+            assert (parent.accepts, allowed.accepts) == (before[0] + 1, before[1] + 1)
+            assert b"harmless-extra-value" in allowed.requests[-1]["head"]
+            assert _authorization(allowed.requests[-1]["head"]) == [
+                b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert token not in allowed.requests[-1]["head"]
+
+            for target in (b"/v1/%72ead", b"/v1//read", b"/v1%2Fread", b"/v1/./read",
+                           b"/v1/read/", b"/v1/read/?x=1"):
+                before = (parent.accepts, allowed.accepts, forbidden.accepts)
+                status, response_headers, body = _send(
+                    path, target, [(b"Host", ALLOWED.encode()), auth])
+                assert status == 403, (target, status, body)
+                assert {name.lower(): value for name, value in response_headers.items()}[
+                    "x-blocked-by"] == "service-gateway"
+                payload = json.loads(body)
+                assert "TRANSPORT_PATH_TRICK" in payload.get(
+                    "reason_codes", [payload.get("error")]), (target, payload)
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before, target
+
+            for target in ("/v1/reａd".encode(), "/v1/ｒead".encode()):
+                before = (parent.accepts, allowed.accepts, forbidden.accepts)
+                status, response_headers, body = _send(
+                    path, target, [(b"Host", ALLOWED.encode()), auth])
+                if proxy_backend == "rust":
+                    assert status == 403, (target, status, body)
+                    assert {name.lower(): value for name, value in response_headers.items()}[
+                        "x-blocked-by"] == "service-gateway"
+                    payload = json.loads(body)
+                    assert payload["error"] == "TRANSPORT_PATH_TRICK", payload
+                else:
+                    assert status == 400, (target, status, body)
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before, target
+
+            chunk = b"4\r\nDATA\r\n0\r\n\r\n"
+            before = (parent.accepts, allowed.accepts, forbidden.accepts)
+            framed = _send(path, SIGNED_TARGET,
+                           [(b"Host", ALLOWED.encode()), auth,
+                            (b"Content-Length", b"0"), (b"Transfer-Encoding", b"chunked")],
+                           chunk, b"POST")
+            if framed[0] < 400:
+                assert framed[0] == 200 and framed[2] == b"allowed", framed
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == (
+                    before[0] + 1, before[1] + 1, before[2])
+                assert parent.requests[-1]["lengths"] == []
+                assert allowed.requests[-1]["lengths"] == []
+                assert parent.requests[-1]["body"] == allowed.requests[-1]["body"] == b"DATA"
+            else:
+                assert (parent.accepts, allowed.accepts, forbidden.accepts) == before
+
+            audit = read_events(directory / "audit.jsonl")
+            path_denials = [row for row in audit if row["event"] == "gateway.deny"
+                            and row.get("details", {}).get("code") == "TRANSPORT_PATH_TRICK"]
+            if proxy_backend == "python":
+                assert len(path_denials) == 6, path_denials
+                assert framed[0] == 400, framed
+            else:
+                assert framed[0] == 200, framed
+            assert len(proxy.events("proxy.egress")) == parent.accepts
+            for secret in (token, VAULT_CREDENTIAL.encode()):
+                assert secret not in (directory / "audit.jsonl").read_bytes()
+                assert secret not in (directory / "events.jsonl").read_bytes()
+            assert forbidden.accepts == 0 and forbidden.requests == []
+
+        # This observer really routes a conflicting Host to another physical
+        # origin; it cannot make a leaked credential look safely contained.
+        with socket.create_connection(parent.server_address, timeout=5) as direct:
+            direct.sendall(b"GET http://allowed.invalid/observer-control HTTP/1.1\r\n"
+                           b"Host: forbidden.invalid\r\nConnection: close\r\n\r\n")
+            response = http.client.HTTPResponse(direct)
+            response.begin()
+            assert response.status == 200 and response.read() == b"forbidden"
+        assert parent.requests[-1]["route"] == "forbidden"
+        assert forbidden.accepts == 1 and len(forbidden.requests) == 1
+        assert VAULT_CREDENTIAL.encode() not in forbidden.requests[0]["head"]
+
+
+def test_conflicting_request_framing_cannot_reinterpret_the_next_request(proxy_backend, tmp_path):
+    """One raw write carries a framed request and its forbidden successor."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _fixture_state(directory)
+    (directory / "services/redirect.yaml").write_text(SERVICE)
+    with _servers() as (parent, allowed, forbidden):
+        with launch_proxy(proxy_backend, directory, POLICY, native_policy=True, agent_api=True,
+                          gateway_services_dir=directory / "services",
+                          gateway_builtin_services_dir=directory / "builtin",
+                          parent_proxy=f"http://127.0.0.1:{parent.server_address[1]}") as proxy:
+            token = _gateway_token(proxy).encode()
+            first = (b"POST http://allowed.invalid/v1/signed HTTP/1.1\r\n"
+                     b"Host: allowed.invalid\r\nAuthorization: Bearer " + token + b"\r\n"
+                     b"Content-Length: 0\r\nTransfer-Encoding: chunked\r\n"
+                     b"Connection: keep-alive\r\n\r\n4\r\nDATA\r\n0\r\n\r\n")
+            second = (b"GET http://forbidden.invalid/v1/read HTTP/1.1\r\n"
+                      b"Host: forbidden.invalid\r\nAuthorization: Bearer " + token + b"\r\n"
+                      b"Connection: close\r\n\r\n")
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(5)
+                stream.connect(proxy.paths["alice"])
+                stream.sendall(first + second)
+                reader = _Wire(stream)
+                response = reader.response()
+                if proxy_backend == "python":
+                    assert response["status"] == 400, response
+                    assert parent.accepts == allowed.accepts == forbidden.accepts == 0
+                else:
+                    assert response["status"] == 200 and response["body"] == b"allowed", response
+                    assert dict(response["headers"])[b"connection"].lower() == b"close"
+                    assert len(parent.requests) == len(allowed.requests) == 1
+                    assert parent.requests[0]["body"] == allowed.requests[0]["body"] == b"DATA"
+                    assert parent.requests[0]["lengths"] == []
+                    assert parent.requests[0]["transfers"] == [b"chunked"]
+                    assert forbidden.accepts == 0 and forbidden.requests == []
+                    assert _authorization(allowed.requests[0]["head"]) == [
+                        b"Bearer " + VAULT_CREDENTIAL.encode()]
+                    assert token not in allowed.requests[0]["head"]
+                assert reader.buffer == b"", reader.buffer
+                assert stream.recv(1) == b"", "ambiguous framing left the client connection open"
+            assert forbidden.accepts == 0 and forbidden.requests == []
+            signed = _send(proxy.paths["alice"], SIGNED_TARGET,
+                           [(b"Host", ALLOWED.encode()), (b"Authorization", b"Bearer " + token),
+                            (b"Content-Length", str(len(SIGNED_BODY)).encode())],
+                           SIGNED_BODY, b"POST")
+            assert signed[0] == 200 and signed[2] == b"allowed", signed
+            assert len(parent.requests) == len(allowed.requests) == (1 if proxy_backend == "python" else 2)
+            assert parent.requests[-1]["target"] == b"http://" + ALLOWED.encode() + SIGNED_TARGET
+            assert parent.requests[-1]["body"] == allowed.requests[-1]["body"] == SIGNED_BODY
+            assert _authorization(allowed.requests[-1]["head"]) == [
+                b"Bearer " + VAULT_CREDENTIAL.encode()]
+            assert forbidden.accepts == 0 and forbidden.requests == []
+
+
+def _reused_request(stream, authority, target, *, credential=False, forged_agent="bob"):
+    head = (b"GET http://" + authority.encode() + target + b" HTTP/1.1\r\n"
+            + b"Host: " + authority.encode() + b"\r\n"
+            + b"X-SafeYolo-Agent: " + forged_agent.encode() + b"\r\n"
+            + b"Connection: keep-alive\r\n")
+    if credential:
+        head += b"Authorization: Bearer key-reused-connection\r\n"
+    stream.sendall(head + b"\r\n")
+    response = http.client.HTTPResponse(stream)
+    response.begin()
+    result = response.status, dict(response.getheaders()), response.read()
+    response.close()
+    return result
+
+
+def test_reused_http1_connection_rechecks_destination_credential_and_agent(proxy_backend, tmp_path):
+    """A local denial or prompt does not change the next request's decision or headers."""
+    with origin_server(keep_alive=True, capture_heads=True) as allowed, \
+         origin_server(keep_alive=True) as denied, \
+         origin_server(keep_alive=True) as approval:
+        hosts = {
+            name: f"127.0.0.1:{server.server_address[1]}"
+            for name, server in (("allowed", allowed), ("denied", denied), ("approval", approval))
+        }
+        policy = f'''budget = 12000
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = {{ agent = "bob" }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "allow"
+condition = {{ port = {allowed.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = {{ port = {denied.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "prompt"
+condition = {{ port = {approval.server_address[1]} }}
+[[permissions]]
+action = "network:request"
+resource = "*"
+effect = "deny"
+[[permissions]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "allow"
+[[credential_rules]]
+name = "reused-connection"
+patterns = ["key-reused-connection"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+        with launch_proxy(proxy_backend, tmp_path / proxy_backend, policy,
+                          native_policy=True) as proxy:
+            with socket.socket(socket.AF_UNIX) as alice:
+                alice.settimeout(5)
+                alice.connect(proxy.paths["alice"])
+                signed = b"/signed/%2F?part=one&part=two%2Fthree&empty="
+                cases = [
+                    ("allowed", signed, True, 200, b"hello"),
+                    ("denied", b"/forbidden", True, 403, None),
+                    ("allowed", b"/after-denial", False, 200, b"hello"),
+                    ("approval", b"/needs-approval", False, 428, None),
+                    ("allowed", b"/after-approval", True, 200, b"hello"),
+                    ("denied", b"/denied-again", False, 403, None),
+                    ("allowed", b"/last", False, 200, b"hello"),
+                ]
+                identifiers = []
+                for name, target, credential, status, body in cases:
+                    result = _reused_request(alice, hosts[name], target,
+                                             credential=credential)
+                    assert result[0] == status, (name, target, result)
+                    if body is not None:
+                        assert result[2] == body, (name, target, result)
+                    response_headers = {key.lower(): value for key, value in result[1].items()}
+                    if name != "allowed":
+                        assert result[2] != b"hello"
+                        assert response_headers["x-blocked-by"] == "network-guard"
+                    identifier = response_headers["x-safeyolo-request-id"]
+                    assert identifier not in identifiers
+                    identifiers.append(identifier)
+                    assert len(allowed.requests) == sum(
+                        case[0] == "allowed" for case in cases[:len(identifiers)]
+                    )
+                    assert denied.accepts == approval.accepts == 0
+
+                with socket.socket(socket.AF_UNIX) as bob:
+                    bob.settimeout(5)
+                    bob.connect(proxy.paths["bob"])
+                    result = _reused_request(bob, hosts["allowed"], b"/bob",
+                                             credential=True, forged_agent="alice")
+                    assert result[0] == 403, result
+                    assert len(allowed.requests) == 4
+
+            assert [request["target"] for request in allowed.requests] == [
+                signed.decode(), "/after-denial", "/after-approval", "/last",
+            ]
+            heads = allowed.request_heads
+            assert b"key-reused-connection" in heads[0]
+            assert b"key-reused-connection" not in heads[1]
+            assert b"key-reused-connection" in heads[2]
+            assert b"key-reused-connection" not in heads[3]
+            egress = proxy.events("proxy.egress")
+            assert egress and all(
+                row["agent"] == "alice" and row["host"] == "127.0.0.1"
+                and row["port"] == allowed.server_address[1] for row in egress
+            ), egress
+
+        requests = proxy.events("proxy.request")
+        assert [row["status"] for row in requests] == [200, 403, 200, 428, 200, 403, 200, 403]
+        assert [row["agent"] for row in requests] == ["alice"] * 7 + ["bob"]
+        assert [row["request_id"] for row in requests[:7]] == identifiers
+        assert len({row["connection_id"] for row in requests[:7]}) == 1
+        assert requests[7]["connection_id"] != requests[0]["connection_id"]
