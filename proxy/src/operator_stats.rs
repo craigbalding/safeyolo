@@ -35,7 +35,7 @@ fn document_with_memory(
         "policy-engine".into(),
         policy_stats(runtime.policy.as_ref(), &runtime.tasks),
     );
-    // The temporary bridge does not install these native pipeline owners.
+    // These pipeline reports belong to an installed native policy.
     if runtime.policy.is_some() {
         let network = match runtime.network_guard.stats() {
             Ok(stats) => json!({
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn temporary_adapter_does_not_report_uninstalled_native_owners() {
+    fn native_runtime_reports_installed_pipeline_owners() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(
             directory.path().join("policy.json"),
@@ -221,6 +221,7 @@ mod tests {
         let config = serde_json::from_value(json!({
             "listeners":[{"agent_id":"alice","socket_path":directory.path().join("alice.sock")}],
             "policy_file":directory.path().join("policy.json"),
+            "data_dir":directory.path().join("data"),
             "readiness_file":directory.path().join("ready"),
             "audit_log_path":directory.path().join("audit.jsonl"),
             "event_log":directory.path().join("events.jsonl"),
@@ -242,6 +243,10 @@ mod tests {
                 "memory-monitor",
                 "service-discovery",
                 "policy-engine",
+                "network-guard",
+                "credential-guard",
+                "circuit-breaker",
+                "test-context",
                 "flow-recorder",
                 "request-logger",
                 "metrics"

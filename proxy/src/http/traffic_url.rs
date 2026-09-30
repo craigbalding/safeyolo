@@ -273,10 +273,10 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "historical Python oracle; set SAFEYOLO_PYTHON_EXECUTABLE to the comparator environment"]
     fn live_source_oracle() {
-        let Some(python) = std::env::var_os("SAFEYOLO_PYTHON") else {
-            return;
-        };
+        let python = std::env::var_os("SAFEYOLO_PYTHON_EXECUTABLE")
+            .expect("set SAFEYOLO_PYTHON_EXECUTABLE to the comparator environment");
         let status = std::process::Command::new(python)
             .arg(concat!(
                 env!("CARGO_MANIFEST_DIR"),
