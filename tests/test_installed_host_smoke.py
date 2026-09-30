@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -175,10 +176,12 @@ def test_smoke_requires_an_owned_disposable_marker(tmp_path: Path, smoke_module)
 
 
 def test_process_identity_is_bound_to_a_live_pid(smoke_module) -> None:
+    from safeyolo.runtime_identity import process_start_token
+
     token = smoke_module._process_start_token(os.getpid())
 
     assert smoke_module._pid_alive(os.getpid())
-    assert token
+    assert token == process_start_token(os.getpid())
 
 
 def test_json_inspection_has_a_size_bound(tmp_path: Path, smoke_module) -> None:
@@ -347,9 +350,21 @@ def test_darwin_process_identity_is_observed_or_unavailable(tmp_path: Path, smok
     monkeypatch.setattr(smoke_module.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(smoke_module.sys, "platform", "darwin")
 
+    def pid_path(_pid, buffer, size):
+        value = os.fsencode(candidate) + b"\0"
+        assert len(value) <= size
+        ctypes.memmove(buffer, value, len(value))
+        return len(value)
+
+    library = type("Library", (), {"proc_pidpath": staticmethod(pid_path)})()
+    monkeypatch.setattr(smoke_module.ctypes, "CDLL", lambda *_args, **_kwargs: library)
+    monkeypatch.setattr(smoke_module, "_run", lambda *_args, **_kwargs: pytest.fail("ps should not run"))
+    assert smoke_module._process_executable(42) == candidate.resolve()
+
     def fake_run(command, **kwargs):
         return subprocess.CompletedProcess(command, 0, str(candidate), "")
 
+    library.proc_pidpath = lambda *_args: 0
     monkeypatch.setattr(smoke_module, "_run", fake_run)
     assert smoke_module._process_executable(42) == candidate.resolve()
 
