@@ -46,9 +46,13 @@ def python_proxy_environment(*, python_source=None):
 
 
 def read_events(path):
+    """Read completed JSONL events while a proxy may still be writing."""
     if not path.exists():
         return []
-    return [json.loads(line) for line in path.read_text().splitlines() if line]
+    # A live writer may have appended only part of the final JSONL record.
+    # Split bytes first so an unfinished UTF-8 character in that tail is safe.
+    complete_lines = path.read_bytes().split(b"\n")[:-1]
+    return [json.loads(line) for line in complete_lines if line]
 
 
 @dataclass
