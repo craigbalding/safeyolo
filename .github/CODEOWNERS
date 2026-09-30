@@ -1,3 +1,8 @@
 /site/ @craigbalding
-/.github/workflows/dispatch-publication.yml @craigbalding
-/.github/workflows/pages.yml @craigbalding
+/.github/CODEOWNERS @craigbalding
+/.github/workflows/ @craigbalding
+/tools/assurance/ @craigbalding
+/tools/acceptance/pyproject.toml @craigbalding
+/tools/acceptance/uv.lock @craigbalding
+/docs/assurance-map.toml @craigbalding
+/docs/assurance.md @craigbalding
