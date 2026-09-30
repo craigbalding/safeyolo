@@ -64,7 +64,7 @@ jobs:
           grep -F "$USER:" /etc/subgid
 
       - name: Install, bootstrap, and run full systrap BB
-        run: ./tests/blackbox/run-lane.sh systrap --verbose
+        run: ./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
 
       - name: Upload platform evidence and failure logs
         if: always()
