@@ -1,48 +1,51 @@
 #!/usr/bin/env python3
-"""Test-only stand-in for the platform stream subprocess, backed by a local origin."""
+"""Run the real Python provider handoff with a local test platform stream."""
 
 import os
 import socket
 import sys
-import threading
+
+from safeyolo import provider_stream
 
 
-def main() -> int:
-    if (
-        sys.argv[-2:] != ["proofspot", "8088"]
-        or os.path.exists(os.environ["PROVIDER_STOP_MARKER"])
-    ):
-        os.write(1, b"\x00")
-        return 1
-    try:
+class LocalRelay:
+    def __init__(self, connection: socket.socket):
+        self.connection = connection
+        self.stdin = connection.makefile("wb", buffering=0)
+        self.stdout = connection.makefile("rb", buffering=0)
+
+    def wait(self, timeout=None):
+        self.stdin.close()
+        self.stdout.close()
+        self.connection.close()
+        return 0
+
+    def terminate(self):
+        self.wait()
+
+    def kill(self):
+        self.wait()
+
+
+class LocalPlatform:
+    def is_sandbox_running(self, name):
+        assert name == "proofspot"
+        return not os.path.exists(os.environ["PROVIDER_STOP_MARKER"])
+
+    def popen_port_forward(self, name, port):
+        assert (name, port) == ("proofspot", 8088)
         connection = socket.create_connection(
             ("127.0.0.1", int(os.environ["PROVIDER_FIXTURE_PORT"])), timeout=5
         )
-    except OSError:
-        os.write(1, b"\x00")
-        return 1
-    connection.settimeout(None)
-    os.write(1, b"\x01")
+        connection.settimeout(None)
+        return LocalRelay(connection)
 
-    def upload() -> None:
-        try:
-            while data := os.read(0, 65536):
-                connection.sendall(data)
-        except OSError:
-            pass
-        finally:
-            try:
-                connection.shutdown(socket.SHUT_WR)
-            except OSError:
-                pass
 
-    threading.Thread(target=upload, daemon=True).start()
-    try:
-        while data := connection.recv(65536):
-            os.write(1, data)
-    finally:
-        connection.close()
-    return 0
+def main() -> int:
+    assert sys.argv[1:5] == ["-I", "-B", "-m", "safeyolo.provider_stream"]
+    provider_stream.get_platform = LocalPlatform
+    sys.argv = ["safeyolo.provider_stream", *sys.argv[-2:]]
+    return provider_stream.main()
 
 
 if __name__ == "__main__":

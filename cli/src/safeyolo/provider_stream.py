@@ -1,12 +1,23 @@
 """Pipe one Rust proxy connection through the existing platform port forward."""
 
-import shutil
 import subprocess
 import sys
 import threading
 
 from .agent_configuration import HOSTNAME_PATTERN
 from .platform import get_platform
+
+
+def _copy_available_bytes(source, target) -> None:
+    read = getattr(source, "read1", source.read)
+    while chunk := read(64 * 1024):
+        remaining = memoryview(chunk)
+        while remaining:
+            written = target.write(remaining)
+            if written is None or written <= 0:
+                raise OSError("provider stream stopped accepting bytes")
+            remaining = remaining[written:]
+        target.flush()
 
 
 def _close_relay(relay) -> None:
@@ -48,7 +59,7 @@ def main() -> int:
 
     def upload() -> None:
         try:
-            shutil.copyfileobj(sys.stdin.buffer, relay.stdin)
+            _copy_available_bytes(sys.stdin.buffer, relay.stdin)
         except OSError:
             pass
         finally:
@@ -56,8 +67,7 @@ def main() -> int:
 
     threading.Thread(target=upload, daemon=True).start()
     try:
-        shutil.copyfileobj(relay.stdout, sys.stdout.buffer)
-        sys.stdout.buffer.flush()
+        _copy_available_bytes(relay.stdout, sys.stdout.buffer)
     except (BrokenPipeError, OSError):
         pass
     finally:

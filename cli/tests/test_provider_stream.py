@@ -1,11 +1,32 @@
 """The Python handoff uses the existing platform stream and readiness signal."""
 
 import io
+import os
+import select
 import socket
 import sys
 import threading
 
 from safeyolo import provider_stream
+
+
+def test_live_pipe_forwards_short_request_without_waiting_for_eof():
+    incoming_read, incoming_write = os.pipe()
+    outgoing_read, outgoing_write = os.pipe()
+    with os.fdopen(incoming_read, "rb") as source, os.fdopen(outgoing_write, "wb") as target:
+        worker = threading.Thread(
+            target=provider_stream._copy_available_bytes, args=(source, target)
+        )
+        worker.start()
+        try:
+            os.write(incoming_write, b"POST /api/v1/check HTTP/1.1\r\n\r\n")
+            assert select.select([outgoing_read], [], [], 1)[0]
+            assert os.read(outgoing_read, 128) == b"POST /api/v1/check HTTP/1.1\r\n\r\n"
+        finally:
+            os.close(incoming_write)
+            worker.join(timeout=2)
+            os.close(outgoing_read)
+        assert not worker.is_alive()
 
 
 def _stdio(monkeypatch, input_bytes: bytes) -> io.BytesIO:
