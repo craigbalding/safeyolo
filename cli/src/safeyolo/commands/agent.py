@@ -1869,8 +1869,8 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
 ) -> None:
     """Authorize an agent to use a service.
 
-    Resolves the service, picks a capability, stores the credential, and updates
-    policy.toml. Capabilities with operator-sourced contract bindings require a
+    Resolves the service, picks a capability, stores a credential when the
+    service requires one, and updates policy.toml. Operator-sourced bindings require a
     separate agent-side binding submission and operator approval.
 
     Examples:
@@ -1933,8 +1933,9 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
             console.print("[red]Error:[/red] Invalid selection")
             raise typer.Exit(1)
 
-    # Auth type comes from service-level auth (v1 schema)
-    auth_config = svc.get("auth", {})
+    auth_config = svc.get("auth")
+    requires_credential = auth_config is not None
+    auth_config = auth_config or {}
     auth_type = auth_config.get("type", "bearer")
 
     # 4. Resolve credential
@@ -1942,7 +1943,9 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     VaultCredential = None
     cred_name = None
 
-    if credential_name:
+    if not requires_credential and not (credential_name or token or token_file or token_env):
+        pass
+    elif credential_name:
         # Reuse existing vault entry
         vault, VaultCredential = _load_vault()
         existing = vault.get(credential_name)
@@ -2034,20 +2037,23 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
             raise typer.Exit(1) from exc
         log.warning("Admin API unavailable (%s), falling back to local write", exc)
         services = metadata.setdefault("services", {})
-        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        services[service_name] = {"capability": selected_cap}
+        if cred_name is not None:
+            services[service_name]["token"] = cred_name
         save_agent(agent_name, metadata)
     except OSError as exc:
         log.warning("Admin API unavailable (%s), falling back to local write", exc)
         services = metadata.setdefault("services", {})
-        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        services[service_name] = {"capability": selected_cap}
+        if cred_name is not None:
+            services[service_name]["token"] = cred_name
         save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
     esc_cap = escape(selected_cap)
-    esc_cred = escape(cred_name)
-
-    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
+    credential_summary = f", credential={escape(cred_name)}" if cred_name is not None else ""
+    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}{credential_summary})")
 
     selected_cap_config = capabilities[selected_cap]
     contract_config = (

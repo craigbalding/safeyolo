@@ -148,6 +148,34 @@ def _invoke(cli_runner: CliRunner, args: list[str], input_text: str | None = Non
 
 
 class TestServiceResolution:
+    def test_service_without_auth_authorizes_without_vault_credential(
+        self, cli_runner, tmp_config_dir
+    ):
+        from safeyolo.api import AdminAPI
+
+        _create_agent(tmp_config_dir, "boris")
+        services = tmp_config_dir / "services"
+        services.mkdir()
+        (services / "proofspot.yaml").write_text(
+            "schema_version: 1\nname: proofspot\ncapabilities:\n"
+            "  assessment:\n    routes:\n      - methods: [GET]\n        path: /api/v1/**\n"
+        )
+        api = create_autospec(AdminAPI, instance=True, spec_set=True)
+        api.authorize_service.side_effect = OSError("running gateway unavailable")
+        with (
+            patch("safeyolo.api.get_api", return_value=api, autospec=True),
+            patch("safeyolo.commands.agent._load_vault", side_effect=AssertionError("vault opened"), autospec=True),
+        ):
+            result = _invoke(
+                cli_runner,
+                ["authorize", "boris", "proofspot", "--capability", "assessment"],
+            )
+        assert result.exit_code == 0, result.output
+        api.authorize_service.assert_called_once_with(
+            agent="boris", service="proofspot", capability="assessment", credential=None
+        )
+        assert load_agent("boris")["services"]["proofspot"] == {"capability": "assessment"}
+
     def test_unknown_service_rejected(self, cli_runner, tmp_config_dir):
         _create_agent(tmp_config_dir, "boris")
         result = _invoke(cli_runner, ["authorize", "boris", "nonexistent", "--token", "x"])

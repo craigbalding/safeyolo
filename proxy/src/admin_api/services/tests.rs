@@ -31,12 +31,23 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_auth(true)
+    }
+
+    fn with_auth(auth: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("policy.toml");
         std::fs::write(&path, INITIAL).unwrap();
         let services = directory.path().join("services");
         std::fs::create_dir(&services).unwrap();
-        std::fs::write(services.join("mail.yaml"), "schema_version: 1\nname: mail\nauth: {type: bearer}\ncapabilities:\n  read:\n    routes: []\n").unwrap();
+        let auth_line = if auth { "auth: {type: bearer}\n" } else { "" };
+        std::fs::write(
+            services.join("mail.yaml"),
+            format!(
+                "schema_version: 1\nname: mail\n{auth_line}capabilities:\n  read:\n    routes: []\n"
+            ),
+        )
+        .unwrap();
         std::fs::create_dir(directory.path().join("no-builtins")).unwrap();
         let registry = Arc::new(
             crate::services::Registry::from_directories(
@@ -240,6 +251,40 @@ async fn service_authorization_persists_preserves_and_requires_later_reload() {
 }
 
 #[tokio::test]
+async fn no_auth_service_mints_a_gateway_grant_without_a_vault_reference() {
+    let fixture = Fixture::with_auth(false);
+    let outcome = fixture
+        .call("alice", r#"{"service":"mail","capability":"read"}"#)
+        .await
+        .unwrap();
+    assert_eq!(outcome.status(), StatusCode::OK);
+    let binding = &fixture.persisted()["agents"]["alice"]["services"]["mail"];
+    assert_eq!(binding, &json!({"capability":"read"}));
+
+    let loaded =
+        Policy::from_path_with_registry_at(&fixture.path, Some(fixture.registry.clone()), 1000.)
+            .unwrap();
+    let gateway = loaded.gateway().unwrap();
+    let view = gateway.agent_services_json("alice").unwrap();
+    assert!(view.expose_secret().contains("sgw_"));
+
+    let credential_backed = Fixture::new();
+    let denied = credential_backed
+        .call("alice", r#"{"service":"mail","capability":"read"}"#)
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body(denied).await["error"],
+        "missing required field: credential"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&credential_backed.path).unwrap(),
+        INITIAL
+    );
+}
+
+#[tokio::test]
 async fn service_validation_precedes_agent_lookup_and_preserves_disk() {
     let fixture = Fixture::new();
     for (agent, payload, expected, message) in [
@@ -249,7 +294,7 @@ async fn service_validation_precedes_agent_lookup_and_preserves_disk() {
             "alice",
             r#"{"service":"mail"}"#,
             400,
-            "missing required fields: service, capability, credential",
+            "missing required fields: service, capability",
         ),
         (
             "missing",

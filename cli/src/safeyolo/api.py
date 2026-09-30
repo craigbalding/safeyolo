@@ -572,7 +572,7 @@ class AdminAPI:
         agent: str,
         service: str,
         capability: str,
-        credential: str,
+        credential: str | None = None,
     ) -> dict[str, Any]:
         """Authorize an agent to use a service.
 
@@ -580,7 +580,7 @@ class AdminAPI:
             agent: Agent name (e.g., "boris")
             service: Service name (e.g., "gmail")
             capability: Capability name (e.g., "readonly")
-            credential: Vault credential name (e.g., "gmail-oauth2")
+            credential: Vault credential name for services with auth.
         """
         return self._request(
             "POST",
@@ -588,7 +588,7 @@ class AdminAPI:
             json={
                 "service": service,
                 "capability": capability,
-                "credential": credential,
+                **({"credential": credential} if credential is not None else {}),
             },
         )
 

@@ -412,6 +412,48 @@ Key v2 changes from v1:
 - **Auth** is defined at service level (not per-role).
 - **Risk appetite** rules in the policy file (`[[risk]]` in TOML / `gateway:` in YAML) determine which risky routes require operator approval based on tactics, account persona, and irreversibility.
 
+### Service provided by a sandbox
+
+If a service name matches a configured agent name, the Rust proxy routes
+authorized requests to that agent's sandbox. The requested URL port is the
+guest port. The provider must listen on that port inside its sandbox.
+
+For example, save this definition as
+`$SAFEYOLO_CONFIG_DIR/services/proofspot.yaml` (or
+`~/.safeyolo/services/proofspot.yaml` when that variable is unset):
+
+```yaml
+schema_version: 1
+name: proofspot
+default_host: proofspot.safeyolo.internal
+capabilities:
+  assessment:
+    routes:
+      - methods: [GET, POST]
+        path: "/api/v1/**"
+```
+
+The `auth` field is absent because the provider needs no upstream credential.
+The operator must have configured agents named `proofspot` and `pentest`. The
+provider application must listen on guest port 8088. From the operator's host
+terminal, map the host and authorize the caller:
+
+```sh
+safeyolo policy host add proofspot.safeyolo.internal --service proofspot
+safeyolo agent authorize pentest proofspot --capability assessment
+```
+
+The authorization creates an agent-bound `sgw_` token without a vault
+credential. The caller obtains the token from its authenticated Agent API
+`GET /gateway/services` response and uses it for an allowed URL such as
+`http://proofspot.safeyolo.internal:8088/api/v1/check`; the proxy removes the
+token and sends trusted caller agent ID and name headers to the provider.
+Requests without valid authorization or outside the capability are denied.
+If the provider sandbox or guest port is unavailable, the proxy returns an
+upstream error without connecting to the service host by DNS or ordinary TCP.
+Opaque `CONNECT` tunnels to provider hosts are denied because the gateway
+needs an HTTP route to authorize each request.
+
 ## Vault
 
 Encrypted credential store for the service gateway. Credentials are stored encrypted at rest and referenced by name in policy.toml agent service bindings.

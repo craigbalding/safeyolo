@@ -646,6 +646,7 @@ def start(config: dict) -> None:
     # launcher; request data supplies a validated stable agent ID only.
     env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
     env["SAFEYOLO_OPERATOR_HOST_PYTHON"] = sys.executable
+    env["SAFEYOLO_PROVIDER_PYTHON"] = sys.executable
     try:
         env["SAFEYOLO_OPERATOR_HOST_USER"] = pwd.getpwuid(os.geteuid()).pw_name
     except KeyError:

@@ -40,6 +40,7 @@ pub mod oauth;
 mod operator_stats;
 pub mod policy;
 mod policy_runtime;
+mod provider_stream;
 mod python_json;
 mod python_text;
 mod request_headers;

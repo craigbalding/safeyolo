@@ -63,13 +63,13 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
         ));
     }
     let fields = data.0.as_object().ok_or(Error::NonObjectBody)?;
-    if ["service", "capability", "credential"]
+    if ["service", "capability"]
         .iter()
         .any(|field| !fields.get(*field).is_some_and(truthy))
     {
         return Ok(response(
             StatusCode::BAD_REQUEST,
-            json!({"error":"missing required fields: service, capability, credential"}),
+            json!({"error":"missing required fields: service, capability"}),
         ));
     }
     // Current clients send string names. Other truthy source values are a
@@ -82,7 +82,6 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
     };
     let service = text("service")?;
     let capability = text("capability")?;
-    let credential = text("credential")?;
     let Some(registry) = policy
         .and_then(Policy::gateway)
         .and_then(crate::services::GatewaySnapshot::registry)
@@ -104,6 +103,19 @@ pub(super) async fn authorize<B: Body<Data = Bytes>>(
             json!({"error":format!("capability '{capability}' is not loaded for service '{service}'")}),
         ));
     }
+    let credential = if definition.auth.is_some() {
+        if !fields.get("credential").is_some_and(truthy) {
+            return Ok(response(
+                StatusCode::BAD_REQUEST,
+                json!({"error":"missing required field: credential"}),
+            ));
+        }
+        text("credential")?
+    } else if fields.get("credential").is_some_and(truthy) {
+        text("credential")?
+    } else {
+        ""
+    };
     let Some(path) = policy_path else {
         return Ok(response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -220,10 +232,12 @@ fn persist(path: PathBuf, authorization: Authorization) -> Result<Outcome, Error
                 "capability",
                 toml_edit::Value::from(authorization.capability.as_str()),
             );
-            binding.insert(
-                "token",
-                toml_edit::Value::from(authorization.credential.as_str()),
-            );
+            if !authorization.credential.is_empty() {
+                binding.insert(
+                    "token",
+                    toml_edit::Value::from(authorization.credential.as_str()),
+                );
+            }
             services.insert(
                 &authorization.service,
                 Item::Value(toml_edit::Value::InlineTable(binding)),

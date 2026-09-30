@@ -248,7 +248,7 @@ impl PendingInjection {
                     .snapshot(self.credential_name())
                     .map_err(|e| error(ErrorKind::Vault(e), 1))?;
                 match current {
-                    Some(snapshot) => finish(self.context, snapshot, 1),
+                    Some(snapshot) => finish(self.context, Some(snapshot), 1),
                     None => Ok(Start::Blocked(deny(self.context, Missing::AfterRefresh, 1))),
                 }
             }
@@ -275,7 +275,7 @@ impl PendingInjection {
                     }
                 };
                 match current {
-                    Some(snapshot) => finish(self.context, snapshot, 1),
+                    Some(snapshot) => finish(self.context, Some(snapshot), 1),
                     None => Ok(Start::Blocked(deny(self.context, Missing::AfterRefresh, 1))),
                 }
             }
@@ -315,7 +315,7 @@ impl PendingInjection {
         if !matches {
             return Err(error(ErrorKind::Superseded, 0));
         }
-        finish(self.context, self.snapshot, 0)
+        finish(self.context, Some(self.snapshot), 0)
     }
 
     pub fn not_needed_for_gateway(self, reason: NotNeeded) -> Result<Start> {
@@ -340,7 +340,7 @@ impl PendingInjection {
         if !matches {
             return Ok(self.refresh_failed(FailureCategory::Superseded));
         }
-        finish(self.context, self.snapshot, 0)
+        finish(self.context, Some(self.snapshot), 0)
     }
 
     fn refresh_failed(self, category: FailureCategory) -> Start {
@@ -413,6 +413,9 @@ pub fn prepare(
     now: OffsetDateTime,
 ) -> Result<Start> {
     let context = Context::new(selection, request);
+    if context.selection.auth_kind.is_none() {
+        return finish(context, None, 0);
+    }
     let Some(vault) = vault else {
         return Ok(Start::Blocked(deny(context, Missing::Vault, 0)));
     };
@@ -438,7 +441,7 @@ pub fn prepare(
             snapshot,
         })));
     }
-    finish(context, snapshot, 0)
+    finish(context, Some(snapshot), 0)
 }
 
 fn audit(
@@ -474,11 +477,11 @@ fn empty_evidence(refreshed: u64) -> Evidence {
         },
     }
 }
-fn finish(context: Context, snapshot: CredentialSnapshot, refreshed: u64) -> Result<Start> {
+fn finish(context: Context, snapshot: Option<CredentialSnapshot>, refreshed: u64) -> Result<Start> {
     let mut evidence = empty_evidence(refreshed);
     let selection = &context.selection;
-    if context.scheme == "http" {
-        if !(selection.auth_kind.is_some() && selection.allow_http) {
+    if context.scheme == "http" && selection.auth_kind.is_some() {
+        if !selection.allow_http {
             // RequestInfo is the source-equivalent full URL, not a reconstructed
             // host/path pair. Preserve source spelling, port and signed query.
             let url = context.full_url.expose_secret();
@@ -520,14 +523,25 @@ fn finish(context: Context, snapshot: CredentialSnapshot, refreshed: u64) -> Res
     };
     let name = HeaderName::from_bytes(auth_header.as_bytes())
         .map_err(|_| error(ErrorKind::InvalidHeaderName, refreshed))?;
-    let credential = snapshot.credential();
     let value = match selection.auth_kind.as_deref() {
         Some("bearer") => Some(Secret::new(format!(
             "{} {}",
             selection.auth_scheme,
-            credential.value.expose_secret()
+            snapshot
+                .as_ref()
+                .expect("authenticated selection has a vault snapshot")
+                .credential()
+                .value
+                .expose_secret()
         ))),
-        Some("api_key") => Some(credential.value.clone()),
+        Some("api_key") => Some(
+            snapshot
+                .as_ref()
+                .expect("authenticated selection has a vault snapshot")
+                .credential()
+                .value
+                .clone(),
+        ),
         _ => None,
     };
     let value = value
@@ -538,13 +552,23 @@ fn finish(context: Context, snapshot: CredentialSnapshot, refreshed: u64) -> Res
             Ok(header)
         })
         .transpose()?;
-    evidence.metadata = json!({"gateway_service":selection.service,"gateway_capability":selection.capability,"gateway_agent":selection.agent,"gateway_account":selection.account,"gateway_injected_header":auth_header});
-    evidence.audit.push(audit(&context,"gateway.allow",AuditDecision::Allow,Severity::Low,format!("Gateway {} {}{} → injected ({})",context.method,selection.service,context.path,selection.capability),json!({"service":selection.service,"capability":selection.capability,"account":selection.account,"method":context.method,"path":context.path})));
+    let injected_header = selection.auth_kind.as_ref().map(|_| auth_header);
+    evidence.metadata = json!({"gateway_service":selection.service,"gateway_capability":selection.capability,"gateway_agent":selection.agent,"gateway_account":selection.account,"gateway_injected_header":injected_header});
+    let action = if selection.auth_kind.is_some() {
+        "injected"
+    } else {
+        "authorized"
+    };
+    evidence.audit.push(audit(&context,"gateway.allow",AuditDecision::Allow,Severity::Low,format!("Gateway {} {}{} → {action} ({})",context.method,selection.service,context.path,selection.capability),json!({"service":selection.service,"capability":selection.capability,"account":selection.account,"method":context.method,"path":context.path})));
     evidence.trace = Some(TraceIntent {
-        outcome: "injected",
+        outcome: if selection.auth_kind.is_some() {
+            "injected"
+        } else {
+            "authorized"
+        },
         details: json!({"service":selection.service,"capability":selection.capability}),
     });
-    evidence.stats.injected = 1;
+    evidence.stats.injected = u64::from(selection.auth_kind.is_some());
     Ok(Start::Ready(HeaderReplacement {
         name,
         value,

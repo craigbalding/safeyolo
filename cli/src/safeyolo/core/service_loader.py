@@ -4,9 +4,9 @@ service_loader.py - Service definition loader for Service Gateway v2
 Loads service definitions from YAML files, provides a registry for
 looking up services by name.
 
-Service definitions describe external APIs: their authentication
-methods, capabilities (named route sets), and risky routes (factual
-security signals for PDP evaluation).
+Service definitions describe external APIs or sandbox-provided services:
+their optional authentication methods, capabilities (named route sets),
+and risky routes (factual security signals for PDP evaluation).
 
 Usage:
     from safeyolo.core.service_loader import init_service_registry, get_service_registry
