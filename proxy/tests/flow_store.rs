@@ -465,6 +465,7 @@ fn source(mode: &str, path: &Path) -> Value {
 }
 
 #[test]
+#[ignore = "historical Python rollback comparator; set SAFEYOLO_POLICY_PYTHON and SAFEYOLO_STATE_PYTHON_SOURCE"]
 fn source_native_source_rollback_preserves_owned_rows_and_tags() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("rollback.sqlite3");
