@@ -159,6 +159,32 @@ PY
 fi
 
 if [ "$LANE" = "proxy" ]; then
+    # The installed lane must test the binary packaged with this CLI. The
+    # direct run-tests.sh selector retains its explicit debug-binary default.
+    ARGS=("$@")
+    SELECTED_BACKEND=""
+    EXPLICIT_RUST_BIN=false
+    for ((i = 0; i < ${#ARGS[@]}; i++)); do
+        if [ "${ARGS[i]}" = "--proxy-impl" ] && [ "$((i + 1))" -lt "${#ARGS[@]}" ]; then
+            SELECTED_BACKEND="${ARGS[i + 1]}"
+        fi
+        if [ "${ARGS[i]}" = "--rust-bin" ]; then
+            EXPLICIT_RUST_BIN=true
+        fi
+    done
+    if { [ "$SELECTED_BACKEND" = "rust" ] || [ "$SELECTED_BACKEND" = "both" ]; } && \
+       [ "$EXPLICIT_RUST_BIN" = false ]; then
+        INSTALLED_RUST_BIN="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _installed_rust_binary
+
+binary, _ = _installed_rust_binary(sys.argv[2])
+print(binary)
+PY
+)"
+        set -- "$@" --rust-bin "$INSTALLED_RUST_BIN"
+    fi
     exec "$SCRIPT_DIR/run-tests.sh" --proxy "$@"
 else
     exec "$SCRIPT_DIR/run-tests.sh" --expect-platform "$LANE" "$@"

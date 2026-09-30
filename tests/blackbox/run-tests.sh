@@ -195,8 +195,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -n "$INSTALL_COMMIT" ] && [ "$P3" != true ] && [ "$P4" != true ]; then
-    echo "ERROR: --install-commit requires the P3 or P4 installed selection" >&2
+if [ -n "$INSTALL_COMMIT" ] && [ "$P2" != true ] && [ "$P3" != true ] && [ "$P4" != true ]; then
+    echo "ERROR: --install-commit requires a P2, P3, or P4 installed selection" >&2
     exit 2
 fi
 INSTALL_COMMIT_ARGS=()
@@ -1049,7 +1049,8 @@ if [ "$P2" = true ]; then
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/linux-$EXPECTED_PLATFORM-p2.json"
+        --output "$ARTIFACTS_DIR/linux-$EXPECTED_PLATFORM-p2.json" \
+        "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 if [ "$P3" = true ]; then

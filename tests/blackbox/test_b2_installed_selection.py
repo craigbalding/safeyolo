@@ -106,5 +106,5 @@ def test_install_commit_option_needs_an_installed_pilot(tmp_path):
         check=False,
     )
     assert result.returncode == 2
-    assert "requires the P3 or P4 installed selection" in result.stderr
+    assert "requires a P2, P3, or P4 installed selection" in result.stderr
     assert not (tmp_path / "test-instance").exists()

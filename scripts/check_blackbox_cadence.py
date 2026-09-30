@@ -26,7 +26,8 @@ FULL_LANES = frozenset({"systrap", "kvm", "vz"})
 START_MARKER = "<!-- blackbox-cadence-contract:start -->"
 END_MARKER = "<!-- blackbox-cadence-contract:end -->"
 RUN_LANE_RE = re.compile(
-    r"(?:^|\s)(?:\./)?tests/blackbox/run-lane\.sh\s+"
+    r"(?:^|\s)(?:\./)?tests/blackbox/"
+    r"(?:run-lane|run-p2-linux|run-p3|run-p4)\.sh\s+"
     r"(?P<lane>systrap|kvm|vz)(?:\s|$)",
 )
 
@@ -97,14 +98,13 @@ def scheduled_lanes_from_workflow(path: Path = WORKFLOW_PATH) -> dict[str, bool]
                 "job-level if condition"
             )
         for lane in lanes:
-            if lane in scheduled:
-                raise ValueError(f"{path}: scheduled lane {lane!r} appears in multiple jobs")
-            scheduled[lane] = any(
+            publishes = any(
                 lane in name
                 and "tests/blackbox/artifacts/" in artifact_path
                 and _condition_is_always(condition)
                 for name, artifact_path, condition in artifact_specs
             )
+            scheduled[lane] = scheduled.get(lane, True) and publishes
 
     return scheduled
 

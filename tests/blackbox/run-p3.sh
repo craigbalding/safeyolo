@@ -65,7 +65,7 @@ if ! git -C "$REPO_ROOT" cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; the
         git -C "$REPO_ROOT" fetch origin "$INSTALL_COMMIT"
     fi
 fi
-if ! git -C "$REPO_ROOT" merge-base --is-ancestor "$FROZEN_R" HEAD; then
+if [ "$INSTALL_COMMIT" = "$FROZEN_R" ] && ! git -C "$REPO_ROOT" merge-base --is-ancestor "$FROZEN_R" HEAD; then
     echo "ERROR: P3 harness checkout does not contain frozen R" >&2
     exit 2
 fi
@@ -76,7 +76,7 @@ export UV_TOOL_BIN_DIR="$PILOT_DIR/bin"
 export SAFEYOLO_CONFIG_DIR="$PILOT_DIR/source-instance"
 export SAFEYOLO_TEST_CONFIG_DIR="$PILOT_DIR/test-instance"
 export SAFEYOLO_TEST_AGENT=bbtest
-export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="$PILOT_DIR/observations"
+export SAFEYOLO_BLACKBOX_ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$PILOT_DIR/observations}"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_TEST_CONFIG_DIR/data/coord"
 export SAFEYOLO_NATS_TEST_INSTANCE="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 export CARGO_BUILD_JOBS=1
@@ -137,7 +137,7 @@ PY
             result=1
         fi
     fi
-    echo "$PLATFORM P3 result: exit $result; records: $PILOT_DIR/observations"
+    echo "$PLATFORM P3 result: exit $result; records: $SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"
     exit "$result"
 }
 trap cleanup EXIT

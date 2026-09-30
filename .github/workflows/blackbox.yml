@@ -1,6 +1,6 @@
-name: Blackbox Tests — systrap
+name: Nightly native blackbox
 
-# The GitHub-hosted lane deliberately proves gVisor's no-KVM fallback.
+# The GitHub-hosted Linux lanes deliberately prove gVisor's no-KVM fallback.
 # Hardware-backed lanes run through the same tests on the KVM VPS and a
 # physical Apple Silicon Mac mini (VZ); see tests/blackbox/README.md.
 #
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: blackbox-systrap-${{ github.ref }}
+  group: blackbox-native-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -64,7 +64,9 @@ jobs:
           grep -F "$USER:" /etc/subgid
 
       - name: Install, bootstrap, and run full systrap BB
-        run: ./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          ./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
 
       - name: Upload platform evidence and failure logs
         if: always()
@@ -75,5 +77,114 @@ jobs:
             tests/blackbox/artifacts/
             ~/.safeyolo-test/logs/
             /tmp/runsc-*.log
+          retention-days: 7
+          if-no-files-found: warn
+
+  installed-journey:
+    name: Installed ${{ matrix.journey }} — Linux systrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        journey: [p2, p3, p4]
+    env:
+      CARGO_BUILD_JOBS: "1"
+      SAFEYOLO_BLACKBOX_ARTIFACTS_DIR: ${{ github.workspace }}/tests/blackbox/artifacts
+      SAFEYOLO_RUNSC_DEBUG: "1"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Provision SafeYolo subordinate IDs
+        run: |
+          has_range() {
+            awk -F: -v user="$USER" '
+              $1 == user && $2 <= 100000 && ($2 + $3) >= 165536 { found = 1 }
+              END { exit !found }
+            ' "$1"
+          }
+
+          if ! has_range /etc/subuid; then
+            sudo usermod --add-subuids 100000-165535 "$USER"
+          fi
+          if ! has_range /etc/subgid; then
+            sudo usermod --add-subgids 100000-165535 "$USER"
+          fi
+
+          grep -F "$USER:" /etc/subuid
+          grep -F "$USER:" /etc/subgid
+
+      - name: Install P2 SSH fixture dependency
+        if: matrix.journey == 'p2'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends openssh-server
+
+      - name: Run installed journey at this commit
+        env:
+          JOURNEY: ${{ matrix.journey }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          case "$JOURNEY" in
+            p2) ./tests/blackbox/run-p2-linux.sh systrap --install-commit "$GITHUB_SHA" ;;
+            p3) ./tests/blackbox/run-p3.sh systrap --install-commit "$GITHUB_SHA" ;;
+            p4) ./tests/blackbox/run-p4.sh systrap --install-commit "$GITHUB_SHA" ;;
+          esac
+
+      - name: Upload journey evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: blackbox-systrap-${{ matrix.journey }}-${{ github.run_id }}
+          # P3 also writes a raw request export with a disposable credential.
+          path: tests/blackbox/artifacts/*.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  macos-proxy:
+    name: Native proxy — GitHub macOS
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      PYTEST_ADDOPTS: --basetemp=/tmp/sy-rs
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Prepare macOS loopback test origin
+        run: |
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+
+      - name: Install and test the native proxy
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          ./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose
+
+      - name: Upload proxy evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: blackbox-macos-proxy-${{ github.run_id }}
+          path: tests/blackbox/artifacts/
           retention-days: 7
           if-no-files-found: warn

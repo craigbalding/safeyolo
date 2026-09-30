@@ -1,5 +1,6 @@
 """Contract tests for implemented versus documented blackbox cadence."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -106,3 +107,18 @@ def test_wrapped_always_expression_publishes_pass_and_fail_evidence(
         upload_condition="${{ always() }}",
     )
     assert scheduled_lanes_from_workflow(workflow) == {"systrap": True}
+
+
+def test_every_scheduled_systrap_job_must_publish_evidence(tmp_path: Path) -> None:
+    workflow = _write_workflow(tmp_path / "multiple-systrap-jobs.yml")
+    data = yaml.load(workflow.read_text(), Loader=yaml.BaseLoader)
+    data["jobs"]["installed"] = deepcopy(data["jobs"]["systrap"])
+    data["jobs"]["installed"]["steps"][0]["run"] = (
+        "./tests/blackbox/run-p2-linux.sh systrap --install-commit $GITHUB_SHA"
+    )
+    workflow.write_text(yaml.safe_dump(data, sort_keys=False))
+    assert scheduled_lanes_from_workflow(workflow) == {"systrap": True}
+
+    data["jobs"]["installed"]["steps"].pop()
+    workflow.write_text(yaml.safe_dump(data, sort_keys=False))
+    assert scheduled_lanes_from_workflow(workflow) == {"systrap": False}
