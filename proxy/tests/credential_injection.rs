@@ -152,12 +152,20 @@ fn exact_auth_kind_drives_validated_sensitive_header_replacement() {
         assert_eq!(
             result.metadata["gateway_injected_header"],
             if kind.is_some() {
-                "X-Credential"
+                json!("X-Credential")
             } else {
-                "Authorization"
+                Value::Null
             }
         );
-        assert_eq!(result.stats.injected, 1);
+        assert_eq!(result.stats.injected, u64::from(kind.is_some()));
+        assert_eq!(
+            result.trace.as_ref().unwrap().outcome,
+            if kind.is_some() {
+                "injected"
+            } else {
+                "authorized"
+            }
+        );
         assert_eq!(result.audit.last().unwrap().event, "gateway.allow");
     }
     let mut selected = selection(Some("bearer"));
@@ -200,7 +208,8 @@ fn redirects_vault_denials_and_expiry_follow_the_actual_stage_order() {
             .collect::<Vec<_>>(),
         vec!["gateway.http_injection_allowed", "gateway.allow"]
     );
-    let Start::Blocked(unavailable) = start(selection(None), None, "http").unwrap() else {
+    let Start::Blocked(unavailable) = start(selection(Some("bearer")), None, "http").unwrap()
+    else {
         panic!("expected block")
     };
     assert_eq!(
@@ -208,11 +217,20 @@ fn redirects_vault_denials_and_expiry_follow_the_actual_stage_order() {
         json!(["VAULT_UNAVAILABLE"])
     );
     vault.remove("demo-key").unwrap();
-    let Start::Blocked(missing) = start(selection(None), Some(&vault), "http").unwrap() else {
+    let Start::Blocked(missing) = start(selection(Some("bearer")), Some(&vault), "http").unwrap()
+    else {
         panic!("expected block")
     };
     assert_eq!(missing.response.status, 503);
     assert_eq!(missing.response.body["action"], "self_correct");
+    let mut token_headers = HeaderMap::new();
+    token_headers.insert("authorization", HeaderValue::from_static("sgw_synthetic"));
+    let no_auth = ready(start(selection(None), None, "http").unwrap())
+        .apply(&mut token_headers)
+        .unwrap();
+    assert!(!token_headers.contains_key("authorization"));
+    assert_eq!(no_auth.metadata["gateway_injected_header"], Value::Null);
+    assert_eq!(no_auth.stats.injected, 0);
     let mut c = oauth();
     c.expires_at = Some("2020-01-01T00:00:00".into());
     vault.store(c).unwrap();
