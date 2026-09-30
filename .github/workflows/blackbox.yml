@@ -155,6 +155,8 @@ jobs:
     name: Native proxy — GitHub macOS
     runs-on: macos-latest
     timeout-minutes: 60
+    env:
+      PYTEST_ADDOPTS: --basetemp=/tmp/sy-rs
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -167,6 +169,11 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.13
+
+      - name: Prepare macOS loopback test origin
+        run: |
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          /sbin/ifconfig lo0 | grep -F '127.0.0.2'
 
       - name: Install and test the native proxy
         run: |
