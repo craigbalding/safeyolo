@@ -569,16 +569,16 @@ for scenario in x['scenarios']:
  output.append({'auth_kind':service.auth.type if service.auth else None,'routes':[{'methods':p['condition']['method'],'path':p['resource'].split(':',1)[1]} for p in permissions], 'outcomes':outcomes})
 json.dump({'scenarios':output,'normalization':[normalize_path(p) for p in x['normalization']]},sys.stdout)
 "#;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
     .args(["-c", script])
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

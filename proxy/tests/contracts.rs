@@ -446,6 +446,10 @@ fn differential_cases() -> Vec<Value> {
         .contains(&target)
         {
             request["intentional_difference"] = json!("decoded_query_alias_rejection");
+        } else if ["/%69tems", "/%2E/items"].contains(&target) {
+            // The pinned source predates the raw route guard; native rejects
+            // these spellings before a credential can be injected.
+            request["intentional_difference"] = json!("encoded_route_rejection");
         }
         requests.push(request);
     }
@@ -658,16 +662,17 @@ with HTTPServer(('127.0.0.1',0),Origin) as origin:
 assert observed['decoded_values']==['chosen','forbidden'] and observed['last_value']=='forbidden'
 json.dump({'outcomes':output,'decoded_query_alias_proof':observed},sys.stdout)
 "#;
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
     .args(["-c", script])
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_STATE_PYTHON_SOURCE")
+                .expect("set SAFEYOLO_STATE_PYTHON_SOURCE")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -711,7 +716,22 @@ json.dump({'outcomes':output,'decoded_query_alias_proof':observed},sys.stdout)
                 &request,
                 scenario["bound"].as_bool().unwrap(),
             ));
-            if request["intentional_difference"] == "decoded_query_alias_rejection" {
+            if request["intentional_difference"] == "encoded_route_rejection" {
+                let old = if scenario["bound"] == true {
+                    json!({"allowed":true,"operation":"write"})
+                } else {
+                    json!({"allowed":false,"code":"CONTRACT_NOT_BOUND"})
+                };
+                assert_eq!(
+                    expected["outcomes"][index][request_index], old,
+                    "historical encoded route behavior changed: {request}"
+                );
+                assert_eq!(
+                    result,
+                    json!({"allowed":false,"code":"TRANSPORT_PATH_TRICK"})
+                );
+                intentional_differences += 1;
+            } else if request["intentional_difference"] == "decoded_query_alias_rejection" {
                 let old = if scenario["bound"] == true {
                     json!({"allowed":true,"operation":"write"})
                 } else {
@@ -736,7 +756,7 @@ json.dump({'outcomes':output,'decoded_query_alias_proof':observed},sys.stdout)
         }
     }
     eprintln!(
-        "Compared {count} request-contract outcomes across {} shipped/synthetic definitions with production Python gateway; {intentional_differences} explicit decoded-query-alias repairs. Owned HTTP origin received historical forbidden second value.",
+        "Compared {count} request-contract outcomes across {} shipped/synthetic definitions with pinned Python gateway; {intentional_differences} explicit encoded-route and decoded-query-alias repairs. Owned HTTP origin received historical forbidden second value.",
         scenarios.len()
     );
 }

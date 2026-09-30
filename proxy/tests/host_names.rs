@@ -312,7 +312,10 @@ fn python(script: &str, input: &Value) -> Value {
         .current_dir(root)
         .env(
             "PYTHONPATH",
-            format!("{}:{}", root.join("cli/src").display(), root.display()),
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
         )
         .output()
         .unwrap();

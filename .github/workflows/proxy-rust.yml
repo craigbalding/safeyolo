@@ -278,6 +278,14 @@ jobs:
           cd "$SAFEYOLO_HTTP_PYTHON_SOURCE"
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Prepare pinned Python dispatch source
+        env:
+          SAFEYOLO_DISPATCH_COMMIT: 9aeb55a1fde5a824ae2846068f26afebadd8f2ee
+          SAFEYOLO_DISPATCH_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-dispatch-source
+        run: |
+          git fetch --no-tags --depth=1 origin "$SAFEYOLO_DISPATCH_COMMIT"
+          git worktree add --detach "$SAFEYOLO_DISPATCH_PYTHON_SOURCE" "$SAFEYOLO_DISPATCH_COMMIT"
+
       - name: Run shared HTTP contracts against the historical Python comparator
         env:
           SAFEYOLO_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-http-comparator
@@ -299,9 +307,10 @@ jobs:
           SAFEYOLO_POLICY_PYTHON: ${{ runner.temp }}/safeyolo-comparator/.venv/bin/python
           SAFEYOLO_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-http-comparator
           SAFEYOLO_PYTHON_EXECUTABLE: ${{ runner.temp }}/safeyolo-http-comparator/.venv/bin/python
-          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
-          SAFEYOLO_SOURCE_PYTHON: ${{ github.workspace }}/.venv/bin/python
-          SAFEYOLO_SOURCE_ROOT: ${{ github.workspace }}
+          SAFEYOLO_PYTHON: ${{ runner.temp }}/safeyolo-http-comparator/.venv/bin/python
+          SAFEYOLO_SOURCE_PYTHON: ${{ runner.temp }}/safeyolo-http-comparator/.venv/bin/python
+          SAFEYOLO_SOURCE_ROOT: ${{ runner.temp }}/safeyolo-http-comparator
+          SAFEYOLO_DISPATCH_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-dispatch-source
           SAFEYOLO_STATE_PYTHON_SOURCE: ${{ runner.temp }}/safeyolo-comparator
           SAFEYOLO_STATE_EVIDENCE_DIR: ${{ runner.temp }}/safeyolo-state-oracle
         run: |

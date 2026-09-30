@@ -325,9 +325,6 @@ fn python(script: &str, input: &Value) -> Value {
         io::Write,
         process::{Command, Stdio},
     };
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
@@ -335,7 +332,10 @@ fn python(script: &str, input: &Value) -> Value {
     .arg(script)
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{0}/cli/src:{0}",
+            std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

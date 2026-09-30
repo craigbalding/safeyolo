@@ -1,7 +1,7 @@
 """Record actual LocalPolicyClient baseline projections from synthetic files.
 
-The Rust historical baseline test runs this from the repository with its
-configured Python executable and PYTHONPATH=cli/src:. .
+The Rust historical baseline test runs this with the selected source checkout
+on PYTHONPATH.
 The fixture disables watchers and audit output, supplies a temporary service
 registry, and replaces token minting with deterministic noncredential labels.
 No service requests are sent. All baseline and list paths belong to this run.
@@ -14,6 +14,7 @@ import hashlib
 import itertools
 import json
 import logging
+import os
 import platform
 import socket
 import tempfile
@@ -23,14 +24,14 @@ from unittest.mock import patch
 
 import pydantic
 import yaml
-
 from pdp.client import LocalPolicyClient, PolicyClientConfig
+
 from safeyolo.core.service_loader import ServiceRegistry
 from safeyolo.policy.compiler import compile_policy
 from safeyolo.policy.loader import PolicyLoader, _extract_simple_permissions
 from safeyolo.policy.models import UnifiedPolicy
 
-ROOT = Path.cwd()
+ROOT = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path.cwd()))
 ROWS = []
 EVENTS = []
 

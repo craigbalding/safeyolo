@@ -13,11 +13,11 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(os.environ.get("SAFEYOLO_SOURCE_ROOT", Path(__file__).resolve().parents[2]))
 sys.path[:0] = [str(REPO), str(REPO / "cli/src")]
 from mitmproxy.test import taddons, tflow
-
 from pdp.client import LocalPolicyClient, PolicyClientConfig
+
 from safeyolo.mitm_addons import agent_api
 from safeyolo.policy import engine as engine_module
 from safeyolo.policy import loader as loader_module

@@ -1300,7 +1300,13 @@ agent = "alice"
         )
         .arg(root.join("proxy/tests/policy_projection_oracle.py"))
         .current_dir(root)
-        .env("PYTHONPATH", "cli/src:.")
+        .env(
+            "PYTHONPATH",
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
+        )
         .output()
         .unwrap();
         assert!(

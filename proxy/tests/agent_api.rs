@@ -1177,7 +1177,13 @@ asyncio.run(run()); print(json.dumps(output))
     let mut child =
         Command::new(std::env::var("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"))
             .current_dir(root)
-            .env("PYTHONPATH", "cli/src:.")
+            .env(
+                "PYTHONPATH",
+                format!(
+                    "{0}/cli/src:{0}",
+                    std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+                ),
+            )
             .args(["-c", script])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1291,7 +1297,13 @@ with tempfile.TemporaryDirectory() as temp,patch.object(PolicyLoader,'start_watc
 "#;
     let output = std::process::Command::new(std::env::var("SAFEYOLO_POLICY_PYTHON").unwrap())
         .current_dir(root)
-        .env("PYTHONPATH", "cli/src:.")
+        .env(
+            "PYTHONPATH",
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
+        )
         .args(["-c", script])
         .output()
         .unwrap();

@@ -503,7 +503,10 @@ mod tests {
             .arg("--check")
             .env(
                 "PYTHONPATH",
-                std::env::join_paths([root.to_owned(), root.join("cli/src")]).unwrap(),
+                format!(
+                    "{0}/cli/src:{0}",
+                    std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+                ),
             )
             .current_dir(root)
             .output()

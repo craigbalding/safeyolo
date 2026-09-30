@@ -189,9 +189,13 @@ def test_full_matrix_native_and_ignored_oracles_use_the_pinned_source_and_interp
     env = oracle["env"]
     assert env["SAFEYOLO_POLICY_PYTHON"] == "${{ runner.temp }}/safeyolo-comparator/.venv/bin/python"
     for key in ("SAFEYOLO_PYTHON", "SAFEYOLO_SOURCE_PYTHON"):
-        assert env[key] == "${{ github.workspace }}/.venv/bin/python"
-    assert env["SAFEYOLO_SOURCE_ROOT"] == "${{ github.workspace }}"
+        assert env[key] == env["SAFEYOLO_PYTHON_EXECUTABLE"]
+    assert env["SAFEYOLO_SOURCE_ROOT"] == env["SAFEYOLO_PYTHON_SOURCE"]
     assert env["SAFEYOLO_STATE_PYTHON_SOURCE"] == source["env"]["SAFEYOLO_STATE_PYTHON_SOURCE"]
+    dispatch = named["Prepare pinned Python dispatch source"]
+    assert dispatch["env"]["SAFEYOLO_DISPATCH_COMMIT"] == "9aeb55a1fde5a824ae2846068f26afebadd8f2ee"
+    assert steps.index(dispatch) < steps.index(oracle)
+    assert env["SAFEYOLO_DISPATCH_PYTHON_SOURCE"] == dispatch["env"]["SAFEYOLO_DISPATCH_PYTHON_SOURCE"]
     assert env["SAFEYOLO_STATE_EVIDENCE_DIR"] == "${{ runner.temp }}/safeyolo-state-oracle"
     assert f'"$comparator_head" != {comparator}' in oracle["run"]
     assert "status --porcelain" in oracle["run"]

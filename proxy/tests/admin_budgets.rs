@@ -287,20 +287,23 @@ async fn get_reporting_failure_terminates_with_a_categorical_error() {
 }
 
 #[test]
-#[ignore = "actual Python oracle; set SAFEYOLO_POLICY_PYTHON to the existing environment"]
+#[ignore = "historical HTTP Python oracle; set SAFEYOLO_PYTHON_SOURCE and SAFEYOLO_PYTHON_EXECUTABLE"]
 fn frozen_facade_rows_match_actual_source_hooks() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
+    let source = std::env::var_os("SAFEYOLO_PYTHON_SOURCE")
+        .expect("set SAFEYOLO_PYTHON_SOURCE to the historical HTTP comparator checkout");
     let temporary = tempfile::tempdir().unwrap();
     let output_path = temporary.path().join("source.json");
     let status = std::process::Command::new(
-        std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set source Python path"),
+        std::env::var_os("SAFEYOLO_PYTHON_EXECUTABLE")
+            .expect("set SAFEYOLO_PYTHON_EXECUTABLE to the historical HTTP comparator interpreter"),
     )
     .arg("-B")
     .arg(root.join("proxy/tests/admin_budgets_oracle.py"))
     .arg(&output_path)
-    .env("SAFEYOLO_SOURCE_ROOT", root)
+    .env("SAFEYOLO_SOURCE_ROOT", source)
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
     .status()

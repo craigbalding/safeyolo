@@ -23,11 +23,14 @@ fn frozen_circuit_api_rows_match_actual_source_hooks() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
-    let python_path = std::env::join_paths([root.join("cli/src"), root.to_owned()]).unwrap();
+    let python_path = format!(
+        "{0}/cli/src:{0}",
+        std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+    );
     let result = std::process::Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set source Python path"),
     )
-    .current_dir(root)
+    .current_dir(std::env::var_os("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT"))
     .env("PYTHONPATH", python_path)
     .arg("-B")
     .arg(root.join("proxy/tests/circuit_api_source.py"))

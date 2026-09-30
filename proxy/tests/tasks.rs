@@ -210,13 +210,21 @@ fn live_registration_schema_matches_frozen_source() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
+    let comparator = std::path::PathBuf::from(
+        std::env::var_os("SAFEYOLO_STATE_PYTHON_SOURCE")
+            .expect("set SAFEYOLO_STATE_PYTHON_SOURCE to the historical comparator checkout"),
+    );
     let mut child = Command::new(
         std::env::var_os("SAFEYOLO_POLICY_PYTHON").expect("set SAFEYOLO_POLICY_PYTHON"),
     )
     .arg(root.join("proxy/tests/tasks_oracle.py"))
     .env(
         "PYTHONPATH",
-        format!("{}:{}", root.join("cli/src").display(), root.display()),
+        format!(
+            "{}:{}",
+            comparator.join("cli/src").display(),
+            comparator.display()
+        ),
     )
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())

@@ -50,7 +50,10 @@ fn live_source_submission_oracle_matches_frozen_rows() {
         .arg(root.join("proxy/tests/circuit_audit_order_source.json"))
         .env(
             "PYTHONPATH",
-            std::env::join_paths([root.join("cli/src"), root.to_owned()]).unwrap(),
+            format!(
+                "{0}/cli/src:{0}",
+                std::env::var("SAFEYOLO_SOURCE_ROOT").expect("set SAFEYOLO_SOURCE_ROOT")
+            ),
         )
         .output()
         .unwrap();
