@@ -18,6 +18,7 @@ docs/state-compatibility.md.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import hashlib
 import http.client
 import http.server
@@ -39,6 +40,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from safeyolo.runtime_identity import process_start_token as _process_start_token
 
 SCHEMA = 1
 COMMAND_TIMEOUT = 20.0
@@ -587,33 +590,6 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _process_start_token(pid: int) -> str | None:
-    """Return the same OS-backed lifetime token recorded by the CLI."""
-    if sys.platform.startswith("linux"):
-        try:
-            stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-            fields_after_command = stat_text.rsplit(")", 1)[1].split()
-            start_ticks = fields_after_command[19]
-            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
-        except (IndexError, OSError):
-            return None
-        return f"linux:{boot_id}:{pid}:{start_ticks}"
-    try:
-        result = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    started = result.stdout.strip()
-    return f"ps:{pid}:{started}" if result.returncode == 0 and started else None
-
-
 def _process_executable(pid: int) -> Path | None:
     """Read the actual supported-host executable, when the host exposes it."""
     if sys.platform.startswith("linux"):
@@ -624,8 +600,22 @@ def _process_executable(pid: int) -> Path | None:
             return None
     if platform.system() != "Darwin":
         return None
-    # macOS has no /proc. `comm` is preferred, while `command` also provides
-    # an absolute argv[0] on hosts whose ps does not expose it in comm.
+    # libproc reports the kernel's executable path without requiring ps,
+    # which is unavailable inside the physical Mac test seatbelt.
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        pid_path = library.proc_pidpath
+        pid_path.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        pid_path.restype = ctypes.c_int
+        path_buffer = ctypes.create_string_buffer(4096)
+        if pid_path(pid, path_buffer, ctypes.sizeof(path_buffer)) > 0:
+            path = Path(os.fsdecode(path_buffer.value))
+            if path.is_absolute():
+                return path.resolve(strict=True)
+    except (AttributeError, OSError, ValueError):
+        pass
+    # Preserve the earlier ps path for Macs where libproc is unavailable.
+    # `comm` is preferred; `command` can also provide an absolute argv[0].
     for arguments in (("-o", "comm="), ("-o", "command=")):
         result = _run(["ps", "-p", str(pid), *arguments], timeout=5)
         if result.returncode != 0:
