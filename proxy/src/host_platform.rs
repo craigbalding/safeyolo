@@ -902,14 +902,11 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
     // OpenSSH runs ProxyCommand through a shell; quote the configured path.
     let socket = shell_socket.display().to_string().replace('\'', "'\\''");
     let proxy_command = format!("nc -U '{socket}'");
-    // Bash opens the guest TCP socket before writing a marker to stdout.
-    // The marker is consumed here and never reaches the caller. A stopped
-    // guest or a closed port therefore fails before a provider stream exists.
-    const READY: &[u8] = b"SAFEYOLO_PORT_READY\n";
-    let open = format!(
-        "/bin/bash -lc \"exec 3<>/dev/tcp/127.0.0.1:{port} || exit 1; \
-         printf 'SAFEYOLO_PORT_READY\\n'; exec socat - FD:3\""
-    );
+    // The guest Bash build has no /dev/tcp support. Socat reports its own
+    // successful connection on stderr before forwarding any bytes on stdout.
+    // Wait for that report so a closed port cannot be mistaken for a stream.
+    const CONNECTED: &[u8] = b"starting data transfer loop with FDs";
+    let open = format!("exec socat -d -d - TCP4:127.0.0.1:{port}");
     let mut child = Command::new("ssh")
         .args([
             "-i",
@@ -931,22 +928,35 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let mut marker = [0u8; READY.len()];
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        child
-            .stdout
-            .as_mut()
-            .ok_or_else(unavailable)?
-            .read_exact(&mut marker),
-    )
+    let mut stderr = child.stderr.take().ok_or_else(unavailable)?;
+    let mut diagnostics = Vec::with_capacity(1024);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while diagnostics.len() < 8192 {
+            let mut chunk = [0u8; 512];
+            let count = stderr.read(&mut chunk).await?;
+            if count == 0 {
+                return Ok::<bool, io::Error>(false);
+            }
+            diagnostics.extend_from_slice(&chunk[..count]);
+            if diagnostics
+                .windows(CONNECTED.len())
+                .any(|part| part == CONNECTED)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
     .await;
-    if !matches!(result, Ok(Ok(_))) || marker != READY {
+    if !matches!(result, Ok(Ok(true))) {
         return Err(unavailable());
     }
+    tokio::spawn(async move {
+        let _ = tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await;
+    });
     child_stream(child)
 }
 
