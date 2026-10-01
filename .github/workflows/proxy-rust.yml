@@ -153,6 +153,12 @@ jobs:
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
 
+      - name: Install native desktop test dependency
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat
+
       - name: Start the Python-owned Coord fixture
         env:
           SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
