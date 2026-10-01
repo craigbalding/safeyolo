@@ -1726,23 +1726,12 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     approval_request_id.as_deref(),
                 ));
             }
-            Err(
-                crate::desktop_present::Error::Failed | crate::desktop_present::Error::Transport,
-            ) => {
+            Err(crate::desktop_present::Error::Failed) => {
                 return Ok(desktop_failure(
                     agent_id,
                     StatusCode::CONFLICT,
                     "desktop_presentation_failed",
                     "Desktop presentation failed",
-                    approval_request_id.as_deref(),
-                ));
-            }
-            Err(crate::desktop_present::Error::Protocol) => {
-                return Ok(desktop_failure(
-                    agent_id,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "desktop_presenter_protocol",
-                    "desktop presenter returned an invalid result",
                     approval_request_id.as_deref(),
                 ));
             }

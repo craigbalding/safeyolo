@@ -21,13 +21,16 @@ pub mod credential_injection;
 mod credential_text;
 pub mod credentials;
 pub(crate) mod desktop_present;
+mod desktop_preview;
 mod flow_recorder;
 #[cfg(test)]
 mod flow_runtime_tests;
 pub mod flow_store;
 mod flow_writer;
 pub mod grants;
+mod host_agents;
 pub mod host_names;
+mod host_platform;
 mod http;
 pub mod http_content;
 pub mod ignored_host_logger;
@@ -49,6 +52,7 @@ mod request_trace;
 #[cfg(test)]
 mod service_catalog_tests;
 pub mod services;
+mod tailnet;
 pub mod tasks;
 pub mod test_context;
 #[cfg(test)]
@@ -1840,14 +1844,14 @@ impl Proxy {
         ) {
             eprintln!("Audit writer shutdown did not complete");
         }
-        desktop_present::shutdown();
+        desktop_present::shutdown().await;
     }
 }
 
 impl Drop for Proxy {
     fn drop(&mut self) {
         clear_readiness(&self.readiness_file, &self.default_via);
-        desktop_present::shutdown();
+        desktop_present::abort();
         for (_, listener) in self.listeners.drain() {
             drop(listener.stop());
         }
