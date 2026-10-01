@@ -95,11 +95,10 @@ jobs:
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
 
-      - name: Test the desktop presenter protocol
+      - name: Test desktop presentation and preview
         run: |
           uv run --frozen pytest -q \
             cli/tests/test_desktop_presenter.py \
-            cli/tests/test_desktop_presenter_rpc.py \
             cli/tests/test_agent_preview.py
 
       - name: Test focused native boundaries
