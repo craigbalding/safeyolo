@@ -3,6 +3,9 @@
 import json
 import os
 import stat
+import sys
+
+import pytest
 
 from tests.proxy_migration.harness import launch_proxy, request
 from tests.proxy_migration.test_gateway_redirect import AGENT_API, _origin, _wire
@@ -41,6 +44,7 @@ def _header_values(wire: bytes, name: bytes) -> list[bytes]:
             if line.split(b":", 1)[0].lower() == name.lower()]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Fake runsc provider fixture requires Linux")
 def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monkeypatch):
     directory = tmp_path / "provider"
     directory.mkdir()
