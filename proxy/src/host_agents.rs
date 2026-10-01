@@ -20,9 +20,10 @@ pub(crate) struct Agent {
     pub(crate) folder: Option<String>,
     pub(crate) launcher: Option<String>,
     pub(crate) host_script: Option<String>,
-    pub(crate) network_slot: Option<i64>,
     pub(crate) memory_mb: Option<i64>,
-    pub(crate) tailnet_port: Option<i64>,
+    pub(crate) rootfs_overlay: Option<String>,
+    pub(crate) user_default_args: Vec<String>,
+    pub(crate) mounts: Vec<String>,
 }
 
 impl Agent {
@@ -32,15 +33,33 @@ impl Agent {
             .ok_or("agent metadata must be a TOML table")?;
         let string = |key| table.get(key).and_then(Item::as_str).map(str::to_owned);
         let integer = |key| table.get(key).and_then(Item::as_integer);
+        let strings = |key| -> Result<Vec<String>, Error> {
+            let Some(item) = table.get(key) else {
+                return Ok(Vec::new());
+            };
+            let array = item
+                .as_array()
+                .ok_or("agent list metadata must be an array")?;
+            array
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "agent list metadata must contain strings".into())
+                })
+                .collect()
+        };
         Ok(Self {
             name,
             id: string("agent_id").ok_or("agent identity is missing")?,
             folder: string("folder"),
             launcher: string("launcher"),
             host_script: string("host_script"),
-            network_slot: integer("network_slot"),
             memory_mb: integer("memory_mb"),
-            tailnet_port: integer("tailnet_port"),
+            rootfs_overlay: string("rootfs_overlay"),
+            user_default_args: strings("user_default_args")?,
+            mounts: strings("mounts")?,
         })
     }
 }
@@ -59,6 +78,7 @@ impl PolicyLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .mode(0o600)
             .open(path)?;
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
@@ -132,8 +152,93 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
     Ok(agents)
 }
 
-pub(crate) fn by_id(agent_id: &str) -> Result<Option<Agent>, Error> {
-    Ok(list()?.into_iter().find(|agent| agent.id == agent_id))
+/// Preserve the assigned 10.200/16 identity and avoid addresses already in
+/// the live agent map, including legacy agents with no saved slot.
+pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
+    let _lock = PolicyLock::exclusive()?;
+    let path = policy_path();
+    let mut document = read_document(&path)?;
+    let agents = document
+        .get("agents")
+        .and_then(Item::as_table_like)
+        .ok_or("Agent not found")?;
+    if !agents.contains_key(name) {
+        return Err("Agent not found".into());
+    }
+    let mut used = std::collections::HashMap::<u16, String>::new();
+    let mut current = None;
+    for (other, item) in agents.iter() {
+        let Some(slot) = item.get("network_slot") else {
+            continue;
+        };
+        let slot = slot
+            .as_integer()
+            .ok_or("agent network slot must be an integer")?;
+        let slot = u16::try_from(slot).map_err(|_| "agent network slot is outside 0-65534")?;
+        if slot == u16::MAX {
+            return Err("agent network slot is outside 0-65534".into());
+        }
+        if let Some(previous) = used.insert(slot, other.to_owned()) {
+            return Err(format!(
+                "network slot {slot} is already assigned to both {previous} and {other}"
+            )
+            .into());
+        }
+        if other == name {
+            current = Some(slot);
+        }
+    }
+    let mut active = std::collections::HashMap::new();
+    let map_path = crate::host_platform::config_dir().join("data/agent_map.json");
+    if let Ok(source) = std::fs::read(&map_path)
+        && let Ok(map) =
+            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&source)
+    {
+        for (other, entry) in map {
+            let Some(ip) = entry.get("ip").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Ok([10, 200, third, fourth]) = ip
+                .parse::<std::net::Ipv4Addr>()
+                .map(|ip| ip.octets())
+                .map_err(|_| ())
+            else {
+                continue;
+            };
+            let address = u16::from(third) * 256 + u16::from(fourth);
+            if address > 0 {
+                active.insert(other, address - 1);
+            }
+        }
+    }
+    for (other, slot) in active.iter() {
+        if other != name {
+            if let Some(owner) = used.get(slot) {
+                if owner != other {
+                    return Err(format!(
+                        "network slot {slot} is assigned to {owner} and used by live agent {other}"
+                    )
+                    .into());
+                }
+            } else {
+                used.insert(*slot, other.clone());
+            }
+        }
+    }
+    if let Some(slot) = current {
+        if used.get(&slot).is_some_and(|owner| owner != name) {
+            return Err("agent network slot conflicts with a live agent".into());
+        }
+        return Ok(slot);
+    }
+    let own_active = active.get(name).copied();
+    let slot = own_active
+        .filter(|slot| !used.contains_key(slot))
+        .or_else(|| (0..u16::MAX).find(|slot| !used.contains_key(slot)))
+        .ok_or("no free SafeYolo agent network slots")?;
+    document["agents"][name]["network_slot"] = value(i64::from(slot));
+    save_document(&path, &document)?;
+    Ok(slot)
 }
 
 /// Reserve a unique Tailnet HTTPS port, returning its previous value so a

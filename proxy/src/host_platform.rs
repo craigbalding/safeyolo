@@ -3,19 +3,95 @@
 //! Linux uses runsc's connected-FD port forwarding. macOS uses the existing
 //! per-agent VZ shell bridge. Neither path opens a host TCP listener.
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 use std::{io, path::PathBuf};
 #[cfg(target_os = "macos")]
 use std::{
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
     pin::Pin,
     task::{Context, Poll},
 };
 
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct DarwinProcessInfo {
+    first_fields: [u32; 12],
+    command: [u8; 16],
+    name: [u8; 32],
+    other_fields: [u32; 5],
+    started_seconds: u64,
+    started_microseconds: u64,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut libc::c_void, size: i32) -> i32;
+    fn proc_pidpath(pid: i32, buffer: *mut libc::c_void, size: u32) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_process_token(pid: i64) -> Option<String> {
+    let pid = i32::try_from(pid).ok().filter(|pid| *pid > 0)?;
+    let mut info = std::mem::MaybeUninit::<DarwinProcessInfo>::zeroed();
+    let size = std::mem::size_of::<DarwinProcessInfo>();
+    if size != 136 {
+        return None;
+    }
+    let returned = unsafe { proc_pidinfo(pid, 3, 0, info.as_mut_ptr().cast(), size as i32) };
+    if returned != size as i32 {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    if info.first_fields[3] != pid as u32
+        || info.started_seconds == 0
+        || info.started_microseconds >= 1_000_000
+    {
+        return None;
+    }
+    Some(format!(
+        "darwin:{pid}:{}:{}",
+        info.started_seconds, info.started_microseconds
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn vm_process_token(name: &str, pid: i32) -> Option<String> {
+    let token = macos_process_token(i64::from(pid))?;
+    let mut buffer = [0u8; 4096];
+    let size = unsafe { proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    if size <= 0 {
+        return None;
+    }
+    let path = std::ffi::CStr::from_bytes_until_nul(&buffer).ok()?;
+    let actual = std::fs::canonicalize(std::path::Path::new(std::ffi::OsStr::from_bytes(
+        path.to_bytes(),
+    )))
+    .ok()?;
+    let expected = std::fs::canonicalize(config_dir().join("bin/safeyolo-vm")).ok()?;
+    if actual != expected {
+        return None;
+    }
+    let stored = config_dir().join("agents").join(name).join("vm.token");
+    match std::fs::read_to_string(stored) {
+        Ok(value) if value.trim() != token => None,
+        Ok(_) => Some(token),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Some(token),
+        Err(_) => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 use tokio::io::AsyncReadExt;
 #[cfg(target_os = "macos")]
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::process::Command;
 #[cfg(target_os = "macos")]
 use tokio::process::{Child, ChildStdin, ChildStdout};
@@ -28,6 +104,37 @@ pub(crate) fn config_dir() -> PathBuf {
         .unwrap_or_else(|| {
             PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".safeyolo")
         })
+}
+
+pub(crate) fn lock_host_state(path: &std::path::Path) -> io::Result<std::fs::File> {
+    use std::os::{
+        fd::AsRawFd,
+        unix::fs::{MetadataExt, PermissionsExt},
+    };
+
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or(io::Error::other("host lock has no parent"))?,
+    )?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err(io::Error::other("unsafe host state lock"));
+    }
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(file)
 }
 
 pub(crate) fn valid_agent_name(name: &str) -> bool {
@@ -114,6 +221,19 @@ fn child_stream(mut child: Child) -> io::Result<BoxStream> {
     }))
 }
 
+#[cfg(target_os = "macos")]
+fn macos_guest_command(command: &str) -> String {
+    // OpenSSH can give the unprivileged session a lower file-descriptor
+    // ceiling than guest PID 1. Preserve the CLI's session prelude.
+    format!(
+        "/usr/local/bin/sudo -n /usr/bin/prlimit --pid 1 --nofile=65536:65536 || exit 1; \
+         /usr/local/bin/sudo -n /usr/bin/prlimit --pid \"$$\" --nofile=65536:65536 || exit 1; \
+         if [ \"$(ulimit -Sn)\" != 65536 ] || [ \"$(ulimit -Hn)\" != 65536 ]; then exit 1; fi; \
+         . /etc/environment 2>/dev/null; \
+         if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
+    )
+}
+
 #[cfg(target_os = "linux")]
 fn userns_pid(name: &str) -> Option<u32> {
     let path = config_dir().join("agents").join(name).join("userns.pid");
@@ -122,12 +242,41 @@ fn userns_pid(name: &str) -> Option<u32> {
         .trim()
         .parse::<u32>()
         .ok()?;
-    // A stale holder must never redirect runsc into an unrelated namespace.
-    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        Some(pid)
-    } else {
-        None
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+        return None;
     }
+    // A stale PID can point at another process. Verify the namespace and
+    // subordinate mappings established by SafeYolo before nsenter or signal.
+    let own_userns = std::fs::metadata("/proc/self/ns/user").ok()?.ino();
+    let own_netns = std::fs::metadata("/proc/self/ns/net").ok()?.ino();
+    let holder_userns = std::fs::metadata(format!("/proc/{pid}/ns/user"))
+        .ok()?
+        .ino();
+    let holder_netns = std::fs::metadata(format!("/proc/{pid}/ns/net")).ok()?.ino();
+    if holder_userns == own_userns || holder_netns == own_netns {
+        return None;
+    }
+    let expected = [
+        (0, 100000, 1000),
+        (1000, unsafe { libc::getuid() }, 1),
+        (1001, 101001, 64534),
+    ];
+    let mappings = std::fs::read_to_string(format!("/proc/{pid}/uid_map")).ok()?;
+    let actual = mappings
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse::<u32>().ok()?,
+                fields.next()?.parse::<u32>().ok()?,
+                fields.next()?.parse::<u32>().ok()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    if actual != expected {
+        return None;
+    }
+    Some(pid)
 }
 
 #[cfg(target_os = "linux")]
@@ -151,6 +300,403 @@ fn runsc_command(name: &str) -> Command {
         .unwrap_or_else(|| config_dir().join("run"));
     command.arg("--root").arg(root);
     command
+}
+
+#[cfg(target_os = "linux")]
+fn runsc_root() -> PathBuf {
+    std::env::var_os("SAFEYOLO_RUNSC_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("run"))
+}
+
+#[cfg(target_os = "linux")]
+fn userns_command(name: &str, program: &str) -> Command {
+    let mut command = Command::new("nsenter");
+    command.args([
+        "--user",
+        "--net",
+        "--target",
+        &userns_pid(name).unwrap_or(0).to_string(),
+        "--",
+        program,
+    ]);
+    command
+}
+
+#[cfg(target_os = "linux")]
+async fn systemd_user_scope_available() -> bool {
+    if std::fs::read_to_string("/proc/1/comm")
+        .ok()
+        .is_none_or(|value| value.trim() != "systemd")
+        || std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none()
+            && std::env::var_os("XDG_RUNTIME_DIR").is_none()
+    {
+        return false;
+    }
+    let probe = tokio::time::timeout(
+        Duration::from_secs(2),
+        Command::new("systemctl")
+            .args(["--user", "show-environment"])
+            .output(),
+    )
+    .await;
+    if !probe
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|output| output.status.success())
+    {
+        return false;
+    }
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        Command::new("systemd-run").arg("--version").output(),
+    )
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .is_some_and(|output| output.status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn scoped_runsc_create(name: &str, memory_mb: u64) -> Command {
+    let mut command = Command::new("systemd-run");
+    command.args([
+        "--user",
+        "--scope",
+        "-p",
+        "Delegate=yes",
+        "-p",
+        &format!("MemoryMax={memory_mb}M"),
+        "-p",
+        "CPUQuota=400%",
+        "-p",
+        &format!("Description=safeyolo-{name}"),
+        "--",
+        "nsenter",
+        "--user",
+        "--net",
+        "--target",
+        &userns_pid(name).unwrap_or(0).to_string(),
+        "--",
+        "runsc",
+    ]);
+    command
+}
+
+#[cfg(target_os = "linux")]
+async fn start_userns(name: &str) -> io::Result<u32> {
+    let restricts =
+        std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
+            .is_ok_and(|value| value.trim() == "1");
+    let mut holder = if restricts {
+        let mut command = Command::new("aa-exec");
+        command.args([
+            "-p",
+            "safeyolo-runsc",
+            "--",
+            "unshare",
+            "-Un",
+            "sleep",
+            "86400",
+        ]);
+        command
+    } else {
+        let mut command = Command::new("unshare");
+        command.args(["-Un", "sleep", "86400"]);
+        command
+    };
+    unsafe {
+        holder.as_std_mut().pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = holder
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let pid = child
+        .id()
+        .ok_or(io::Error::other("user namespace holder has no PID"))?;
+    let parent_user = std::fs::metadata("/proc/self/ns/user")?.ino();
+    let parent_net = std::fs::metadata("/proc/self/ns/net")?.ino();
+    let entered = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if child.try_wait()?.is_some() {
+                return Err(io::Error::other(
+                    "user namespace holder exited before setup",
+                ));
+            }
+            let user = std::fs::metadata(format!("/proc/{pid}/ns/user")).map(|info| info.ino());
+            let net = std::fs::metadata(format!("/proc/{pid}/ns/net")).map(|info| info.ino());
+            if user.is_ok_and(|inode| inode != parent_user)
+                && net.is_ok_and(|inode| inode != parent_net)
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    if !matches!(entered, Ok(Ok(()))) {
+        let _ = child.kill().await;
+        return Err(io::Error::other(
+            "user namespace holder did not become ready",
+        ));
+    }
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
+    let map = Command::new("newuidmap")
+        .args([
+            pid.to_string(),
+            "0".to_owned(),
+            "100000".to_owned(),
+            "1000".to_owned(),
+            "1000".to_owned(),
+            uid.to_string(),
+            "1".to_owned(),
+            "1001".to_owned(),
+            "101001".to_owned(),
+            "64534".to_owned(),
+        ])
+        .output()
+        .await?;
+    if !map.status.success() {
+        let _ = child.kill().await;
+        return Err(io::Error::other(format!(
+            "newuidmap failed: {}",
+            String::from_utf8_lossy(&map.stderr)
+        )));
+    }
+    let map = Command::new("newgidmap")
+        .args([
+            pid.to_string(),
+            "0".to_owned(),
+            "100000".to_owned(),
+            "1000".to_owned(),
+            "1000".to_owned(),
+            gid.to_string(),
+            "1".to_owned(),
+            "1001".to_owned(),
+            "101001".to_owned(),
+            "64534".to_owned(),
+        ])
+        .output()
+        .await?;
+    if !map.status.success() {
+        let _ = child.kill().await;
+        return Err(io::Error::other(format!(
+            "newgidmap failed: {}",
+            String::from_utf8_lossy(&map.stderr)
+        )));
+    }
+    std::fs::write(
+        config_dir().join("agents").join(name).join("userns.pid"),
+        pid.to_string(),
+    )?;
+    Ok(pid)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn start_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    let directory = config_dir().join("agents").join(name);
+    let bundle = directory.join("config.json");
+    let share = directory.join("config-share");
+    if !share.join("guest-init").is_file() || !bundle.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "agent boot configuration was not staged by the CLI",
+        ));
+    }
+    let root = runsc_root();
+    std::fs::create_dir_all(&root)?;
+    let acl = Command::new("setfacl")
+        .args(["-m", "u:100000:rwx"])
+        .arg(&root)
+        .output()
+        .await?;
+    if !acl.status.success() {
+        return Err(io::Error::other("setfacl failed on runsc state directory"));
+    }
+    if userns_pid(name).is_some() {
+        stop_sandbox(name).await?;
+    }
+    let pid = start_userns(name).await?;
+    let result = async {
+        let mut spec: serde_json::Value = serde_json::from_slice(&std::fs::read(&bundle)?)?;
+        let namespaces = spec
+            .pointer_mut("/linux/namespaces")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or(io::Error::other("agent OCI namespaces missing"))?;
+        namespaces.retain(|entry| {
+            entry.get("type").and_then(serde_json::Value::as_str) != Some("network")
+        });
+        namespaces.push(serde_json::json!({"type":"network","path":format!("/proc/{pid}/ns/net")}));
+        let mode = std::fs::metadata(&bundle)?.permissions().mode();
+        let mut file = tempfile::NamedTempFile::new_in(&directory)?;
+        serde_json::to_writer_pretty(&mut file, &spec)?;
+        file.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(mode))?;
+        file.persist(&bundle)?;
+        let status_dir = directory.join("status");
+        std::fs::create_dir_all(&status_dir)?;
+        for marker in ["static-init-done", "per-run-started", "vm-status"] {
+            let _ = std::fs::remove_file(status_dir.join(marker));
+        }
+        std::fs::write(share.join("per-run-go"), b"")?;
+        let set_loopback = userns_command(name, "ip")
+            .args(["link", "set", "lo", "up"])
+            .status()
+            .await?;
+        if !set_loopback.success() {
+            return Err(io::Error::other("could not activate sandbox loopback"));
+        }
+        let address = userns_command(name, "ip")
+            .args(["addr", "add", &format!("{ip}/32"), "dev", "lo"])
+            .status()
+            .await?;
+        if !address.success() {
+            return Err(io::Error::other(
+                "could not assign sandbox attribution address",
+            ));
+        }
+        let id = format!("safeyolo-{name}");
+        let _ = runsc_command(name)
+            .args(["delete", "--force", &id])
+            .status()
+            .await;
+        let overlay = if ephemeral {
+            "--overlay2=root:memory".to_owned()
+        } else {
+            let path = directory.join("overlay");
+            std::fs::create_dir_all(&path)?;
+            format!("--overlay2=root:dir={}", path.display())
+        };
+        let platform = match std::env::var("SAFEYOLO_RUNSC_PLATFORM")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "systrap" => "systrap",
+            "" | "auto" => {
+                let operator_access = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/kvm")
+                    .is_ok();
+                let subordinate_access = if operator_access {
+                    tokio::time::timeout(
+                        Duration::from_secs(3),
+                        Command::new("getfacl").arg("/dev/kvm").output(),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .is_some_and(|output| {
+                        output.status.success()
+                            && String::from_utf8_lossy(&output.stdout).contains("user:100000:rw")
+                    })
+                } else {
+                    false
+                };
+                if subordinate_access { "kvm" } else { "systrap" }
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid runsc platform override",
+                ));
+            }
+        };
+        // runsc create forks a sandbox and gofer. A pipe inherited by either
+        // child can keep Command::output waiting after create itself exits.
+        let stderr = tempfile::tempfile()?;
+        let use_scope = systemd_user_scope_available().await;
+        let mut create = if use_scope {
+            scoped_runsc_create(name, memory_mb)
+        } else {
+            eprintln!(
+                "systemd user scope unavailable; starting {name} without host MemoryMax/CPUQuota limits"
+            );
+            userns_command(name, "runsc")
+        };
+        let create = create
+            .arg("--root")
+            .arg(&root)
+            .arg(&overlay)
+            .args([
+                "--host-uds=open",
+                "--ignore-cgroups",
+                "--network=sandbox",
+                &format!("--platform={platform}"),
+                "create",
+                "--bundle",
+            ])
+            .arg(&directory)
+            .arg(&id)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(stderr.try_clone()?)
+            .status()
+            .await?;
+        if !create.success() {
+            use std::io::{Read, Seek};
+            let mut stderr = stderr;
+            stderr.rewind()?;
+            let mut detail = String::new();
+            stderr.take(4096).read_to_string(&mut detail)?;
+            return Err(io::Error::other(format!("runsc create failed: {}", detail)));
+        }
+        let start = userns_command(name, "runsc")
+            .arg("--ignore-cgroups")
+            .arg("--root")
+            .arg(&root)
+            .args(["start", &id])
+            .output()
+            .await?;
+        if !start.status.success() {
+            return Err(io::Error::other(format!(
+                "runsc start failed: {}",
+                String::from_utf8_lossy(&start.stderr)
+            )));
+        }
+        let state = runsc_command(name).args(["state", &id]).output().await?;
+        let value: serde_json::Value = serde_json::from_slice(&state.stdout)?;
+        std::fs::write(
+            directory.join("container.pid"),
+            value
+                .get("pid")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                .to_string(),
+        )?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        while tokio::time::Instant::now() < deadline && is_sandbox_running(name).await {
+            if status_dir.join("per-run-started").is_file() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err(io::Error::other("guest did not reach per-run startup"))
+    }
+    .await;
+    if result.is_err() {
+        let _ = stop_sandbox(name).await;
+    }
+    result
 }
 
 #[cfg(target_os = "linux")]
@@ -254,6 +800,78 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
     Ok(status.code().unwrap_or(1))
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) async fn spawn_guest_command(
+    name: &str,
+    command: &str,
+) -> io::Result<tokio::process::Child> {
+    if !valid_agent_name(name) || !is_sandbox_running(name).await {
+        return Err(unavailable());
+    }
+    let wrapped = format!(
+        ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
+    );
+    runsc_command(name)
+        .args([
+            "exec",
+            "--user",
+            "1000:1000",
+            "--cwd",
+            "/workspace",
+            &format!("safeyolo-{name}"),
+            "/bin/bash",
+            "-lc",
+            &wrapped,
+        ])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    let id = format!("safeyolo-{name}");
+    if is_sandbox_running(name).await {
+        let _ = runsc_command(name)
+            .args(["kill", &id, "SIGTERM"])
+            .status()
+            .await;
+        for _ in 0..50 {
+            if !is_sandbox_running(name).await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if is_sandbox_running(name).await {
+            let _ = runsc_command(name)
+                .args(["kill", "--all", &id, "SIGKILL"])
+                .status()
+                .await;
+        }
+    }
+    let status = runsc_command(name)
+        .args(["delete", "--force", &id])
+        .status()
+        .await?;
+    if !status.success() && is_sandbox_running(name).await {
+        return Err(io::Error::other("runsc could not delete the sandbox"));
+    }
+    if let Some(pid) = userns_pid(name) {
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    }
+    let directory = config_dir().join("agents").join(name);
+    let _ = std::fs::remove_file(directory.join("userns.pid"));
+    let _ = std::fs::remove_file(directory.join("container.pid"));
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) async fn is_sandbox_running(name: &str) -> bool {
     if !valid_agent_name(name) {
@@ -266,7 +884,7 @@ pub(crate) async fn is_sandbox_running(name: &str) -> bool {
     else {
         return false;
     };
-    unsafe { libc::kill(pid, 0) == 0 }
+    vm_process_token(name, pid).is_some()
 }
 
 #[cfg(target_os = "macos")]
@@ -284,7 +902,15 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
     // OpenSSH runs ProxyCommand through a shell; quote the configured path.
     let socket = shell_socket.display().to_string().replace('\'', "'\\''");
     let proxy_command = format!("nc -U '{socket}'");
-    let child = Command::new("ssh")
+    // Bash opens the guest TCP socket before writing a marker to stdout.
+    // The marker is consumed here and never reaches the caller. A stopped
+    // guest or a closed port therefore fails before a provider stream exists.
+    const READY: &[u8] = b"SAFEYOLO_PORT_READY\n";
+    let open = format!(
+        "/bin/bash -lc \"exec 3<>/dev/tcp/127.0.0.1:{port} || exit 1; \
+         printf 'SAFEYOLO_PORT_READY\\n'; exec socat - FD:3\""
+    );
+    let mut child = Command::new("ssh")
         .args([
             "-i",
             key.to_str().unwrap_or_default(),
@@ -301,13 +927,26 @@ pub(crate) async fn open_guest_port(name: &str, port: u16) -> io::Result<BoxStre
             "-o",
             &format!("ProxyCommand={proxy_command}"),
             "agent@sandbox",
-            &format!("exec socat - TCP:127.0.0.1:{port}"),
+            &macos_guest_command(&open),
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
+    let mut marker = [0u8; READY.len()];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        child
+            .stdout
+            .as_mut()
+            .ok_or_else(unavailable)?
+            .read_exact(&mut marker),
+    )
+    .await;
+    if !matches!(result, Ok(Ok(_))) || marker != READY {
+        return Err(unavailable());
+    }
     child_stream(child)
 }
 
@@ -325,9 +964,7 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
     let key = config_dir().join("data/vm_ssh_key");
     let socket = shell_socket.display().to_string().replace('\'', "'\\''");
     let proxy_command = format!("nc -U '{socket}'");
-    let wrapped = format!(
-        ". /etc/environment 2>/dev/null; if [ -f /etc/mise-activate.sh ]; then . /etc/mise-activate.sh; fi; {command}"
-    );
+    let wrapped = macos_guest_command(command);
     let status = Command::new("ssh")
         .args([
             "-i",
@@ -353,6 +990,268 @@ pub(crate) async fn exec_guest_command(name: &str, command: &str) -> io::Result<
     Ok(status.code().unwrap_or(1))
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) async fn spawn_guest_command(
+    name: &str,
+    command: &str,
+) -> io::Result<tokio::process::Child> {
+    if !valid_agent_name(name) || !is_sandbox_running(name).await {
+        return Err(unavailable());
+    }
+    let shell = config_dir()
+        .join("data/shell-sockets")
+        .join(format!("{name}.sock"));
+    if !shell.exists() {
+        return Err(unavailable());
+    }
+    let key = config_dir().join("data/vm_ssh_key");
+    let socket = shell.display().to_string().replace('\'', "'\\''");
+    let wrapped = macos_guest_command(command);
+    Command::new("ssh")
+        .args([
+            "-i",
+            key.to_str().unwrap_or_default(),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ControlMaster=no",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            &format!("ProxyCommand=nc -U '{socket}'"),
+            "-t",
+            "agent@sandbox",
+            &wrapped,
+        ])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    let path = config_dir().join("agents").join(name).join("vm.pid");
+    let source = match std::fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let pid = source
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid VM PID"))?;
+    let Some(token) = vm_process_token(name, pid) else {
+        if unsafe { libc::kill(pid, 0) } != 0
+            && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
+        {
+            std::fs::remove_file(path)?;
+            let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
+            return Ok(());
+        }
+        return Err(io::Error::other(
+            "VM PID does not identify this agent's helper",
+        ));
+    };
+    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::NotFound {
+            return Err(error);
+        }
+    }
+    for _ in 0..100 {
+        if !is_sandbox_running(name).await {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    if vm_process_token(name, pid).as_deref() == Some(&token) {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+    }
+    std::fs::remove_file(path)?;
+    let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) async fn start_sandbox(
+    name: &str,
+    ip: &str,
+    memory_mb: u64,
+    ephemeral: bool,
+) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    let config = config_dir();
+    let directory = config.join("agents").join(name);
+    let share = directory.join("config-share");
+    let status_dir = directory.join("status");
+    let launch_context: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(share.join("host-launch-context.json"))?)?;
+    let workspace = launch_context
+        .get("workspace")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(io::Error::other(
+            "agent workspace missing from host launch context",
+        ))?;
+    let rootfs = if directory.join("rootfs.ext4").is_file() {
+        directory.join("rootfs.ext4")
+    } else {
+        config.join("share/rootfs-base.ext4")
+    };
+    let kernel = config.join("share/Image");
+    let initrd = config.join("share/initramfs.cpio.gz");
+    for path in [&rootfs, &kernel, &initrd, &share] {
+        if !path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("missing agent boot input: {}", path.display()),
+            ));
+        }
+    }
+    std::fs::create_dir_all(&status_dir)?;
+    std::fs::create_dir_all(directory.join("home"))?;
+    let shell = config
+        .join("data/shell-sockets")
+        .join(format!("{name}.sock"));
+    let control = config.join("data/vm-control").join(format!("{name}.sock"));
+    for socket in [&shell, &control] {
+        let parent = socket
+            .parent()
+            .ok_or(io::Error::other("VM socket has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        match std::fs::remove_file(socket) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    for marker in ["static-init-done", "per-run-started", "vm-status"] {
+        let _ = std::fs::remove_file(status_dir.join(marker));
+    }
+    std::fs::write(share.join("per-run-go"), b"")?;
+    let proxy = config
+        .join("data/sockets")
+        .join(format!("{ip}_{name}/proxy.sock"));
+    let mut command = Command::new(config.join("bin/safeyolo-vm"));
+    let mut cmdline = "console=hvc0 root=/dev/vda rw quiet".to_owned();
+    if ephemeral {
+        cmdline.push_str(" safeyolo.ephemeral_upper=1");
+    }
+    command.arg("run").args([
+        "--kernel",
+        kernel.to_str().unwrap_or_default(),
+        "--initrd",
+        initrd.to_str().unwrap_or_default(),
+        "--rootfs",
+        rootfs.to_str().unwrap_or_default(),
+        "--cpus",
+        "4",
+        "--memory",
+        &memory_mb.to_string(),
+        "--share",
+        &format!("{workspace}:workspace:rw"),
+        "--share",
+        &format!("{}:config:ro", share.display()),
+        "--share",
+        &format!("{}:status:rw", status_dir.display()),
+        "--share",
+        &format!("{}:home:rw", directory.join("home").display()),
+        "--serial-log",
+        &directory.join("console.log").display().to_string(),
+        "--cmdline",
+        &cmdline,
+        "--proxy-socket",
+        proxy.to_str().unwrap_or_default(),
+        "--shell-socket",
+        shell.to_str().unwrap_or_default(),
+        "--control-socket",
+        control.to_str().unwrap_or_default(),
+        "--no-terminal",
+    ]);
+    if let Some(shares) = launch_context
+        .get("extra_shares")
+        .and_then(serde_json::Value::as_array)
+    {
+        for (index, entry) in shares.iter().enumerate() {
+            let host = entry
+                .get("host_path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(io::Error::other("invalid staged extra share"))?;
+            let read_only = entry
+                .get("read_only")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or(io::Error::other("invalid staged extra share mode"))?;
+            if !std::path::Path::new(host).is_absolute() {
+                return Err(io::Error::other("staged extra share must be absolute"));
+            }
+            command.arg("--share").arg(format!(
+                "{host}:extra{index}:{}",
+                if read_only { "ro" } else { "rw" }
+            ));
+        }
+    }
+    if !ephemeral {
+        let overlay = directory.join("overlay.img");
+        if !overlay.is_file() || overlay.metadata()?.len() == 0 {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&overlay)?;
+            file.set_len(256 * 1024 * 1024 * 1024)?;
+            std::fs::set_permissions(&overlay, std::fs::Permissions::from_mode(0o600))?;
+        }
+        command.arg("--overlay").arg(overlay);
+    }
+    let serial = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(directory.join("serial.log"))?;
+    let stderr = serial.try_clone()?;
+    let mut child = command
+        .stdin(std::process::Stdio::null())
+        .stdout(serial)
+        .stderr(stderr)
+        .spawn()?;
+    let pid = child.id().ok_or(io::Error::other("VM helper has no PID"))?;
+    let _ = std::fs::remove_file(directory.join("vm.token"));
+    std::fs::write(directory.join("vm.pid"), pid.to_string())?;
+    if let Some(token) = vm_process_token(name, pid as i32) {
+        std::fs::write(directory.join("vm.token"), token)?;
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    while tokio::time::Instant::now() < deadline {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if status_dir.join("per-run-started").is_file() {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let _ = stop_sandbox(name).await;
+    Err(io::Error::other("VM did not reach per-run startup"))
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) async fn is_sandbox_running(_name: &str) -> bool {
     false
@@ -366,4 +1265,78 @@ pub(crate) async fn open_guest_port(_name: &str, _port: u16) -> io::Result<BoxSt
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) async fn exec_guest_command(_name: &str, _command: &str) -> io::Result<i32> {
     Err(unavailable())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn spawn_guest_command(
+    _name: &str,
+    _command: &str,
+) -> io::Result<tokio::process::Child> {
+    Err(unavailable())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn stop_sandbox(_name: &str) -> io::Result<()> {
+    Err(unavailable())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) async fn start_sandbox(
+    _name: &str,
+    _ip: &str,
+    _memory_mb: u64,
+    _ephemeral: bool,
+) -> io::Result<()> {
+    Err(unavailable())
+}
+
+pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
+    if !valid_agent_name(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid agent name",
+        ));
+    }
+    let path = config_dir().join("data/agent_map.json");
+    let _lock = lock_host_state(&path.with_file_name("agent_map.lock"))?;
+    let mut map = match std::fs::read(&path) {
+        Ok(content) => {
+            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&content)?
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(error),
+    };
+    if let Some(ip) = ip {
+        if ip.parse::<std::net::Ipv4Addr>().is_err() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid agent IP",
+            ));
+        }
+        let directory = config_dir()
+            .join("data/sockets")
+            .join(format!("{ip}_{name}"));
+        std::fs::create_dir_all(&directory)?;
+        let socket = directory.join("proxy.sock");
+        let started = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(io::Error::other)?;
+        map.insert(
+            name.to_owned(),
+            serde_json::json!({"ip":ip,"started":started,"socket":socket}),
+        );
+    } else {
+        map.remove(name);
+    }
+    std::fs::create_dir_all(
+        path.parent()
+            .ok_or(io::Error::other("agent map has no parent"))?,
+    )?;
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    serde_json::to_writer_pretty(&mut temporary, &map)?;
+    use std::io::Write;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path)?;
+    Ok(())
 }

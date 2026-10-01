@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, io::Write, os::unix::fs::PermissionsExt, sync::LazyLock};
 
+use regex::Regex;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use yaml_rust2::YamlLoader;
@@ -60,6 +61,8 @@ fn parse_geometry(value: &str) -> Result<(u32, u32), Error> {
         || !(3..=5).contains(&height.len())
         || !width.bytes().all(|byte| byte.is_ascii_digit())
         || !height.bytes().all(|byte| byte.is_ascii_digit())
+        || width.starts_with('0')
+        || height.starts_with('0')
     {
         return Err(Error::Failed);
     }
@@ -71,17 +74,95 @@ fn parse_geometry(value: &str) -> Result<(u32, u32), Error> {
     Ok((width, height))
 }
 
-fn geometry(size: &str) -> Result<String, Error> {
+fn geometry_in_text(value: &str) -> Option<(u32, u32)> {
+    static PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"([1-9][0-9]{2,4})\s*x\s*([1-9][0-9]{2,4})").expect("valid display pattern")
+    });
+    PATTERN
+        .captures_iter(value)
+        .filter_map(|captures| {
+            Some((
+                captures.get(1)?.as_str().parse::<u32>().ok()?,
+                captures.get(2)?.as_str().parse::<u32>().ok()?,
+            ))
+        })
+        .max_by_key(|(width, height)| width * height)
+}
+
+#[cfg(target_os = "macos")]
+fn main_display_size() -> Option<(u32, u32)> {
+    #[repr(C)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    struct Size {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    struct Rect {
+        origin: Point,
+        size: Size,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGMainDisplayID() -> u32;
+        fn CGDisplayBounds(display: u32) -> Rect;
+    }
+    let bounds = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+    let width = bounds.size.width as u32;
+    let height = bounds.size.height as u32;
+    (width >= 640 && height >= 480).then_some((width, height))
+}
+
+async fn display_size() -> Option<(u32, u32)> {
+    #[cfg(target_os = "macos")]
+    if let Some(size) = main_display_size() {
+        return Some(size);
+    }
+    #[cfg(target_os = "macos")]
+    let commands: &[(&str, &[&str], u64)] =
+        &[("system_profiler", &["SPDisplaysDataType", "-json"], 8)];
+    #[cfg(target_os = "linux")]
+    let commands: &[(&str, &[&str], u64)] = &[("xdpyinfo", &[], 3), ("xrandr", &["--current"], 3)];
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let commands: &[(&str, &[&str], u64)] = &[];
+    for (program, args, seconds) in commands {
+        let Some(output) = tokio::time::timeout(
+            std::time::Duration::from_secs(*seconds),
+            tokio::process::Command::new(program).args(*args).output(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok) else {
+            continue;
+        };
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(size) = geometry_in_text(&text) {
+                return Some(size);
+            }
+        }
+    }
+    None
+}
+
+async fn geometry(size: &str) -> Result<String, Error> {
     let size = size.trim().to_ascii_lowercase();
     if size != "auto" {
         let (width, height) = parse_geometry(&size)?;
         return Ok(format!("{width}x{height}"));
     }
-    let display = std::env::var("SAFEYOLO_PREVIEW_SCREEN_SIZE").ok();
-    let Some(display) = display else {
+    let display = if let Ok(value) = std::env::var("SAFEYOLO_PREVIEW_SCREEN_SIZE") {
+        Some(parse_geometry(&value)?)
+    } else {
+        display_size().await
+    };
+    let Some((width, height)) = display else {
         return Ok("1280x800".into());
     };
-    let (width, height) = parse_geometry(&display)?;
     Ok(format!(
         "{}x{}",
         width.saturating_sub(160).clamp(640, 2560),
@@ -135,11 +216,11 @@ pub(crate) async fn present(listener_name: String) -> Result<Value, Error> {
     let id = agent.id;
     let name = agent.name;
     let mut presentations = PRESENTATIONS.lock().await;
-    if let Some(presentation) = presentations.get_mut(&id) {
-        if presentation.preview.is_running() {
-            let code = presentation.preview.issue_unlock_code().await;
-            return Ok(response(&id, &name, &presentation.preview, code, true));
-        }
+    if let Some(presentation) = presentations.get_mut(&id)
+        && presentation.preview.is_running()
+    {
+        let code = presentation.preview.issue_unlock_code().await;
+        return Ok(response(&id, &name, &presentation.preview, code, true));
     }
     if let Some(mut presentation) = presentations.remove(&id) {
         presentation.preview.close().await;
@@ -148,7 +229,7 @@ pub(crate) async fn present(listener_name: String) -> Result<Value, Error> {
         return Err(Error::Failed);
     }
     let (preferred_size, host_port) = settings()?;
-    let geometry = geometry(&preferred_size)?;
+    let geometry = geometry(&preferred_size).await?;
     stage_guest_desktop(&name, &preferred_size)?;
     let tailnet = if std::env::var("SAFEYOLO_COMMAND_CENTRE_SHARE").as_deref() == Ok("tailnet") {
         let name = name.clone();

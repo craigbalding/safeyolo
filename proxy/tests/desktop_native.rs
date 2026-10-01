@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UnixStream},
 };
 
 const TOKEN: &str = "desktop-native-token";
@@ -26,6 +26,8 @@ fn fixture(root: &Path, guest_port: u16) {
     )
     .unwrap();
     fs::write(root.join("token"), TOKEN).unwrap();
+    fs::create_dir(root.join("data")).unwrap();
+    fs::write(root.join("data/agent_token"), "native-desktop-agent-token").unwrap();
     let bin = root.join("bin");
     fs::create_dir(&bin).unwrap();
     let script = bin.join("runsc");
@@ -43,7 +45,7 @@ case "$3" in
         : > "$SAFEYOLO_CONFIG_DIR/desktop-ready"
         ;;
       *"guest-desktop stop"*)
-        rm -f "$SAFEYOLO_CONFIG_DIR/desktop-ready"
+        /bin/rm -f "$SAFEYOLO_CONFIG_DIR/desktop-ready"
         : > "$SAFEYOLO_CONFIG_DIR/desktop-stopped"
         ;;
       *) exit 2;;
@@ -63,11 +65,10 @@ esac
     unsafe {
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         std::env::set_var("FAKE_GUEST_PORT", guest_port.to_string());
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-        );
-        std::env::remove_var("SAFEYOLO_DESKTOP_PRESENTER_PYTHON");
+        // An interpreter name is unavailable in the proxy's executable path.
+        std::env::set_var("PATH", bin);
+        std::env::set_var("SAFEYOLO_CLI_PYTHON", "/no/python/interpreter");
+        std::env::set_var("SAFEYOLO_LOG_PATH", root.join("audit.jsonl"));
     }
 }
 
@@ -76,6 +77,7 @@ fn config(root: &Path) -> Config {
         "listeners":[{"agent_id":"alice","socket_path":root.join("alice.sock")}],
         "policy_file":root.join("native-policy.toml"),
         "data_dir":root.join("data"),
+        "agent_api_enabled":true,
         "admin_port":0,
         "admin_api_token_file":root.join("token"),
         "readiness_file":root.join("ready.json"),
@@ -138,43 +140,68 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     let guest = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     fixture(root.path(), guest.local_addr().unwrap().port());
     let origin = tokio::spawn(async move {
-        let (mut stream, _) = guest.accept().await.unwrap();
-        let mut incoming = vec![0u8; 4096];
-        let size = stream.read(&mut incoming).await.unwrap();
-        let received = &incoming[..size];
-        assert!(received.starts_with(b"GET /vnc.html HTTP/1.1\r\n"));
-        assert!(
-            received
-                .windows(b"X-SafeYolo-Preview: 1".len())
-                .any(|part| part == b"X-SafeYolo-Preview: 1")
-        );
-        assert!(
-            !received
-                .windows(b"safeyolo_preview_token_".len())
-                .any(|part| part == b"safeyolo_preview_token_")
-        );
-        stream
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nalive")
-            .await
-            .unwrap();
+        for attempt in 0..2 {
+            let (mut stream, _) = guest.accept().await.unwrap();
+            let mut incoming = vec![0u8; 4096];
+            let size = stream.read(&mut incoming).await.unwrap();
+            let received = &incoming[..size];
+            assert!(received.starts_with(b"GET /vnc.html HTTP/1.1\r\n"));
+            assert!(
+                received
+                    .windows(b"X-SafeYolo-Preview: 1".len())
+                    .any(|part| part == b"X-SafeYolo-Preview: 1")
+            );
+            assert!(
+                !received
+                    .windows(b"safeyolo_preview_token_".len())
+                    .any(|part| part == b"safeyolo_preview_token_")
+            );
+            if attempt == 1 {
+                assert!(received.windows(11).any(|part| part == b"X-Byte: \xff\r\n"));
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nalive",
+                )
+                .await
+                .unwrap();
+        }
     });
     let proxy = Proxy::start(config(root.path())).await.unwrap();
     let ready: Value =
         serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
     let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
     let admin_headers = [("Authorization", format!("Bearer {TOKEN}"))];
+    let mut agent = UnixStream::connect(root.path().join("alice.sock"))
+        .await
+        .unwrap();
+    agent
+        .write_all(b"POST http://_safeyolo.proxy.internal/desktop/present HTTP/1.1\r\nHost: _safeyolo.proxy.internal\r\nAuthorization: Bearer native-desktop-agent-token\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+        .await
+        .unwrap();
+    let mut requested = Vec::new();
+    agent.read_to_end(&mut requested).await.unwrap();
+    assert_eq!(status(&requested), 202);
+    let request_id = body(&requested)["request_id"].as_str().unwrap().to_owned();
+    let pending = request(admin_port, "GET", "/admin/approvals", &admin_headers, b"").await;
+    assert_eq!(status(&pending), 200);
+    assert_eq!(body(&pending)["approvals"][0]["request_id"], request_id);
     let first = request(
         admin_port,
         "POST",
         "/admin/agents/alice/desktop/present",
         &admin_headers,
-        b"",
+        serde_json::to_string(&json!({"approval_request_id":request_id}))
+            .unwrap()
+            .as_bytes(),
     )
     .await;
     assert_eq!(status(&first), 200, "{}", String::from_utf8_lossy(&first));
     let first = body(&first);
     assert_eq!(first["agent_id"], ID);
     assert_eq!(first["reused"], false);
+    let resolved = request(admin_port, "GET", "/admin/approvals", &admin_headers, b"").await;
+    assert_eq!(body(&resolved)["approvals"], json!([]));
     assert!(root.path().join("desktop-ready").exists());
     assert!(
         root.path()
@@ -194,6 +221,15 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     let locked = request(preview_port, "GET", "/vnc.html", &[], b"").await;
     assert_eq!(status(&locked), 200);
     assert!(String::from_utf8_lossy(&locked).contains("Unlock Preview"));
+    let mut oversized = TcpStream::connect((Ipv4Addr::LOCALHOST, preview_port))
+        .await
+        .unwrap();
+    oversized.write_all(format!(
+        "POST /_safeyolo_preview/unlock HTTP/1.1\r\nHost: 127.0.0.1:{preview_port}\r\nOrigin: http://127.0.0.1:{preview_port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n"
+    ).as_bytes()).await.unwrap();
+    let mut oversized_reply = Vec::new();
+    oversized.read_to_end(&mut oversized_reply).await.unwrap();
+    assert_eq!(status(&oversized_reply), 413);
     let code = first["unlock_code"].as_str().unwrap();
     let unlock = request(
         preview_port,
@@ -215,10 +251,35 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
         .next()
         .unwrap()
         .to_owned();
-    let opened = request(preview_port, "GET", "/vnc.html", &[("Cookie", cookie)], b"").await;
+    let opened = request(
+        preview_port,
+        "GET",
+        "/vnc.html",
+        &[("Cookie", cookie.clone())],
+        b"",
+    )
+    .await;
     assert_eq!(status(&opened), 200);
     assert!(opened.ends_with(b"alive"));
+    let mut raw = TcpStream::connect((Ipv4Addr::LOCALHOST, preview_port))
+        .await
+        .unwrap();
+    raw.write_all(format!("GET /vnc.html HTTP/1.1\r\nHost: 127.0.0.1:{preview_port}\r\nCookie: {cookie}\r\nConnection: close\r\nX-Byte: ").as_bytes()).await.unwrap();
+    raw.write_all(b"\xff\r\n\r\n").await.unwrap();
+    let mut raw_reply = Vec::new();
+    raw.read_to_end(&mut raw_reply).await.unwrap();
+    assert_eq!(status(&raw_reply), 200);
+    assert!(raw_reply.ends_with(b"alive"));
     origin.await.unwrap();
+    let ambiguous = request(
+        preview_port,
+        "GET",
+        "/vnc.html",
+        &[("Cookie", cookie), ("Content-Length", "0".into())],
+        b"",
+    )
+    .await;
+    assert_eq!(status(&ambiguous), 502);
     let second = request(
         admin_port,
         "POST",
@@ -233,9 +294,76 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
     assert_eq!(second["url"], first["url"]);
     assert_ne!(second["unlock_code"], first["unlock_code"]);
     proxy.shutdown().await;
+    let audit = fs::read_to_string(root.path().join("audit.jsonl")).unwrap();
+    for event in [
+        "agent.preview_open",
+        "agent.preview_unlock",
+        "traffic.preview_request",
+        "traffic.preview_response",
+        "agent.preview_close",
+    ] {
+        assert!(
+            audit.contains(event),
+            "missing {event} from native preview audit"
+        );
+    }
     assert!(
         TcpStream::connect((Ipv4Addr::LOCALHOST, preview_port))
             .await
             .is_err()
     );
+
+    // A preview bind failure after the guest desktop starts must roll back
+    // that newly started desktop and leave no owned presentation behind.
+    fs::remove_file(root.path().join("desktop-ready")).unwrap();
+    let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    fs::write(
+        root.path().join("config.yaml"),
+        format!(
+            "desktop:\n  present_host_port: {}\n",
+            occupied.local_addr().unwrap().port()
+        ),
+    )
+    .unwrap();
+    let proxy = Proxy::start(config(root.path())).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let failed = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&failed), 409);
+    assert_eq!(body(&failed)["error"], "Desktop presentation failed");
+    assert!(root.path().join("desktop-stopped").is_file());
+    assert!(!root.path().join("desktop-ready").exists());
+    drop(occupied);
+    fs::remove_file(root.path().join("config.yaml")).unwrap();
+
+    fs::write(root.path().join("agent-stopped"), b"").unwrap();
+    let stopped = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&stopped), 409);
+    fs::remove_file(root.path().join("agent-stopped")).unwrap();
+    fs::write(root.path().join("policy.toml"), "").unwrap();
+    let missing = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&missing), 404);
+    proxy.shutdown().await;
 }

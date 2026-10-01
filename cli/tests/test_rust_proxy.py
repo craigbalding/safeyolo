@@ -152,7 +152,12 @@ def test_installed_launch_passes_command_centre_ports_and_durable_host_identity(
 
     def launched(*_args, **kwargs):
         env = kwargs["env"]
-        assert env["SAFEYOLO_OPERATOR_HOST_PYTHON"] == rust_proxy.sys.executable
+        assert env["SAFEYOLO_CLI_PYTHON"] == rust_proxy.sys.executable
+        assert env["SAFEYOLO_NATIVE_PROXY_BINARY"] == str(launch.binary)
+        assert all(name not in env for name in (
+            "SAFEYOLO_OPERATOR_HOST_PYTHON", "SAFEYOLO_PROVIDER_PYTHON",
+            "SAFEYOLO_DESKTOP_PRESENTER_PYTHON",
+        ))
         assert env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] == str(rust_proxy.instance_id_file().absolute())
         assert Path(env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"]).read_text().startswith("sy-")
         assert env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] == "9191"

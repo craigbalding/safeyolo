@@ -182,7 +182,7 @@ impl Session {
     }
 
     pub(crate) fn is_running(&mut self) -> bool {
-        self.child.try_wait().ok().flatten().is_none()
+        matches!(self.child.try_wait(), Ok(None))
     }
 
     pub(crate) async fn stop(&mut self) {

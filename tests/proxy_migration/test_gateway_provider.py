@@ -1,7 +1,8 @@
 """Rust gateway admission and provider stream boundary, including fail-closed routes."""
 
 import json
-from pathlib import Path
+import os
+import stat
 
 from tests.proxy_migration.harness import launch_proxy, request
 from tests.proxy_migration.test_gateway_redirect import AGENT_API, _origin, _wire
@@ -50,12 +51,34 @@ def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monke
     api_data.mkdir()
     (api_data / "agent_token").write_text("fixture-provider-agent-api-token")
 
-    fixture = Path(__file__).with_name("provider_pipe_fixture.py")
+    runsc_dir = directory / "bin"
+    runsc_dir.mkdir()
+    runsc = runsc_dir / "runsc"
+    runsc.write_text('''#!/bin/sh
+case "$3" in
+  state)
+    [ ! -e "$PROVIDER_STOP_MARKER" ] || exit 1
+    printf '{"status":"running"}\\n'
+    ;;
+  port-forward)
+    [ ! -e "$PROVIDER_STOP_MARKER" ] || exit 1
+    if [ -e "$PROVIDER_CLOSE_MARKER" ]; then
+        echo 'connection was refused' >&2
+        exit 1
+    fi
+    /usr/bin/socat "UNIX-CONNECT:$5" "TCP:127.0.0.1:$PROVIDER_FIXTURE_PORT" </dev/null >/dev/null 2>/dev/null &
+    ;;
+  *) exit 2 ;;
+esac
+''')
+    runsc.chmod(runsc.stat().st_mode | stat.S_IXUSR)
     stopped = directory / "provider-stopped"
+    closed = directory / "provider-port-closed"
     with _origin("127.0.0.1") as origin:
-        monkeypatch.setenv("SAFEYOLO_PROVIDER_PYTHON", str(fixture))
+        monkeypatch.setenv("PATH", f"{runsc_dir}:{os.environ['PATH']}")
         monkeypatch.setenv("PROVIDER_FIXTURE_PORT", str(origin.server_address[1]))
         monkeypatch.setenv("PROVIDER_STOP_MARKER", str(stopped))
+        monkeypatch.setenv("PROVIDER_CLOSE_MARKER", str(closed))
         with launch_proxy(
             "rust", directory, _policy(), native_policy=True, agent_api=True,
             agent_api_token=b"fixture-provider-agent-api-token",
@@ -111,6 +134,16 @@ def test_gateway_routes_only_authorized_calls_to_provider_stream(tmp_path, monke
             assert token.encode() not in wire
             assert wire.endswith(b"provider-request-body")
             assert not proxy.events("proxy.egress")
+
+            closed.touch()
+            status, _, _ = request(
+                proxy.paths["alice"], url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert status in {502, 503}
+            assert origin.accepts == 1
+            assert not proxy.events("proxy.egress")
+            closed.unlink()
 
             stopped.touch()
             status, _, _ = request(

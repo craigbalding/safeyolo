@@ -567,6 +567,18 @@ def add(  # DOC: README.md, docs/AGENTS.md
     from ..agents_store import _new_agent_id
     metadata["agent_id"] = _new_agent_id()
     save_agent(name, metadata)
+    if no_run:
+        # The installed CLI may prepare a stopped agent before the native
+        # proxy is the only remaining host runtime. Stage the same guest boot
+        # inputs that an ordinary CLI run would prepare.
+        from ..vm import stage_native_boot_inputs
+        try:
+            stage_native_boot_inputs(name, metadata)
+        except Exception as err:
+            log.warning("Native boot staging for %s failed", name, exc_info=True)
+            console.print(
+                f"[yellow]Native agent boot inputs are not ready:[/yellow] {escape(str(err))}"
+            )
 
     panel_lines = [
         f"[green]Agent '{name}' added![/green]\n",

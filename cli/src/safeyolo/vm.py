@@ -14,6 +14,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -1194,11 +1195,66 @@ def prepare_config_share(
         "generation": uuid.uuid4().hex,
         "command_payloads": payload_identities,
         "workspace": str(Path(workspace_path).expanduser().resolve()),
+        "extra_shares": [
+            {"host_path": str(Path(host).expanduser().resolve()), "read_only": read_only}
+            for host, _guest, read_only in (host_mounts or [])
+        ],
         "writable_mounts": [str(Path(host).resolve()) for host, _guest, read_only in (host_mounts or [])
                             if not read_only],
     }) + "\n")
 
     return share_dir
+
+
+def stage_native_boot_inputs(name: str, metadata: dict) -> None:
+    """Stage host-owned boot inputs while the Python CLI is available.
+
+    The native proxy can later start this configured agent without importing
+    the CLI package. The ordinary CLI run still refreshes these inputs before
+    its own boot. Only a stopped agent may be staged here.
+    """
+    from .agent_configuration import _resolve_extra_shares
+    from .agents_store import reserve_agent_network_slot
+    from .platform import get_platform
+    from .sockets import path_for
+
+    platform = get_platform()
+    slot = reserve_agent_network_slot(name)
+    allocation = platform.setup_networking(slot)
+    attribution_ip = allocation["attribution_ip"]
+    socket_dir = path_for(name, attribution_ip).parent
+    socket_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    shares = _resolve_extra_shares(metadata, None)
+    workspace = str(Path(metadata["folder"]).expanduser().resolve())
+    share = prepare_config_share(
+        name=name,
+        workspace_path=workspace,
+        agent_args=" ".join(metadata.get("user_default_args", [])),
+        extra_env={"SAFEYOLO_YOLO_MODE": "1", "SAFEYOLO_DETACH": "1"},
+        proxy_port=8080,
+        host_mounts=shares,
+        gateway_ip=allocation["host_ip"],
+        guest_ip=allocation["guest_ip"],
+        attribution_ip=attribution_ip,
+        pre_write_per_run_go=True,
+        debug_mode=os.environ.get("SAFEYOLO_DEBUG") == "1",
+    )
+    if sys.platform.startswith("linux"):
+        specification = platform._generate_oci_config(
+            name=name,
+            rootfs_path=platform.agent_rootfs_path(name),
+            workspace_path=workspace,
+            config_share=share,
+            fw_alloc=allocation,
+            cpus=4,
+            memory_mb=metadata.get("memory_mb", 4096),
+            extra_shares=shares,
+            userns_pid=None,
+            ephemeral=metadata.get("rootfs_overlay") == "memory",
+        )
+        (get_agents_dir() / name / "config.json").write_text(
+            json.dumps(specification, indent=2) + "\n"
+        )
 
 
 def _command_payload_identity(payload: Path) -> list[int]:
@@ -1489,6 +1545,9 @@ def start_vm(
 
     # Write PID file
     pid_path = get_agent_pid_path(name)
+    # A Python-launched VM has no native start token. Clear one left by an
+    # earlier native run before exposing the new PID to the proxy.
+    (pid_path.parent / "vm.token").unlink(missing_ok=True)
     pid_path.write_text(str(proc.pid))
 
     return proc
@@ -1507,6 +1566,7 @@ def stop_vm(name: str) -> None:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pid_path.unlink(missing_ok=True)
+        (pid_path.parent / "vm.token").unlink(missing_ok=True)
         _update_agent_map(name, remove=True)
         return
 
@@ -1525,6 +1585,7 @@ def stop_vm(name: str) -> None:
             pass
 
     pid_path.unlink(missing_ok=True)
+    (pid_path.parent / "vm.token").unlink(missing_ok=True)
     _update_agent_map(name, remove=True)
 
 

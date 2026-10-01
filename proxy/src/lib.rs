@@ -29,6 +29,13 @@ pub mod flow_store;
 mod flow_writer;
 pub mod grants;
 mod host_agents;
+mod host_events;
+mod host_lifecycle;
+
+/// Run one host-owned coding-agent launch in a native terminal wrapper.
+pub async fn run_host_agent_entrypoint(name: &str, launch_id: &str) -> Result<i32, Error> {
+    host_lifecycle::run_entrypoint(name, launch_id).await
+}
 pub mod host_names;
 mod host_platform;
 mod http;
