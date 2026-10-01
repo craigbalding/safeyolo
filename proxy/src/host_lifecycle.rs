@@ -1,6 +1,7 @@
 //! Installed Command Centre agent state and fixed lifecycle operations.
 
 use std::{
+    collections::BTreeSet,
     fs::{File, OpenOptions},
     io::Write,
     os::{
@@ -17,6 +18,7 @@ use serde_json::{Value, json};
 use crate::{Error, host_agents::Agent};
 
 static LISTENER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TMUX_LAUNCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn agent_dir(name: &str) -> PathBuf {
     crate::host_platform::config_dir().join("agents").join(name)
@@ -809,6 +811,103 @@ async fn invoke_launcher(agent: &Agent, record: &Value) -> Result<(), Error> {
     }
 }
 
+fn valid_tmux_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+async fn tmux_session_with_current_env(
+    session: &str,
+    name: &str,
+    binary: &std::path::Path,
+    arguments: &[String],
+) -> Result<std::process::Output, Error> {
+    // tmux only imports its configured update-environment names from a client
+    // when creating a session. Transfer all current names and mask values left
+    // in a pre-existing server, without putting any values in command argv.
+    let _lock = TMUX_LAUNCH_LOCK.lock().await;
+    let option = tokio::process::Command::new("tmux")
+        .args(["show-options", "-gqv", "update-environment"])
+        .output()
+        .await?;
+    let previous = if option.status.success() {
+        let global = tokio::process::Command::new("tmux")
+            .args(["show-environment", "-g"])
+            .output()
+            .await?;
+        if !global.status.success() {
+            return Err("Could not inspect tmux server environment".into());
+        }
+        let mut names = BTreeSet::new();
+        for (name, _) in std::env::vars_os() {
+            if let Some(name) = name.to_str().filter(|name| valid_tmux_env_name(name)) {
+                names.insert(name.to_owned());
+            }
+        }
+        for line in global.stdout.split(|byte| *byte == b'\n') {
+            let line = line.strip_prefix(b"-").unwrap_or(line);
+            let name = line.split(|byte| *byte == b'=').next().unwrap_or_default();
+            if let Ok(name) = std::str::from_utf8(name)
+                && valid_tmux_env_name(name)
+            {
+                names.insert(name.to_owned());
+            }
+        }
+        let previous = String::from_utf8(option.stdout)?.trim_end().to_owned();
+        let names = names.into_iter().collect::<Vec<_>>().join(" ");
+        let set = tokio::process::Command::new("tmux")
+            .args(["set-option", "-g", "update-environment", &names])
+            .status()
+            .await?;
+        if !set.success() {
+            return Err("Could not set tmux environment update names".into());
+        }
+        Some(previous)
+    } else {
+        let sessions = tokio::process::Command::new("tmux")
+            .arg("list-sessions")
+            .output()
+            .await?;
+        if sessions.status.success() {
+            return Err("Could not inspect existing tmux environment setting".into());
+        }
+        None
+    };
+    let created = tokio::process::Command::new("tmux")
+        .args([
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{socket_path}\n#{pane_id}",
+            "-s",
+            session,
+            "-n",
+            name,
+        ])
+        .arg(binary)
+        .args(arguments)
+        .output()
+        .await;
+    if let Some(previous) = previous {
+        let restored = tokio::process::Command::new("tmux")
+            .args(["set-option", "-g", "update-environment", &previous])
+            .status()
+            .await;
+        if !matches!(restored, Ok(status) if status.success()) {
+            if created.as_ref().is_ok_and(|output| output.status.success()) {
+                let _ = tokio::process::Command::new("tmux")
+                    .args(["kill-session", "-t", &format!("={session}")])
+                    .status()
+                    .await;
+            }
+            return Err("Could not restore tmux environment update names".into());
+        }
+    }
+    Ok(created?)
+}
+
 async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Error> {
     let session = record
         .get("tmux_session")
@@ -821,69 +920,60 @@ async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Er
     let binary = std::env::var_os("SAFEYOLO_NATIVE_PROXY_BINARY")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_exe()?);
-    let mut arguments = vec![
+    let arguments = [
         "--host-agent-entrypoint".to_owned(),
         agent.name.clone(),
         launch_id.to_owned(),
     ];
-    let mut output = tokio::process::Command::new("tmux")
+    let output = tokio::process::Command::new("tmux")
         .args(["has-session", "-t", &format!("={session}")])
         .output()
         .await?;
-    let format = "#{socket_path}\n#{pane_id}";
-    if !output.status.success() {
-        output = tokio::process::Command::new("tmux")
-            .args([
-                "new-session",
-                "-d",
-                "-P",
-                "-F",
-                format,
-                "-s",
-                session,
-                "-n",
-                &agent.name,
-            ])
-            .arg(&binary)
-            .args(&arguments)
-            .output()
-            .await?;
-    } else {
-        output.stdout.clear();
-    }
-    if !output.status.success() || output.stdout.is_empty() {
-        let mut command = tokio::process::Command::new("tmux");
-        if kind == "tmux-pane" {
-            command.args([
-                "split-window",
-                "-d",
-                "-P",
-                "-F",
-                format,
-                "-t",
-                &format!("={session}:"),
-            ]);
-        } else {
-            command.args([
-                "new-window",
-                "-d",
-                "-P",
-                "-F",
-                format,
-                "-t",
-                &format!("={session}:"),
-                "-n",
-                &agent.name,
-            ]);
-        }
-        output = command.arg(&binary).args(&arguments).output().await?;
-    }
+    let existing = output.status.success();
+    let temporary = existing.then(|| format!("safeyolo-agent-{}", uuid::Uuid::new_v4().simple()));
+    let created = temporary.as_deref().unwrap_or(session);
+    let output = tmux_session_with_current_env(created, &agent.name, &binary, &arguments).await?;
     if !output.status.success() {
         return Err(format!(
             "tmux launcher failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )
         .into());
+    }
+    if let Some(temporary) = temporary {
+        let mut command = tokio::process::Command::new("tmux");
+        if kind == "tmux-pane" {
+            command.args([
+                "join-pane",
+                "-d",
+                "-s",
+                &format!("{temporary}:"),
+                "-t",
+                &format!("={session}:"),
+            ]);
+        } else {
+            command.args([
+                "move-window",
+                "-d",
+                "-s",
+                &format!("{temporary}:"),
+                "-t",
+                &format!("={session}:"),
+            ]);
+        }
+        let moved = command.output().await;
+        if !moved.as_ref().is_ok_and(|output| output.status.success()) {
+            let _ = tokio::process::Command::new("tmux")
+                .args(["kill-session", "-t", &format!("={temporary}")])
+                .status()
+                .await;
+            let moved = moved?;
+            return Err(format!(
+                "tmux launcher failed: {}",
+                String::from_utf8_lossy(&moved.stderr)
+            )
+            .into());
+        }
     }
     let value = String::from_utf8(output.stdout)?;
     let (socket, pane) = value
@@ -898,7 +988,6 @@ async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Er
             ("pane_id".to_owned(), pane.into()),
         ]),
     )?;
-    arguments.clear();
     Ok(())
 }
 

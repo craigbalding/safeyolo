@@ -110,6 +110,55 @@ async fn admin(port: u16, method: &str, path: &str) -> (u16, Value) {
     (status, body)
 }
 
+async fn start_tmux_agent_and_check_env(port: u16, root: &Path) {
+    let (code, started) = admin(port, "POST", &format!("/admin/agents/{ID}/start")).await;
+    assert_eq!(code, 200, "{started}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let (code, observed) = admin(port, "GET", "/admin/agents").await;
+        assert_eq!(code, 200);
+        if observed["agents"][0]["agent_state"] == "running" {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "{observed}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let launch: Value =
+        serde_json::from_slice(&fs::read(root.join("agents/alice/current-launch.json")).unwrap())
+            .unwrap();
+    let runner = launch["runner_pid"].as_i64().unwrap();
+    let environment = fs::read(format!("/proc/{runner}/environ")).unwrap();
+    let expected_config = format!("SAFEYOLO_CONFIG_DIR={}", root.display());
+    assert!(
+        environment
+            .split(|byte| *byte == 0)
+            .any(|entry| entry == expected_config.as_bytes()),
+        "agent child did not receive the current config directory"
+    );
+    assert!(
+        !environment
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"SAFEYOLO_RUNSC_ROOT=")),
+        "agent child retained the old runsc root"
+    );
+    let (code, stopped) = admin(port, "POST", &format!("/admin/agents/{ID}/stop")).await;
+    assert_eq!(code, 200, "{stopped}");
+    assert_eq!(stopped["sandbox_state"], "stopped");
+    assert!(root.join("stopped").exists());
+}
+
+struct TmuxServerGuard(std::path::PathBuf);
+
+impl Drop for TmuxServerGuard {
+    fn drop(&mut self) {
+        let _ = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", &self.0)
+            .env_remove("TMUX")
+            .arg("kill-server")
+            .output();
+    }
+}
+
 #[tokio::test]
 async fn admin_lists_starts_observes_and_stops_without_python() {
     let directory = TempDir::new().unwrap();
@@ -252,34 +301,87 @@ async fn admin_lists_starts_observes_and_stops_without_python() {
         .unwrap();
         let tmux_dir = root.join("tmux");
         fs::create_dir(&tmux_dir).unwrap();
+        let _server = TmuxServerGuard(tmux_dir.clone());
         std::os::unix::fs::symlink("/usr/bin/tmux", root.join("bin/tmux")).unwrap();
+        let previous_runsc_root = std::env::var_os("SAFEYOLO_RUNSC_ROOT");
+        let previous_tmux = std::env::var_os("TMUX");
         unsafe {
             std::env::set_var("TMUX_TMPDIR", &tmux_dir);
+            std::env::remove_var("TMUX");
             std::env::set_var(
                 "SAFEYOLO_NATIVE_PROXY_BINARY",
                 env!("CARGO_BIN_EXE_safeyolo-proxy"),
             );
+            std::env::remove_var("SAFEYOLO_RUNSC_ROOT");
         }
-        let (code, started) = admin(port, "POST", &format!("/admin/agents/{ID}/start")).await;
-        assert_eq!(code, 200, "{started}");
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-        loop {
-            let (code, observed) = admin(port, "GET", "/admin/agents").await;
-            assert_eq!(code, 200);
-            if observed["agents"][0]["agent_state"] == "running" {
-                break;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "{observed}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let (code, stopped) = admin(port, "POST", &format!("/admin/agents/{ID}/stop")).await;
-        assert_eq!(code, 200, "{stopped}");
-        assert_eq!(stopped["sandbox_state"], "stopped");
-        assert!(root.join("stopped").exists());
+        // First launch starts a fresh server. The following launches reuse an
+        // older server with stale settings and exercise both transfer routes.
+        start_tmux_agent_and_check_env(port, root).await;
         let _ = Command::new("/usr/bin/tmux")
             .env("TMUX_TMPDIR", &tmux_dir)
-            .args(["kill-session", "-t", &format!("={session}")])
-            .status();
+            .arg("kill-server")
+            .output();
+        let stale = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", &tmux_dir)
+            .env("SAFEYOLO_CONFIG_DIR", "/old-instance")
+            .env("SAFEYOLO_RUNSC_ROOT", "/old-runsc")
+            .args(["new-session", "-d", "-s", &session, "/bin/sleep", "60"])
+            .status()
+            .unwrap();
+        assert!(stale.success());
+        for (name, expected) in [
+            ("SAFEYOLO_CONFIG_DIR", "SAFEYOLO_CONFIG_DIR=/old-instance\n"),
+            ("SAFEYOLO_RUNSC_ROOT", "SAFEYOLO_RUNSC_ROOT=/old-runsc\n"),
+        ] {
+            let server_env = Command::new("/usr/bin/tmux")
+                .env("TMUX_TMPDIR", &tmux_dir)
+                .args(["show-environment", "-g", name])
+                .output()
+                .unwrap();
+            assert!(server_env.status.success());
+            assert_eq!(server_env.stdout, expected.as_bytes());
+        }
+        let original_update = Command::new("/usr/bin/tmux")
+            .env("TMUX_TMPDIR", &tmux_dir)
+            .args(["show-options", "-gqv", "update-environment"])
+            .output()
+            .unwrap();
+        assert!(original_update.status.success());
+        for launcher in ["tmux-window", "tmux-pane"] {
+            fs::remove_file(root.join("stopped")).unwrap();
+            fs::remove_file(&launch_path).unwrap();
+            fs::write(
+                root.join("policy.toml"),
+                format!(
+                    "[agents.alice]\nagent_id = \"{ID}\"\nfolder = \"{}\"\nlauncher = \"{launcher}\"\n",
+                    root.join("workspace").display()
+                ),
+            )
+            .unwrap();
+            start_tmux_agent_and_check_env(port, root).await;
+            let restored_update = Command::new("/usr/bin/tmux")
+                .env("TMUX_TMPDIR", &tmux_dir)
+                .args(["show-options", "-gqv", "update-environment"])
+                .output()
+                .unwrap();
+            assert!(restored_update.status.success());
+            assert_eq!(restored_update.stdout, original_update.stdout);
+            let sessions = Command::new("/usr/bin/tmux")
+                .env("TMUX_TMPDIR", &tmux_dir)
+                .arg("list-sessions")
+                .output()
+                .unwrap();
+            assert!(sessions.status.success());
+            assert!(!String::from_utf8_lossy(&sessions.stdout).contains("safeyolo-agent-"));
+        }
+        unsafe {
+            if let Some(previous) = previous_runsc_root {
+                std::env::set_var("SAFEYOLO_RUNSC_ROOT", previous);
+            }
+            if let Some(previous) = previous_tmux {
+                std::env::set_var("TMUX", previous);
+            }
+        }
     }
 
     proxy.shutdown().await;
