@@ -5,6 +5,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import create_autospec, patch
@@ -30,6 +31,7 @@ from safeyolo.vm import (
     prepare_config_share,
     probe_vm_helper,
     stage_guest_desktop_launcher,
+    stage_native_boot_inputs,
     start_vm,
     stop_vm,
     vm_helper_failure_summary,
@@ -440,13 +442,43 @@ class TestPrepareConfigShare:
         generation = context.pop("generation")
         assert generation
         assert context == {"command_payloads": {}, "workspace": str(tmp_path / "override"),
+                           "extra_shares": [
+                               {"host_path": str(tmp_path / "writable"), "read_only": False},
+                               {"host_path": str(tmp_path / "readonly"), "read_only": True},
+                           ],
                            "writable_mounts": [str(tmp_path / "writable")]}
         prepare_config_share("agent1", str(tmp_path / "next"))
         context = json.loads((share / "host-launch-context.json").read_text())
         assert context.pop("generation") != generation
         assert context == {
-            "command_payloads": {}, "workspace": str(tmp_path / "next"), "writable_mounts": [],
+            "command_payloads": {}, "workspace": str(tmp_path / "next"),
+            "extra_shares": [], "writable_mounts": [],
         }
+
+    def test_native_boot_staging_prepares_stopped_agent_without_running_python_later(
+        self, tmp_config_dir, tmp_path, monkeypatch,
+    ):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        rootfs = tmp_config_dir / "share" / "rootfs-tree"
+        rootfs.mkdir(parents=True)
+        (tmp_config_dir / "policy.toml").write_text(
+            f'[agents.agent1]\nfolder = "{workspace}"\n'
+        )
+        with tempfile.TemporaryDirectory(prefix="sy-nb-") as short:
+            alias = Path(short) / "config"
+            alias.symlink_to(tmp_config_dir, target_is_directory=True)
+            monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(alias))
+            stage_native_boot_inputs("agent1", {"folder": str(workspace)})
+            agent_dir = tmp_config_dir / "agents" / "agent1"
+            config = json.loads((agent_dir / "config.json").read_text())
+            assert Path(config["root"]["path"]).resolve() == rootfs
+            assert next(
+                mount["source"] for mount in config["mounts"]
+                if mount["destination"] == "/workspace"
+            ) == str(workspace)
+            assert (agent_dir / "config-share" / "guest-init").is_file()
+            assert (agent_dir / "config-share" / "host-launch-context.json").is_file()
 
     @pytest.mark.parametrize("collision", ["file", "dangling-symlink", "replaced-managed", "replaced-managed-after-boot"])
     def test_command_payload_collision_preserves_existing_files(self, tmp_config_dir, collision):

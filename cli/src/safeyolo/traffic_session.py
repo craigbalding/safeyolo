@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ from .config import get_config_dir, get_data_dir
 from .runtime_identity import process_start_token
 
 SESSION_NAME = "safeyolo-traffic"
+_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
 def find_private_tmux() -> Path:  # DOC: README.md, cli/README.md
@@ -137,6 +139,55 @@ def _parse_pane_pid(raw_pid: str) -> int | None:
     return pid if pid > 1 else None
 
 
+def _create_traffic_tmux_session(base: list[str], tmux: Path | None, env: dict[str, str] | None) -> None:
+    # A tmux client does not pass arbitrary environment variables to a pane
+    # when its private server already exists. Temporarily include the client's
+    # variable names in update-environment; tmux transfers the values through
+    # its client protocol, without putting credentials in command arguments.
+    previous_update = None
+    if env is not None:
+        option = subprocess.run(
+            [*base, "show-options", "-gqv", "update-environment"],
+            capture_output=True, text=True, check=False, env=env,
+        )
+        if option.returncode == 0:
+            server_env = subprocess.run(
+                [*base, "show-environment", "-g"],
+                capture_output=True, text=True, check=True, env=env,
+            )
+            server_names = {
+                line.lstrip("-").split("=", 1)[0]
+                for line in server_env.stdout.splitlines()
+            }
+            names = {name for name in env.keys() | server_names if _ENV_NAME.fullmatch(name)}
+            previous_update = option.stdout.rstrip("\n")
+            subprocess.run(
+                [*base, "set-option", "-g", "update-environment", " ".join(sorted(names))],
+                check=True, capture_output=True, text=True, env=env,
+            )
+    created = False
+    try:
+        subprocess.run(
+            [*base, "new-session", "-d", "-s", SESSION_NAME],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        created = True
+    finally:
+        if previous_update is not None:
+            try:
+                subprocess.run(
+                    [*base, "set-option", "-g", "update-environment", previous_update],
+                    check=True, capture_output=True, text=True, env=env,
+                )
+            except Exception:
+                if created:
+                    stop_session(tmux)
+                raise
+
+
 def start_session(
     command: list[str],
     tmux: Path | None = None,
@@ -155,13 +206,7 @@ def start_session(
         # remain-on-exit deliberately preserves the console after a crash.
         # Reap that dead pane before retrying startup.
         stop_session(tmux)
-    subprocess.run(
-        [*base, "new-session", "-d", "-s", SESSION_NAME],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    _create_traffic_tmux_session(base, tmux, env)
     try:
         subprocess.run(
             [

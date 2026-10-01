@@ -591,7 +591,7 @@ def _command_centre_options(config: dict) -> dict:
     if type(events_port) is not int or not 1 <= events_port <= 65535:
         raise ValueError("Command Centre event port must be an integer from 1 to 65535")
     share = options.get("share", "local")
-    if share not in {"local", "tailnet"}:
+    if not isinstance(share, str) or share not in {"local", "tailnet"}:
         raise ValueError("command_centre.share must be local or tailnet")
     if share == "tailnet":
         if any(type(port) is not int or not 1 <= port <= 65535
@@ -628,6 +628,28 @@ def start(config: dict) -> None:
     launch = prepare(config)
     if session_process_id() is not None:
         raise RuntimeError("The traffic session is still running; stop it before launching Rust")
+    # Existing agents created with --no-run may predate the native boot
+    # staging step. Repair only missing, stopped inputs while the CLI launcher
+    # is still available; the proxy later consumes these files on its own.
+    from .agents_store import load_all_agents
+    from .config import get_agents_dir
+    from .platform import get_platform
+    from .vm import stage_native_boot_inputs
+
+    platform = None
+    for name, metadata in load_all_agents().items():
+        agent_dir = get_agents_dir() / name
+        missing = not (agent_dir / "config-share" / "guest-init").is_file()
+        if sys.platform.startswith("linux"):
+            missing = missing or not (agent_dir / "config.json").is_file()
+        if missing:
+            if platform is None:
+                platform = get_platform()
+            if not platform.is_sandbox_running(name):
+                try:
+                    stage_native_boot_inputs(name, metadata)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    log.warning("Native boot staging for %s failed: %s", name, exc)
     try:
         get_or_create_instance_id()
     except (OSError, UnicodeError) as exc:
@@ -641,12 +663,13 @@ def start(config: dict) -> None:
     env = os.environ.copy()
     env["SAFEYOLO_DATA_DIR"] = str(get_data_dir().absolute())
     env["SAFEYOLO_LOG_PATH"] = str((get_logs_dir(create=True) / "safeyolo.jsonl").absolute())
-    # The native proxy invokes only this fixed SafeYolo presenter module for
-    # desktop approvals.  The interpreter is inherited from the trusted CLI
-    # launcher; request data supplies a validated stable agent ID only.
-    env["SAFEYOLO_DESKTOP_PRESENTER_PYTHON"] = sys.executable
-    env["SAFEYOLO_OPERATOR_HOST_PYTHON"] = sys.executable
-    env["SAFEYOLO_PROVIDER_PYTHON"] = sys.executable
+    # Only the separate operator CLI still uses this interpreter. The native
+    # proxy exposes its path for clients' explicit Open Terminal action.
+    env["SAFEYOLO_CLI_PYTHON"] = sys.executable
+    env["SAFEYOLO_CLI_ASSETS_DIR"] = str(Path(__file__).parent)
+    env["SAFEYOLO_NATIVE_PROXY_BINARY"] = str(launch.binary)
+    env["SAFEYOLO_NATIVE_CONFIG_PATH"] = str(launch.config)
+    env["SAFEYOLO_NATIVE_WORKING_DIRECTORY"] = str(Path.cwd())
     try:
         env["SAFEYOLO_OPERATOR_HOST_USER"] = pwd.getpwuid(os.geteuid()).pw_name
     except KeyError:
@@ -654,6 +677,7 @@ def start(config: dict) -> None:
     env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] = str(instance_id_file().absolute())
     for name in (
         "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_SHARE",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
@@ -661,6 +685,7 @@ def start(config: dict) -> None:
         env.pop(name, None)
     if command_centre["enabled"]:
         env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] = str(command_centre["events_port"])
+        env["SAFEYOLO_COMMAND_CENTRE_SHARE"] = command_centre["share"]
         if command_centre["share"] == "tailnet":
             env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre["tailnet_admin_port"])
             env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre["tailnet_events_port"])

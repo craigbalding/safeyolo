@@ -1,7 +1,10 @@
 """Tests for SafeYolo's private tmux lifecycle adapter."""
 
+import os
 import shlex
+import shutil
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import call, patch
 
@@ -148,24 +151,70 @@ def test_start_exec_owns_the_pane_without_changing_argument_boundaries(tmp_path,
     tmux = Path("/opt/safeyolo/tmux")
     command = ["/owned path/proxy", "", "value's suffix", "semi;colon", "$(owned)"]
     env = {"OWNED_SETTING": "value"}
+    def tmux_result(args, **_kwargs):
+        if args[5] == "show-options":
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="no server running")
+        return subprocess.CompletedProcess(args, 0, stdout="2468\n", stderr="")
+
     with (
         patch("safeyolo.traffic_session.session_exists", return_value=False, autospec=True),
         patch(
             "safeyolo.traffic_session.subprocess.run",
-            return_value=subprocess.CompletedProcess([], 0, stdout="2468\n", stderr=""),
+            side_effect=tmux_result,
             autospec=True,
         ) as run,
     ):
         assert start_session(command, tmux=tmux, env=env, exec_command=True) == 2468
 
-    assert run.call_count == 4
-    respawn = run.call_args_list[2]
+    assert run.call_count == 5
+    respawn = run.call_args_list[3]
     assert respawn.args[0][-1].startswith("exec ")
     assert shlex.split(respawn.args[0][-1]) == ["exec", *command]
-    assert all(invocation.kwargs["env"] is env for invocation in run.call_args_list[:3])
-    query = run.call_args_list[3]
+    assert all(invocation.kwargs["env"] is env for invocation in run.call_args_list[:4])
+    query = run.call_args_list[4]
     assert query.args[0][5:] == ["display-message", "-p", "-t", "safeyolo-traffic:0.0", "#{pane_pid}"]
     assert query.kwargs["check"] is False
+
+
+def test_existing_private_tmux_server_receives_new_and_removed_share(tmp_path, monkeypatch):
+    tmux = shutil.which("tmux")
+    if tmux is None:
+        pytest.skip("tmux is not installed")
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    from safeyolo.traffic_session import session_process_alive, socket_path
+
+    socket_path().parent.mkdir(parents=True)
+    base = [tmux, "-S", str(socket_path()), "-f", "/dev/null"]
+    old_env = os.environ.copy() | {"SAFEYOLO_COMMAND_CENTRE_SHARE": "local"}
+
+    def observed_share(share, name):
+        target = tmp_path / name
+        env = os.environ.copy()
+        if share is None:
+            env.pop("SAFEYOLO_COMMAND_CENTRE_SHARE", None)
+        else:
+            env["SAFEYOLO_COMMAND_CENTRE_SHARE"] = share
+        command = f'printf "%s" "${{SAFEYOLO_COMMAND_CENTRE_SHARE-unset}}" > {shlex.quote(str(target))}'
+        start_session(["/bin/sh", "-c", command], tmux=Path(tmux), env=env, exec_command=True)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (not target.exists() or session_process_alive(Path(tmux))):
+            time.sleep(0.05)
+        assert target.exists()
+        assert not session_process_alive(Path(tmux))
+        return target.read_text()
+
+    try:
+        subprocess.run([*base, "new-session", "-d", "-s", "keeper", "/bin/sleep 60"],
+                       env=old_env, check=True, capture_output=True)
+        original = subprocess.run([*base, "show-options", "-gqv", "update-environment"],
+                                  check=True, capture_output=True, text=True).stdout
+        assert observed_share("tailnet", "tailnet-share") == "tailnet"
+        assert observed_share(None, "disabled-share") == "unset"
+        restored = subprocess.run([*base, "show-options", "-gqv", "update-environment"],
+                                  check=True, capture_output=True, text=True).stdout
+        assert restored == original
+    finally:
+        subprocess.run([*base, "kill-server"], capture_output=True)
 
 
 def test_session_process_id_reads_live_status_and_pid_in_one_query(tmp_path, monkeypatch):

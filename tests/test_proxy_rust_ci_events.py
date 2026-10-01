@@ -70,7 +70,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     assert "socat" in steps["Install preview test system dependency"]["run"]
     step_names = list(steps)
     assert step_names.index("Install preview test system dependency") < step_names.index(
-        "Test the desktop presenter protocol"
+        "Test desktop presentation and preview"
     )
     native = steps["Test focused native boundaries"]
     assert "--ignored" not in native["run"]
@@ -83,7 +83,6 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/test_proxy_rust_coord_fixture.py",
         "tests/test_proxy_cutover_deletion_map.py",
         "cli/tests/test_desktop_presenter.py",
-        "cli/tests/test_desktop_presenter_rpc.py",
         "cli/tests/test_agent_preview.py",
         "tests/test_blackbox_harness.py",
         "tests/proxy_migration/test_readiness.py",

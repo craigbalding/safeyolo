@@ -1662,9 +1662,11 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 None,
             ));
         }
-        if !listeners
-            .iter()
-            .any(|listener| listener.agent_id == agent_id)
+        let standalone = command_centre.is_none();
+        if standalone
+            && !listeners
+                .iter()
+                .any(|listener| listener.agent_id == agent_id)
         {
             return Ok(desktop_failure(
                 agent_id,
@@ -1706,7 +1708,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
-        let result = match crate::desktop_present::present(agent_id.to_owned()).await {
+        let result = match crate::desktop_present::present(agent_id.to_owned(), standalone).await {
             Ok(value) => value,
             Err(crate::desktop_present::Error::NotFound) => {
                 return Ok(desktop_failure(
@@ -1726,23 +1728,12 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                     approval_request_id.as_deref(),
                 ));
             }
-            Err(
-                crate::desktop_present::Error::Failed | crate::desktop_present::Error::Transport,
-            ) => {
+            Err(crate::desktop_present::Error::Failed) => {
                 return Ok(desktop_failure(
                     agent_id,
                     StatusCode::CONFLICT,
                     "desktop_presentation_failed",
                     "Desktop presentation failed",
-                    approval_request_id.as_deref(),
-                ));
-            }
-            Err(crate::desktop_present::Error::Protocol) => {
-                return Ok(desktop_failure(
-                    agent_id,
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "desktop_presenter_protocol",
-                    "desktop presenter returned an invalid result",
                     approval_request_id.as_deref(),
                 ));
             }

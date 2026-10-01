@@ -2,19 +2,16 @@
 //! The native Admin listener authenticates and validates requests before these
 //! fixed host commands can run. None of these helpers handles proxy traffic.
 
-use std::{path::PathBuf, process::Stdio};
+use std::path::PathBuf;
 
 use serde_json::Value;
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::{Child, ChildStdin, Command},
-};
+use tokio::sync::oneshot;
 
 use crate::Error;
 
 #[derive(Clone)]
 pub(crate) struct Host {
-    python: PathBuf,
+    cli_python: Option<PathBuf>,
     user: Option<String>,
     instance_file: PathBuf,
     events_port: Option<u16>,
@@ -51,18 +48,17 @@ fn env_path(name: &str) -> Result<PathBuf, Error> {
 
 impl Host {
     pub(crate) fn from_env() -> Result<Option<Self>, Error> {
-        let Some(python) = std::env::var_os("SAFEYOLO_OPERATOR_HOST_PYTHON") else {
+        let Some(_) = std::env::var_os("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE") else {
             if std::env::var_os("SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT").is_some()
                 || std::env::var_os("SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT").is_some()
             {
-                return Err("Command Centre events require the installed host helper".into());
+                return Err("Command Centre events require an installed instance identity".into());
             }
             return Ok(None);
         };
-        let python = PathBuf::from(python);
-        if !python.is_absolute() || !python.is_file() {
-            return Err("SAFEYOLO_OPERATOR_HOST_PYTHON must name an installed interpreter".into());
-        }
+        // This is only an informational field for clients that explicitly
+        // launch the separate Python CLI. Native proxy operations never use it.
+        let cli_python = std::env::var_os("SAFEYOLO_CLI_PYTHON").map(PathBuf::from);
         let user = std::env::var("SAFEYOLO_OPERATOR_HOST_USER")
             .ok()
             .filter(|value| !value.is_empty());
@@ -87,7 +83,7 @@ impl Host {
             return Err("Command Centre events must be enabled for Tailnet publication".into());
         }
         Ok(Some(Self {
-            python,
+            cli_python,
             user,
             instance_file,
             events_port,
@@ -104,7 +100,10 @@ impl Host {
     }
 
     pub(crate) fn python(&self) -> &str {
-        self.python.to_str().unwrap_or_default()
+        self.cli_python
+            .as_ref()
+            .and_then(|path| path.to_str())
+            .unwrap_or_default()
     }
 
     pub(crate) fn instance_id(&self) -> Result<String, Error> {
@@ -124,42 +123,13 @@ impl Host {
         operation: &str,
         agent_id: Option<&str>,
     ) -> Result<Value, Error> {
-        let python = self.python.clone();
-        let arguments = match agent_id {
-            Some(agent_id) => vec![operation.to_owned(), agent_id.to_owned()],
-            None => vec![operation.to_owned()],
-        };
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new(python)
-                .args(["-m", "safeyolo.command_centre_agent_host"])
-                .args(arguments)
-                .stdin(Stdio::null())
-                .stderr(Stdio::inherit())
-                .output()
-        })
-        .await??;
-        if !output.status.success() || output.stdout.len() > 1024 * 1024 {
-            return Err("Command Centre agent host helper failed".into());
-        }
-        let value: Value = serde_json::from_slice(&output.stdout)?;
-        if let Some(agent_id) = agent_id {
-            if value.get("status_code").is_none()
-                && value.get("agent_id").and_then(Value::as_str) != Some(agent_id)
-            {
-                return Err("Command Centre agent helper returned another identity".into());
-            }
-        } else if !value.get("agents").is_some_and(Value::is_array)
-            && value.get("status_code").is_none()
-        {
-            return Err("Command Centre agent helper returned an invalid inventory".into());
-        }
-        Ok(value)
+        crate::host_lifecycle::operate(operation, agent_id).await
     }
 }
 
 pub(crate) struct Publication {
-    child: Child,
-    input: Option<ChildStdin>,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl Publication {
@@ -171,71 +141,94 @@ impl Publication {
         let Some(tailnet) = &host.tailnet else {
             return Ok(None);
         };
-        let mut child = Command::new(&host.python)
-            .args(["-m", "safeyolo.command_centre_tailnet_host"])
-            .args([
-                admin_local.to_string(),
-                events_local.to_string(),
-                tailnet.admin_port.to_string(),
-                tailnet.events_port.to_string(),
-                tailnet.state_file.to_string_lossy().into_owned(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        let input = child
-            .stdin
-            .take()
-            .ok_or("Tailnet publisher has no stop channel")?;
-        let output = child
-            .stdout
-            .take()
-            .ok_or("Tailnet publisher has no readiness channel")?;
-        let mut output = BufReader::new(output);
-        let mut line = String::new();
-        let ready = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            output.read_line(&mut line),
-        )
-        .await;
-        let result = match ready {
-            Ok(Ok(size)) if size > 0 && line.len() <= 4096 => {
-                serde_json::from_str::<Value>(&line).ok()
-            }
-            _ => None,
-        };
-        if result
-            .as_ref()
-            .and_then(|value| value.get("state"))
-            .and_then(Value::as_str)
-            != Some("healthy")
+        let state_file = tailnet.state_file.clone();
+        let mut admin = match crate::tailnet::Session::start(admin_local, tailnet.admin_port).await
         {
-            drop(input);
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(12), child.wait()).await;
-            return Err(format!(
-                "Command Centre Tailnet publication failed: {}",
-                result
-                    .as_ref()
-                    .and_then(|value| value.get("detail"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("publisher did not confirm both mappings")
-            )
-            .into());
+            Ok(admin) => admin,
+            Err(error) => {
+                let _ = crate::tailnet::write_state(
+                    &state_file,
+                    &serde_json::json!({
+                        "state":"error", "enabled":true, "detail":error.to_string()
+                    }),
+                );
+                return Err(error);
+            }
+        };
+        let mut events =
+            match crate::tailnet::Session::start(events_local, tailnet.events_port).await {
+                Ok(events) => events,
+                Err(error) => {
+                    admin.stop().await;
+                    let _ = crate::tailnet::write_state(
+                        &state_file,
+                        &serde_json::json!({
+                            "state":"error", "enabled":true, "detail":error.to_string()
+                        }),
+                    );
+                    return Err(error);
+                }
+            };
+        let admin_url = admin.url("/");
+        let events_url = events
+            .url("/admin/events")
+            .replacen("https://", "wss://", 1);
+        if let Err(error) = crate::tailnet::write_state(
+            &state_file,
+            &serde_json::json!({
+                "state":"healthy", "enabled":true,
+                "admin_port":tailnet.admin_port, "events_port":tailnet.events_port,
+                "admin_url":admin_url, "events_url":events_url,
+                "admin_pid":admin.pid(), "events_pid":events.pid()
+            }),
+        ) {
+            events.stop().await;
+            admin.stop().await;
+            return Err(error);
         }
+        let (shutdown, receiver) = oneshot::channel();
+        let watched_state = state_file.clone();
+        let task = tokio::spawn(async move {
+            tokio::select! {
+                _ = receiver => {
+                    events.stop().await;
+                    admin.stop().await;
+                    let _ = std::fs::remove_file(&watched_state);
+                }
+                result = admin.child_mut().wait() => {
+                    events.stop().await;
+                    let _ = crate::tailnet::write_state(&watched_state, &serde_json::json!({
+                        "state":"error", "enabled":true,
+                        "detail":format!("Command Centre admin Tailnet mapping exited: {result:?}")
+                    }));
+                }
+                result = events.child_mut().wait() => {
+                    admin.stop().await;
+                    let _ = crate::tailnet::write_state(&watched_state, &serde_json::json!({
+                        "state":"error", "enabled":true,
+                        "detail":format!("Command Centre events Tailnet mapping exited: {result:?}")
+                    }));
+                }
+            }
+        });
         Ok(Some(Self {
-            child,
-            input: Some(input),
+            shutdown: Some(shutdown),
+            task,
         }))
     }
 
     pub(crate) async fn stop(mut self) {
-        self.input.take();
-        if tokio::time::timeout(std::time::Duration::from_secs(15), self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.kill().await;
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        let _ = (&mut self.task).await;
+    }
+}
+
+impl Drop for Publication {
+    fn drop(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
         }
     }
 }

@@ -95,11 +95,10 @@ jobs:
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
 
-      - name: Test the desktop presenter protocol
+      - name: Test desktop presentation and preview
         run: |
           uv run --frozen pytest -q \
             cli/tests/test_desktop_presenter.py \
-            cli/tests/test_desktop_presenter_rpc.py \
             cli/tests/test_agent_preview.py
 
       - name: Test focused native boundaries
@@ -152,6 +151,12 @@ jobs:
         run: |
           uv python install 3.12.14
           uv sync --frozen --group dev --python 3.12.14
+
+      - name: Install native desktop test dependency
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat
 
       - name: Start the Python-owned Coord fixture
         env:

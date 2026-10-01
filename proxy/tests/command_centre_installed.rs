@@ -5,7 +5,6 @@ use std::{
     io::Write,
     net::{Ipv4Addr, TcpListener as StdTcpListener},
     os::unix::fs::PermissionsExt,
-    path::Path,
     time::Duration,
 };
 
@@ -25,10 +24,6 @@ const HOST_ID: &str = "sy-22222222222222222222222222222222";
 async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes() {
     let directory = TempDir::new().unwrap();
     let root = directory.path();
-    let python = std::env::var_os("SAFEYOLO_PYTHON")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.venv/bin/python"));
-    assert!(python.is_file(), "installed CLI test Python is required");
     std::fs::write(root.join("instance_id"), format!("{HOST_ID}\n")).unwrap();
     std::fs::write(root.join("token"), TOKEN).unwrap();
     std::fs::write(
@@ -49,30 +44,39 @@ async fn installed_command_centre_keeps_host_identity_and_serves_client_shapes()
     let tailscale = bin.join("tailscale");
     std::fs::write(
         &tailscale,
-        r#"#!/usr/bin/env python3
-import json, os, pathlib, signal, sys, time
-root = pathlib.Path(os.environ['FAKE_TAILSCALE_STATE_DIR'])
-root.mkdir(exist_ok=True)
-args = sys.argv[1:]
-if args == ['status', '--json']:
-    print(json.dumps({'BackendState': 'Running', 'Self': {'DNSName': 'host.test.ts.net.'}}))
-elif args == ['serve', 'status', '--json']:
-    targets = {path.name: path.read_text() for path in root.glob('*.target')}
-    print(json.dumps({'TCP': {port[:-7]: {'HTTPS': True} for port in targets},
-                      'Web': {port: {'Handlers': {'/': {'Proxy': target}}}
-                              for port, target in targets.items()}}))
-elif len(args) == 4 and args[:2] == ['serve', '--yes'] and args[2].startswith('--https='):
-    port = args[2].split('=', 1)[1]
-    marker = root / (port + '.target')
-    def close(_signal, _frame):
-        marker.unlink(missing_ok=True)
-        sys.exit(0)
-    signal.signal(signal.SIGTERM, close)
-    marker.write_text(args[3])
-    while True:
-        time.sleep(0.1)
-else:
-    sys.exit(2)
+        r#"#!/bin/sh
+root=$FAKE_TAILSCALE_STATE_DIR
+/bin/mkdir -p "$root"
+if [ "$1" = status ] && [ "$2" = --json ]; then
+    printf '{"BackendState":"Running","Self":{"DNSName":"host.test.ts.net."}}\n'
+elif [ "$1" = serve ] && [ "$2" = status ] && [ "$3" = --json ]; then
+    printf '{"TCP":{'
+    separator=
+    for marker in "$root"/*.target; do
+        [ -f "$marker" ] || continue
+        port=${marker##*/}; port=${port%.target}
+        printf '%s"%s":{"HTTPS":true}' "$separator" "$port"
+        separator=,
+    done
+    printf '},"Web":{'
+    separator=
+    for marker in "$root"/*.target; do
+        [ -f "$marker" ] || continue
+        port=${marker##*/}; port=${port%.target}
+        target=$(/bin/cat "$marker")
+        printf '%s"%s":{"Handlers":{"/":{"Proxy":"%s"}}}' "$separator" "$port" "$target"
+        separator=,
+    done
+    printf '}}\n'
+elif [ "$1" = serve ] && [ "$2" = --yes ]; then
+    port=${3#--https=}
+    marker=$root/$port.target
+    trap '/bin/rm -f "$marker"; exit 0' TERM
+    printf '%s' "$4" > "$marker"
+    while :; do /bin/sleep 0.1; done
+else
+    exit 2
+fi
 "#,
     )
     .unwrap();
@@ -80,9 +84,8 @@ else:
     let reserved = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let events_port = reserved.local_addr().unwrap().port();
     drop(reserved);
-    let root_str = Path::new(env!("CARGO_MANIFEST_DIR")).join("../cli/src");
     unsafe {
-        std::env::set_var("SAFEYOLO_OPERATOR_HOST_PYTHON", &python);
+        std::env::set_var("SAFEYOLO_CLI_PYTHON", "/no/python/interpreter");
         std::env::set_var("SAFEYOLO_OPERATOR_HOST_USER", "operator");
         std::env::set_var(
             "SAFEYOLO_OPERATOR_INSTANCE_ID_FILE",
@@ -94,11 +97,7 @@ else:
         );
         std::env::set_var("SAFEYOLO_CONFIG_DIR", root);
         std::env::set_var("SAFEYOLO_LOGS_DIR", root.join("logs"));
-        std::env::set_var("PYTHONPATH", root_str);
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
-        );
+        std::env::set_var("PATH", &bin);
         std::env::set_var("FAKE_TAILSCALE_STATE_DIR", root.join("tailnet"));
     }
     let config: Config = serde_json::from_value(json!({
@@ -125,7 +124,7 @@ else:
     let identity = identity.1;
     assert_eq!(identity["safeyolo_instance_id"], HOST_ID);
     assert_eq!(identity["host_user"], "operator");
-    assert_eq!(identity["host_python"], python.to_str().unwrap());
+    assert_eq!(identity["host_python"], "/no/python/interpreter");
     assert_eq!(
         identity["command_centre_events"],
         json!({"enabled":true,"port":events_port})

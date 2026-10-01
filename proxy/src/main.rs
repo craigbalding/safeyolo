@@ -12,6 +12,15 @@ async fn main() -> Result<(), Error> {
             return Ok(());
         }
         Some("--config") => {}
+        Some("--host-agent-entrypoint") => {
+            let name = arguments.next().ok_or("agent name is required")?;
+            let launch_id = arguments.next().ok_or("launch ID is required")?;
+            if arguments.next().is_some() {
+                return Err("unexpected command argument".into());
+            }
+            let code = safeyolo_proxy::run_host_agent_entrypoint(&name, &launch_id).await?;
+            std::process::exit(code);
+        }
         _ => return Err("usage: safeyolo-proxy --config CONFIG.json".into()),
     }
     let config_path = PathBuf::from(arguments.next().ok_or("--config needs a path")?);
