@@ -35,6 +35,48 @@ before this proposed baseline becomes trusted.
 | Other sinks and launch | [native launcher](../cli/src/safeyolo/rust_proxy.py), [desktop presenter](../proxy/src/desktop_present.rs), [coord client](../proxy/src/agent_api/coord.rs) |
 | Foreign and embedded code | [descriptor ownership](../proxy/src/lib.rs), [WebSocket spill mapping](../proxy/src/websocket.rs), [traffic filter](../proxy/src/traffic_view/filter.rs) |
 
+## Proposed baseline refresh
+
+[PR #885](https://github.com/craigbalding/safeyolo/pull/885) names the exact
+proposed control commit in its review handoff. Its snapshot records source
+revision `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`. Neither revision is
+approved by generating the snapshot or by passing a local check.
+
+At that master commit, the installed snapshot still records source revision
+`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. It binds acceptance-tool lock
+`ee045a54387a26c6cfe27c60422f2e56a64b73001f41d108e90f01e90415299f`,
+but the trusted checkout contains lock
+`d5e5be721172aad87c4d98b065f7ed3009ec086989fa64dd7b9b5b3fde764a20`.
+The lock delta updates AnyIO from 4.12.1 to 4.14.2. The checker, rules and
+Semgrep 1.176.0 selection are unchanged. This promotion retains the current
+master lock and proposes a snapshot that binds it.
+
+| Detected source delta | From the recorded `2ca598ce` source | From the previous `05e5e243` proposal |
+| --- | --- | --- |
+| Changed previously mapped function bodies | 14 | 4 |
+| Added mapped symbols; removed mapped symbols | 8; 0 | 8; 0 |
+| Added; removed; moved selected operations | 19; 50; 7 | 6; 1; 0 |
+| Added; removed source files | 7; 55 | 2; 0 |
+| Changed dependency or build inputs | 5 | 0 |
+| Parsed functions | 5,528 to 4,523 | 4,512 to 4,523 |
+
+The source reduction accounts for the released Python proxy and policy-decision
+process deletions. The five changed inputs are `proxy/Cargo.toml`,
+`pyproject.toml`, `uv.lock`, `install.sh`, and
+`cli/src/safeyolo/guest-proxy-forwarder.sh`. The provider delta adds the Rust
+stream and Python port-forward helper, optional service credentials, trusted
+caller headers and provider routing before delivery. The eight added symbols
+map service authorization, persistence, provider selection, configured caller
+identity, launcher setup and both transport entry points. All 78 mapped symbols
+resolve in the proposed source snapshot.
+
+The proposal preserves every workflow from master, including the Rust release
+workflow. It adds code-owner coverage for `.semgrepignore`, which is already a
+detected control input. The proposal does not accept unmerged PR #895's native
+host changes or removed Python helpers; those changes still need a map and
+snapshot review after their product review. Drift counts require source review;
+they do not establish that changed behavior is safe.
+
 ## What the drift check does
 
 [The rule set](../tools/assurance/rules.yml) uses Semgrep's Rust and Python
@@ -100,7 +142,9 @@ tools/acceptance/.venv/bin/python -I tools/assurance/check.py check \
 ```
 
 Exit 0 means no detected drift against that checkout's accepted snapshot.
-Exit 1 means a detected change needs review. Exit 2 means analysis failed.
+Exit 1 means detected drift or an invalid trusted snapshot binding; the JSON
+`status` and `errors` fields distinguish those results. Exit 2 means analysis
+failed before comparison.
 The proposed snapshot is for master `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`.
 That base still has an older snapshot and map. Until Craig approves and merges
 this promotion, its PR check uses the older trusted snapshot and reports an
@@ -133,7 +177,9 @@ release credentials.
 head with base-revision controls and publishes both reports. The existing
 `main-protection` ruleset currently targets only the default branch. It
 requires `Test CLI`, `Lint` and `Test Addons (Python 3.12)`; it does not require
-`Proxy assurance drift` or code-owner review. The
+`Proxy assurance drift` or code-owner review. It also requires CodeQL code
+scanning. Craig must preserve these existing requirements when adding the
+assurance gate. The
 [workflow](../.github/workflows/proxy-assurance.yml) and
 [CODEOWNERS](../.github/CODEOWNERS) files alone do not enforce an independently
 approved merge gate.

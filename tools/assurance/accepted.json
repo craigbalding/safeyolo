@@ -1,7 +1,7 @@
 {
   "checker_sha256": "0e29b2012d85109ecd724fdcdacd1863c5b205ec11fab41b5312cffc828aca8d",
   "checker_version": "2",
-  "codeowners_sha256": "0de1d0b02eb10c7a9fabf8e4f1d57890e6f79620fc768cd835293e9e6e530d76",
+  "codeowners_sha256": "d4556e315e24af963f42be2fa808382cc5910f9d15375fe14cc184d7f99aa6dd",
   "function_count": 4523,
   "inputs": {
     "cli/src/safeyolo/guest-proxy-forwarder.sh": "6aa3dcd35264bdeac5d47e7c9e76ddcdd1f4884613f74d929dda3e7bfd317490",
