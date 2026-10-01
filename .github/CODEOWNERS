@@ -1,6 +1,7 @@
 /site/ @craigbalding
 /.github/CODEOWNERS @craigbalding
 /.github/workflows/ @craigbalding
+/.semgrepignore @craigbalding
 /tools/assurance/ @craigbalding
 /tools/acceptance/pyproject.toml @craigbalding
 /tools/acceptance/uv.lock @craigbalding
