@@ -1,14 +1,14 @@
 {
   "checker_sha256": "0e29b2012d85109ecd724fdcdacd1863c5b205ec11fab41b5312cffc828aca8d",
   "checker_version": "2",
-  "codeowners_sha256": "0de1d0b02eb10c7a9fabf8e4f1d57890e6f79620fc768cd835293e9e6e530d76",
-  "function_count": 5528,
+  "codeowners_sha256": "d4556e315e24af963f42be2fa808382cc5910f9d15375fe14cc184d7f99aa6dd",
+  "function_count": 4523,
   "inputs": {
-    "cli/src/safeyolo/guest-proxy-forwarder.sh": "3d32a0c9421398d21185465982413c8658b4d639f2266b1b75fac31bf64e98f1",
+    "cli/src/safeyolo/guest-proxy-forwarder.sh": "6aa3dcd35264bdeac5d47e7c9e76ddcdd1f4884613f74d929dda3e7bfd317490",
     "guest/build-rootfs.sh": "980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa",
-    "install.sh": "efc56a45d6288f0c74bb54e44f62db432bbf13fe11c54ddc4ba5f43cbe8bf3f3",
+    "install.sh": "86f2f3910b12c2df8361ffacedb2267f4851f3fc4c2753fca643a0b1b32fe041",
     "proxy/Cargo.lock": "a39faf1bf349b5fd8f5db172b6f4c75961a47b5f096aea4a169b76f4a0d99c8f",
-    "proxy/Cargo.toml": "da1e84d3d2e8837fad10a4874f28ba1032f7be908bd5096f1c14236b5b901b07",
+    "proxy/Cargo.toml": "ad4e573128f7b76f9f9f7d3d83f19538d6cf64051e114a690c1194d3b1410fb2",
     "proxy/data/agent_api/LICENSE-Python.txt": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf",
     "proxy/data/agent_api/LICENSE-Unicode.txt": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
     "proxy/data/agent_api/README.md": "1fc1ff23d156a42a5291699bff0bd6c280ab9c02cde4aec5ffb37a57a2c603e3",
@@ -216,8 +216,8 @@
     "proxy/vendor/hyper/src/service/util.rs": "a35d37abcd2fcf5c3c6a0c0241a9a9361922fe0da989f3314ab0b490db6b2b0b",
     "proxy/vendor/hyper/src/trace.rs": "a766c472433c7569440862e978eceeea78220af170220e9fdc90b71bab731344",
     "proxy/vendor/hyper/src/upgrade.rs": "a9406f2cf45bb2f3574371a60cab20a60733f36fee65828c4f395f1fcf31e520",
-    "pyproject.toml": "239508449fbf78860652fb4b810b9b6f579ecc5a3132637898f5d32b23d29c04",
-    "uv.lock": "021814c713f889c8451ce0c368b73b721072bfd1af674d567e315382fdf232fc",
+    "pyproject.toml": "fea3be7e65a66c26664b6ceb5aa5a677416ca68dca7f4af499ffbbd22062665c",
+    "uv.lock": "af86a11ec256b04726d600707fcea09661793d8b38ea509b2212598632008289",
     "vm/Package.swift": "cacd73db22ee6e881da5cbbcdd9de7f8d56a920951b6feca6ac65d637bcbc47b",
     "vm/Sources/SafeYoloVM/BuildIdentity.swift": "98a642abc707cc77cecf8ac4c7f83de75ba749a74c19e8c75e635f4ecf80d0cf",
     "vm/Sources/SafeYoloVM/Log.swift": "8794998655e3a7df70562a3c9325c77f31e63e5de25791f3d3a4fb6c75f0b2d7",
@@ -233,23 +233,28 @@
     "vm/Sources/SafeYoloVM/VSockTerminal.swift": "88d9a6a365509301570c1d6cc0b62a3205c06c68c082a41a64ef5e59f668cd74",
     "vm/Sources/SafeYoloVM/main.swift": "2e6e47a3f4b9ecfb85e07959e739fc350509e68ce808910b4fb9d8b717f88e39"
   },
-  "map_sha256": "1163a3b921dc430c70b7dbbcc78222c74f798e2c1f2b783cf3b1a1e02cb288e9",
+  "map_sha256": "92214adaf82f83065591a67b07ba12d437677daf7a7eabb46bb077f7b2d5d04f",
   "mapped_functions": {
-    "cli/src/safeyolo/proxy.py::selected_backend": "16b0f91c8ab1eb8d1436dcab5d1f00aace39bfeeb52fbdd0816e1f21678f1770",
+    "cli/src/safeyolo/commands/agent.py::authorize": "c2ca5349dd8ffc4d0592515b5db4c6d3bd6c40013797416a462f8d2bf5b90e73",
+    "cli/src/safeyolo/provider_stream.py::main": "3eeddd6113fa532ac9e8a13efa2c3c37b13c33b26a69dfcf8bfbfe37a5ebab2c",
+    "cli/src/safeyolo/proxy.py::selected_backend": "363e32df84449fa8103c0086aa9026615bef1d65b7b716605114b23461ef9e19",
     "cli/src/safeyolo/rust_proxy.py::_agent_listeners": "44a46466200b6e7c09f144b34c42fc0b3331baf4c7e69d0d490724a6ae67268f",
     "cli/src/safeyolo/rust_proxy.py::_binary": "b1ea8b57fc11f2c260fb889b442911a46bb8aa2d4a723955d83d2430c89c6c3a",
-    "cli/src/safeyolo/rust_proxy.py::_default_native_config": "a71830940182544b21a47a6a0cc596cca0c1ef6d39dcae460444436dfc7a5d0b",
+    "cli/src/safeyolo/rust_proxy.py::_default_native_config": "708fb09da8f71fa73c2c90aceca1ade5884e8cd966e976a5426f4dec1464fb9e",
     "cli/src/safeyolo/rust_proxy.py::_sync_running_listeners": "5f6490f78bf54713cd2308ea5d6613ef1706ab8aebd658b8ec1c2d5826837e04",
-    "cli/src/safeyolo/rust_proxy.py::_wait_ready": "420c11621ae4f759dd771df9e6247f5b4f5239aec9c710d8daaf73602f2e44d5",
+    "cli/src/safeyolo/rust_proxy.py::_wait_ready": "9bcffbf6636a421f3901c6f2d43c5f24fbdaf5101c4d562331e0117377ff97f2",
     "cli/src/safeyolo/rust_proxy.py::prepare": "04ffe2b13f74baa31fd3dd9d4bc485ca9319fae91dc4f973546ab32e9f8d819a",
+    "cli/src/safeyolo/rust_proxy.py::start": "7cc8370358cdc22dba324b27772c6521dfda59073847f0a2be98bcf59d7f5a0d",
     "cli/src/safeyolo/sockets.py::directory_for": "33dcc3728307d280eacb075b5f80863adffb4d8c1074fea8654ceac4c90b9b2f",
     "proxy/src/admin_api.rs::authenticate": "6b1b4b8147fcd19036433f57078c8d3fa55f99552c7ab7aee4e763d5abb74795",
-    "proxy/src/admin_api.rs::respond_with_context": "dca445b55acdf36da8c77743eb8dd294b3dd1fb9c11721a90a5bdd35639b7c5a",
-    "proxy/src/admin_listener.rs::serve_events": "f8f47bb3217513040a15b407819c124e903f7e248faf8baa5d09158e8af7044d",
+    "proxy/src/admin_api.rs::respond_with_context": "652a18a65d23478ff491711f311c309c6e0397c8fdacdc333d4b12cd5cbbfad3",
+    "proxy/src/admin_api/services.rs::authorize": "bf243bf3c86365c5f8673c49ace839d30a57482bb43b39aa369c79e26f98887e",
+    "proxy/src/admin_api/services.rs::persist": "bd5a09d293857215af8d38ee9746cebb8d457b063b52fc8060310bfa17901e09",
+    "proxy/src/admin_listener.rs::serve_events": "5df9127b5590d778de6dc22e06a62a2c5d5bf774b7940c86ddb12196a372d8d7",
     "proxy/src/admin_shield.rs::blocks_address": "be118d9e964fa19b6db375041887f43494a26a58e4b9f9d96e54d12078f5046c",
     "proxy/src/admin_shield.rs::blocks_host": "5bf6c8b0cc8f76b3d643a5688bd111495cc3b23d8b1c18081b1dfd0024432f59",
     "proxy/src/agent_api.rs::authenticate": "70302d187988146c95fe4c911d53960770195cc254944dd450111973911d31ec",
-    "proxy/src/agent_api/flows.rs::execute": "3313bb2fb42511ccac1e13ab3447f1494f0dd4e4401712f37566ec79cc10fe5e",
+    "proxy/src/agent_api/flows.rs::execute": "ae87bf6ed1eb553e49ac3db0b0ce334d52eccea605ff2ecf297b613a1452fcab",
     "proxy/src/agent_api/flows.rs::owned": "7085d3ff0ed0935f57c4670a3437847d720c220ceb0c12aef240f3bcd72e987e",
     "proxy/src/agent_discovery.rs::read_map": "eb31348aab5727b28bc7c80fcb4ee044caa018a12ca0f30c09c1bf3faededb35",
     "proxy/src/agent_discovery.rs::reconcile": "7ed3ed945d22278b59af9565f6b8ecab89c163e42cea7edb480ab5550f285d49",
@@ -257,28 +262,28 @@
     "proxy/src/approvals.rs::update_policy": "29d6f4e48d8677af47f26b4db1da09c0b896fd8d55954527e6c98d2d82d6bace",
     "proxy/src/audit/writer.rs::close": "703955de8f28544717a0c1059c8ce1732f95ce859bbab3662478617b31a08b12",
     "proxy/src/circuits.rs::close_snapshot": "df3eb44fd7b5f4e1041f32183a6d3574f86af2681757be8c22cf4f21abdf63f5",
-    "proxy/src/config.rs::validate": "37e83edf376c7262a4c21d9fbac35d1198b3f2e54e7da422ce4924b62661aaa8",
+    "proxy/src/config.rs::validate": "eef0aa068e657c82baeaf04f8356be829d24432b69f61a79754c6f2d0ab758b4",
     "proxy/src/credential_guard.rs::enforce_ordered": "8fa2613e639ae8e31ea05205a1fb25f0b12a75a0317c009ea8d352cfec7637a5",
     "proxy/src/credential_guard.rs::evaluate": "b6df60a205c0bf576de538754a483fc2140a48e35dc55397d868d03eef6557c9",
     "proxy/src/credential_hmac.rs::close": "a3729eafaee7d2d0d3a74944bc4cf8f5cc35dd172f70b2b7f928b9f71202a3a0",
     "proxy/src/credential_injection.rs::apply": "86072ab446095bd7fed523d0ea21a6eb2a1bd6f7e5a73da6698fcd0f11db78e1",
-    "proxy/src/credential_injection.rs::prepare": "900a5453c2e8ad6903c2cc129ddf69bcbb550bcf4947a10e71bf07828c8f9101",
+    "proxy/src/credential_injection.rs::prepare": "9ed285009b81b8ea97e310dd536f45002932e9bb53dc0addccb1487bc7605a21",
     "proxy/src/credentials.rs::expose_secret": "bcf47129935923dcadc21036cb134434f43241c68eb38500979d634f8c31afcf",
     "proxy/src/credentials.rs::unlock": "e0fd45445c928a4390f01cda2be7ba32eb37a2ebd9f6c18cd9b0fed8eef554ef",
     "proxy/src/flow_store.rs::record": "8c24a019a94e8d7987d9256dcd117946485b7955310ab7a6e62acc12c91d8232",
     "proxy/src/grants.rs::check_grant": "cea20643e0a4f1cd36e136782aed628f682fb07c39c348fce8595c6aaa06eb13",
     "proxy/src/grants.rs::finish_response": "780df18b2d9e84a38faa8cf83b322a5950e0e8110a82470870a51ae54725531c",
-    "proxy/src/http.rs::decide": "b714ecdf59fbfc8be2e313a5e692d4a712e558aeff66f4a93c1ae54812c56b11",
+    "proxy/src/http.rs::decide": "b9ded1790134617a16de135ae8d47c8a7f06b1a22b3777c6c1b2d457ee68f269",
     "proxy/src/http.rs::enforce_response_decision": "fa87118c709cb8d3e455096ac6eaeb250a903f6d7450060b9b9fd9b8ed4a8b06",
-    "proxy/src/http.rs::execute_refresh": "3b53e17e66315147f6bd085671543855b1f1b3d034a1d7797bc4336708b11af9",
-    "proxy/src/http.rs::forward": "d9f7e259be8668d86b95660911f5d17d53cb8119a8918972442fdcdb9adf3d16",
-    "proxy/src/http.rs::local_agent_api": "9f5d31bcee1560a329f4988f973409cd1e0e4049f4573bb5a37cd08ec193b4e4",
+    "proxy/src/http.rs::execute_refresh": "156c741a4fca6588f1b1b8d78b3a05f7abc53ba7e2538668c1549947683fe407",
+    "proxy/src/http.rs::forward": "23910341954fe89daad606931a65b2f5ad852b16463de40d20806a98513ddb80",
+    "proxy/src/http.rs::local_agent_api": "a5152c5fe8675bff6c883a0d0442a5315028907ae8c10e1893b807d8290d260c",
     "proxy/src/http.rs::open_egress_for_flow": "7d0fba6cb8621bf24bec7bfae38132974935ca4acf027a9e2234f1ecab3efa33",
-    "proxy/src/http.rs::open_outbound": "bb4a6061ca15e24a85833d3dfc7a494ce18d29027b9ffcf846a5d1fd738e10a2",
+    "proxy/src/http.rs::open_outbound": "8373c7ae489dc8b7708c8b2528508ee49f1d0e47550f0df0de7c2e03bb921ab3",
     "proxy/src/http.rs::resolve_and_connect_egress": "04f7be2773581f25834153f4cec48142fe2792b26d684cbfbe2daf49a7a0b3dc",
     "proxy/src/http.rs::serve_request": "6d4010cff8ba221e79c5e7ce2d13fd03bfa0cfe46233508201faf2ee33367553",
     "proxy/src/http.rs::serve_tunnel_http": "c21b7f12230402ed4c30c665761f33bf833f29b2a32415cbbb6c44fe306bafef",
-    "proxy/src/lib.rs::Runtime::load": "55be1479aedbfa5194d6598db83b4a5c9be7f4cbed898e676a023d0aac2024f9",
+    "proxy/src/lib.rs::Runtime::load": "9567f237a3cce1291b0e53bff4142e67c5b69406182e86a3dd6e33698e288dba",
     "proxy/src/lib.rs::accept_agents": "e0aad19f2f3b31faf532f5e83ed80063d63cec187df4c0cc886ded1f2de2f382",
     "proxy/src/lib.rs::activate_registered_task": "634cc34a5b9cd1e0080097fe96ca641b093f3e6203169046aca2139d13ece72a",
     "proxy/src/lib.rs::load_gateway_vault": "b1ec7c7e449d6cb1cc9e1cd6e93f296b2b1b332d138501dcc3c4c2b9e32a919b",
@@ -291,6 +296,9 @@
     "proxy/src/network_guard.rs::evaluate_policy": "bde05cd6bfd241e058bfcf86ab2e8b8700f4c9b810b0c779b580b647ee54b3e2",
     "proxy/src/policy.rs::evaluate": "3c796c5ae8e3ee401efc68415732ce2c16cbaaafa85db49586284a43ef8ce9d8",
     "proxy/src/policy_runtime.rs::load": "f0d4c7cf7aea9c46869e40d003691b8dee2848909914569c211a573cd4d88806",
+    "proxy/src/provider_stream.rs::open": "18113337e6d35d68d6cd577819bfec694d26f4c2ade378eeac2189c8b7836900",
+    "proxy/src/services.rs::GatewaySnapshot::configured_agent_id": "1e24f4e39a9b18dab33890b9f4b06075db03b1f9a886cd6e676bcdebf81c02a3",
+    "proxy/src/services.rs::GatewaySnapshot::provider_for_host": "1e86dd089c3289d6f06585f41277e075bcfba22430f2fe88377e5214279c0a61",
     "proxy/src/services.rs::select": "7c604c875058a559b5c4e5eec8b17fb8f473928552f3de7d05d9b1be95e838ad",
     "proxy/src/test_context.rs::select_context": "9197866d505c72cbd9d5d019c3bd9b50fc7524ca8e4e0b7fef621e059e8d4368",
     "proxy/src/tls.rs::CertificateAuthority::from_pem": "3244cae621da7fe814d59da42658fdeedf246d9a6600e6f770252f63bd61fe6a",
@@ -336,6 +344,34 @@
       "text": "path.open(\"a\")"
     },
     {
+      "digest": "2a33a7c78db4664febc5b8434cd48bd593f6413f9f0373a99530d550e509e102",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-file",
+      "symbol": "_agent_host_setup_lock",
+      "text": "os.open(\"host-setup.lock\", flags, 0o600, dir_fd=setup_dir_fd)"
+    },
+    {
+      "digest": "80f37bc79ce2786ff8bc12f54aa35112486615b8211e665d1a9119f2b4947788",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-file",
+      "symbol": "_capture_snapshot_blocking",
+      "text": "per_run_go.write_text(\"\")"
+    },
+    {
+      "digest": "80f37bc79ce2786ff8bc12f54aa35112486615b8211e665d1a9119f2b4947788",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-file",
+      "symbol": "_give_up",
+      "text": "per_run_go.write_text(\"\")"
+    },
+    {
+      "digest": "f35752fffe560c62d15a73a17f4b189bd573f2ce2c6787870c522da4a35a728b",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-file",
+      "symbol": "_open_safe_setup_directory",
+      "text": "os.open(path, flags)"
+    },
+    {
       "digest": "6bea3d9d53240d17e2e6f2d80d4882aeca7ee0b9ab706aa5bedadc2d199cd8e8",
       "path": "cli/src/safeyolo/agents_store.py",
       "rule": "python-file",
@@ -369,34 +405,6 @@
       "rule": "python-file",
       "symbol": "run_oauth2_flow",
       "text": "webbrowser.open(full_url)"
-    },
-    {
-      "digest": "2a33a7c78db4664febc5b8434cd48bd593f6413f9f0373a99530d550e509e102",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-file",
-      "symbol": "_agent_host_setup_lock",
-      "text": "os.open(\"host-setup.lock\", flags, 0o600, dir_fd=setup_dir_fd)"
-    },
-    {
-      "digest": "80f37bc79ce2786ff8bc12f54aa35112486615b8211e665d1a9119f2b4947788",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-file",
-      "symbol": "_capture_snapshot_blocking",
-      "text": "per_run_go.write_text(\"\")"
-    },
-    {
-      "digest": "80f37bc79ce2786ff8bc12f54aa35112486615b8211e665d1a9119f2b4947788",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-file",
-      "symbol": "_give_up",
-      "text": "per_run_go.write_text(\"\")"
-    },
-    {
-      "digest": "f35752fffe560c62d15a73a17f4b189bd573f2ce2c6787870c522da4a35a728b",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-file",
-      "symbol": "_open_safe_setup_directory",
-      "text": "os.open(path, flags)"
     },
     {
       "digest": "99333d42335d8500973a31a22ec33e41d0dc15865d4050c5cfa82f1bb2abbfa5",
@@ -791,20 +799,6 @@
       "text": "open(path, \"a\")"
     },
     {
-      "digest": "12fe8533d21ce8cbfe8a30a3f2e795203b7309fa7fce2c765a14dbe2a9b587f0",
-      "path": "cli/src/safeyolo/core/utils.py",
-      "rule": "python-file",
-      "symbol": "atomic_write_json",
-      "text": "open(tmp, 'w')"
-    },
-    {
-      "digest": "e5e58e42b7ec933969ce0dcd119f771a64abb8b8b0cf3c54a12ea7a023b899e3",
-      "path": "cli/src/safeyolo/core/utils.py",
-      "rule": "python-file",
-      "symbol": "load_hmac_secret",
-      "text": "os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)"
-    },
-    {
       "digest": "58e2b75456aa18551c6b00d73ac4f9da5be828ad72b8526af724dd7ae294dfff",
       "path": "cli/src/safeyolo/core/vault.py",
       "rule": "python-file",
@@ -896,48 +890,6 @@
       "text": "open(\"/safeyolo/agent-name\")"
     },
     {
-      "digest": "c98a5397948356b532cf47a66aa9f13c10f1bf546df920ee262e58de3c838de5",
-      "path": "cli/src/safeyolo/mitm_addons/admin_api.py",
-      "rule": "python-file",
-      "symbol": "_start_server",
-      "text": "open(token_file)"
-    },
-    {
-      "digest": "19b3220018f7b476786e1352a9664b3a9dc6dd9fab98416b7ab9f9e48e74952e",
-      "path": "cli/src/safeyolo/mitm_addons/agent_api.py",
-      "rule": "python-file",
-      "symbol": "_scan_audit_files",
-      "text": "open(path)"
-    },
-    {
-      "digest": "c619bf6e3ec524e29b35bdab4e7106cfb888d7a60b967fd1ae1ad89608ba64fa",
-      "path": "cli/src/safeyolo/mitm_addons/circuit_breaker.py",
-      "rule": "python-file",
-      "symbol": "_load_state",
-      "text": "open(self._state_file)"
-    },
-    {
-      "digest": "2baac35a4b63bc56be164f218daf669fb5043f004fc6fcf051c0592913d7718c",
-      "path": "cli/src/safeyolo/mitm_addons/memory_monitor.py",
-      "rule": "python-file",
-      "symbol": "_read_proc_memory",
-      "text": "open(\"/proc/self/status\")"
-    },
-    {
-      "digest": "21ab112724fe4738b9e9181f1458e2b12c50cd60074d0513e18a9cf835f9acae",
-      "path": "cli/src/safeyolo/mitm_addons/pid_writer.py",
-      "rule": "python-file",
-      "symbol": "signal_ready",
-      "text": "os.replace(temp_path, self.path)"
-    },
-    {
-      "digest": "df2fc2cad61edb8b83e610e384a6c81621bd2a5020951f23bdfb8f5f7165ede0",
-      "path": "cli/src/safeyolo/mitm_addons/pid_writer.py",
-      "rule": "python-file",
-      "symbol": "signal_ready",
-      "text": "open(temp_path, \"w\")"
-    },
-    {
       "digest": "4ed9af24600f47bf4c8cebed5fc745cd6c5e1d6bb3bee871182c4aa54aca0ed1",
       "path": "cli/src/safeyolo/platform/linux.py",
       "rule": "python-file",
@@ -957,13 +909,6 @@
       "rule": "python-file",
       "symbol": "start_sandbox",
       "text": "pid_path.write_text(str(pid))"
-    },
-    {
-      "digest": "c619bf6e3ec524e29b35bdab4e7106cfb888d7a60b967fd1ae1ad89608ba64fa",
-      "path": "cli/src/safeyolo/policy/budget_tracker.py",
-      "rule": "python-file",
-      "symbol": "_load_state",
-      "text": "open(self._state_file)"
     },
     {
       "digest": "9a3a1a24d2f2bf25fc7111991cb516499ec974bbab0288bda696ef074759c993",
@@ -992,41 +937,6 @@
       "rule": "python-file",
       "symbol": "serve_agent_preview",
       "text": "webbrowser.open(session.url)"
-    },
-    {
-      "digest": "d2107d489612cf7d76f8a5b846f45799d28ab8c3dea77694ac80bd5054ffa8d6",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-file",
-      "symbol": "_build_combined_ca_bundle",
-      "text": "combined.write_text(certifi_bundle.read_text() + \"\\n\" + custom_ca.read_text())"
-    },
-    {
-      "digest": "60c9b48a86619a8496388afb05d2065ec16c4ef969cea099750173d9fbe551cf",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-file",
-      "symbol": "_ensure_tokens",
-      "text": "admin_token_file.write_text(admin_token)"
-    },
-    {
-      "digest": "bbff9459fba91ee55df7ccf0997aa672fe06f30bbd0abbeca792f1c2e6e13c3b",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-file",
-      "symbol": "_merge_system_cas_into_certifi",
-      "text": "certifi_bundle.open(\"a\")"
-    },
-    {
-      "digest": "effe067c9764b4415cbdef89f50211e820f6ba48d05842ed8d887a99daff247d",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-file",
-      "symbol": "_read_startup_failure",
-      "text": "path.open(encoding=\"utf-8\")"
-    },
-    {
-      "digest": "f98b0d242c3f81d485abc5a1ba283c62c185aa5b20ef660814b0e9d50448025b",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-file",
-      "symbol": "_tail_text",
-      "text": "path.open(encoding=\"utf-8\", errors=\"replace\")"
     },
     {
       "digest": "6e4435c383e55091ce58ee64d22c7ecb73dafc106230252cb7932bbbcb68fcbc",
@@ -1264,13 +1174,6 @@
       "path": "cli/src/safeyolo/commands/doctor.py",
       "rule": "python-network",
       "symbol": "_check_pipeline_probe",
-      "text": "s.connect(str(sock_path))"
-    },
-    {
-      "digest": "f9f61ebf526d66158e57e1213f8cae5d41e6433953a0f51b741b56bde6c8a445",
-      "path": "cli/src/safeyolo/commands/doctor.py",
-      "rule": "python-network",
-      "symbol": "_send_uds_request",
       "text": "s.connect(str(sock_path))"
     },
     {
@@ -1575,13 +1478,6 @@
       "text": "sqlite3.connect(str(path), isolation_level=None, timeout=10)"
     },
     {
-      "digest": "7da8f342fcafce80abc942eef550ba29273bc5747ea4349b2e6c42a9e7ceb7c2",
-      "path": "cli/src/safeyolo/core/plumb_service.py",
-      "rule": "python-network",
-      "symbol": "init_db",
-      "text": "sqlite3.connect(self.db_path, check_same_thread=False)"
-    },
-    {
       "digest": "255c8e7ea6c8c5b3ca36b8572e41765d8947b2fdd7acc1ce52567f529f816e7d",
       "path": "cli/src/safeyolo/guest-diag.py",
       "rule": "python-network",
@@ -1624,95 +1520,11 @@
       "text": "s2.connect((VSOCK_HOST_CID, VSOCK_SHELL_PORT))"
     },
     {
-      "digest": "23aac132cf14bb6d8af3cd84bb3a9e5c4a98d52ac8c7b405fef28d72d438dd13",
-      "path": "cli/src/safeyolo/mitm_addons/agent_api.py",
-      "rule": "python-network",
-      "symbol": "_coord_room_id_for_audit",
-      "text": "store.connect()"
-    },
-    {
-      "digest": "cd97fa7504692074ea146fac18db9dff1867f037b840ad2376d3ce930908897d",
-      "path": "cli/src/safeyolo/mitm_addons/operator_provenance.py",
-      "rule": "python-network",
-      "symbol": "running",
-      "text": "self._view.sig_view_update.connect(self._view_update)"
-    },
-    {
-      "digest": "ddb28206936423adbcd947a394bf07a8baf5a268d36762738ff28541c4b8b5aa",
-      "path": "cli/src/safeyolo/mitm_addons/operator_provenance.py",
-      "rule": "python-network",
-      "symbol": "running",
-      "text": "self._view.sig_view_add.connect(self._view_add)"
-    },
-    {
       "digest": "14a73663573b0002c22c88b3f407e2bfa075a1ce8fd932b488f74807257591f5",
       "path": "cli/src/safeyolo/platform/linux.py",
       "rule": "python-network",
       "symbol": "popen_port_forward",
       "text": "listener.bind(str(stream_path))"
-    },
-    {
-      "digest": "7da8f342fcafce80abc942eef550ba29273bc5747ea4349b2e6c42a9e7ceb7c2",
-      "path": "cli/src/safeyolo/storage/flow_store.py",
-      "rule": "python-network",
-      "symbol": "init_db",
-      "text": "sqlite3.connect(self.db_path, check_same_thread=False)"
-    },
-    {
-      "digest": "10b0b7240f74910e462d1d0f1612229ddfd788d6c70558c5e244993271bf6fe7",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.view.sig_view_remove.connect(self.view_remove)"
-    },
-    {
-      "digest": "2e74bd255a09e9e25ab1f8486c1703543ee160639efbc752d0bcdbbfe50b745f",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.options.changed.connect(self.options_update)"
-    },
-    {
-      "digest": "3860efd18e8d054a2853f950859bccd863237171d457a40d7eb01c5abe57d91e",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.proxyserver.servers.changed.connect(self.servers_update)"
-    },
-    {
-      "digest": "8932806305414c349f76e73db5569d407ef3476680c6cfbb74876fc3ee00d9ff",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.events.sig_refresh.connect(self.event_refresh)"
-    },
-    {
-      "digest": "8ca07321f66957f8c13ef4ad1376e4fed0cc009bd94763b483bab73362ce3b76",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.events.sig_add.connect(self.event_add)"
-    },
-    {
-      "digest": "90580b6f8f90a48c62c5c0a0fd0a1c9190c4a918db7878ac42f1f7423ffbb45f",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.view.sig_view_add.connect(self.view_add)"
-    },
-    {
-      "digest": "bfecee959d03499962392d121a52d833322acd41240542df5d705a235601ea8d",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.view.sig_view_update.connect(self.view_update)"
-    },
-    {
-      "digest": "f6395ed35398d10d7f4c574fd97fa5773a14cfb3b6dcd245a949ddee84572d46",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-network",
-      "symbol": "__init__",
-      "text": "master.view.sig_view_refresh.connect(self.view_refresh)"
     },
     {
       "digest": "3fbe72ec3f8f086fe7698af8bf2f6c046ab7afabbc8527440621e039477b79fb",
@@ -1727,20 +1539,6 @@
       "rule": "python-network",
       "symbol": "probe_shell_socket",
       "text": "sock.connect(str(path))"
-    },
-    {
-      "digest": "3be7f7e7c478e07ff2734600da4d2ae70c1132787cd6b73546da285927cf5d3e",
-      "path": "cli/src/safeyolo/websocket_body_filter.py",
-      "rule": "python-network",
-      "symbol": "install",
-      "text": "self.view.sig_store_refresh.connect(self._store_refresh)"
-    },
-    {
-      "digest": "549a8aa9b5dd7e1e9a1cf86b82d3b3d138d64174934706c806a116ee60fe3e33",
-      "path": "cli/src/safeyolo/websocket_body_filter.py",
-      "rule": "python-network",
-      "symbol": "install",
-      "text": "self.view.sig_store_remove.connect(self._store_remove)"
     },
     {
       "digest": "1f6de592f2079f577afd2dfda87fd7f5e7ffdcd853d9489edbe03630b1f7e7e5",
@@ -1764,6 +1562,20 @@
       "text": "destination.write(line)"
     },
     {
+      "digest": "dc717cc0784a717613737c2bda82b9f454ebc8598735cc71dee7d4194ad5a998",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-output",
+      "symbol": "_run_agent_impl",
+      "text": "_timing_emit()"
+    },
+    {
+      "digest": "dc717cc0784a717613737c2bda82b9f454ebc8598735cc71dee7d4194ad5a998",
+      "path": "cli/src/safeyolo/agent_lifecycle.py",
+      "rule": "python-output",
+      "symbol": "_run_agent_impl",
+      "text": "_timing_emit()"
+    },
+    {
       "digest": "36f354d1e081e08d06a52d5e4a98e991af81144af6296250e4ec5550f7728349",
       "path": "cli/src/safeyolo/api.py",
       "rule": "python-output",
@@ -1783,20 +1595,6 @@
       "rule": "python-output",
       "symbol": "do_GET",
       "text": "self.wfile.write(\n                b\"<html><body style='font-family:system-ui;text-align:center;padding:60px'>\"\n                b\"<h1>&#9989; Authorization succe"
-    },
-    {
-      "digest": "dc717cc0784a717613737c2bda82b9f454ebc8598735cc71dee7d4194ad5a998",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-output",
-      "symbol": "_run_agent_impl",
-      "text": "_timing_emit()"
-    },
-    {
-      "digest": "dc717cc0784a717613737c2bda82b9f454ebc8598735cc71dee7d4194ad5a998",
-      "path": "cli/src/safeyolo/commands/agent.py",
-      "rule": "python-output",
-      "symbol": "_run_agent_impl",
-      "text": "_timing_emit()"
     },
     {
       "digest": "0f10afc1321583070b023f71e759bfd4bd8b26bf894d0aa8070fe2ad905fdd21",
@@ -1925,13 +1723,6 @@
       "text": "connection.send(json.dumps(event, separators=(\",\", \":\")))"
     },
     {
-      "digest": "29ac630a2ba349a222f585353270d963a1c72744afcbdd1acfebc2306281b633",
-      "path": "cli/src/safeyolo/core/utils.py",
-      "rule": "python-output",
-      "symbol": "load_hmac_secret",
-      "text": "os.write(fd, secret)"
-    },
-    {
       "digest": "db674afae8afc3e8e11a4bad6c1b142546d3c8c6b8dbf02f1f5836e06b732002",
       "path": "cli/src/safeyolo/desktop_presenter_rpc.py",
       "rule": "python-output",
@@ -1986,55 +1777,6 @@
       "rule": "python-output",
       "symbol": "_write",
       "text": "handle.write(\"\\n\")"
-    },
-    {
-      "digest": "9de3fb0a8ebd0d75795eb505ae1fd03cb91a779df701c53d71292c219b94cfc3",
-      "path": "cli/src/safeyolo/mitm_addons/admin_api.py",
-      "rule": "python-output",
-      "symbol": "_send_json",
-      "text": "self.wfile.write(body)"
-    },
-    {
-      "digest": "9a011129b4e1c861dee68ddd82ce0629490c0413fc4c206cadadc4d59cbf6f57",
-      "path": "cli/src/safeyolo/mitm_addons/agent_api.py",
-      "rule": "python-output",
-      "symbol": "_handle_coord",
-      "text": "coord_api.send(**send_args)"
-    },
-    {
-      "digest": "807b0691ec12f62e60794987d53dac194adce0c45e8afd8bad43c8df44c2830b",
-      "path": "cli/src/safeyolo/mitm_addons/pid_writer.py",
-      "rule": "python-output",
-      "symbol": "signal_ready",
-      "text": "f.write(f\"{os.getpid()}\\n\")"
-    },
-    {
-      "digest": "1d344a30b17b233124abf3435e482c9ba9aec798d103659eb4a7fa44b70c29e2",
-      "path": "cli/src/safeyolo/mitm_addons/traffic_scope.py",
-      "rule": "python-output",
-      "symbol": "choose_test",
-      "text": "console_signals.status_message.send(\n                message=f\"No test contexts recorded{scope}.\"\n            )"
-    },
-    {
-      "digest": "9889c1c0a5106b9c2f2dd02ecfc01c61aefcddb81b2fb34408a1d71208b928c0",
-      "path": "cli/src/safeyolo/mitm_addons/traffic_scope.py",
-      "rule": "python-output",
-      "symbol": "edit_user_filter",
-      "text": "console_signals.status_prompt_command.send(\n            partial=command_text,\n            cursor=len(command_text) - 1,\n        )"
-    },
-    {
-      "digest": "742c60a167d806a1c103f63e98a55514f256b08e5c6501ef205cedc8362726fa",
-      "path": "cli/src/safeyolo/policy/engine.py",
-      "rule": "python-output",
-      "symbol": "_save_baseline_full",
-      "text": "tmp.write(content)"
-    },
-    {
-      "digest": "742c60a167d806a1c103f63e98a55514f256b08e5c6501ef205cedc8362726fa",
-      "path": "cli/src/safeyolo/policy/engine.py",
-      "rule": "python-output",
-      "symbol": "_save_baseline_plain",
-      "text": "tmp.write(content)"
     },
     {
       "digest": "742c60a167d806a1c103f63e98a55514f256b08e5c6501ef205cedc8362726fa",
@@ -2100,11 +1842,25 @@
       "text": "proc.stdin.write(data)"
     },
     {
-      "digest": "b14c314fd490ba90868a47b2a6bcdf442051d57c223e04c180058a18030e5215",
-      "path": "cli/src/safeyolo/proxy.py",
+      "digest": "352d1679780198dfe945b07ea505bd40d0dffc05da0a51ff15b7a36404fa445e",
+      "path": "cli/src/safeyolo/provider_stream.py",
       "rule": "python-output",
-      "symbol": "_merge_system_cas_into_certifi",
-      "text": "f.write(\"\\n\")"
+      "symbol": "_copy_available_bytes",
+      "text": "target.write(remaining)"
+    },
+    {
+      "digest": "ddc2b9d511892457c6db48bfe845fa63c348578718efbfdacac86ecfdfa31f15",
+      "path": "cli/src/safeyolo/provider_stream.py",
+      "rule": "python-output",
+      "symbol": "main",
+      "text": "sys.stdout.buffer.write(b\"\\x01\")"
+    },
+    {
+      "digest": "ed3fc85c792dc53e5da5514c5470394ca94edc9c73c1ec44ed526305ccb2abf0",
+      "path": "cli/src/safeyolo/provider_stream.py",
+      "rule": "python-output",
+      "symbol": "main",
+      "text": "sys.stdout.buffer.write(b\"\\x00\")"
     },
     {
       "digest": "a2cf9ae637256e887d9ea30573daa718d072c3ce058d7b9897f8c595a526606d",
@@ -2168,48 +1924,6 @@
       "rule": "python-output",
       "symbol": "emit",
       "text": "sys.stderr.write(f\"  {label:<72s} {duration:9.1f} ms\\n\")"
-    },
-    {
-      "digest": "11afff00cf400bf6996e4bd444f0b477db8b7f0ee3185d8afd537350f3a35b18",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "get",
-      "text": "self.write(\n            html.replace(\"</head>\", '<link rel=\"stylesheet\" href=\"/safeyolo/scope.css\"></head>').replace(\n                \"<body>\", f\"<body>{_scope_"
-    },
-    {
-      "digest": "bc7f40bebb60ca35d7318dc41beb02e62708b951191a92e569b928ae8778a10f",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "get",
-      "text": "self.write(_SCOPE_STYLE)"
-    },
-    {
-      "digest": "c131b289114051436e6f02a3d9fa021840796a4a2fc87d463a1378f5b5caef0d",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "get",
-      "text": "self.write(_SCOPE_SCRIPT)"
-    },
-    {
-      "digest": "efba077ac9a00f74cabf2f9b1a36746059dafc8c10e022bfb1d98e14365fdafa",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "get",
-      "text": "self.write({\"scope\": addon.get_stats(), \"facets\": addon.facet_values()})"
-    },
-    {
-      "digest": "1f62a4f1a21545669f638e14ef572dbb239e155ec2a3af330138bcc8f2a9bd99",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "prompt_for_exit",
-      "text": "console_signals.status_message.send(\n            message=\"Detach with tmux prefix+d; stop with `safeyolo stop`.\",\n            expire=5,\n        )"
-    },
-    {
-      "digest": "9b8b9b64d786a2744fb8ed14ad41eaf44333efdca7519f56cb07db12c3eb41e7",
-      "path": "cli/src/safeyolo/traffic_master.py",
-      "rule": "python-output",
-      "symbol": "put",
-      "text": "self.write({\"scope\": self._scope_addon().set_scope(**self.json)})"
     },
     {
       "digest": "1bf62b89634b2fc8fb2e939c63765fc938725c1b52ff5c994a783a97860543c3",
@@ -2751,13 +2465,6 @@
       "text": "subprocess.run(command, capture_output=True, text=True, timeout=3, check=False)"
     },
     {
-      "digest": "7057c6dacc4ebe31e007d4739499d9b79c59d114a5920b1d59bd3d189b4637a8",
-      "path": "cli/src/safeyolo/proxy.py",
-      "rule": "python-process",
-      "symbol": "_ensure_certs",
-      "text": "subprocess.Popen(\n        [mitmdump, \"--set\", f\"confdir={cert_dir}\", \"-p\", \"0\"],\n        stdin=subprocess.DEVNULL,\n        stdout=subprocess.DEVNULL,\n        st"
-    },
-    {
       "digest": "f9803f6bcb89c8f44210c44f8aac69f930382f37e1497d4a7140b22ffccb4df2",
       "path": "cli/src/safeyolo/repo_map.py",
       "rule": "python-process",
@@ -2854,6 +2561,20 @@
       "rule": "python-process",
       "symbol": "capture_session",
       "text": "subprocess.run(\n        [*_base_command(tmux), \"capture-pane\", \"-p\", \"-S\", \"-200\", \"-t\", f\"{SESSION_NAME}:0.0\"],\n        check=False,\n        capture_output=Tru"
+    },
+    {
+      "digest": "17b3d845842e97e91f0024349684a30bdb68410f6b27c5b57bcf3a4281d3973b",
+      "path": "cli/src/safeyolo/traffic_session.py",
+      "rule": "python-process",
+      "symbol": "interrupt_session_process",
+      "text": "subprocess.run(\n        [*base, \"display-message\", \"-p\", \"-t\", f\"{SESSION_NAME}:0.0\",\n         \"#{pane_dead} #{pane_pid} #{pane_id}\"],\n        capture_output=Tr"
+    },
+    {
+      "digest": "5903b3ac8c46d53ae6662c6cabe392b13c2f038ec51cc425f35f831e09ae29b1",
+      "path": "cli/src/safeyolo/traffic_session.py",
+      "rule": "python-process",
+      "symbol": "interrupt_session_process",
+      "text": "subprocess.run(\n        [*base, \"send-keys\", \"-t\", fields[2], \"C-c\"],\n        capture_output=True, text=True, check=True,\n    )"
     },
     {
       "digest": "6bad6642295eb026ad39c693dbce143539e8e6713f0a6fcd32b928c7e0c9b9ca",
@@ -3150,6 +2871,13 @@
       "text": "fs::read(path)"
     },
     {
+      "digest": "2a0ff874bbefaf93b8445788e6718bd4f8eae4221226e203ca41363f6b11dad8",
+      "path": "proxy/src/agent_api.rs",
+      "rule": "rust-file",
+      "symbol": "authenticate_flow_read",
+      "text": "fs::OpenOptions::new()"
+    },
+    {
       "digest": "19e0841a0abe7a4f52bfadc8da2f6cd9d022de6efcffd61e50335b5c30ecb921",
       "path": "proxy/src/agent_api.rs",
       "rule": "rust-file",
@@ -3176,6 +2904,13 @@
       "rule": "rust-file",
       "symbol": "nats_url",
       "text": "std::fs::read(endpoint)"
+    },
+    {
+      "digest": "79944304757d23c19e605a80d1f083f679f378bed50564746fcf314902b9a20c",
+      "path": "proxy/src/agent_api/plumb.rs",
+      "rule": "rust-file",
+      "symbol": "shutdown_config",
+      "text": "std::fs::write(root.join(\"policy.json\"), r#\"{\"permissions\":[]}\"#)"
     },
     {
       "digest": "2fa4cc32324ac8f8a242f8aae047981767bd11e2c43d0fcbbfc67270dc7a17c8",
@@ -3521,6 +3256,13 @@
       "text": "File::open(\"/proc/self/status\")"
     },
     {
+      "digest": "0f648fdc8c7ccad33c95c324d87147d724cbd844b075400d9eb02b35bc91c487",
+      "path": "proxy/src/operator_stats.rs",
+      "rule": "rust-file",
+      "symbol": "native_runtime_reports_installed_pipeline_owners",
+      "text": "std::fs::write(\n            directory.path().join(\"policy.json\"),\n            r#\"{\"permissions\":[]}\"#,\n        )"
+    },
+    {
       "digest": "f268d0f5b255783659601ab0665daf8ee997afc9a9ff96c6c002a6a5aee340c0",
       "path": "proxy/src/policy/baseline.rs",
       "rule": "rust-file",
@@ -3717,6 +3459,13 @@
       "text": "std::fs::read(path)"
     },
     {
+      "digest": "376439c737d972fd98acbc76b99066f00e52ba845e6aaa55c3b44a014bf67df9",
+      "path": "proxy/src/admin_listener.rs",
+      "rule": "rust-network",
+      "symbol": "bind",
+      "text": "TcpListener::bind((Ipv4Addr::LOCALHOST, events_port))"
+    },
+    {
       "digest": "673c9d60dbac5790c1b499dc5b54f71cd35c3dacc1430cd930d0e72939fa8885",
       "path": "proxy/src/admin_listener.rs",
       "rule": "rust-network",
@@ -3736,13 +3485,6 @@
       "rule": "rust-network",
       "symbol": "raw_agent_request",
       "text": "UnixStream::connect(socket)"
-    },
-    {
-      "digest": "b7123a8764d659ae31a04e92ed40fca86486bd0686054e458d267d56c323b114",
-      "path": "proxy/src/http.rs",
-      "rule": "rust-network",
-      "symbol": "decide",
-      "text": "UnixStream::connect(\n        runtime\n            .config\n            .temporary_policy_socket\n            .as_deref()\n            .ok_or(\"policy is not configur"
     },
     {
       "digest": "0b3f98430432556cad09d45660122a928bea08fc109532147cd6ff1aaed704f2",
@@ -4039,11 +3781,11 @@
       "text": "services.insert(\n                &authorization.service,\n                Item::Value(toml_edit::Value::InlineTable(binding)),\n            )"
     },
     {
-      "digest": "fca2c373f59948789aefac468608e03b764fe088f23b7f1f946f2b3612b3313d",
+      "digest": "cb7ba8fe3d1afb04e136c09f1a6e3196b7ccb9f24845dfb5f710a1e5705c9831",
       "path": "proxy/src/admin_api/services.rs",
       "rule": "rust-output",
       "symbol": "persist",
-      "text": "binding.insert(\n                \"token\",\n                toml_edit::Value::from(authorization.credential.as_str()),\n            )"
+      "text": "binding.insert(\n                    \"token\",\n                    toml_edit::Value::from(authorization.credential.as_str()),\n                )"
     },
     {
       "digest": "e315c3b9826b27f6cc0edba27c17419949c9236a8b74f0b14030c31dd5b3d434",
@@ -4074,6 +3816,13 @@
       "text": "std::fs::OpenOptions::new()\n            .append(true)\n            .open(&path)\n            .unwrap()\n            .write_all(b\"{\\\"event\\\":\\\"admin.host_allowed\\\","
     },
     {
+      "digest": "18bf3775fa4c10ec061bc26d001bf99e7c8d0145fcb37a5a12818fb4131e7eeb",
+      "path": "proxy/src/admin_listener.rs",
+      "rule": "rust-output",
+      "symbol": "close_http_response",
+      "text": "response.headers_mut().insert(\n        hyper::header::CONNECTION,\n        hyper::header::HeaderValue::from_static(\"close\"),\n    )"
+    },
+    {
       "digest": "00059352eb00d5a24b159ba26110962a4b4bc003c38b97f5388ccedcf9325bb7",
       "path": "proxy/src/admin_listener.rs",
       "rule": "rust-output",
@@ -4093,6 +3842,13 @@
       "rule": "rust-output",
       "symbol": "serve_connection",
       "text": "response\n                    .headers_mut()\n                    .insert(\"x-safeyolo-evidence-error\", \"true\".parse().unwrap())"
+    },
+    {
+      "digest": "368f4b7f649a6e2e65ddc03cd5f7af2dab569e8af0488c1bd17c02aa9302fbd7",
+      "path": "proxy/src/admin_listener.rs",
+      "rule": "rust-output",
+      "symbol": "serve_events",
+      "text": "response.headers_mut().insert(\n            hyper::header::CONNECTION,\n            hyper::header::HeaderValue::from_static(\"close\"),\n        )"
     },
     {
       "digest": "381ae777d89c4de03148fcb8c6fb5b7d2757e65c84b95c71b9864a051cdf8dff",
@@ -4242,11 +3998,25 @@
       "text": "sender.send(true)"
     },
     {
-      "digest": "428468d28c2179ae48a110ea4302b0a6432eb54b8abd6c238f16fd0cd153935e",
+      "digest": "08b7edc9e6055f0e1072be302fa6c031e372d5c7c68bbcdd325524fe5dbae422",
       "path": "proxy/src/agent_api/flows.rs",
       "rule": "rust-output",
-      "symbol": "execute",
-      "text": "fields.insert(\n                    \"body_text\".into(),\n                    Value::String(String::from_utf8_lossy(&body.body).into_owned()),\n                )"
+      "symbol": "body_value",
+      "text": "fields.insert(\n        \"body_base64\".into(),\n        Value::String(STANDARD.encode(&body.body)),\n    )"
+    },
+    {
+      "digest": "6afc1f0ea686ef1f7fdc38800a03a6b6c49215f79294bc731f492e0b0c3324f3",
+      "path": "proxy/src/agent_api/flows.rs",
+      "rule": "rust-output",
+      "symbol": "body_value",
+      "text": "fields.insert(\n            \"body_text\".into(),\n            Value::String(String::from_utf8_lossy(&body.body).into_owned()),\n        )"
+    },
+    {
+      "digest": "a04870b729d318acb19952ba046a15c21add1477d894ca72c436baab33d64127",
+      "path": "proxy/src/agent_api/flows.rs",
+      "rule": "rust-output",
+      "symbol": "body_value",
+      "text": "fields.insert(\"body_length\".into(), Value::from(body.body.len()))"
     },
     {
       "digest": "66a1e3f755a85494e290cb10fd632729ddc73122a2c3bda130665370e1cbb58c",
@@ -4256,18 +4026,11 @@
       "text": "object.insert(\n                \"evidence_owner\".into(),\n                CircuitValue::Other(Value::String(owner.into())),\n            )"
     },
     {
-      "digest": "a04870b729d318acb19952ba046a15c21add1477d894ca72c436baab33d64127",
+      "digest": "e5ec94bb02859806f60f79ad346f7cd97d6d7ea7c247b9ddcf75be0a1fe8fd0a",
       "path": "proxy/src/agent_api/flows.rs",
       "rule": "rust-output",
       "symbol": "execute",
-      "text": "fields.insert(\"body_length\".into(), Value::from(body.body.len()))"
-    },
-    {
-      "digest": "a9b61b79e6cb2147c71729b9f5d83afa83af6cda6f5db28000a62f5dd2c5aafa",
-      "path": "proxy/src/agent_api/flows.rs",
-      "rule": "rust-output",
-      "symbol": "execute",
-      "text": "fields.insert(\n                \"body_base64\".into(),\n                Value::String(STANDARD.encode(&body.body)),\n            )"
+      "text": "fields.insert(\"capture_state\".into(), Value::String(state.into()))"
     },
     {
       "digest": "67edc264aa9d3e1bdfa253298bd20bb95e2219420bcffc1320e6c5711624e51d",
@@ -5332,6 +5095,13 @@
       "rule": "rust-output",
       "symbol": "forward",
       "text": "upstream\n            .headers_mut()\n            .insert(\"x-safeyolo-evidence-error\", \"true\".parse()?)"
+    },
+    {
+      "digest": "37f06a8b5c029163543184b169a482547e9b3c0c85b9e796be72183fe93c02cd",
+      "path": "proxy/src/http.rs",
+      "rule": "rust-output",
+      "symbol": "forward",
+      "text": "request.headers_mut().insert(&name, value.clone())"
     },
     {
       "digest": "43891fe37cf2c6092e09baa377cc318eba732035ab57457c001cb16fd195ca3a",
@@ -7378,6 +7148,20 @@
       "text": "std::process::Command::new(python)"
     },
     {
+      "digest": "63aef9db7c675393a6250b8c8b675bdc171439417936455cacf1ae7018a1b36e",
+      "path": "proxy/src/command_centre.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "agents",
+      "text": "std::process::Command::new(python)"
+    },
+    {
+      "digest": "35a244c714c600bab8a756d56e2a75ff15f41287fee33ca1c42b667474eacdba",
+      "path": "proxy/src/command_centre.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "start",
+      "text": "Command::new(&host.python)"
+    },
+    {
       "digest": "e1d1e28f5e9b60646c37c62f6c9d2146fa2890e38d0ba64a56922871319106eb",
       "path": "proxy/src/credential_hmac.rs",
       "rule": "rust-process-ffi",
@@ -7519,6 +7303,13 @@
     },
     {
       "digest": "abe962f3f8882ca2e4c83b3528086161ac893ad21c32b7d98ab06c1f8dbb8f64",
+      "path": "proxy/src/provider_stream.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "open",
+      "text": "Command::new(python)"
+    },
+    {
+      "digest": "abe962f3f8882ca2e4c83b3528086161ac893ad21c32b7d98ab06c1f8dbb8f64",
       "path": "proxy/src/python_json.rs",
       "rule": "rust-process-ffi",
       "symbol": "json_presentation_matches_python_scalars_and_binary64_samples",
@@ -7546,6 +7337,7 @@
     "cli/src/safeyolo/__init__.py",
     "cli/src/safeyolo/_tactics.py",
     "cli/src/safeyolo/agent_command_supervisor.py",
+    "cli/src/safeyolo/agent_configuration.py",
     "cli/src/safeyolo/agent_context/skills/safeyolo-lab-controller/scripts/redact_credentials.py",
     "cli/src/safeyolo/agent_context/skills/safeyolo/scripts/github_checks.py",
     "cli/src/safeyolo/agent_diag.py",
@@ -7555,6 +7347,8 @@
     "cli/src/safeyolo/agents_store.py",
     "cli/src/safeyolo/api.py",
     "cli/src/safeyolo/cli.py",
+    "cli/src/safeyolo/command_centre_agent_host.py",
+    "cli/src/safeyolo/command_centre_tailnet_host.py",
     "cli/src/safeyolo/commands/__init__.py",
     "cli/src/safeyolo/commands/_oauth2_flow.py",
     "cli/src/safeyolo/commands/_service_discovery.py",
@@ -7609,21 +7403,12 @@
     "cli/src/safeyolo/core/audit_schema.py",
     "cli/src/safeyolo/core/audit_stream.py",
     "cli/src/safeyolo/core/audit_writer.py",
-    "cli/src/safeyolo/core/base.py",
-    "cli/src/safeyolo/core/config_cache.py",
     "cli/src/safeyolo/core/destination.py",
-    "cli/src/safeyolo/core/flow_cache.py",
-    "cli/src/safeyolo/core/flow_writer.py",
     "cli/src/safeyolo/core/identifiers.py",
-    "cli/src/safeyolo/core/identity.py",
     "cli/src/safeyolo/core/internal_api.py",
     "cli/src/safeyolo/core/operator_event_server.py",
-    "cli/src/safeyolo/core/plumb_service.py",
-    "cli/src/safeyolo/core/probe.py",
-    "cli/src/safeyolo/core/sensor_utils.py",
     "cli/src/safeyolo/core/service_loader.py",
     "cli/src/safeyolo/core/service_paths.py",
-    "cli/src/safeyolo/core/trace.py",
     "cli/src/safeyolo/core/utils.py",
     "cli/src/safeyolo/core/vault.py",
     "cli/src/safeyolo/desktop_presenter.py",
@@ -7633,7 +7418,6 @@
     "cli/src/safeyolo/detection/credentials.py",
     "cli/src/safeyolo/detection/matching.py",
     "cli/src/safeyolo/detection/patterns.py",
-    "cli/src/safeyolo/early_request_response.py",
     "cli/src/safeyolo/events.py",
     "cli/src/safeyolo/factory_contract.py",
     "cli/src/safeyolo/factory_doctor.py",
@@ -7642,51 +7426,20 @@
     "cli/src/safeyolo/guest-command-supervisor.py",
     "cli/src/safeyolo/guest-diag.py",
     "cli/src/safeyolo/ignore_hosts.py",
-    "cli/src/safeyolo/mitm_addons/__init__.py",
-    "cli/src/safeyolo/mitm_addons/admin_api.py",
-    "cli/src/safeyolo/mitm_addons/admin_shield.py",
-    "cli/src/safeyolo/mitm_addons/agent_api.py",
-    "cli/src/safeyolo/mitm_addons/agent_api_guard.py",
-    "cli/src/safeyolo/mitm_addons/circuit_breaker.py",
-    "cli/src/safeyolo/mitm_addons/credential_guard.py",
-    "cli/src/safeyolo/mitm_addons/file_logging.py",
-    "cli/src/safeyolo/mitm_addons/flow_pruner.py",
-    "cli/src/safeyolo/mitm_addons/flow_recorder.py",
-    "cli/src/safeyolo/mitm_addons/ignored_host_logger.py",
-    "cli/src/safeyolo/mitm_addons/loop_guard.py",
-    "cli/src/safeyolo/mitm_addons/memory_monitor.py",
-    "cli/src/safeyolo/mitm_addons/metrics.py",
-    "cli/src/safeyolo/mitm_addons/network_guard.py",
-    "cli/src/safeyolo/mitm_addons/operator_provenance.py",
-    "cli/src/safeyolo/mitm_addons/pattern_scanner.py",
-    "cli/src/safeyolo/mitm_addons/pid_writer.py",
-    "cli/src/safeyolo/mitm_addons/policy_engine.py",
-    "cli/src/safeyolo/mitm_addons/probe_sink.py",
-    "cli/src/safeyolo/mitm_addons/request_id.py",
-    "cli/src/safeyolo/mitm_addons/request_logger.py",
-    "cli/src/safeyolo/mitm_addons/service_discovery.py",
-    "cli/src/safeyolo/mitm_addons/service_gateway.py",
-    "cli/src/safeyolo/mitm_addons/sse_streaming.py",
-    "cli/src/safeyolo/mitm_addons/traffic_scope.py",
-    "cli/src/safeyolo/mitm_addons/transport_guard.py",
+    "cli/src/safeyolo/mount_protection.py",
     "cli/src/safeyolo/notify/__init__.py",
     "cli/src/safeyolo/operator_approvals.py",
     "cli/src/safeyolo/platform/__init__.py",
     "cli/src/safeyolo/platform/darwin.py",
     "cli/src/safeyolo/platform/linux.py",
     "cli/src/safeyolo/policy/__init__.py",
-    "cli/src/safeyolo/policy/budget_tracker.py",
     "cli/src/safeyolo/policy/compiler.py",
-    "cli/src/safeyolo/policy/engine.py",
     "cli/src/safeyolo/policy/list_loader.py",
-    "cli/src/safeyolo/policy/loader.py",
-    "cli/src/safeyolo/policy/models.py",
     "cli/src/safeyolo/policy/toml_normalize.py",
     "cli/src/safeyolo/policy/toml_roundtrip.py",
     "cli/src/safeyolo/preview.py",
+    "cli/src/safeyolo/provider_stream.py",
     "cli/src/safeyolo/proxy.py",
-    "cli/src/safeyolo/proxy_modes/__init__.py",
-    "cli/src/safeyolo/proxy_modes/unix_listener.py",
     "cli/src/safeyolo/repo_map.py",
     "cli/src/safeyolo/runtime_identity.py",
     "cli/src/safeyolo/rust_listener_json.py",
@@ -7694,26 +7447,14 @@
     "cli/src/safeyolo/shell_sessions.py",
     "cli/src/safeyolo/snapshot.py",
     "cli/src/safeyolo/sockets.py",
-    "cli/src/safeyolo/storage/__init__.py",
-    "cli/src/safeyolo/storage/flow_store.py",
     "cli/src/safeyolo/tailnet.py",
     "cli/src/safeyolo/timing.py",
     "cli/src/safeyolo/traffic_inspector.py",
-    "cli/src/safeyolo/traffic_master.py",
     "cli/src/safeyolo/traffic_session.py",
     "cli/src/safeyolo/vm.py",
     "cli/src/safeyolo/vm_control.py",
     "cli/src/safeyolo/vm_diagnostics.py",
     "cli/src/safeyolo/vm_identity.py",
-    "cli/src/safeyolo/websocket_body_filter.py",
-    "cli/src/safeyolo/websocket_close.py",
-    "cli/src/safeyolo/websocket_console.py",
-    "pdp/__init__.py",
-    "pdp/app.py",
-    "pdp/client.py",
-    "pdp/core.py",
-    "pdp/schemas.py",
-    "pdp/tokens.py",
     "proxy/src/admin_api.rs",
     "proxy/src/admin_api/audit_events.rs",
     "proxy/src/admin_api/gateway.rs",
@@ -7743,6 +7484,7 @@
     "proxy/src/circuits/config.rs",
     "proxy/src/circuits/json.rs",
     "proxy/src/circuits/numeric.rs",
+    "proxy/src/command_centre.rs",
     "proxy/src/config.rs",
     "proxy/src/connection_tasks.rs",
     "proxy/src/contracts.rs",
@@ -7800,6 +7542,7 @@
     "proxy/src/policy/watch.rs",
     "proxy/src/policy/watch/expiry_replay.rs",
     "proxy/src/policy_runtime.rs",
+    "proxy/src/provider_stream.rs",
     "proxy/src/python_json.rs",
     "proxy/src/python_text.rs",
     "proxy/src/request_headers.rs",
@@ -7823,8 +7566,8 @@
     "proxy/src/websocket.rs",
     "proxy/src/websocket_relay.rs"
   ],
-  "source_revision": "2ca598ce11d7c375a024b38eb3e7b4104a795d84",
+  "source_revision": "8ba22365616d83b8b8b18b87781f0e9b9ad1e439",
   "stale_symbols": [],
-  "tool_lock_sha256": "ee045a54387a26c6cfe27c60422f2e56a64b73001f41d108e90f01e90415299f",
+  "tool_lock_sha256": "d5e5be721172aad87c4d98b065f7ed3009ec086989fa64dd7b9b5b3fde764a20",
   "workflow_sha256": "c02870a9036657ba654d49f596aa89a184a33543b180994b72f3f03fcc24f39a"
 }
