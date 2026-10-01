@@ -1,336 +1,38 @@
-"""
-Pytest fixtures for SafeYolo addon tests.
-
-Uses mitmproxy.test.tflow for creating test flows and
-mitmproxy.test.taddons for testing addons with proper context.
-
-Key pattern: Use taddons.context() to set up ctx.options properly.
-See: https://snyk.io/advisor/python/mitmproxy/functions/mitmproxy.test.taddons.context
-"""
+"""Shared fixtures for current Python and native proxy tests."""
 
 import os
 import sys
 import tempfile
 from pathlib import Path
 
-# Set log path to temp directory BEFORE utils.py is imported
-# (AUDIT_LOG_PATH is evaluated at module import time)
+import pytest
+
+# The audit writer reads this setting on first import. Keep test writes out of
+# the operator's normal log path.
 os.environ.setdefault(
     "SAFEYOLO_LOG_PATH",
     str(Path(tempfile.gettempdir()) / "safeyolo-test.jsonl"),
 )
 
-import pytest
-
-# Addons live under the installed `safeyolo` package. Keep the source tree
-# first on sys.path for local edits, and expose `mitm_addons/` for the older
-# "bare" import pattern (`from pid_writer import ...`) that mitmproxy's `-s`
-# loader exposes at runtime.
-_CLI_SRC_DIR = Path(__file__).parent.parent / "cli" / "src"
-sys.path.insert(0, str(_CLI_SRC_DIR))
-_MITM_ADDONS_DIR = _CLI_SRC_DIR / "safeyolo" / "mitm_addons"
-sys.path.insert(0, str(_MITM_ADDONS_DIR))
-
-# Project root remains on sys.path for `from pdp import ...`.
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-
-# ---------- NATS runtime fixtures ----------
-# Coord v1 tests need a running nats-server. Session-cache the binary
-# so downloads happen at most once per test session.
+# Use the checked-out CLI package when testing local edits.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "cli" / "src"))
 
 
 @pytest.fixture(scope="session")
 def _binary_cache(tmp_path_factory):
-    """Download the nats-server binary once per session (matches
-    cli/tests/conftest.py). Ships the cached path so per-test coord dirs
-    can symlink it in without re-downloading."""
+    """Cache a test NATS binary once per session for isolated Coord fixtures."""
     from safeyolo.coord import nats_runtime as nr
+
     cache_dir = tmp_path_factory.mktemp("nats-binary-cache")
-    orig_env = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
+    previous = os.environ.get("SAFEYOLO_COORD_DATA_DIR")
     os.environ["SAFEYOLO_COORD_DATA_DIR"] = str(cache_dir)
     try:
         try:
             return nr.ensure_binary()
-        except Exception as e:
-            pytest.skip(f"nats-server binary unavailable: {e!s}")
+        except Exception as error:
+            pytest.skip(f"nats-server binary unavailable: {error!s}")
     finally:
-        if orig_env is None:
+        if previous is None:
             os.environ.pop("SAFEYOLO_COORD_DATA_DIR", None)
         else:
-            os.environ["SAFEYOLO_COORD_DATA_DIR"] = orig_env
-
-
-@pytest.fixture(autouse=True)
-def _reset_config_cache():
-    """Reset the sensor_config cache between tests.
-
-    `config_cache` is a module-level singleton (same as in production).
-    Tests that mock PolicyClient behaviour need to start from a clean
-    state, otherwise a prior test's stubbed config bleeds into the
-    next. Invalidate before AND after so fresh mocks are picked up on
-    the next `get()` and the singleton doesn't leak into later
-    sessions either.
-    """
-    try:
-        import safeyolo.core.config_cache as config_cache
-        config_cache._cache._config = None
-        config_cache._cache._callback_registered = False
-    except ImportError:  # pragma: no cover — addon path issue
-        pass
-    yield
-    try:
-        import safeyolo.core.config_cache as config_cache
-        config_cache._cache._config = None
-        config_cache._cache._callback_registered = False
-    except ImportError:
-        pass
-
-
-@pytest.fixture
-def make_flow():
-    """Factory for creating test flows."""
-    from mitmproxy.test import tflow
-
-    def _make_flow(
-        method: str = "GET",
-        url: str = "http://example.com/",
-        content: bytes | str = b"",
-        headers: dict | None = None,
-    ):
-        """Create a test flow with customized request."""
-        flow = tflow.tflow()
-        flow.request.method = method
-        flow.request.url = url
-
-        if isinstance(content, str):
-            content = content.encode()
-        flow.request.content = content
-
-        if headers:
-            for name, value in headers.items():
-                flow.request.headers[name] = value
-
-        return flow
-
-    return _make_flow
-
-
-@pytest.fixture
-def make_response():
-    """Factory for creating test responses."""
-    from mitmproxy import http
-
-    def _make_response(
-        status_code: int = 200,
-        content: bytes | str = b"",
-        headers: dict | None = None,
-    ):
-        """Create a test HTTP response."""
-        if isinstance(content, str):
-            content = content.encode()
-
-        return http.Response.make(
-            status_code,
-            content,
-            headers or {},
-        )
-
-    return _make_response
-
-
-@pytest.fixture
-def taddons_ctx():
-    """Provide taddons.context for tests that need ctx.options."""
-    from mitmproxy.test import taddons
-    return taddons.context
-
-
-@pytest.fixture
-def policy_engine_initialized(tmp_path):
-    """Initialize PDP with test baseline for credential_guard tests.
-
-    Uses PDPCore as the authority - tests configure policy through PDP,
-    not the legacy init_policy_engine() path.
-    """
-    from pdp import PolicyClientConfig, configure_policy_client, get_policy_client, reset_policy_client
-
-    # Reset any existing client
-    reset_policy_client()
-
-    # Create test baseline
-    baseline = tmp_path / "policy.yaml"
-    baseline.write_text("""
-metadata:
-  version: "1.0"
-  description: "Test baseline"
-
-permissions:
-  # OpenAI credentials to OpenAI endpoints
-  - action: credential:use
-    resource: "api.openai.com/*"
-    effect: allow
-    tier: explicit
-    condition:
-      credential: ["openai:*"]
-
-  # Unknown destinations require approval
-  - action: credential:use
-    resource: "*"
-    effect: prompt
-    tier: explicit
-
-  # Default-allow for network requests (explicit catch-all required
-  # since evaluate_request defaults to deny)
-  - action: network:request
-    resource: "*"
-    effect: allow
-    tier: explicit
-
-budgets: {}
-required: []
-addons:
-  credential_guard:
-    enabled: true
-
-credential_rules:
-  - name: openai
-    patterns:
-      - "sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
-      - "sk-proj-[a-zA-Z0-9_-]{80,}"
-    allowed_hosts:
-      - api.openai.com
-  - name: anthropic
-    patterns:
-      - "sk-ant-api[a-zA-Z0-9-]{90,}"
-    allowed_hosts:
-      - api.anthropic.com
-  - name: github
-    patterns:
-      - "gh[ps]_[a-zA-Z0-9]{36}"
-    allowed_hosts:
-      - api.github.com
-      - github.com
-""")
-
-    # Configure PolicyClient with the test baseline
-    config = PolicyClientConfig(baseline_path=baseline)
-    configure_policy_client(config)
-    client = get_policy_client()
-
-    yield client
-
-    # Cleanup
-    reset_policy_client()
-
-
-@pytest.fixture
-def credential_guard(policy_engine_initialized):
-    """Create a fresh CredentialGuard instance with proper mitmproxy context.
-
-    Rules are loaded from PolicyClient via get_sensor_config() - no manual setup needed.
-    """
-    from credential_guard import CredentialGuard
-    from mitmproxy.test import taddons
-
-    addon = CredentialGuard()
-
-    # Set up proper mitmproxy context with options
-    with taddons.context(addon) as tctx:
-        # Configure options
-        tctx.options.credguard_block = True
-        tctx.options.credguard_scan_urls = False
-        tctx.options.credguard_scan_bodies = True  # Enable for integration tests
-
-        # Test initialization - rules load from PolicyClient.get_sensor_config()
-        addon.hmac_secret = b"test-secret-for-hmac-fingerprinting-in-tests"
-        addon.config = {}
-        addon.safe_headers_config = {}
-
-        yield addon  # Keep context alive during test
-
-
-@pytest.fixture
-def network_guard(tmp_path):
-    """Create a real NetworkGuard in a mitmproxy context with a real PDP.
-
-    The baseline deliberately exercises the three ordinary network outcomes:
-    deny, require approval, and allow.  ``*.internal`` also verifies the
-    domain-level addon bypass path without patching ``NetworkGuard`` itself.
-    Tests that need synthetic PDP failures may replace only the PolicyClient
-    boundary with an autospecced collaborator.
-    """
-    from mitmproxy.test import taddons
-    from network_guard import NetworkGuard
-
-    from pdp import PolicyClientConfig, configure_policy_client, reset_policy_client
-
-    # Reset PDP client for fresh state
-    reset_policy_client()
-
-    # Create permissive baseline for network_guard tests
-    baseline = tmp_path / "policy.yaml"
-    baseline.write_text("""
-metadata:
-  version: "1.0"
-permissions:
-  - action: network:request
-    resource: "evil.com/*"
-    effect: deny
-  - action: network:request
-    resource: "unknown-host.com/*"
-    effect: prompt
-  - action: network:request
-    resource: "*"
-    effect: allow
-budgets: {}
-required: []
-addons:
-  network_guard:
-    enabled: true
-domains:
-  "*.internal":
-    bypass:
-      - network_guard
-""")
-
-    # Initialize PolicyClient with baseline
-    config = PolicyClientConfig(baseline_path=baseline)
-    configure_policy_client(config)
-
-    addon = NetworkGuard()
-    with taddons.context(addon) as tctx:
-        tctx.options.network_guard_enabled = True
-        tctx.options.network_guard_block = True
-        tctx.options.network_guard_homoglyph = True
-        yield addon
-
-    # Cleanup
-    reset_policy_client()
-
-
-@pytest.fixture
-def circuit_breaker():
-    """Create a fresh CircuitBreaker instance."""
-    from circuit_breaker import CircuitBreaker
-
-    addon = CircuitBreaker()
-    return addon
-
-
-@pytest.fixture
-def make_flow_with_request_id(make_flow):
-    """Factory for creating test flows with request_id pre-set.
-
-    Simulates what request_id.py addon does in production.
-    """
-    import time
-
-    def _make_flow(request_id: str = "req-test123abc", **kwargs):
-        flow = make_flow(**kwargs)
-        flow.metadata["request_id"] = request_id
-        flow.metadata["start_time"] = time.time()
-        return flow
-
-    return _make_flow
+            os.environ["SAFEYOLO_COORD_DATA_DIR"] = previous

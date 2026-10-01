@@ -1,0 +1,1175 @@
+{
+  "source_base": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+  "source_hashes": {
+    "pdp/core.py": "26b5833958ac09f34b530c3413dfbee1836261b99b32e81d75f880b743780ed0",
+    "pdp/client.py": "92e969c07581bdb164633a5b7411ab459fbcf1976f7fa72274c230688441f82f",
+    "cli/src/safeyolo/policy/models.py": "fc8dbf7131996337cdea7af3ce5d37f95a91f8de14900da93015e4bc645ff97f",
+    "cli/src/safeyolo/core/identifiers.py": "30f2beb0e9b1d1c510ff608df11abf4de6b14f1ca845c891dd7303a08b83146c"
+  },
+  "cases": [
+    {
+      "name": "empty",
+      "task_id": "task-1",
+      "document": "{}",
+      "source": {
+        "name": "empty",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {},
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "raw_metadata_unknown_order",
+      "task_id": "task-1",
+      "document": "{\"metadata\": {\"task_id\": \"authored-id\", \"description\": \"authored\"}, \"unknown\": {\"nested\": [1, false, null]}, \"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"deny\"}, {\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"allow\"}]}",
+      "source": {
+        "name": "raw_metadata_unknown_order",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 2
+        },
+        "retained": {
+          "metadata": {
+            "task_id": "authored-id",
+            "description": "authored"
+          },
+          "unknown": {
+            "nested": [
+              1,
+              false,
+              null
+            ]
+          },
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "deny"
+            },
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "allow"
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "unknown_host_format_is_not_compiled",
+      "task_id": "task-1",
+      "document": "{\"hosts\": false, \"agents\": [], \"lists\": {\"unread\": \"file:/not-opened\"}, \"global_budget\": -7, \"credentials\": null}",
+      "source": {
+        "name": "unknown_host_format_is_not_compiled",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "hosts": false,
+          "agents": [],
+          "lists": {
+            "unread": "file:/not-opened"
+          },
+          "global_budget": -7,
+          "credentials": null
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "invalid_regex_is_schema_valid",
+      "task_id": "task-1",
+      "document": "{\"scan_patterns\": [{\"name\": \"incomplete\", \"pattern\": \"[\"}], \"credential_rules\": [{\"name\": \"incomplete\", \"patterns\": [\"(?z)\"], \"allowed_hosts\": [\"bad:port\"]}]}",
+      "source": {
+        "name": "invalid_regex_is_schema_valid",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "scan_patterns": [
+            {
+              "name": "incomplete",
+              "pattern": "["
+            }
+          ],
+          "credential_rules": [
+            {
+              "name": "incomplete",
+              "patterns": [
+                "(?z)"
+              ],
+              "allowed_hosts": [
+                "bad:port"
+              ]
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "budget_effect_0",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\", \"budget\": 0}]}",
+      "source": {
+        "name": "budget_effect_0",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "budget",
+              "budget": 0
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "budget_effect_-1",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\", \"budget\": -1}]}",
+      "source": {
+        "name": "budget_effect_-1",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "budget",
+              "budget": -1
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "budget_effect_18446744073709551616",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\", \"budget\": 18446744073709551616}]}",
+      "source": {
+        "name": "budget_effect_18446744073709551616",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "budget",
+              "budget": 18446744073709551616
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "budget_effect_10000000000000000000",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\", \"budget\": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000}]}",
+      "source": {
+        "name": "budget_effect_10000000000000000000",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "budget",
+              "budget": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "global_budget_0",
+      "task_id": "task-1",
+      "document": "{\"budgets\": {\"network:request\": 0}}",
+      "source": {
+        "name": "global_budget_0",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "budgets": {
+            "network:request": 0
+          }
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "global_budget_-1",
+      "task_id": "task-1",
+      "document": "{\"budgets\": {\"network:request\": -1}}",
+      "source": {
+        "name": "global_budget_-1",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "budgets": {
+            "network:request": -1
+          }
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "global_budget_18446744073709551616",
+      "task_id": "task-1",
+      "document": "{\"budgets\": {\"network:request\": 18446744073709551616}}",
+      "source": {
+        "name": "global_budget_18446744073709551616",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "budgets": {
+            "network:request": 18446744073709551616
+          }
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "unexpanded_reference",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\"}], \"credential_rules\": [{\"name\": \"raw\", \"patterns\": [\"@absent\"], \"allowed_hosts\": [\"@absent\"]}], \"required\": [\"operator-addon\"]}",
+      "source": {
+        "name": "unexpanded_reference",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*"
+            }
+          ],
+          "credential_rules": [
+            {
+              "name": "raw",
+              "patterns": [
+                "@absent"
+              ],
+              "allowed_hosts": [
+                "@absent"
+              ]
+            }
+          ],
+          "required": [
+            "operator-addon"
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "boolean_and_integer_coercion",
+      "task_id": "task-1",
+      "document": "{\"budgets\": {\"network:request\": \"1_0.00\", \"other\": true}, \"addons\": {\"custom\": {\"enabled\": \"off\", \"settings\": {\"observed\": 1}, \"extra\": {\"preserved\": true}}}, \"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"allow\", \"budget\": \"-4.0\", \"condition\": {\"irreversible\": \"yes\"}}]}",
+      "source": {
+        "name": "boolean_and_integer_coercion",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 1
+        },
+        "retained": {
+          "budgets": {
+            "network:request": "1_0.00",
+            "other": true
+          },
+          "addons": {
+            "custom": {
+              "enabled": "off",
+              "settings": {
+                "observed": 1
+              },
+              "extra": {
+                "preserved": true
+              }
+            }
+          },
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "*",
+              "effect": "allow",
+              "budget": "-4.0",
+              "condition": {
+                "irreversible": "yes"
+              }
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "all_permission_actions",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"credential:use\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"file:read\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"file:write\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"subprocess:exec\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"gateway:risky_route\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}, {\"action\": \"gateway:request\", \"resource\": \"bad:port/[\", \"condition\": {\"method\": []}}]}",
+      "source": {
+        "name": "all_permission_actions",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 7
+        },
+        "retained": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "credential:use",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "file:read",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "file:write",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "subprocess:exec",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "gateway:risky_route",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            },
+            {
+              "action": "gateway:request",
+              "resource": "bad:port/[",
+              "condition": {
+                "method": []
+              }
+            }
+          ]
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "any_gateway_shapes",
+      "task_id": "task-1",
+      "document": "{\"gateway\": {\"token_map\": [\"synthetic\"], \"nested\": {\"mixed\": [1, {}, true, null]}}, \"simple_permissions\": {\"custom\": -10}}",
+      "source": {
+        "name": "any_gateway_shapes",
+        "result": {
+          "status": "ok",
+          "task_id": "task-1",
+          "permissions": 0
+        },
+        "retained": {
+          "gateway": {
+            "token_map": [
+              "synthetic"
+            ],
+            "nested": {
+              "mixed": [
+                1,
+                {},
+                true,
+                null
+              ]
+            }
+          },
+          "simple_permissions": {
+            "custom": -10
+          }
+        },
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "root_null",
+      "task_id": "task-1",
+      "document": "null",
+      "source": {
+        "name": "root_null",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "root_false",
+      "task_id": "task-1",
+      "document": "false",
+      "source": {
+        "name": "root_false",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "root_array",
+      "task_id": "task-1",
+      "document": "[]",
+      "source": {
+        "name": "root_array",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "root_string",
+      "task_id": "task-1",
+      "document": "\"policy\"",
+      "source": {
+        "name": "root_string",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "permissions_null",
+      "task_id": "task-1",
+      "document": "{\"permissions\": null}",
+      "source": {
+        "name": "permissions_null",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "permissions_object",
+      "task_id": "task-1",
+      "document": "{\"permissions\": {}}",
+      "source": {
+        "name": "permissions_object",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "permission_scalar",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [1]}",
+      "source": {
+        "name": "permission_scalar",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "missing_action",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"resource\": \"*\"}]}",
+      "source": {
+        "name": "missing_action",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "unknown_action",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"arbitrary\", \"resource\": \"*\"}]}",
+      "source": {
+        "name": "unknown_action",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "missing_resource",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\"}]}",
+      "source": {
+        "name": "missing_resource",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "numeric_resource",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": 7}]}",
+      "source": {
+        "name": "numeric_resource",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "missing_budget",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\"}]}",
+      "source": {
+        "name": "missing_budget",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "null_budget",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"budget\", \"budget\": null}]}",
+      "source": {
+        "name": "null_budget",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "fractional_budget",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"budget\": 1.25}]}",
+      "source": {
+        "name": "fractional_budget",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "invalid_effect",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"effect\": \"unknown\"}]}",
+      "source": {
+        "name": "invalid_effect",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "invalid_tier",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"tier\": \"unknown\"}]}",
+      "source": {
+        "name": "invalid_tier",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "condition_boolean_port",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"condition\": {\"port\": true}}]}",
+      "source": {
+        "name": "condition_boolean_port",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "condition_string_port",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"condition\": {\"port\": \"443\"}}]}",
+      "source": {
+        "name": "condition_string_port",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "condition_empty_ports",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"condition\": {\"port\": []}}]}",
+      "source": {
+        "name": "condition_empty_ports",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "condition_zero_port",
+      "task_id": "task-1",
+      "document": "{\"permissions\": [{\"action\": \"network:request\", \"resource\": \"*\", \"condition\": {\"port\": 0}}]}",
+      "source": {
+        "name": "condition_zero_port",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "metadata_null",
+      "task_id": "task-1",
+      "document": "{\"metadata\": null}",
+      "source": {
+        "name": "metadata_null",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "metadata_invalid_id",
+      "task_id": "task-1",
+      "document": "{\"metadata\": {\"task_id\": \"../wrong\"}}",
+      "source": {
+        "name": "metadata_invalid_id",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "metadata_numeric_description",
+      "task_id": "task-1",
+      "document": "{\"metadata\": {\"description\": 1}}",
+      "source": {
+        "name": "metadata_numeric_description",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "required_null",
+      "task_id": "task-1",
+      "document": "{\"required\": null}",
+      "source": {
+        "name": "required_null",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "scan_missing_pattern",
+      "task_id": "task-1",
+      "document": "{\"scan_patterns\": [{\"name\": \"missing\"}]}",
+      "source": {
+        "name": "scan_missing_pattern",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "scan_invalid_scope",
+      "task_id": "task-1",
+      "document": "{\"scan_patterns\": [{\"name\": \"wrong\", \"pattern\": \"x\", \"scope\": [\"elsewhere\"]}]}",
+      "source": {
+        "name": "scan_invalid_scope",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "credential_missing_hosts",
+      "task_id": "task-1",
+      "document": "{\"credential_rules\": [{\"name\": \"missing\", \"patterns\": [\"x\"]}]}",
+      "source": {
+        "name": "credential_missing_hosts",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "addon_nonobject_settings",
+      "task_id": "task-1",
+      "document": "{\"addons\": {\"addon\": {\"settings\": []}}}",
+      "source": {
+        "name": "addon_nonobject_settings",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "domain_invalid_addons",
+      "task_id": "task-1",
+      "document": "{\"domains\": {\"*\": {\"addons\": []}}}",
+      "source": {
+        "name": "domain_invalid_addons",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "clients_invalid",
+      "task_id": "task-1",
+      "document": "{\"clients\": []}",
+      "source": {
+        "name": "clients_invalid",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "gateway_null",
+      "task_id": "task-1",
+      "document": "{\"gateway\": null}",
+      "source": {
+        "name": "gateway_null",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "simple_fraction",
+      "task_id": "task-1",
+      "document": "{\"simple_permissions\": {\"x\": 1.5}}",
+      "source": {
+        "name": "simple_fraction",
+        "result": {
+          "status": "error",
+          "task_id": "task-1",
+          "error": "Invalid policy document"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_empty",
+      "task_id": "",
+      "document": "{}",
+      "source": {
+        "name": "id_empty",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_slash",
+      "task_id": "a/b",
+      "document": "{}",
+      "source": {
+        "name": "id_slash",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_encoded",
+      "task_id": "a%2fb",
+      "document": "{}",
+      "source": {
+        "name": "id_encoded",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_unicode",
+      "task_id": "\u00e9",
+      "document": "{}",
+      "source": {
+        "name": "id_unicode",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_dot_prefix",
+      "task_id": ".task",
+      "document": "{}",
+      "source": {
+        "name": "id_dot_prefix",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_hyphen_prefix",
+      "task_id": "-task",
+      "document": "{}",
+      "source": {
+        "name": "id_hyphen_prefix",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_128",
+      "task_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "document": "{}",
+      "source": {
+        "name": "id_128",
+        "result": {
+          "status": "ok",
+          "task_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "permissions": 0
+        },
+        "retained": {},
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_129",
+      "task_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "document": "{}",
+      "source": {
+        "name": "id_129",
+        "result": {
+          "status": "error",
+          "error": "Invalid task ID"
+        },
+        "retained": null,
+        "count": 0,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    },
+    {
+      "name": "id_safe_symbols",
+      "task_id": "A9._-z",
+      "document": "{}",
+      "source": {
+        "name": "id_safe_symbols",
+        "result": {
+          "status": "ok",
+          "task_id": "A9._-z",
+          "permissions": 0
+        },
+        "retained": {},
+        "count": 1,
+        "active_task": false,
+        "hash_unchanged": true
+      }
+    }
+  ],
+  "attempts": {
+    "network": 0,
+    "mint": 0
+  }
+}

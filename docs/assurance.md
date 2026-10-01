@@ -11,27 +11,29 @@ The map starts from [Lens's independent source reading at PR #830's pinned
 head](https://github.com/craigbalding/safeyolo/issues/838#issuecomment-5876216643),
 the [#621 native inventory](https://github.com/craigbalding/safeyolo/issues/621#issuecomment-5801132524),
 and the [#636 accepted local-patch review](https://github.com/craigbalding/safeyolo/issues/636#issuecomment-5736479281).
-The map was reviewed for `feat/rust-proxy-620` at
-`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. At that head, the release
-CLI requires native `policy_file`; an explicit temporary policy UDS remains a
-development path in [config.rs](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/config.rs) and
-[decide](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/http.rs). The production Python proxy still exists there
-for comparison and rollback. PR #830 remains a distinct deletion candidate.
-The proposed accepted snapshot in this control promotion analyzes release
-head `05e5e243afc0c959599618089825801dfb1b146e`. Craig must review the
-changed source and delta before that snapshot becomes a trusted baseline.
+The initial map was reviewed at
+`2ca598ce11d7c375a024b38eb3e7b4104a795d84`. This promotion proposes
+master `8ba22365616d83b8b8b18b87781f0e9b9ad1e439` as the accepted
+source revision. Since the previous proposal at `05e5e243afc0c959599618089825801dfb1b146e`,
+master added sandbox provider routing and optional gateway credentials. The
+map now records that route and its host Python transport. The released CLI
+requires native `policy_file`; a temporary policy UDS remains an explicit
+development path in [config.rs](../proxy/src/config.rs) and
+[decide](../proxy/src/http.rs). Craig must review the source and snapshot delta
+before this proposed baseline becomes trusted.
 
 | Map decision | Entry points and effect boundary |
 | --- | --- |
-| Identity | [CLI socket layout](../cli/src/safeyolo/sockets.py), [native listener](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/lib.rs), [request reconciliation](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/agent_discovery.rs) |
-| Authorization | [policy decision](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/policy.rs), [guard](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/network_guard.rs), [DNS and dial](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/http.rs) |
-| Interception TLS | [CA selection](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/cli/src/safeyolo/rust_proxy.py), [CA load and leaf issuance](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/tls.rs), [CONNECT handshake](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/http.rs) |
-| Credentials | [vault](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/credentials.rs), [gateway injection](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/credential_injection.rs), [grant check](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/grants.rs) |
-| Management and evidence | [Admin authentication](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/admin_api.rs), [Agent API](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/agent_api.rs), [flow store](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/flow_store.rs), [export](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/traffic_view.rs) |
-| Policy publication | [load](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/policy_runtime.rs), [durable writer](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/approvals.rs), [runtime swap](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/lib.rs) |
-| External effects | [forwarding and response handoff](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/http.rs), [tunnel](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/tunnels.rs), [WebSocket](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/websocket.rs) |
-| Other sinks and launch | [native launcher](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/cli/src/safeyolo/rust_proxy.py), [desktop presenter](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/desktop_present.rs), [coord client](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/agent_api/coord.rs) |
-| Foreign and embedded code | [descriptor ownership](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/lib.rs), [WebSocket spill mapping](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/websocket.rs), [traffic filter](https://github.com/craigbalding/safeyolo/blob/05e5e243afc0c959599618089825801dfb1b146e/proxy/src/traffic_view/filter.rs) |
+| Identity | [CLI socket layout](../cli/src/safeyolo/sockets.py), [native listener](../proxy/src/lib.rs), [request reconciliation](../proxy/src/agent_discovery.rs) |
+| Authorization | [policy decision](../proxy/src/policy.rs), [guard](../proxy/src/network_guard.rs), [DNS and dial](../proxy/src/http.rs) |
+| Interception TLS | [CA selection](../cli/src/safeyolo/rust_proxy.py), [CA load and leaf issuance](../proxy/src/tls.rs), [CONNECT handshake](../proxy/src/http.rs) |
+| Credentials | [vault](../proxy/src/credentials.rs), [gateway injection](../proxy/src/credential_injection.rs), [grant check](../proxy/src/grants.rs) |
+| Provider services | [gateway selection](../proxy/src/services.rs), [provider admission](../proxy/src/http.rs), [Rust stream](../proxy/src/provider_stream.rs), [host port forward](../cli/src/safeyolo/provider_stream.py) |
+| Management and evidence | [Admin authentication](../proxy/src/admin_api.rs), [Agent API](../proxy/src/agent_api.rs), [flow store](../proxy/src/flow_store.rs), [export](../proxy/src/traffic_view.rs) |
+| Policy publication | [load](../proxy/src/policy_runtime.rs), [durable writer](../proxy/src/approvals.rs), [runtime swap](../proxy/src/lib.rs) |
+| External effects | [forwarding and response handoff](../proxy/src/http.rs), [tunnel](../proxy/src/tunnels.rs), [WebSocket](../proxy/src/websocket.rs) |
+| Other sinks and launch | [native launcher](../cli/src/safeyolo/rust_proxy.py), [desktop presenter](../proxy/src/desktop_present.rs), [coord client](../proxy/src/agent_api/coord.rs) |
+| Foreign and embedded code | [descriptor ownership](../proxy/src/lib.rs), [WebSocket spill mapping](../proxy/src/websocket.rs), [traffic filter](../proxy/src/traffic_view/filter.rs) |
 
 ## What the drift check does
 
@@ -47,7 +49,8 @@ produce a clean result. The result is JSON and a Markdown delta. A finding
 means review is needed; it does not prove a vulnerability.
 
 The scan covers production Rust source in `proxy/src`, Python source in
-`cli/src/safeyolo` and `pdp`, the Cargo manifest and lockfile, local Hyper,
+`cli/src/safeyolo`, and `pdp` if present. It also covers the Cargo manifest
+and lockfile, local Hyper,
 h2 and fancy-regex patches, embedded proxy data, Rust toolchain, Python lock,
 installer, Linux rootfs builder, guest forwarder and Swift VM helper sources.
 The scanner reads Rust `#[cfg]` source for all supported configurations; it
@@ -81,15 +84,15 @@ properties.
 ## Local check and accepted revisions
 
 On a supported Ubuntu 24.04 host with Python 3.12 and `uv` 0.9.24, run from a
-checkout containing the trusted controls. Set `candidate_root` to a separate
-checkout of the exact release head before running the command. The command
+checkout of the approved trusted controls. Set `candidate_root` to a separate
+checkout of the exact candidate commit before running the command. The command
 installs Semgrep from the locked acceptance environment and writes two reports
 to the chosen output directory. It does not build or run candidate code.
 
 ```sh
 uv python install 3.12
 uv sync --frozen --group static --project tools/acceptance --python 3.12
-candidate_root=/path/to/reviewed-release-head
+candidate_root=/path/to/exact-candidate-checkout
 tools/acceptance/.venv/bin/python -I tools/assurance/check.py check \
   --trusted-root . --candidate "$candidate_root" \
   --json /tmp/proxy-assurance.json \
@@ -98,11 +101,12 @@ tools/acceptance/.venv/bin/python -I tools/assurance/check.py check \
 
 Exit 0 means no detected drift against that checkout's accepted snapshot.
 Exit 1 means a detected change needs review. Exit 2 means analysis failed.
-The current release head still contains older snapshot and workflow controls,
-so its comparison with this proposal reports those files as candidate control
-changes. After an approved baseline update, the candidate must incorporate
-the approved controls before the required check can return clean. A local run
-with both arguments pointing at a candidate is only a smoke check.
+The proposed snapshot is for master `8ba22365616d83b8b8b18b87781f0e9b9ad1e439`.
+That base still has an older snapshot and map. Until Craig approves and merges
+this promotion, its PR check uses the older trusted snapshot and reports an
+analysis error for the changed acceptance-tool lock. A candidate must include
+approved control changes before its check can return clean. A local run with
+both arguments pointing at one candidate is only a smoke check.
 
 After reviewing a legitimate change, an operator can generate a proposed
 snapshot from a trusted checker checkout without accepting it:
@@ -117,8 +121,8 @@ tools/acceptance/.venv/bin/python -I tools/assurance/check.py snapshot \
 Craig must review the exact source and delta before promoting that JSON into
 the protected base revision. The candidate then incorporates the approved
 base update and the PR check runs again. Candidate edits to the checker,
-rules, map, snapshot, Semgrep ignore file, acceptance-tool lock, workflow files or assurance tests
-are listed as proposed control changes. The PR job reads all those controls
+rules, map, snapshot, Semgrep ignore file, acceptance-tool lock, workflow files
+or assurance tests are listed as proposed control changes. The PR job reads all those controls
 from the base checkout. It never executes candidate source, dependencies or
 build scripts. The job requests only `contents: read` and no approval or
 release credentials.
@@ -129,19 +133,17 @@ release credentials.
 head with base-revision controls and publishes both reports. The existing
 `main-protection` ruleset currently targets only the default branch. It
 requires `Test CLI`, `Lint` and `Test Addons (Python 3.12)`; it does not require
-`Proxy assurance drift` or code-owner review. No active ruleset protects
-`feat/rust-proxy-620`. The current repository credential can read rulesets but
-GitHub rejects its branch-protection read request. The
+`Proxy assurance drift` or code-owner review. The
 [workflow](../.github/workflows/proxy-assurance.yml) and
 [CODEOWNERS](../.github/CODEOWNERS) files alone do not enforce an independently
 approved merge gate.
 
 Before treating this as protected acceptance, Craig must place these controls
-on an operator-controlled base and configure an active branch ruleset for
-`feat/rust-proxy-620` and the actual release branch. The rule must require a
-pull request, at least one code-owner approval for control-file changes, and
-the exact `Proxy assurance drift` check from GitHub Actions (integration ID
-`15368`), with no agent bypass. Workflow files must be included in that
+on the operator-controlled default branch and update `main-protection`. That
+ruleset must require a pull request and at least one code-owner approval for
+control-file changes. It must also require the exact `Proxy assurance drift`
+check from GitHub Actions (integration ID `15368`), with no agent bypass.
+Workflow files must be included in that
 protected review set because a new workflow can otherwise imitate a required
 job name. Once enforced, benign changes to mapped code, selected operations,
 or build inputs also wait for an accepted snapshot update. Every workflow edit
@@ -150,7 +152,8 @@ costs follow from the shared GitHub Actions check identity and the required
 baseline. The coding agent currently creates PRs as `craigbalding`; GitHub
 does not count an author's own PR approval. Craig must use a distinct PR
 author identity for future agent changes or select an independently controlled
-required-check principal before claiming operator approval separation. The
-release branch's base must also contain the trusted controls before its PR
-check can run. No such setting is implied by this documentation, and this
-assurance lane does not change #640 or #620 release acceptance.
+required-check principal before claiming operator approval separation. If a
+separate branch becomes a release merge target, its base also needs the trusted
+controls and an equivalent gate. No such setting is implied by this
+documentation, and this assurance lane does not change #640 or #620 release
+acceptance.

@@ -297,10 +297,13 @@ struct ModelTests {
             "/admin/agents": (503, Data(#"{"error":"agent inventory unavailable"}"#.utf8)),
         ]
         defer { StubURLProtocol.responsesByPath = [:] }
+        let socketSession = URLSession(configuration: .ephemeral)
+        defer { socketSession.invalidateAndCancel() }
         let client = try SafeYoloClient(
-            adminURL: "https://dev.example.ts.net:9443", eventsURL: "wss://dev.example.ts.net:9444/admin/events",
+            adminURL: "https://dev.example.ts.net:9443", eventsURL: "ws://127.0.0.1:1/admin/events",
             token: "fixture-token", expectedInstanceID: "sy-remote-test",
-            session: URLSession(configuration: configuration)
+            session: URLSession(configuration: configuration),
+            makeEventSocket: { socketSession.webSocketTask(with: $0) }
         )
         defer { client.stop() }
         let failedRefresh = await client.refreshAgents()
@@ -330,7 +333,9 @@ struct ModelTests {
         client.stop()
         StubURLProtocol.responsesByPath["/admin/agents"] = (200, Data(#"{"agents":[]}"#.utf8))
         let recovered = await client.refreshAgents()
-        precondition(recovered && client.errorDetails == nil)
+        precondition(recovered && client.requestErrors["Agent status"] == nil)
+        precondition(client.requestErrors["Live events"] != nil,
+                     "Recovering agent status must not clear the independent socket error")
     }
 
     private static func testTransportURLs() throws {

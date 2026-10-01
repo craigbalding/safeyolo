@@ -1,5 +1,6 @@
 """Tests for config module."""
 
+import pytest
 import yaml
 
 from safeyolo.config import (
@@ -16,6 +17,7 @@ from safeyolo.config import (
     get_config_dir,
     get_config_path,
     get_data_dir,
+    get_desktop_present_host_port,
     get_desktop_size,
     get_logs_dir,
     get_policies_dir,
@@ -106,6 +108,18 @@ class TestLoadConfig:
 
         assert DEFAULT_CONFIG["proxy"]["ignore_hosts"] == []
 
+    def test_defaults_select_native_proxy_and_retain_explicit_python_escape_hatch(self, tmp_path, monkeypatch):
+        config_dir = tmp_path / ".safeyolo"
+        config_dir.mkdir()
+        monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(config_dir))
+
+        config = load_config()
+
+        assert config["proxy"]["backend"] == "rust"
+        assert config["proxy"]["rust_config"] == "data/native.json"
+        config["proxy"]["backend"] = "python"
+        assert config["proxy"]["backend"] == "python"
+
 
 class TestDesktopSize:
     def test_uses_persistent_host_preference(self, tmp_config_dir):
@@ -121,6 +135,21 @@ class TestDesktopSize:
         )
 
         assert get_desktop_size("1600x900") == "1600x900"
+
+
+class TestDesktopPresentHostPort:
+    def test_default_uses_an_available_loopback_port(self, tmp_config_dir):
+        assert get_desktop_present_host_port() == 0
+
+    def test_reads_fixed_port(self, tmp_config_dir):
+        (tmp_config_dir / "config.yaml").write_text("desktop:\n  present_host_port: 46375\n")
+        assert get_desktop_present_host_port() == 46375
+
+    @pytest.mark.parametrize("value", ["false", "'46375'", "-1", "65536"])
+    def test_rejects_invalid_port(self, tmp_config_dir, value):
+        (tmp_config_dir / "config.yaml").write_text(f"desktop:\n  present_host_port: {value}\n")
+        with pytest.raises(ValueError, match="desktop.present_host_port"):
+            get_desktop_present_host_port()
 
 
 class TestSaveConfig:

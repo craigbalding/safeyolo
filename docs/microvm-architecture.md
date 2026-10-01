@@ -6,61 +6,42 @@ The microVM approach — guest image build, vsock terminal, openpty/setsid/TIOCS
 
 ## Architecture
 
+On an Apple Silicon Mac, the guest forwarder sends proxy traffic over vsock
+port 1080. The `safeyolo-vm` helper relays those bytes to the agent's host
+Unix domain socket (UDS). The Rust proxy owns that listener.
+
+```text
+Agent microVM -> guest forwarder -> vsock:1080 -> VSockProxyRelay
+                                                   -> per-agent host UDS
+                                                   -> Rust proxy -> upstream
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ Host (macOS, Apple Silicon)                                      │
-│                                                                  │
-│  ┌────────────────────────────────────┐                          │
-│  │ mitmproxy (host process, UDS-only) │                          │
-│  │   - mitmdump with ~15 addons       │                          │
-│  │   - per-agent UnixInstance listens │                          │
-│  │     on <ip>_<agent>/proxy.sock     │                          │
-│  │     parsed from filename)          │                          │
-│  │   - admin API on 127.0.0.1:9090    │                          │
-│  └──────────────▲─────────────────────┘                          │
-│                 │  AF_UNIX (per-agent UDS)                       │
-│  ┌──────────────┴─────────────────────┐                          │
-│  │ safeyolo-vm                        │                          │
-│  │   VSockProxyRelay: vsock:1080  →   │                          │
-│  │     per-agent UDS (dumb pump)      │                          │
-│  │   VSockShellBridge: per-agent UDS →│                          │
-│  │     vsock:2220 (guest sshd)        │                          │
-│  │   VSockTerminal: vsock:1024/1025 → │                          │
-│  │     guest vsock-term (foreground)  │                          │
-│  └──────────────▲─────────────────────┘                          │
-│                 │  vsock (virtio socket) — no virtio-net         │
-│  ┌──────────────┴──────────────────────────┐                     │
-│  │ Apple Virtualization.framework          │                     │
-│  │                                         │                     │
-│  │  ┌───────────────────────────────────┐  │                     │
-│  │  │ Agent MicroVM                     │  │                     │
-│  │  │   Debian trixie + mise + node@22  │  │                     │
-│  │  │   Loopback-only (no eth0)         │  │                     │
-│  │  │   HTTP_PROXY → 127.0.0.1:8080 →   │  │                     │
-│  │  │     guest-proxy-forwarder → vsock │  │                     │
-│  │  │   Workspace via VirtioFS          │  │                     │
-│  │  │   Terminal via vsock PTY          │  │                     │
-│  │  │   Persistent ext4 root disk      │  │                     │
-│  │  └───────────────────────────────────┘  │                     │
-│  └─────────────────────────────────────────┘                     │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+The helper also bridges the separate operator shell UDS to guest SSH over
+vsock port 2220. The interactive terminal uses its own vsock
+pseudo-terminal (PTY) channels.
+The guest has no external network interface; its workspace and configuration
+shares use VirtioFS.
 
 ## Network Isolation
 
-The sandbox has **no external network interface**. There is no virtio-net attachment — the only ingress/egress channels into the guest are vsock (a virtio socket, not a network device) and VirtioFS. This is structural isolation: there is no firewall rule to misconfigure and no way to route around, because the guest kernel never sees an interface it could use.
+The microVM has no virtio-net attachment. Its guest forwarder listens on
+`127.0.0.1:8080`. Agent HTTP clients use
+`HTTP_PROXY=http://127.0.0.1:8080`. The guest forwarder, the
+`VSockProxyRelay` in `safeyolo-vm`, and the host UDS carry the connection to
+the Rust proxy.
 
-All agent-initiated HTTP traffic takes this path:
+The host command-line interface (CLI) derives a private socket path for the
+agent, writes its identity to
+`agent_map.json`, and puts `agent_id`, `source_id`, and `socket_path` in the
+native listener configuration. The Rust proxy binds the UDS and fixes the
+configured identity when it accepts a connection. It does not use a
+guest-supplied header or a mitmproxy mode to select the agent. Removing proxy
+environment variables does not create another external route from the guest.
 
-1. Agent makes an HTTP request honouring `HTTP_PROXY=http://127.0.0.1:8080`
-2. `guest-proxy-forwarder.sh` (socat, listening on `127.0.0.1:8080` inside the guest) accepts the connection and relays bytes over vsock
-3. `VSockProxyRelay` (in `safeyolo-vm`) accepts on vsock port 1080 and connects to the per-agent host UDS
-4. mitmproxy's per-agent `UnixInstance` accepts on that UDS. Identity (attribution IP + agent name) is parsed from the socket directory (`<ip>_<agent>/proxy.sock`) once at bind time and stamped on every connection via `client.peername = (ip, 0)`
-5. mitmproxy's `service_discovery` addon maps the attribution IP back to the agent name for policy evaluation and audit
-
-An agent that unsets proxy env vars has nowhere to go — there is no other network path out of the sandbox.
-
-See `docs/networking-vsock-uds.md` for the hop-by-hop detail, attribution mechanics, log correlation, and troubleshooting.
+For the host and guest hops, listener reload, and diagnostics, see
+[agent networking](networking-vsock-uds.md). This describes the implemented
+macOS bridge; the physical Virtualization.framework (VZ) release pilot remains open under
+[issue #640](https://github.com/craigbalding/safeyolo/issues/640).
 
 ## Connection admission on macOS
 
@@ -98,11 +79,11 @@ The VM terminal uses vsock (virtio socket) with a proper PTY:
 
 **Host side (`VSockTerminal.swift`)**: Connects to vsock after VM boots. Full `cfmakeraw` terminal mode. `write_all()` with retry to prevent split ANSI sequences. SIGWINCH → 4-byte resize message on control channel. Drains PTY output before closing.
 
-For background agents (`safeyolo agent run --detach`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. Guest shell and terminal execution use SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
+For background agents (`safeyolo agent run --detach`), a configured host launcher owns the agent terminal, or an explicit supervisor owns headless harness turns. `--sandbox-only` boots without a coding agent. The separate `safeyolo agent shell` route uses SSH through `VSockShellBridge` → `vsock:2220` → `guest-shell-bridge` → sshd; see [agent launchers](agent-launchers.md).
 
 ## Config Share Architecture
 
-All SafeYolo-specific logic lives on the VirtioFS config share, not baked into the rootfs:
+The CLI stages guest boot scripts and environment on the VirtioFS configuration share:
 
 ```
 ~/.safeyolo/agents/<name>/config-share/
@@ -129,23 +110,13 @@ The rootfs has a 30-line stub at `/usr/local/bin/safeyolo-guest-init` that mount
 
 ## Trust Boundaries
 
-```
-TRUSTED: Host
-  mitmproxy + addons + PDP + policy (owns per-agent UDS listeners
-    via UnixInstance; identity from socket directory)
-  safeyolo-vm (Swift, manages VM lifecycle + vsock bridges)
-  Python CLI (agent management)
-  VirtioFS config share contents
-
-UNTRUSTED: Guest VM
-  Agent process (claude, codex, etc.)
-  Guest OS, tools, anything the agent installs
-  Guest networking configuration
-
-  If the guest unsets HTTP_PROXY → no path out (no external interface)
-  If the guest opens a raw socket → no interface to bind to
-  VM boundary is hardware virtualisation (stronger than kernel-shared containers)
-```
+The host owns the Rust proxy, per-agent UDS listeners, policy and evidence,
+the Python CLI, the Swift VM helper, and the VirtioFS configuration share.
+The guest and its coding agent can be compromised. The helper's relay can
+reach only the host UDS selected for that VM; the Rust listener attaches
+the host-configured identity. The guest has no external network interface,
+so unsetting proxy variables or opening a raw socket does not create
+general outbound network access.
 
 ## Guest Image
 
@@ -161,33 +132,34 @@ Artifacts stored at `~/.safeyolo/share/`: `Image`, `initramfs.cpio.gz`, `rootfs-
 
 One mutable ext4 disk per agent at `~/.safeyolo/agents/<name>/rootfs.ext4`. Cloned from base image on `agent add`. All changes persist: mise installs, shell history, agent state.
 
-## Service Discovery
+## Agent map and native listeners
 
-The CLI writes `~/.safeyolo/data/agent_map.json` when VMs start/stop:
-
-```json
-{"test": {"ip": "10.200.0.1", "socket": "/Users/me/.safeyolo/data/sockets/10.200.0.1_test.sock", "started": "2026-04-17T..."}}
-```
-
-The `service_discovery` addon reads this file (mtime-cached) to resolve the attribution IP (10.200.N.N) back to the agent name for per-agent policy evaluation. `safeyolo agent add`/`remove` calls admin API `PUT /admin/proxy/mode` with a `unix:<path>` list derived from the map; mitmproxy's `Proxyserver` hot-reloads `options.mode` to spawn / tear down the matching `UnixInstance`s.
+The CLI writes the host-controlled `~/.safeyolo/data/agent_map.json` before
+starting a VM. A running agent entry identifies its attribution IP and
+private socket, for example
+`~/.safeyolo/data/sockets/10.200.0.1_test/proxy.sock`. The CLI derives the
+managed native listener from this map. When an agent starts or stops, the CLI
+reconciles its managed listeners, sends SIGHUP to the Rust proxy, and waits
+for the matching readiness reload marker. Operator-defined listeners remain
+intact. The current package has no `PUT /admin/proxy/mode` route.
 
 ## Components
 
 | Component | Language | Purpose |
-|-----------|----------|---------|
-| `safeyolo-vm` | Swift | VM lifecycle (Apple Virtualization.framework) + vsock bridges |
-| `vsock-term` | C (static, ARM64) | Guest terminal daemon (vsock PTY bridge) |
-| `guest-proxy-forwarder.sh` | Shell + socat (in guest) | `127.0.0.1:8080` → vsock:1080 / UDS |
-| `guest-shell-bridge.py` | Python (in guest) | vsock:2220 → sshd on `127.0.0.1:22` |
-| `proxy.py` | Python | Host mitmproxy process management |
-| `proxy_modes/unix_listener.py` | Python | `UnixMode`/`UnixInstance` — per-agent UDS ingress |
-| `sockets.py` | Python | Socket-path helpers; `<ip>_<agent>/proxy.sock` is identity |
-| `vm.py` | Python | VM lifecycle, config share, agent map |
-| `guest-init.sh` | Bash | Guest init (on config share, not rootfs) |
+| --- | --- | --- |
+| `safeyolo-vm` | Swift | VM lifecycle, proxy and shell vsock relays |
+| `vsock-term` | C | Guest terminal daemon and PTY bridge |
+| `guest-proxy-forwarder` | Shell and socat | Guest loopback proxy port to vsock:1080 |
+| `guest-shell-bridge` | Shell and socat | vsock:2220 to guest `sshd` |
+| `proxy/src/lib.rs` | Rust | Per-agent UDS listeners and fixed accept identity |
+| `rust_proxy.py` | Python | Native process launch, listener reconciliation, reload acknowledgement |
+| `sockets.py` | Python | Private socket paths under `<ip>_<agent>/proxy.sock` |
+| `vm.py` | Python | VM lifecycle and configuration share |
+| `guest-init.sh` | Shell | Guest init staged on the configuration share |
 
 ## Limitations
 
 1. **macOS only** (Apple Silicon) for the microVM path. Linux runs gVisor containers via `runsc`; see `docs/linux-port-design.md`.
-2. **Non-HTTP traffic has no path at all.** There is no external interface; raw TCP/UDP have no kernel route out of the guest.
+2. **No general raw TCP/UDP egress path.** There is no external interface for those connections; the proxy forwarder and operator shell use their explicit bridges.
 3. **No guest snapshots by default** (though `--snapshot` is a beta flag on `agent run`). Corrupted rootfs → re-create agent.
 4. **Guest image build requires Lima on macOS** (for cross-compilation). Runtime itself has no Lima dependency.

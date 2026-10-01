@@ -1,6 +1,12 @@
-# Service Discovery
+# Historical Python service discovery
 
-SafeYolo identifies which agent is making each request using a file-based IP map maintained by the CLI.
+This document records the removed Python/mitmproxy service-discovery addon.
+Its addon settings and troubleshooting steps do not configure the current Rust
+package. For current agent identity, listener setup, and diagnostics, use the
+[agent networking guide](networking-vsock-uds.md).
+
+The former Python proxy identified agents using a file-based IP map maintained
+by the CLI.
 
 ## How It Works
 

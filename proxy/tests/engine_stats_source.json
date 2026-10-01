@@ -1,0 +1,1233 @@
+{
+  "source_commit": "838319a1a6a97a5317350e678fda6abc5a44fed1",
+  "python": "3.12.14",
+  "source_hashes": {
+    "cli/src/safeyolo/policy/engine.py": "a69b61583a87b19ea0f26b2ee56220d8ed2de8b76c6f46dd657329e38c9f8479",
+    "cli/src/safeyolo/policy/loader.py": "74f7da6c9c80c0b6e0cd1780a4d40e8c8e2e3ed81d4371da6cd8e9570c59ace4",
+    "cli/src/safeyolo/policy/budget_tracker.py": "0547aa7e063228330bd115bef1ba1a53b1f80cda712c7887cb18ccf36ba7f53a"
+  },
+  "baseline": {
+    "required": [
+      "network_guard",
+      "pattern_scanner",
+      "fixture_control",
+      "pattern_scanner"
+    ],
+    "permissions": [
+      {
+        "action": "network:request",
+        "resource": "allow.invalid/*",
+        "effect": "allow"
+      },
+      {
+        "action": "network:request",
+        "resource": "deny.invalid/*",
+        "effect": "deny"
+      },
+      {
+        "action": "network:request",
+        "resource": "prompt.invalid/*",
+        "effect": "prompt"
+      },
+      {
+        "action": "network:request",
+        "resource": "limited.invalid/*",
+        "effect": "budget",
+        "budget": 1
+      },
+      {
+        "action": "credential:use",
+        "resource": "allow.invalid/*",
+        "effect": "allow"
+      },
+      {
+        "action": "credential:use",
+        "resource": "deny.invalid/*",
+        "effect": "deny"
+      },
+      {
+        "action": "credential:use",
+        "resource": "limited.invalid/*",
+        "effect": "budget",
+        "budget": 1
+      },
+      {
+        "action": "gateway:risky_route",
+        "resource": "*",
+        "effect": "allow",
+        "condition": {
+          "service": "allowed"
+        }
+      },
+      {
+        "action": "gateway:risky_route",
+        "resource": "*",
+        "effect": "deny",
+        "condition": {
+          "service": "denied"
+        }
+      },
+      {
+        "action": "gateway:risky_route",
+        "resource": "*",
+        "effect": "budget",
+        "budget": 1,
+        "condition": {
+          "service": "budgeted"
+        }
+      },
+      {
+        "action": "gateway:request",
+        "resource": "fixture:/allowed",
+        "effect": "allow"
+      },
+      {
+        "action": "gateway:request",
+        "resource": "fixture:/budget",
+        "effect": "budget",
+        "budget": 1
+      }
+    ]
+  },
+  "initial": {
+    "baseline_path": "$ROOT/baseline.json",
+    "task_policy_path": null,
+    "baseline_permissions": 12,
+    "task_permissions": 0,
+    "required_addons": [
+      "network_guard",
+      "pattern_scanner",
+      "fixture_control",
+      "pattern_scanner"
+    ],
+    "evaluations": 0,
+    "budget_stats": {
+      "tracked_keys": 0,
+      "keys": []
+    }
+  },
+  "unconfigured": {
+    "baseline_path": null,
+    "task_policy_path": null,
+    "baseline_permissions": 0,
+    "task_permissions": 0,
+    "required_addons": [],
+    "evaluations": 0,
+    "budget_stats": {
+      "tracked_keys": 0,
+      "keys": []
+    }
+  },
+  "rows": [
+    {
+      "operation": {
+        "kind": "read"
+      },
+      "outcome": {
+        "value": null
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 0,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "allow.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 1,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "deny.invalid"
+      },
+      "outcome": {
+        "value": "deny"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 2,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "prompt.invalid"
+      },
+      "outcome": {
+        "value": "prompt"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 3,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "absent.invalid"
+      },
+      "outcome": {
+        "value": "deny"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 4,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid",
+        "port": 0
+      },
+      "outcome": {
+        "error": "ValueError"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 4,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid",
+        "consume": false
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 5,
+        "budget_stats": {
+          "tracked_keys": 0,
+          "keys": []
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 6,
+        "budget_stats": {
+          "tracked_keys": 1,
+          "keys": [
+            "network:request:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 7,
+        "budget_stats": {
+          "tracked_keys": 1,
+          "keys": [
+            "network:request:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "budget_exceeded"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 8,
+        "budget_stats": {
+          "tracked_keys": 1,
+          "keys": [
+            "network:request:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid",
+        "method": "CONNECT"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 9,
+        "budget_stats": {
+          "tracked_keys": 2,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "allow.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 10,
+        "budget_stats": {
+          "tracked_keys": 2,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "deny.invalid"
+      },
+      "outcome": {
+        "value": "deny"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 11,
+        "budget_stats": {
+          "tracked_keys": 2,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "absent.invalid"
+      },
+      "outcome": {
+        "value": "prompt"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 12,
+        "budget_stats": {
+          "tracked_keys": 2,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 13,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 14,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "limited.invalid"
+      },
+      "outcome": {
+        "value": "budget_exceeded"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 15,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "risk",
+        "service": "allowed"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 16,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "risk",
+        "service": "denied"
+      },
+      "outcome": {
+        "value": "deny"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 17,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "risk",
+        "service": "absent"
+      },
+      "outcome": {
+        "value": "prompt"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 18,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "risk",
+        "service": "budgeted"
+      },
+      "outcome": {
+        "value": "budget"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 19,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "gateway",
+        "path": "/allowed"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 20,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "gateway",
+        "path": "/budget"
+      },
+      "outcome": {
+        "value": "budget"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 21,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "gateway",
+        "path": "/absent"
+      },
+      "outcome": {
+        "value": "deny"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 22,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "limited.invalid",
+        "clock_error": true
+      },
+      "outcome": {
+        "error": "RuntimeError"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 23,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "credential",
+        "host": "limited.invalid",
+        "clock_error": true
+      },
+      "outcome": {
+        "error": "RuntimeError"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "read"
+      },
+      "outcome": {
+        "value": null
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 12,
+        "task_permissions": 0,
+        "required_addons": [
+          "network_guard",
+          "pattern_scanner",
+          "fixture_control",
+          "pattern_scanner"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "reload",
+        "document": {
+          "hosts": {
+            "simple.invalid": {
+              "egress": "allow"
+            },
+            "*.invalid": {
+              "egress": "deny"
+            }
+          },
+          "required": [
+            "pattern_scanner",
+            "fixture_control"
+          ]
+        }
+      },
+      "outcome": {
+        "value": true
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 1,
+        "task_permissions": 0,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "reload",
+        "invalid": true
+      },
+      "outcome": {
+        "value": false
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 1,
+        "task_permissions": 0,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "task",
+        "document": {
+          "permissions": [
+            {
+              "action": "network:request",
+              "resource": "task.invalid/*",
+              "effect": "allow"
+            },
+            {
+              "action": "network:request",
+              "resource": "other.invalid/*",
+              "effect": "allow"
+            }
+          ]
+        }
+      },
+      "outcome": {
+        "value": true
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": "$ROOT/task.json",
+        "baseline_permissions": 1,
+        "task_permissions": 2,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "task",
+        "invalid": true
+      },
+      "outcome": {
+        "value": false
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": "$ROOT/task.json",
+        "baseline_permissions": 1,
+        "task_permissions": 2,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 24,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "network",
+        "host": "task.invalid"
+      },
+      "outcome": {
+        "value": "allow"
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": "$ROOT/task.json",
+        "baseline_permissions": 1,
+        "task_permissions": 2,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 25,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 1
+    },
+    {
+      "operation": {
+        "kind": "task",
+        "document": {}
+      },
+      "outcome": {
+        "value": true
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": "$ROOT/task.json",
+        "baseline_permissions": 1,
+        "task_permissions": 0,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 25,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "clear_task"
+      },
+      "outcome": {
+        "value": null
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 1,
+        "task_permissions": 0,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 25,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    },
+    {
+      "operation": {
+        "kind": "read"
+      },
+      "outcome": {
+        "value": null
+      },
+      "after": {
+        "baseline_path": "$ROOT/baseline.json",
+        "task_policy_path": null,
+        "baseline_permissions": 1,
+        "task_permissions": 0,
+        "required_addons": [
+          "pattern_scanner",
+          "fixture_control"
+        ],
+        "evaluations": 25,
+        "budget_stats": {
+          "tracked_keys": 3,
+          "keys": [
+            "network:request:limited.invalid",
+            "network:connect:limited.invalid",
+            "credential:use:limited.invalid:fixture"
+          ]
+        }
+      },
+      "count_delta": 0
+    }
+  ],
+  "path_rows": [
+    {
+      "raw": "",
+      "display": "."
+    },
+    {
+      "raw": ".",
+      "display": "."
+    },
+    {
+      "raw": "./",
+      "display": "."
+    },
+    {
+      "raw": "./a//b/./../c/",
+      "display": "a/b/../c"
+    },
+    {
+      "raw": "//a///b//",
+      "display": "//a/b"
+    },
+    {
+      "raw": "///a//b",
+      "display": "/a/b"
+    },
+    {
+      "raw": "a/../b",
+      "display": "a/../b"
+    },
+    {
+      "raw": "a\\b",
+      "display": "a\\b"
+    },
+    {
+      "raw": "\u00e9/\u4efd\u989d",
+      "display": "\u00e9/\u4efd\u989d"
+    },
+    {
+      "raw": "/",
+      "display": "/"
+    },
+    {
+      "raw": "//",
+      "display": "//"
+    },
+    {
+      "raw": "///",
+      "display": "/"
+    }
+  ],
+  "external_network_attempts": 0,
+  "issued_credentials": 0
+}

@@ -1,0 +1,978 @@
+//! Process-owned live HTTP and WebSocket observations, without transport ownership.
+//! Retention targets are soft while observation handles remain alive.
+
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    sync::{Arc, Mutex, MutexGuard, Weak},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use indexmap::IndexMap;
+use serde_json::{Map, Value, json};
+use zeroize::{Zeroize, Zeroizing};
+
+mod codec_tables;
+pub(crate) mod export;
+mod filter;
+mod websocket;
+
+pub use filter::FilterError;
+
+const SELECTORS: [(&str, &str); 5] = [
+    ("agent", "agent"),
+    ("test_id", "test_id"),
+    ("intent", "test_intent"),
+    ("role", "test_role"),
+    ("expect", "test_expect"),
+];
+
+/// Header pairs retain the order, spelling, duplicates and text supplied by the
+/// reached HTTP observer. Raw HTTP bytes can be projected losslessly as Latin-1.
+pub struct RequestInfo {
+    pub id: String,
+    pub connection_id: String,
+    pub agent: Option<String>,
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub started: f64,
+}
+
+impl Drop for RequestInfo {
+    fn drop(&mut self) {
+        self.id.zeroize();
+        self.connection_id.zeroize();
+        self.agent.zeroize();
+        self.method.zeroize();
+        self.url.zeroize();
+        wipe_headers(&mut self.headers);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Side {
+    Request,
+    Response,
+}
+
+pub struct TrafficView {
+    state: Mutex<State>,
+    case_sensitive: bool,
+}
+
+struct State {
+    rows: IndexMap<String, Row>,
+    scope: Scope,
+    user_filter: Arc<filter::UserFilter>,
+    max_flows: usize,
+    max_body_bytes: usize,
+}
+
+/// Only the view owns retained evidence. A handle holds a weak view reference,
+/// so retaining an exchange cannot keep a stopped process's view alive.
+pub struct Exchange {
+    view: Weak<TrafficView>,
+    id: Zeroizing<String>,
+}
+
+struct Row {
+    handle: Weak<Exchange>,
+    request: RequestInfo,
+    metadata: Value,
+    response_headers: Vec<(String, String)>,
+    status: Option<u16>,
+    request_version: Option<Zeroizing<String>>,
+    request_target: Option<Zeroizing<String>>,
+    response_version: Option<Zeroizing<String>>,
+    response_reason: Option<Zeroizing<Vec<u8>>>,
+    request_trailers: Vec<(String, String)>,
+    response_trailers: Vec<(String, String)>,
+    request_body: Body,
+    request_completed: Option<f64>,
+    response_head_observed: Option<f64>,
+    response_body: Body,
+    response_completed: Option<f64>,
+    upstream: Option<UpstreamConnectionObservation>,
+    state: &'static str,
+    ended: Option<f64>,
+    error: Option<Zeroizing<String>>,
+    websocket: Option<websocket::Session>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UpstreamRoute {
+    Direct,
+    Parent,
+    Provider,
+}
+
+#[derive(Clone)]
+pub(crate) struct UpstreamConnectionObservation {
+    pub(crate) id: Zeroizing<String>,
+    pub(crate) route: UpstreamRoute,
+    pub(crate) peer: Option<SocketAddr>,
+    pub(crate) started: Option<f64>,
+    pub(crate) tcp_setup: Option<f64>,
+    pub(crate) tls_setup: Option<f64>,
+}
+
+impl UpstreamConnectionObservation {
+    pub(crate) fn new(id: String, route: UpstreamRoute, started: Option<f64>) -> Self {
+        Self {
+            id: Zeroizing::new(id),
+            route,
+            peer: None,
+            started,
+            tcp_setup: None,
+            tls_setup: None,
+        }
+    }
+
+    fn snapshot(&self) -> Value {
+        json!({
+            "id": self.id.as_str(),
+            "route": match self.route {
+                UpstreamRoute::Direct => "direct",
+                UpstreamRoute::Parent => "parent",
+                UpstreamRoute::Provider => "provider",
+            },
+            "peer": self.peer.map(|peer| peer.to_string()),
+            "started": self.started,
+            "tcp_setup": self.tcp_setup,
+            "tls_setup": self.tls_setup,
+        })
+    }
+}
+
+enum Body {
+    Pending,
+    Unavailable,
+    Bytes(Arc<Zeroizing<Vec<u8>>>),
+}
+
+pub(crate) use export::{ExportError, ExportFormat, ExportPlan};
+
+impl Body {
+    fn observe(bytes: Option<&[u8]>) -> Self {
+        bytes.map_or(Self::Unavailable, |bytes| {
+            Self::Bytes(Arc::new(Zeroizing::new(bytes.to_vec())))
+        })
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::Bytes(bytes) => bytes.len(),
+            _ => 0,
+        }
+    }
+
+    fn facts(&self) -> Value {
+        json!({
+            "available": matches!(self, Self::Bytes(_)),
+            "size": self.size(),
+            "reason": match self {
+                Self::Pending => Some("pending"),
+                Self::Unavailable => Some("streamed_or_unavailable"),
+                Self::Bytes(_) => None,
+            },
+        })
+    }
+
+    fn snapshot(&self) -> Value {
+        let mut facts = self.facts();
+        facts.as_object_mut().expect("body facts").insert(
+            "data_base64".into(),
+            match self {
+                Self::Bytes(bytes) => Value::String(STANDARD.encode(bytes.as_slice())),
+                _ => Value::Null,
+            },
+        );
+        facts
+    }
+}
+
+impl TrafficView {
+    pub fn new(max_flows: usize, max_body_bytes: usize) -> Self {
+        Self::with_case_mode(
+            max_flows,
+            max_body_bytes,
+            std::env::var("MITMPROXY_CASE_SENSITIVE_FILTERS").is_ok_and(|value| value == "1"),
+        )
+    }
+
+    fn with_case_mode(max_flows: usize, max_body_bytes: usize, case_sensitive: bool) -> Self {
+        Self {
+            case_sensitive,
+            state: Mutex::new(State {
+                rows: IndexMap::new(),
+                scope: Scope::default(),
+                user_filter: Arc::new(filter::UserFilter::empty()),
+                max_flows,
+                max_body_bytes,
+            }),
+        }
+    }
+
+    // Observation must not create a new forwarding error. Recover the contained
+    // display state after a panic; no transport decision depends on this lock.
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn begin(self: &Arc<Self>, info: RequestInfo) -> Arc<Exchange> {
+        let handle = Arc::new(Exchange {
+            view: Arc::downgrade(self),
+            id: Zeroizing::new(info.id.clone()),
+        });
+        let mut metadata = Map::new();
+        if let Some(agent) = &info.agent {
+            metadata.insert("agent".into(), Value::String(agent.clone()));
+        }
+        let mut state = self.lock();
+        // Replacing a duplicate correlation ID cannot let an older handle edit
+        // the replacement: each write checks the concrete handle's identity.
+        if let Some((mut id, _)) = state.rows.shift_remove_entry(&info.id) {
+            id.zeroize();
+        }
+        state.rows.insert(
+            info.id.clone(),
+            Row {
+                handle: Arc::downgrade(&handle),
+                request: info,
+                metadata: Value::Object(metadata),
+                response_headers: Vec::new(),
+                status: None,
+                request_version: None,
+                request_target: None,
+                response_version: None,
+                response_reason: None,
+                request_trailers: Vec::new(),
+                response_trailers: Vec::new(),
+                request_body: Body::Pending,
+                request_completed: None,
+                response_head_observed: None,
+                response_body: Body::Pending,
+                response_completed: None,
+                upstream: None,
+                state: "pending",
+                ended: None,
+                error: None,
+                websocket: None,
+            },
+        );
+        state.prune();
+        handle
+    }
+
+    pub fn configure(&self, max_flows: usize, max_body_bytes: usize) {
+        let mut state = self.lock();
+        state.max_flows = max_flows;
+        state.max_body_bytes = max_body_bytes;
+        state.prune();
+    }
+
+    pub fn scope(&self) -> Value {
+        self.lock().scope_snapshot()
+    }
+
+    pub fn set_scope(&self, input: &Value) -> Result<Value, String> {
+        let scope = Scope::parse(input)?;
+        let mut state = self.lock();
+        state.scope = scope;
+        Ok(state.scope_snapshot())
+    }
+
+    /// Compile before taking the observation lock. Failed edits preserve both
+    /// the current user expression and pinned scope.
+    pub fn set_user_filter(&self, input: &str) -> Result<Value, FilterError> {
+        let compiled = Arc::new(filter::UserFilter::compile(input, self.case_sensitive)?);
+        let mut state = self.lock();
+        state.user_filter = compiled;
+        Ok(state.scope_snapshot())
+    }
+
+    pub fn flows(&self) -> Result<Value, FilterError> {
+        let (compiled, mut result, snapshots) = {
+            let state = self.lock();
+            let compiled = Arc::clone(&state.user_filter);
+            let mut rows: Vec<_> = state
+                .rows
+                .values()
+                .filter(|row| state.scope.matches(row))
+                .collect();
+            rows.sort_by(|a, b| {
+                b.request
+                    .started
+                    .total_cmp(&a.request.started)
+                    .then_with(|| b.request.id.cmp(&a.request.id))
+            });
+            let snapshots = rows
+                .into_iter()
+                .map(|row| compiled.snapshot(row))
+                .collect::<Result<Vec<_>, _>>()?;
+            (
+                compiled,
+                filter::WipingValue(json!({"flows":[],"scope":state.scope_snapshot()})),
+                snapshots,
+            )
+        };
+        // Regex execution, HTTP decoding and immutable spool reads all run
+        // after capture can acquire its mutex again. The caller owns offloading.
+        for mut snapshot in snapshots {
+            if compiled.matches(&snapshot)? {
+                result.0["flows"]
+                    .as_array_mut()
+                    .expect("flow list")
+                    .push(std::mem::take(&mut snapshot.summary));
+            }
+        }
+        Ok(result.0.take())
+    }
+
+    /// Direct reads address all retained rows; pinned display scope is not an
+    /// authorization boundary. The operator route owns authorization.
+    pub fn detail(&self, id: &str) -> Option<Value> {
+        self.lock().rows.get(id).map(|row| {
+            let mut result = row.summary();
+            let object = result.as_object_mut().expect("row summary");
+            object.insert("request_headers".into(), json!(row.request.headers));
+            object.insert("response_headers".into(), json!(row.response_headers));
+            object.insert("metadata".into(), row.metadata.clone());
+            result
+        })
+    }
+
+    pub fn body(&self, id: &str, side: Side) -> Option<Value> {
+        self.lock().rows.get(id).map(|row| match side {
+            Side::Request => row.request_body.snapshot(),
+            Side::Response => row.response_body.snapshot(),
+        })
+    }
+
+    /// Snapshot all selected-flow owners while the row is coherent, then do
+    /// decoding and retained-message reads after releasing the view lock.
+    pub(crate) fn export(&self, id: &str, format: ExportFormat) -> Result<ExportPlan, ExportError> {
+        let snapshot = {
+            let state = self.lock();
+            let row = state.rows.get(id).ok_or(ExportError::MissingFlow)?;
+            // A queued terminal selection must not export a row hidden by a
+            // later pinned-scope change. Treat hidden rows like pruned rows so
+            // the operator route does not disclose why the ID is unavailable.
+            if !state.scope.matches(row) {
+                return Err(ExportError::MissingFlow);
+            }
+            row.export_snapshot()
+        };
+        ExportPlan::build(snapshot, format)
+    }
+
+    pub fn facets(&self) -> Value {
+        let state = self.lock();
+        let mut result = Map::new();
+        for (_, key) in SELECTORS {
+            let mut counts = BTreeMap::<String, usize>::new();
+            for row in state.rows.values() {
+                if key != "agent"
+                    && state.scope.selected("agent").is_some_and(|agent| {
+                        row.metadata.get("agent").and_then(Value::as_str) != Some(agent)
+                    })
+                {
+                    continue;
+                }
+                if !matches!(key, "agent" | "test_id")
+                    && state.scope.selected("test_id").is_some_and(|test| {
+                        row.metadata.get("test_id").and_then(Value::as_str) != Some(test)
+                    })
+                {
+                    continue;
+                }
+                if let Some(value) = row.metadata.get(key).filter(|v| !v.is_null()) {
+                    *counts.entry(python_text(value)).or_default() += 1;
+                }
+            }
+            let mut counts: Vec<_> = counts.into_iter().collect();
+            counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            result.insert(
+                key.into(),
+                Value::Array(
+                    counts
+                        .into_iter()
+                        .map(|(value, count)| json!({"value":value,"count":count}))
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(result)
+    }
+}
+
+impl Exchange {
+    fn update(&self, change: impl FnOnce(&mut Row)) {
+        if let Some(view) = self.view.upgrade() {
+            let mut state = view.lock();
+            if let Some(row) = state
+                .rows
+                .get_mut(self.id.as_str())
+                .filter(|row| std::ptr::eq(row.handle.as_ptr(), self))
+            {
+                change(row);
+            }
+        }
+    }
+
+    pub fn request_headers(&self, headers: Vec<(String, String)>) {
+        // Own/wipe even if the row has already been evicted/replaced.
+        let mut headers = headers;
+        self.update(|row| {
+            wipe_headers(&mut row.request.headers);
+            row.request.headers = std::mem::take(&mut headers);
+        });
+        wipe_headers(&mut headers);
+    }
+
+    /// Request protocol and target are captured from the parser-owned request
+    /// before the relay rewrites its URI or version for the upstream leg.
+    pub(crate) fn request_line(&self, version: &str, target: &str) {
+        let version = Zeroizing::new(version.to_owned());
+        let target = Zeroizing::new(target.to_owned());
+        self.update(|row| {
+            row.request_version = Some(version);
+            row.request_target = Some(target);
+        });
+    }
+
+    pub fn request_body(&self, bytes: Option<&[u8]>) {
+        self.request_body_at(bytes, now());
+    }
+
+    fn request_body_at(&self, bytes: Option<&[u8]>, completed: f64) {
+        self.update(|row| {
+            row.request_body = Body::observe(bytes);
+            row.request_completed = Some(completed);
+        });
+    }
+
+    /// Merge reached metadata. The trusted ingress agent remains authoritative;
+    /// an arbitrary caller-supplied metadata agent cannot relabel the row.
+    pub fn metadata(&self, metadata: &Map<String, Value>) {
+        self.update(|row| {
+            let current = row.metadata.as_object_mut().expect("row metadata");
+            for (key, value) in metadata {
+                if key != "agent" {
+                    if let Some(replaced) = current.get_mut(key) {
+                        wipe_json(replaced);
+                        *replaced = value.clone();
+                    } else {
+                        current.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        });
+    }
+
+    pub fn response_head(&self, status: u16, headers: Vec<(String, String)>) {
+        self.response_head_observed(status, None, headers, None);
+    }
+
+    /// Preserve parser-observed protocol and reason bytes when available. A
+    /// missing reason remains missing; export never synthesizes one from the
+    /// status code.
+    pub(crate) fn response_head_observed(
+        &self,
+        status: u16,
+        version: Option<&str>,
+        headers: Vec<(String, String)>,
+        reason: Option<&[u8]>,
+    ) {
+        self.response_head_observed_at(status, version, headers, reason, now());
+    }
+
+    fn response_head_observed_at(
+        &self,
+        status: u16,
+        version: Option<&str>,
+        headers: Vec<(String, String)>,
+        reason: Option<&[u8]>,
+        observed: f64,
+    ) {
+        let mut headers = headers;
+        let version = version.map(|version| Zeroizing::new(version.to_owned()));
+        let reason = reason.map(|reason| Zeroizing::new(reason.to_vec()));
+        self.update(|row| {
+            wipe_headers(&mut row.response_headers);
+            row.response_headers = std::mem::take(&mut headers);
+            row.status = Some(status);
+            if version.is_some() {
+                row.response_version = version;
+            }
+            if reason.is_some() {
+                row.response_reason = reason;
+            }
+            if row.response_head_observed.is_none() {
+                row.response_head_observed = Some(observed);
+            }
+        });
+        wipe_headers(&mut headers);
+    }
+
+    /// Update protocol-only response facts without replacing the ordered
+    /// header projection captured by the reached parser owner.
+    pub(crate) fn response_details(&self, version: Option<&str>, reason: Option<&[u8]>) {
+        let version = version.map(|version| Zeroizing::new(version.to_owned()));
+        let reason = reason.map(|reason| Zeroizing::new(reason.to_vec()));
+        self.update(|row| {
+            if version.is_some() {
+                row.response_version = version;
+            }
+            if reason.is_some() {
+                row.response_reason = reason;
+            }
+        });
+    }
+
+    pub(crate) fn response_trailers(&self, trailers: Vec<(String, String)>) {
+        let mut trailers = trailers;
+        self.update(|row| {
+            wipe_headers(&mut row.response_trailers);
+            row.response_trailers = std::mem::take(&mut trailers);
+        });
+        wipe_headers(&mut trailers);
+    }
+
+    pub(crate) fn request_trailers(&self, trailers: Vec<(String, String)>) {
+        let mut trailers = trailers;
+        self.update(|row| {
+            wipe_headers(&mut row.request_trailers);
+            row.request_trailers = std::mem::take(&mut trailers);
+        });
+        wipe_headers(&mut trailers);
+    }
+
+    pub fn response_body(&self, bytes: Option<&[u8]>) {
+        self.update(|row| row.response_body = Body::observe(bytes));
+    }
+
+    pub(crate) fn response_body_complete(&self, bytes: Option<&[u8]>) {
+        self.response_body_complete_at(bytes, now());
+    }
+
+    pub(crate) fn upstream_connection(&self, observation: UpstreamConnectionObservation) {
+        self.update(|row| row.upstream = Some(observation));
+    }
+
+    pub(crate) fn upstream_tls(&self, completed: f64) {
+        self.update(|row| {
+            if let Some(upstream) = &mut row.upstream
+                && upstream.tls_setup.is_none()
+            {
+                upstream.tls_setup = Some(completed);
+            }
+        });
+    }
+
+    fn response_body_complete_at(&self, bytes: Option<&[u8]>, completed: f64) {
+        self.update(|row| {
+            row.response_body = Body::observe(bytes);
+            row.response_completed = Some(completed);
+        });
+    }
+
+    pub fn finish(&self, error: Option<&str>) {
+        self.finish_at(error, now());
+    }
+
+    fn finish_at(&self, error: Option<&str>, ended: f64) {
+        self.update(|row| {
+            if row.ended.is_none() {
+                row.state = if error.is_some() { "error" } else { "complete" };
+                row.ended = Some(ended);
+                // A peer may finish its response while the request parser is
+                // still receiving bytes. Keep that side pending until its
+                // validated observation or the final handle release.
+                if matches!(row.response_body, Body::Pending) {
+                    row.response_body = Body::Unavailable;
+                }
+                row.error = error.map(|error| Zeroizing::new(error.into()));
+            }
+        });
+    }
+}
+
+impl Drop for Exchange {
+    fn drop(&mut self) {
+        if let Some(view) = self.view.upgrade() {
+            let mut state = view.lock();
+            if let Some(row) = state
+                .rows
+                .get_mut(self.id.as_str())
+                .filter(|row| std::ptr::eq(row.handle.as_ptr(), self))
+            {
+                if row.ended.is_none() {
+                    row.state = "incomplete";
+                    row.ended = Some(now());
+                    row.error = Some(Zeroizing::new("cancelled".into()));
+                }
+                row.finalize_bodies();
+                if let Some(websocket) = &mut row.websocket {
+                    websocket.cancel(now());
+                }
+            }
+            state.prune();
+        }
+    }
+}
+
+impl Row {
+    fn finalize_bodies(&mut self) {
+        if matches!(self.request_body, Body::Pending) {
+            self.request_body = Body::Unavailable;
+        }
+        if matches!(self.response_body, Body::Pending) {
+            self.response_body = Body::Unavailable;
+        }
+    }
+
+    fn summary(&self) -> Value {
+        json!({
+            "id": self.request.id,
+            "connection_id": self.request.connection_id,
+            "agent": self.request.agent,
+            "method": self.request.method,
+            "url": self.request.url,
+            "status": self.status,
+            "state": self.websocket.as_ref().map_or(self.state, websocket::Session::flow_state),
+            "started": self.request.started,
+            "request_completed": self.request_completed,
+            "response_head_observed": self.response_head_observed,
+            "response_completed": self.response_completed,
+            "upstream": self.upstream.as_ref().map(UpstreamConnectionObservation::snapshot),
+            "ended": self.websocket.as_ref().map_or(self.ended, |websocket| websocket.ended),
+            "error": self.websocket.as_ref().and_then(|websocket| websocket.error.as_ref()).or(self.error.as_ref()).map(|s| s.as_str()),
+            "websocket": self.websocket.as_ref().map(websocket::Session::snapshot),
+            "request_body": self.request_body.facts(),
+            "response_body": self.response_body.facts(),
+        })
+    }
+}
+
+impl Drop for Row {
+    fn drop(&mut self) {
+        self.request_version.zeroize();
+        self.request_target.zeroize();
+        self.response_version.zeroize();
+        self.response_reason.zeroize();
+        wipe_headers(&mut self.response_headers);
+        wipe_headers(&mut self.request_trailers);
+        wipe_headers(&mut self.response_trailers);
+        wipe_json(&mut self.metadata);
+    }
+}
+
+impl State {
+    fn scope_snapshot(&self) -> Value {
+        let mut snapshot = self.scope.snapshot();
+        snapshot["user_filter"] = Value::String(self.user_filter.raw().into());
+        let expression = self.user_filter.trimmed();
+        if !expression.is_empty() {
+            let prefix = self.scope.effective.as_str();
+            snapshot["effective_filter"] = Value::String(if prefix.is_empty() {
+                format!("({expression})")
+            } else if let Some(user) = self.user_filter.pinned_display() {
+                // Raw parentheses may close the source-generated user wrapper.
+                // Pins still AND the actual tree, and this display must say so.
+                format!("{prefix} & {user}")
+            } else {
+                format!("{prefix} & ({expression})")
+            });
+        }
+        snapshot
+    }
+
+    fn prune(&mut self) {
+        let mut bytes: u64 = self.rows.values().map(Row::retained_bytes).sum();
+        let max_bytes = self.max_body_bytes as u64;
+        if self.rows.len() <= self.max_flows && bytes <= max_bytes {
+            return;
+        }
+        let mut terminal: Vec<_> = self
+            .rows
+            .iter()
+            .filter(|(_, row)| row.terminal() && row.handle.strong_count() == 0)
+            .map(|(id, row)| (row.completion_time(), Zeroizing::new(id.clone())))
+            .collect();
+        terminal.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.as_str().cmp(b.1.as_str()))
+        });
+        for (_, id) in terminal {
+            if self.rows.len() <= self.max_flows && bytes <= max_bytes {
+                break;
+            }
+            if let Some((mut key, row)) = self.rows.shift_remove_entry(id.as_str()) {
+                key.zeroize();
+                bytes -= row.retained_bytes();
+            }
+        }
+        if bytes > max_bytes {
+            self.trim_websocket_messages(bytes, max_bytes);
+        }
+    }
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        for (mut key, _) in std::mem::take(&mut self.rows) {
+            key.zeroize();
+        }
+    }
+}
+
+struct Scope {
+    fields: Value,
+    effective: Zeroizing<String>,
+    needles: Vec<Zeroizing<String>>,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self::parse(&json!({})).expect("empty scope")
+    }
+}
+
+impl Scope {
+    fn selected(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).and_then(Value::as_str)
+    }
+
+    fn parse(value: &Value) -> Result<Self, String> {
+        let input = value
+            .as_object()
+            .ok_or("request body must be a JSON object")?;
+        let mut unknown: Vec<_> = input
+            .keys()
+            .filter(|key| {
+                !SELECTORS.iter().any(|(field, _)| key == field) && key.as_str() != "unattributed"
+            })
+            .cloned()
+            .collect();
+        unknown.sort();
+        if !unknown.is_empty() {
+            return Err(format!("unknown scope field(s): {}", unknown.join(", ")));
+        }
+        let unattributed = input.get("unattributed").unwrap_or(&Value::Bool(false));
+        if truthy(unattributed) && input.get("agent").is_some_and(|v| !v.is_null()) {
+            return Err("agent and unattributed are mutually exclusive".into());
+        }
+        for (field, _) in SELECTORS {
+            if input
+                .get(field)
+                .is_some_and(|v| !v.is_null() && v.as_str().is_none_or(str::is_empty))
+            {
+                return Err(format!("{field} must be a non-empty string or null"));
+            }
+        }
+        let mut fields = Map::new();
+        fields.insert(
+            "agent".into(),
+            input.get("agent").cloned().unwrap_or(Value::Null),
+        );
+        fields.insert("unattributed".into(), unattributed.clone());
+        for (field, _) in &SELECTORS[1..] {
+            fields.insert(
+                (*field).into(),
+                input.get(*field).cloned().unwrap_or(Value::Null),
+            );
+        }
+        let mut parts = Vec::new();
+        let mut needles = Vec::new();
+        if truthy(unattributed) {
+            parts.push("!(~meta ^agent:)".to_string());
+        }
+        for (field, key) in SELECTORS {
+            if field == "agent" && truthy(unattributed) {
+                continue;
+            }
+            if let Some(value) = fields.get(field).and_then(Value::as_str) {
+                let raw = Zeroizing::new(format!("{key}: {value}"));
+                needles.push(Zeroizing::new(raw.to_lowercase()));
+                let mut escaped = Zeroizing::new(String::new());
+                for ch in raw.chars() {
+                    if "()[]{}?*+-|^$\\.&~# \t\n\r\u{b}\u{c}\"".contains(ch) {
+                        escaped.push('\\');
+                    }
+                    escaped.push(ch);
+                }
+                parts.push(format!("~meta \"^{}$\"", escaped.as_str()));
+            }
+        }
+        let effective = Zeroizing::new(parts.join(" & "));
+        parts.zeroize();
+        Ok(Self {
+            fields: Value::Object(fields),
+            effective,
+            needles,
+        })
+    }
+
+    fn snapshot(&self) -> Value {
+        let mut fields = self.fields.clone();
+        let object = fields.as_object_mut().expect("scope fields");
+        object.insert("user_filter".into(), Value::String(String::new()));
+        object.insert(
+            "effective_filter".into(),
+            Value::String(self.effective.to_string()),
+        );
+        fields
+    }
+
+    fn matches(&self, row: &Row) -> bool {
+        // Source FMeta searches newline-joined Python presentations. This uses
+        // its default case-insensitive, multiline mode with literal anchors.
+        // Unicode lowercase is a finite approximation of Python regex folding;
+        // environment-sensitive regex mode and Unicode-fold differences remain
+        // outside this finite display adapter. The source command lexer also
+        // consumes some escapes and rejects newline selectors; native matching
+        // is deliberately literal and accepts those strings. This is not a
+        // general mitmproxy/user-filter interpreter.
+        if self.effective.is_empty() {
+            return true;
+        }
+        let mut text = Zeroizing::new(String::new());
+        for (key, value) in row.metadata.as_object().expect("row metadata") {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(key);
+            text.push_str(": ");
+            let value = Zeroizing::new(python_text(value));
+            text.push_str(&value);
+        }
+        let text = Zeroizing::new(text.to_lowercase());
+        if truthy(&self.fields["unattributed"])
+            && text.split('\n').any(|line| line.starts_with("agent:"))
+        {
+            return false;
+        }
+        self.needles.iter().all(|needle| {
+            std::iter::once(0)
+                .chain(text.match_indices('\n').map(|(index, _)| index + 1))
+                .any(|start| {
+                    text[start..].starts_with(needle.as_str())
+                        && text
+                            .as_bytes()
+                            .get(start + needle.len())
+                            .is_none_or(|byte| *byte == b'\n')
+                })
+        })
+    }
+}
+
+impl Drop for Scope {
+    fn drop(&mut self) {
+        wipe_json(&mut self.fields);
+    }
+}
+
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64().is_none_or(|number| number != 0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
+/// Only JSON-representable metadata is accepted at this seam. Python string
+/// representation keeps facet values distinct from JSON (True, None, quotes).
+fn python_text(value: &Value) -> String {
+    enum Part<'a> {
+        Value(&'a Value, bool),
+        Text(&'a str),
+        Key(&'a str),
+    }
+    let mut output = String::new();
+    let mut pending = vec![Part::Value(value, true)];
+    while let Some(part) = pending.pop() {
+        match part {
+            Part::Text(text) => output.push_str(text),
+            Part::Key(text) => output.push_str(&Zeroizing::new(crate::agent_api::repr(text))),
+            Part::Value(Value::Null, _) => output.push_str("None"),
+            Part::Value(Value::Bool(value), _) => {
+                output.push_str(if *value { "True" } else { "False" })
+            }
+            Part::Value(Value::String(value), true) => output.push_str(value),
+            Part::Value(Value::String(value), false) => {
+                output.push_str(&Zeroizing::new(crate::agent_api::repr(value)))
+            }
+            Part::Value(value @ Value::Number(_), _) => {
+                crate::python_json::write(value, &mut output).expect("String sink");
+            }
+            Part::Value(Value::Array(values), _) => {
+                output.push('[');
+                pending.push(Part::Text("]"));
+                for (index, value) in values.iter().enumerate().rev() {
+                    pending.push(Part::Value(value, false));
+                    if index > 0 {
+                        pending.push(Part::Text(", "));
+                    }
+                }
+            }
+            Part::Value(Value::Object(values), _) => {
+                output.push('{');
+                pending.push(Part::Text("}"));
+                for (index, (key, value)) in values.iter().enumerate().rev() {
+                    pending.push(Part::Value(value, false));
+                    pending.push(Part::Text(": "));
+                    pending.push(Part::Key(key));
+                    if index > 0 {
+                        pending.push(Part::Text(", "));
+                    }
+                }
+            }
+        }
+    }
+    output
+}
+
+fn wipe_headers(headers: &mut Vec<(String, String)>) {
+    for (name, value) in headers.iter_mut() {
+        name.zeroize();
+        value.zeroize();
+    }
+    headers.clear();
+}
+
+fn wipe_json(value: &mut Value) {
+    // Iterative cleanup also covers caller-built deep metadata. This does not
+    // impose a parser limit or copy strings into a second retained owner.
+    let mut pending = vec![value.take()];
+    while let Some(value) = pending.pop() {
+        match value {
+            Value::String(mut value) => value.zeroize(),
+            Value::Array(values) => pending.extend(values),
+            Value::Object(values) => {
+                for (mut key, value) in values {
+                    key.zeroize();
+                    pending.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or_else(
+        |error| -error.duration().as_secs_f64(),
+        |duration| duration.as_secs_f64(),
+    )
+}
+
+#[cfg(test)]
+mod tests;

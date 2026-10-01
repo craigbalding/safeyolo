@@ -1,0 +1,65 @@
+[package]
+name = "safeyolo-proxy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license = "MIT"
+
+[dependencies]
+async-nats = "0.42"
+base64 = "0.23"
+brotli-decompressor = "=5.0.3"
+bzip2 = "=0.6.1"
+bytes = "1"
+encoding_rs = "0.8.41"
+fernet = { version = "0.2.2", default-features = false, features = ["rustcrypto", "fernet_danger_timestamps"] }
+fancy-regex = "0.19.2"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+h2 = "=0.4.19"
+http-body-util = "0.1"
+hyper = { version = "1.11", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+indexmap = "=2.14.2"
+libc = "0.2"
+memmap2 = "0.9"
+num-bigint = "0.4"
+pkcs8 = { version = "0.10", features = ["std"] }
+percent-encoding = "2"
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
+rand = "=0.10.2"
+regex = "1"
+ring = "0.17"
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
+rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+subtle = "2.6.1"
+tempfile = "3"
+toml_edit = "0.25"
+time = { version = "0.3", features = ["parsing", "formatting"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+futures-util = "0.3"
+tokio-rustls = { version = "0.26.5", default-features = false, features = ["ring", "tls12"] }
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+uuid = { version = "1", features = ["v4"] }
+unicode-normalization = "0.1"
+x509-parser = "0.18"
+yaml-rust2 = { version = "0.13", default-features = false }
+zeroize = "1"
+zstd = { version = "=0.13.3", default-features = false }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+toml = { version = "1.1", features = ["preserve_order"] }
+
+[[bin]]
+name = "safeyolo-proxy"
+path = "src/main.rs"
+
+[patch.crates-io]
+fancy-regex = { path = "vendor/fancy-regex" }
+hyper = { path = "vendor/hyper" }
+h2 = { path = "vendor/h2" }

@@ -1,0 +1,174 @@
+{
+  "name": "hyper",
+  "version": "1.11.1",
+  "license": "MIT",
+  "license_sha256": "2d01890414494742ba4a509fcec8efa40f6d8be22cbd72be7cff08d6fda4ec89",
+  "source": "registry+https://github.com/rust-lang/crates.io-index",
+  "archive_sha256": "27b501faa50e7a26c3d3560ca625132f4078a17771f4810baf70475ae48cbe43",
+  "patch_source_sha256": "83f2cd2fa687935e0823cbe3dfdaff8f3cd6a6495a7466c24f84bd4281ab0887",
+  "files": [
+    {
+      "path": "hyper-1.11.1/src/ext/mod.rs",
+      "original_sha256": "45e4e184394742eaf2c53b9d856639c72fefbb8d89ef790215581903760db03c",
+      "candidate_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e",
+      "added": 20,
+      "removed": 0,
+      "proof_candidate_sha256": "1a19794127a1f65e2a88454f2cfd207ce2f3eeac16226cea94069be69eb1f7e6",
+      "header_metadata_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+      "counts_scope": "original header metadata patch"
+    },
+    {
+      "path": "hyper-1.11.1/src/proto/h1/role.rs",
+      "original_sha256": "4741a413b947a72da0f58a2ef73bc9b209e1dfebe1a110e6ed5752745db93b07",
+      "candidate_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14",
+      "added": 11,
+      "removed": 0,
+      "proof_candidate_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "header_metadata_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+      "counts_scope": "original header metadata patch"
+    }
+  ],
+  "local_adjustments": [
+    "Updated the proof-only accessor comment for application use."
+  ],
+  "metadata_normalization": {
+    "path": ".cargo_vcs_info.json",
+    "original_sha256": "8e08544c1e6778d3606bb6a827f7ea6496033bc9b3356289710d1954fb71a5cc",
+    "candidate_sha256": "3993dc5af39e5c0684c8dd1e5c549b6616ffa9901a910c93a5e198e4a33bfa38",
+    "change": "Add the terminal newline required by repository hooks."
+  },
+  "response_completion_patch": {
+    "base_commit": "d089f99506d9342cfd853709de87d2a465312d4e",
+    "scope": "Optional HTTP/1 client completion at existing parser boundaries; no buffering, draining, admission or wire changes.",
+    "files": [
+      {
+        "path": "proxy/vendor/hyper/src/ext/mod.rs",
+        "base_sha256": "223c81ffc4d6f65fe63d12410ec5c6eed4e60683e14b068097412a18ff21efa7",
+        "candidate_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/ext/response_completion.rs",
+        "base_sha256": null,
+        "candidate_sha256": "d01022009e3984c449fc4fb8f7afb5097f71e814332a4fcbf423f84c7647e2b0"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/mod.rs",
+        "base_sha256": "bdb49167f68428e34b9b60a46c535fa44d9a3a6a849b1f232a466f8379efd792",
+        "candidate_sha256": "87cc8fa4ba5f4340a567c74dc7d41cf94b496ddd09d75c89641e27add53239b7"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/role.rs",
+        "base_sha256": "30eb7937f0d27f5c3a351d99c3cdc561e01a1c3f4f2364456505bd8debacca0c",
+        "candidate_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/conn.rs",
+        "base_sha256": "e0e2294b3c3d0fcbf2a7bfe69fc494ec145a227f5f2db81501691fed9fe81857",
+        "candidate_sha256": "9dd42f390a8dec4eb93913d3dc2ee63fab87121955b862f58509e22f553c57a9"
+      }
+    ]
+  },
+  "response_capture_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "scope": "Opt-in synchronous final-head/DATA copy sink on existing response-completion ownership. The application owns bounded capture and errors. Existing parser admission, body queue, cancellation/drain and completion result semantics remain unchanged.",
+    "api": "ext::on_response_complete_with_capture(&mut http::Request<B>, Arc<dyn ResponseBodyCapture>) -> ResponseCompletion",
+    "files": [
+      {
+        "path": "src/ext/response_completion.rs",
+        "base_sha256": "d01022009e3984c449fc4fb8f7afb5097f71e814332a4fcbf423f84c7647e2b0",
+        "candidate_sha256": "258d5605ece2e5b17964e4a6706f04f59f7ae9090c08dfb6aed8bf612c683e06"
+      },
+      {
+        "path": "src/ext/mod.rs",
+        "base_sha256": "62e156c5752032eb399d508a5762eee749791b58c81d88eb8aa1e5a9583d561e",
+        "candidate_sha256": "6c723f8d216c571889c5dea34b8f42fe1296331b792d6d5f663ff888cdbb1111"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "9dd42f390a8dec4eb93913d3dc2ee63fab87121955b862f58509e22f553c57a9",
+        "candidate_sha256": "40a7127f1151dbd4749ad8ade5db9286458eb46e43cb9cd42da7665dd67bd7c9"
+      }
+    ]
+  },
+  "request_completion_patch": {
+    "base_commit": "33682df1e4a8c5ae113b3d4f141c77b7c52a8afc",
+    "seed_response_patch_sha256": "b0d7ca9863c3a815ebc87a8dea618465bf5c25daf0396ee3876616556e6ef30b",
+    "scope": "Payload-free request EOM/abort observation at existing server receive validation transitions. No capture, draining, callbacks, framing/admission or flow-control changes. One bounded producer/receiver pair per live parsed request; private extension clones share a single takeable observer.",
+    "files": [
+      {
+        "path": "proxy/vendor/hyper/src/ext/mod.rs",
+        "base_sha256": "6c723f8d216c571889c5dea34b8f42fe1296331b792d6d5f663ff888cdbb1111",
+        "candidate_sha256": "3beafc3ffdea0ecfcb74a802bebc1a81167a426cf76ffdc89554c350ebce8d26"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/ext/request_completion.rs",
+        "base_sha256": null,
+        "candidate_sha256": "fa4742407f4dbf1b94d7834782a13f90a445024f31ddccfdc5cc4d2343e1e144"
+      },
+      {
+        "path": "proxy/vendor/hyper/src/proto/h1/conn.rs",
+        "base_sha256": "40a7127f1151dbd4749ad8ade5db9286458eb46e43cb9cd42da7665dd67bd7c9",
+        "candidate_sha256": "83cbc4c5ba611a56e780cd95846df9d97b9eec5ee1b278b36f7edd1b586f509d"
+      }
+    ]
+  },
+  "response_head_capture_patch": {
+    "base_commit": "99bb0df9a481f550b0623722a999c6e8775e6a02",
+    "scope": "Default extended final-head callback on the existing response capture owner. Borrow parser-owned ordered regular fields and reason bytes before completion; preserve old head/data implementations, validation, framing, DATA, cancellation and terminal ownership. No HeaderMap reconstruction.",
+    "api": "ResponseBodyCapture::head_with_fields(status, headers, end_stream_at_head, Option<&OriginalHeaderFields>, Option<&[u8]>)",
+    "requirements": "HTTP/1 client builder preserve_header_case(true) enables ordered fields. Canonical reason fallback is used only where parser equality already proved it; HTTP/0.9 has no reason.",
+    "files": [
+      {
+        "path": "src/ext/mod.rs",
+        "base_sha256": "3beafc3ffdea0ecfcb74a802bebc1a81167a426cf76ffdc89554c350ebce8d26",
+        "candidate_sha256": "82dd98df814015166666694650196502b0896ea5aa1f64960d9eb9992e6c7622"
+      },
+      {
+        "path": "src/ext/response_completion.rs",
+        "base_sha256": "258d5605ece2e5b17964e4a6706f04f59f7ae9090c08dfb6aed8bf612c683e06",
+        "candidate_sha256": "515a864cf86e48a991f8df2cc0e43524db2839edcc77a22d2564f1979ffc58b9"
+      },
+      {
+        "path": "src/proto/h1/role.rs",
+        "base_sha256": "f2b61741b2ad5f4c31f1fcebd7bc3d0578b018da180f370bfeb65c09aac0dd14",
+        "candidate_sha256": "a4b8eb0096782fa8a1b66f0c4f49346fb0b54cde3d48aa9ed72be9607d52fba0"
+      },
+      {
+        "path": "src/proto/h1/conn.rs",
+        "base_sha256": "83cbc4c5ba611a56e780cd95846df9d97b9eec5ee1b278b36f7edd1b586f509d",
+        "candidate_sha256": "c3ef26fa745a0628ca593b14ecf5c0882ad7543f6f4c0ebabf1b9e6571131d1e"
+      }
+    ],
+    "validation": [
+      "proxy/tests/response_head_capture.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
+  },
+  "response_raw_reason_patch": {
+    "base_commit": "99bb0df9a481f550b0623722a999c6e8775e6a02",
+    "seed": "frozen response_head_capture_patch",
+    "scope": "After httparse Status::Complete only, recover the already validated status-line reason byte span. Preserve obs-text in the existing ReasonPhrase extension and response-head callback. No grammar, header, body, status, HTTP/0.9 fallback, or H2 changes; existing delimiter configuration remains authoritative.",
+    "source_detail": "httparse 1.10.1 parse_reason validates obs-text but returns an empty str; byte recovery is bounded to the accepted head and never runs on partial/error/HTTP0.9 paths.",
+    "application_boundary": "ReasonPhrase and callback retain raw bytes including existing leading/trailing whitespace behavior. Source metadata delimiter normalization and ISO-8859-1 presentation belong to the application.",
+    "files": [
+      {
+        "path": "src/proto/h1/role.rs",
+        "base_sha256": "a4b8eb0096782fa8a1b66f0c4f49346fb0b54cde3d48aa9ed72be9607d52fba0",
+        "candidate_sha256": "d25f99d02a19861952c192a16819554f5fa87ab1568dce10d9485b9f22ff8224"
+      }
+    ],
+    "validation": [
+      "proxy/tests/response_head_capture.rs"
+    ],
+    "license": "MIT (existing LICENSE unchanged)"
+  },
+  "latest_vendored_checkpoint": {
+    "scope": "Post-validation integration source checkpoint",
+    "files": [
+      {
+        "path": "src/ext/mod.rs",
+        "vendored_sha256": "9a0132e0648dff0fec9ee353b56c51f752ba723e50bcf932756782cf035c348f"
+      }
+    ]
+  }
+}

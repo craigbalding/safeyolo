@@ -1,0 +1,894 @@
+{
+  "source_evidence_sha256": "96c08e511d7ed45b0c988db359b2014ed3cb9aa6c7ca0cb0f1bbce75aa7a2c9a",
+  "source_scope": "Standalone /budgets owner source refinement; /status deferred; no native or independent acceptance claim",
+  "source_versions": {
+    "python": "3.12.14",
+    "pydantic": "2.11.10",
+    "mitmproxy": "12.2.3"
+  },
+  "rows": [
+    {
+      "case": "allow_null",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": null,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_zero",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 0,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_negative",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": -7,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": -7,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_ordinary",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 30,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 30,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "deny_with_budget",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 30,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "deny",
+        "budget": 30,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "prompt_with_budget",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 30,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "prompt",
+        "budget": 30,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "budget_ordinary",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 30,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": 30,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "budget_zero_read",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": 0,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "budget_negative_read",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": -7,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": -7,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_u64_max",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 18446744073709551615,
+            "remaining": 922337203685477632,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 18446744073709551615,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_large_float_supported",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 89884656743115795386465259539451236680898848947115328636715040578866337902750481566354238661203768010560056939935696678829394884407208311246423715319737062188883946712432742638151109800623047059726541476042502884419075341171231440736956555270413618581675255342293149119973622969239858152417678164812112068608,
+            "remaining": 4494232837155790018803301668812538291091531576960587190267159583375509582955929382969198416680696623647748533576247470109275599744422321058875934315186060701840672121225564671908264608916861917678542254347498542052623360126552071203199134653629479540190671323120177144388794507931498112915695812033606844416,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 89884656743115795386465259539451236680898848947115328636715040578866337902750481566354238661203768010560056939935696678829394884407208311246423715319737062188883946712432742638151109800623047059726541476042502884419075341171231440736956555270413618581675255342293149119973622969239858152417678164812112068608,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_int_to_float_overflow",
+      "now_ms": 1000000.0,
+      "body": {
+        "error": "Internal error: OverflowError"
+      },
+      "error": "OverflowError",
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "allow_infinite_remaining_conversion",
+      "now_ms": 1600000.0,
+      "body": {
+        "error": "Internal error: OverflowError"
+      },
+      "error": "OverflowError",
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "allow",
+        "budget": 89884656743115795386465259539451236680898848947115328636715040578866337902750481566354238661203768010560056939935696678829394884407208311246423715319737062188883946712432742638151109800623047059726541476042502884419075341171231440736956555270413618581675255342293149119973622969239858152417678164812112068608,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "iam_simple_allow_drops_reporting_budget",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*",
+        "effect": "allow",
+        "budget": null,
+        "tier": "explicit",
+        "condition": null
+      }
+    },
+    {
+      "case": "host_raw_simple_extract_drops_reporting_budget",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*",
+        "effect": "allow",
+        "budget": null,
+        "tier": "explicit",
+        "condition": null
+      }
+    },
+    {
+      "case": "wildcard_allow_keeps_reporting_budget",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 30,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "allow",
+        "budget": 30,
+        "tier": "explicit",
+        "condition": null
+      }
+    },
+    {
+      "case": "agent_scoped_invisible",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": null
+    },
+    {
+      "case": "path_scoped_invisible",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": null
+    },
+    {
+      "case": "post_scoped_invisible",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 1,
+        "budgets": {},
+        "global_budgets": {}
+      },
+      "error": null,
+      "permission": null
+    },
+    {
+      "case": "task_lower_ceiling",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 2,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 5,
+            "remaining": 0,
+            "resource": "__global__"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "task_higher_ceiling",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 2,
+        "budgets": {
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 9,
+            "resource": "__global__"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "alpha.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "ordered_new_host_and_global_keys",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 3,
+        "budgets": {
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "zeta.invalid"
+          },
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 8,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "reset_and_reinsert_appends_key",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 3,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 7,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "zeta.invalid"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "credential_scoped_key_invisible_and_appended",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 4,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 7,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "zeta.invalid"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "credential_empty_context_match_exposes_retained_key",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 4,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 7,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "zeta.invalid"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    },
+    {
+      "case": "unrelated_temporal_baseline_still_reports_budgets",
+      "now_ms": 1000000.0,
+      "body": {
+        "tracked_keys": 4,
+        "budgets": {
+          "network:request:__global__": {
+            "budget_per_minute": 100,
+            "remaining": 7,
+            "resource": "__global__"
+          },
+          "network:request:alpha.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "alpha.invalid"
+          },
+          "network:request:zeta.invalid": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "zeta.invalid"
+          },
+          "credential:use:credential.invalid:fixture": {
+            "budget_per_minute": 20,
+            "remaining": 1,
+            "resource": "credential.invalid:fixture"
+          }
+        },
+        "global_budgets": {
+          "network:request": 100
+        }
+      },
+      "error": null,
+      "permission": {
+        "action": "network:request",
+        "resource": "*.invalid/*",
+        "effect": "budget",
+        "budget": 20,
+        "tier": "explicit",
+        "condition": {
+          "credential": null,
+          "method": null,
+          "port": null,
+          "path_prefix": null,
+          "content_type": null,
+          "tactics": null,
+          "enables": null,
+          "irreversible": null,
+          "account": null,
+          "agent": null,
+          "service": null,
+          "capability": null
+        }
+      }
+    }
+  ]
+}

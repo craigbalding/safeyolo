@@ -111,9 +111,16 @@ class TestLiveAgentLifecycle:
         token_before = token_file.read_text().strip() if token_file.exists() else ""
 
         # 3. Restart proxy
-        self._safeyolo("stop", timeout=15)
+        stopped = self._safeyolo("stop", timeout=15)
+        assert stopped.returncode == 0, stopped.stderr
         time.sleep(1)
-        self._safeyolo("start", "--test", "--no-wait", timeout=15)
+        start_args = (
+            ("start", "--no-wait")
+            if os.environ.get("SAFEYOLO_BLACKBOX_PROXY_BACKEND") == "rust"
+            else ("start", "--test", "--no-wait")
+        )
+        started = self._safeyolo(*start_args, timeout=15)
+        assert started.returncode == 0, started.stderr
 
         # Wait for proxy health
         for _ in range(15):

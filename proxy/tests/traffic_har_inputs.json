@@ -1,0 +1,1514 @@
+{
+  "schema": 1,
+  "source": "owned_pre_har_flow_inputs",
+  "versions": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3"
+  },
+  "source_sha256": {
+    "mitmproxy/addons/savehar.py": "488bc3fe9d338b1825f042a3ddfe085814b4340f965a8cb0cf9aa9bfcd84a02c",
+    "mitmproxy/connection.py": "e8e7f3a695e17cd134be6728258a98bdcbda52304655532595b31564732ca726",
+    "mitmproxy/flow.py": "7d013511593f0c4fa370cd58118edb52d0841a1b81a0f846ea512482fbcd9c63",
+    "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+    "mitmproxy/coretypes/multidict.py": "d8cf7fdc1896241c94a611e940654f30f028e0823c272771ba36519336ce6f57",
+    "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea",
+    "mitmproxy/net/http/headers.py": "6a2ac2db6b7c3e5891b9dbd243dc83b6651939056f28bb6c64254979dd1392b9",
+    "mitmproxy/tools/cmdline.py": "811212c9c009634aa09b811eb1160d21286f8253ea478cbf21b16962ed89c37b",
+    "mitmproxy/tools/main.py": "014339be3f863460097f502d16c4931a807d9d640c2a0b7cb88a8a995d63ad2d",
+    "mitmproxy/utils/strutils.py": "de6bacada4d4ed26f6555472ae48466dba969bb60c57fbc5a0d3c14c77743e09",
+    "mitmproxy/version.py": "081de8d22ceeea6267ddf573b39c6f33b79d90dd2e18265e1f74a135124c64fe",
+    "mitmproxy/websocket.py": "efdfc38b017f36e14fa3f58d8c101493af58f4469edd115ce690fb17e0eaba7b"
+  },
+  "flows": [
+    {
+      "name": "rich_http",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d447570",
+            "6f6e65"
+          ],
+          [
+            "782d647570",
+            "74776f"
+          ],
+          [
+            "436f6f6b6965",
+            "613d313b20623d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3132"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-0",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "empty_response",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 10.0,
+        "timestamp_end": 11.0,
+        "method_hex": "474554",
+        "url": "http://source.fixture.invalid/empty",
+        "target_hex": "2f656d707479"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 11.0,
+        "timestamp_end": 11.0,
+        "status": 204,
+        "reason_hex": "4e6f20436f6e74656e74"
+      },
+      "server": {
+        "id": "server-1",
+        "peername": [
+          "198.51.100.31",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "request_body_empty",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 14.0,
+        "timestamp_end": 15.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/request-empty",
+        "target_hex": "2f726571756573742d656d707479"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "3138"
+          ]
+        ],
+        "body_hex": "656d7074792061636b6e6f776c6564676564",
+        "timestamp_start": 15.0,
+        "timestamp_end": 16.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-2",
+        "peername": [
+          "198.51.100.40",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "request_body_missing",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": null,
+        "timestamp_start": 17.0,
+        "timestamp_end": 18.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/request-missing",
+        "target_hex": "2f726571756573742d6d697373696e67"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "3230"
+          ]
+        ],
+        "body_hex": "6d697373696e672061636b6e6f776c6564676564",
+        "timestamp_start": 18.0,
+        "timestamp_end": 19.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-3",
+        "peername": [
+          "198.51.100.41",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "response_body_missing",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 12.0,
+        "timestamp_end": 13.0,
+        "method_hex": "474554",
+        "url": "http://source.fixture.invalid/missing-body",
+        "target_hex": "2f6d697373696e672d626f6479"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": null,
+        "timestamp_start": 13.0,
+        "timestamp_end": 14.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-4",
+        "peername": [
+          "198.51.100.32",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "response_unavailable",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 20.0,
+        "timestamp_end": 21.0,
+        "method_hex": "474554",
+        "url": "http://source.fixture.invalid/unavailable",
+        "target_hex": "2f756e617661696c61626c65"
+      },
+      "response": null,
+      "server": {
+        "id": "server-5",
+        "peername": null,
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "error_without_response",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 20.0,
+        "timestamp_end": 21.0,
+        "method_hex": "474554",
+        "url": "http://source.fixture.invalid/unavailable",
+        "target_hex": "2f756e617661696c61626c65"
+      },
+      "response": null,
+      "server": {
+        "id": "server-6",
+        "peername": null,
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": {
+        "msg": "fixture timeout",
+        "timestamp": 30.0
+      },
+      "websocket": null
+    },
+    {
+      "name": "encoded_text",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d456e636f64696e67",
+            "677a6970"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3335"
+          ]
+        ],
+        "body_hex": "1f8b08000000000004ff4bcd4bce4f494d51284a2d2c4d2d2e01005eaf12810f000000",
+        "timestamp_start": 31.0,
+        "timestamp_end": 32.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/encoded",
+        "target_hex": "2f656e636f646564"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d456e636f64696e67",
+            "677a6970"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3336"
+          ]
+        ],
+        "body_hex": "1f8b08000000000004ff4bcd4bce4f494d51284a2d2ec8cf2b4e0500fd7ca2d210000000",
+        "timestamp_start": 32.0,
+        "timestamp_end": 33.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-7",
+        "peername": [
+          "198.51.100.33",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "binary_bodies",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "6170706c69636174696f6e2f6f637465742d73747265616d"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "34"
+          ]
+        ],
+        "body_hex": "00ff0161",
+        "timestamp_start": 41.0,
+        "timestamp_end": 42.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/binary",
+        "target_hex": "2f62696e617279"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "6170706c69636174696f6e2f6f637465742d73747265616d"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "34"
+          ]
+        ],
+        "body_hex": "00ff0161",
+        "timestamp_start": 42.0,
+        "timestamp_end": 43.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-8",
+        "peername": [
+          "198.51.100.34",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "latin1_charset",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d69736f2d383835392d31"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3130"
+          ]
+        ],
+        "body_hex": "6c656674e97269676874",
+        "timestamp_start": 44.0,
+        "timestamp_end": 45.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/latin1",
+        "target_hex": "2f6c6174696e31"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d69736f2d383835392d31"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "36"
+          ]
+        ],
+        "body_hex": "7265706c79e9",
+        "timestamp_start": 45.0,
+        "timestamp_end": 46.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-9",
+        "peername": [
+          "198.51.100.42",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "websocket",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e6e656374696f6e",
+            "55706772616465"
+          ],
+          [
+            "55706772616465",
+            "776562736f636b6574"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 51.0,
+        "timestamp_end": 52.0,
+        "method_hex": "474554",
+        "url": "http://source.fixture.invalid/socket",
+        "target_hex": "2f736f636b6574"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "55706772616465",
+            "776562736f636b6574"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 52.0,
+        "timestamp_end": 53.0,
+        "status": 101,
+        "reason_hex": "537769746368696e672050726f746f636f6c73"
+      },
+      "server": {
+        "id": "server-10",
+        "peername": [
+          "198.51.100.35",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": {
+        "timestamp_end": null,
+        "messages": [
+          {
+            "opcode": 1,
+            "from_client": true,
+            "content_hex": "6f7574676f696e67",
+            "timestamp": 61.0,
+            "dropped": false,
+            "injected": false
+          },
+          {
+            "opcode": 2,
+            "from_client": false,
+            "content_hex": "ff00",
+            "timestamp": 62.0,
+            "dropped": true,
+            "injected": false
+          },
+          {
+            "opcode": 1,
+            "from_client": false,
+            "content_hex": "696e636f6d696e67",
+            "timestamp": 63.0,
+            "dropped": false,
+            "injected": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "timed_first",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "474554",
+        "url": "https://source.fixture.invalid/first",
+        "target_hex": "2f6669727374"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "35"
+          ]
+        ],
+        "body_hex": "6669727374",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-11",
+        "peername": [
+          "198.51.100.36",
+          443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "timed_reused",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "30"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 8.0,
+        "timestamp_end": 9.0,
+        "method_hex": "474554",
+        "url": "https://source.fixture.invalid/second",
+        "target_hex": "2f7365636f6e64"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "636f6e74656e742d6c656e677468",
+            "36"
+          ]
+        ],
+        "body_hex": "7365636f6e64",
+        "timestamp_start": 10.0,
+        "timestamp_end": 11.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-11",
+        "peername": [
+          "198.51.100.36",
+          443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "non_http",
+      "kind": "tcp"
+    },
+    {
+      "name": "pending_request_with_response",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d447570",
+            "6f6e65"
+          ],
+          [
+            "782d647570",
+            "74776f"
+          ],
+          [
+            "436f6f6b6965",
+            "613d313b20623d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3132"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": null,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-12",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "pending_request_without_response",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d447570",
+            "6f6e65"
+          ],
+          [
+            "782d647570",
+            "74776f"
+          ],
+          [
+            "436f6f6b6965",
+            "613d313b20623d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3132"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": null,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": null,
+      "server": {
+        "id": "server-13",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "tls_without_tcp",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d447570",
+            "6f6e65"
+          ],
+          [
+            "782d647570",
+            "74776f"
+          ],
+          [
+            "436f6f6b6965",
+            "613d313b20623d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3132"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-14",
+        "peername": null,
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "utf8_sampling_boundary",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d447570",
+            "6f6e65"
+          ],
+          [
+            "782d647570",
+            "74776f"
+          ],
+          [
+            "436f6f6b6965",
+            "613d313b20623d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3132"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d7574662d38"
+          ]
+        ],
+        "body_hex": "e282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ace282ac78",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-15",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "header_bytes_repr",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "58",
+            "79"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "58",
+            "080c"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-16",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "folded_raw_headers",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "582d54657874",
+            "c3a9"
+          ],
+          [
+            "582d496e76616c6964",
+            "ff"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742fc3a9"
+          ],
+          [
+            "636f6e74656e742d74797065",
+            "6170706c69636174696f6e2fff"
+          ],
+          [
+            "4c6f636174696f6e",
+            "2f636166c3a9"
+          ],
+          [
+            "6c6f636174696f6e",
+            "2fff"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-17",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "query_form_empty_components",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "6170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465643b20636861727365743d7574662d38"
+          ]
+        ],
+        "body_hex": "613d312626623d263d656d70747926666c616726",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/a?a=1&&b=&=empty&flag&",
+        "target_hex": "2f613f613d312626623d263d656d70747926666c616726"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-18",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "empty_urlencoded_form",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "6170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465643b20636861727365743d7574662d38"
+          ]
+        ],
+        "body_hex": "",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-19",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "unknown_charset_fallback",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d6f776e65642d756e6b6e6f776e2d63686172736574"
+          ]
+        ],
+        "body_hex": "616161616161616161ff",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d6f776e65642d756e6b6e6f776e2d63686172736574"
+          ]
+        ],
+        "body_hex": "616161616161616161ff",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-20",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "supported_big5_text",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d62696735"
+          ]
+        ],
+        "body_hex": "707265666978a440737566666978",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d62696735"
+          ]
+        ],
+        "body_hex": "707265666978a440737566666978",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-21",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "pretty_url_quoted_cookies",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "486f7374",
+            "76697369626c652e666978747572652e696e76616c69643a3830"
+          ],
+          [
+            "436f6f6b6965",
+            "613d226f6e653b74776f223b20623d7468726565"
+          ]
+        ],
+        "body_hex": "7265717565737420626f6479",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/a?keep=1",
+        "target_hex": "2f613f6b6565703d31"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "613d226f6e653b74776f223b20506174683d222f613b62223b2053616d65536974653d4c61783b20487474704f6e6c79"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-22",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "mime_parameter_invalid_byte",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d6c6174696e2d313b20783dff"
+          ]
+        ],
+        "body_hex": "ff",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e3b20636861727365743d6c6174696e2d313b20783dff"
+          ]
+        ],
+        "body_hex": "ff",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-23",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "form_declared_charset",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f32",
+        "headers_hex": [
+          [
+            "436f6e74656e742d54797065",
+            "6170706c69636174696f6e2f782d7777772d666f726d2d75726c656e636f6465643b20636861727365743d6c6174696e2d31"
+          ]
+        ],
+        "body_hex": "783de926657363617065643d254539",
+        "timestamp_start": 4.0,
+        "timestamp_end": 5.0,
+        "method_hex": "504f5354",
+        "url": "https://source.fixture.invalid:8443/rich?q=one&q=two&space=a%20b",
+        "target_hex": "2f726963683f713d6f6e6526713d74776f2673706163653d6125323062"
+      },
+      "response": {
+        "version_hex": "485454502f312e30",
+        "headers_hex": [
+          [
+            "5365742d436f6f6b6965",
+            "633d333b20506174683d2f3b20536563757265"
+          ],
+          [
+            "5365742d436f6f6b6965",
+            "643d343b20487474704f6e6c79"
+          ],
+          [
+            "582d447570",
+            "7265706c792d6f6e65"
+          ],
+          [
+            "782d647570",
+            "7265706c792d74776f"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ],
+          [
+            "636f6e74656e742d6c656e677468",
+            "3133"
+          ]
+        ],
+        "body_hex": "726573706f6e736520626f6479",
+        "timestamp_start": 6.0,
+        "timestamp_end": 7.0,
+        "status": 299,
+        "reason_hex": "53796e74686574696320526561736f6e"
+      },
+      "server": {
+        "id": "server-24",
+        "peername": [
+          "198.51.100.30",
+          8443
+        ],
+        "timestamp_start": 1.0,
+        "timestamp_tcp_setup": 2.0,
+        "timestamp_tls_setup": 3.0
+      },
+      "error": null,
+      "websocket": null
+    },
+    {
+      "name": "empty_content_encoding",
+      "kind": "http",
+      "request": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d456e636f64696e67",
+            ""
+          ],
+          [
+            "636f6e74656e742d656e636f64696e67",
+            "677a6970"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ]
+        ],
+        "body_hex": "1f8b08000000000004ff4bcd4bce4f494d51284a2d2c4d2d2e01005eaf12810f000000",
+        "timestamp_start": 31.0,
+        "timestamp_end": 32.0,
+        "method_hex": "504f5354",
+        "url": "http://source.fixture.invalid/encoded",
+        "target_hex": "2f656e636f646564"
+      },
+      "response": {
+        "version_hex": "485454502f312e31",
+        "headers_hex": [
+          [
+            "436f6e74656e742d456e636f64696e67",
+            ""
+          ],
+          [
+            "636f6e74656e742d656e636f64696e67",
+            "677a6970"
+          ],
+          [
+            "436f6e74656e742d54797065",
+            "746578742f706c61696e"
+          ]
+        ],
+        "body_hex": "1f8b08000000000004ff4bcd4bce4f494d51284a2d2ec8cf2b4e0500fd7ca2d210000000",
+        "timestamp_start": 32.0,
+        "timestamp_end": 33.0,
+        "status": 200,
+        "reason_hex": "4f4b"
+      },
+      "server": {
+        "id": "server-25",
+        "peername": [
+          "198.51.100.33",
+          80
+        ],
+        "timestamp_start": null,
+        "timestamp_tcp_setup": null,
+        "timestamp_tls_setup": null
+      },
+      "error": null,
+      "websocket": null
+    }
+  ]
+}

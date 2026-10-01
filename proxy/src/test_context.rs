@@ -1,0 +1,1180 @@
+//! Test-context parsing, declaration state and request decisions.
+//!
+//! Context `agent` is a caller-supplied provenance claim, never trusted identity.
+//! The caller supplies authenticated source/agent identity and the existing trusted
+//! flow metadata separately. Only the declared fallback resolves/stamps identity
+//! in the Python addon; an explicit header uses preexisting metadata for its match
+//! flag. Applied metadata contains no replacement for the trusted `agent` field.
+//!
+//! Target-host configuration reloads only when policy_hash changes. Declaration
+//! enable/TTL settings and inherited block/warn options are evaluated independently.
+//! Declaring context remains allowed when injection is disabled or targets are empty.
+//! Declarations are process-local, capped only by configured TTL, and expire using
+//! caller-supplied monotonic seconds. An agent mismatch evicts a reused source slot;
+//! DELETE clears that caller's source slot even if it held the former agent's record.
+//!
+//! Callers own bearer authentication, authoritative identity resolution, config
+//! cache availability, header serialization, request/response audit emission and
+//! FlowStore recording. This module returns decisions and metadata updates, not
+//! a flow/addon framework. Response recording uses the applied context and the
+//! request-id start_time; body snippets are the first 512 characters of capture_body.
+//! The shared Python atomic context-file writer remains a CLI producer helper.
+//! Header formatting here does not publish files or install a watcher.
+
+use num_bigint::BigInt;
+use serde::Serialize;
+use serde_json::{Map, Number, Value, json};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
+
+use crate::policy::{Policy, TimestampPaths, host_matches, python_whitespace};
+
+pub const HEADER: &str = "X-SafeYolo-Test-Context";
+pub const CANONICAL_KEYS: [&str; 9] = [
+    "run", "agent", "role", "suite", "subject", "step", "test", "intent", "expect",
+];
+pub const MAX_CONTEXT_PAIRS: usize = 20;
+const LIVE_KEYS: [&str; 9] = [
+    "test_run",
+    "test_agent",
+    "test_role",
+    "test_suite",
+    "test_subject",
+    "test_step",
+    "test_id",
+    "test_intent",
+    "test_expect",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextError(pub String, ContextErrorKind);
+/// Only Value errors belong to the declaration POST's local 400 boundary.
+/// Other kinds propagate to the outer Agent API's categorical error response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextErrorKind {
+    Value,
+    Overflow,
+    Type,
+    Attribute,
+    Poisoned,
+}
+impl ContextError {
+    pub fn kind(&self) -> ContextErrorKind {
+        self.1
+    }
+}
+impl fmt::Display for ContextError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for ContextError {}
+pub(crate) type Result<T> = std::result::Result<T, ContextError>;
+fn invalid(message: impl Into<String>) -> ContextError {
+    ContextError(message.into(), ContextErrorKind::Value)
+}
+fn overflow(message: &'static str) -> ContextError {
+    ContextError(message.into(), ContextErrorKind::Overflow)
+}
+fn trim(value: &str) -> &str {
+    value.trim_matches(python_whitespace)
+}
+// Parser errors are returned verbatim by the existing Agent API.
+fn python_repr(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut result = String::from(quote);
+    for character in value.chars() {
+        if character == quote || character == '\\' {
+            result.push('\\');
+            result.push(character);
+        } else if matches!(character, '\n' | '\r' | '\t') {
+            result.push_str(&character.escape_debug().to_string());
+        } else if character.is_control() || character.escape_debug().to_string().starts_with("\\u{")
+        {
+            let code = character as u32;
+            result.push_str(&if code <= 0xff {
+                format!("\\x{code:02x}")
+            } else if code <= 0xffff {
+                format!("\\u{code:04x}")
+            } else {
+                format!("\\U{code:08x}")
+            });
+        } else {
+            result.push(character);
+        }
+    }
+    result.push(quote);
+    result
+}
+fn safe_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || b"_.:-".contains(&value))
+}
+
+/// Construction validates required fields and duplicates before declarations can
+/// accept a context. Extra safe fields remain available in nested test_context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Context(Map<String, Value>);
+impl Context {
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (String, String)>) -> Result<Self> {
+        let mut fields = Map::new();
+        for (key, value) in pairs {
+            if key.is_empty() {
+                return Err(invalid("context key must be a non-empty string"));
+            }
+            if value.is_empty() {
+                return Err(invalid(format!(
+                    "context value for {} must be a non-empty string",
+                    python_repr(&key)
+                )));
+            }
+            if !safe_token(&key) {
+                return Err(invalid(format!(
+                    "context key {} contains characters outside [A-Za-z0-9_.:-]",
+                    python_repr(&key)
+                )));
+            }
+            if !safe_token(&value) {
+                return Err(invalid(format!(
+                    "context value for {} contains characters outside [A-Za-z0-9_.:-]",
+                    python_repr(&key)
+                )));
+            }
+            if fields.contains_key(&key) {
+                return Err(invalid(format!("duplicate context key: {key}")));
+            }
+            fields.insert(key, Value::String(value));
+            if fields.len() > MAX_CONTEXT_PAIRS {
+                return Err(invalid(format!(
+                    "context has more than {MAX_CONTEXT_PAIRS} key/value pairs"
+                )));
+            }
+        }
+        let missing: Vec<_> = ["run", "agent"]
+            .into_iter()
+            .filter(|key| !fields.contains_key(*key))
+            .collect();
+        if !missing.is_empty() {
+            return Err(invalid(format!(
+                "missing required context field(s): {}",
+                missing.join(", ")
+            )));
+        }
+        Ok(Self(fields))
+    }
+    pub fn parse(value: &str) -> Result<Self> {
+        if trim(value).is_empty() {
+            return Err(invalid("context header value must not be empty"));
+        }
+        let mut pairs = Vec::new();
+        for part in value.split(';').map(trim).filter(|part| !part.is_empty()) {
+            let (key, value) = part.split_once('=').ok_or_else(|| {
+                invalid(format!(
+                    "context field has no '=' separator: {}",
+                    python_repr(part)
+                ))
+            })?;
+            pairs.push((trim(key).to_owned(), trim(value).to_owned()));
+        }
+        Self::from_pairs(pairs)
+    }
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(Value::as_str)
+    }
+    pub fn fields(&self) -> &Map<String, Value> {
+        &self.0
+    }
+    pub fn format(&self) -> String {
+        let mut keys: Vec<_> = self.0.keys().collect();
+        keys.sort_by_key(|key| {
+            (
+                CANONICAL_KEYS
+                    .iter()
+                    .position(|canonical| canonical == key)
+                    .unwrap_or(CANONICAL_KEYS.len()),
+                key.as_str(),
+            )
+        });
+        keys.into_iter()
+            .map(|key| format!("{key}={}", self.get(key).unwrap()))
+            .collect::<Vec<_>>()
+            .join(";")
+    }
+    pub fn header_line(&self) -> String {
+        format!("{HEADER}: {}", self.format())
+    }
+}
+
+/// These values must come from authenticated transport/service discovery, never
+/// from context fields or an API body. Validation alone does not authenticate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedIdentity {
+    source: String,
+    agent: String,
+}
+impl TrustedIdentity {
+    pub fn new(source: impl Into<String>, agent: impl Into<String>) -> Result<Self> {
+        let source = source.into();
+        let agent = agent.into();
+        if source.is_empty() || source == "unknown" {
+            return Err(invalid("invalid source identity"));
+        }
+        if agent.is_empty() || matches!(agent.as_str(), "unknown" | "default") {
+            return Err(invalid("invalid trusted agent"));
+        }
+        Ok(Self { source, agent })
+    }
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+    pub fn agent(&self) -> &str {
+        &self.agent
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Options {
+    pub block: bool,
+    pub inject_declared: bool,
+    pub declared_ttl: Value,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            block: true,
+            inject_declared: false,
+            declared_ttl: json!(900),
+        }
+    }
+}
+#[derive(Clone)]
+struct Config {
+    targets: Value,
+    target_timestamps: TimestampPaths,
+    last_hash: Value,
+    options: Options,
+    inject: bool,
+    ttl_max: Number,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            targets: json!([]),
+            target_timestamps: TimestampPaths::default(),
+            last_hash: json!(""),
+            options: Options::default(),
+            inject: false,
+            ttl_max: Number::from(900),
+        }
+    }
+}
+// Keep only the operations this addon actually performs on target_hosts. No
+// eager item validation: a matching prefix prevents reaching later invalid items.
+fn target_type(message: &'static str) -> ContextError {
+    ContextError(message.into(), ContextErrorKind::Type)
+}
+fn target_attribute() -> ContextError {
+    ContextError(
+        "target pattern has no string lower method".into(),
+        ContextErrorKind::Attribute,
+    )
+}
+fn target_count(config: &Config) -> Result<usize> {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return Err(target_type("target_hosts has no length"));
+    }
+    match &config.targets {
+        Value::String(value) => Ok(value.chars().count()),
+        Value::Array(values) => Ok(values.len()),
+        Value::Object(values) => Ok(values.len()),
+        _ => Err(target_type("target_hosts has no length")),
+    }
+}
+fn target_truth(config: &Config) -> bool {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return true;
+    }
+    match &config.targets {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64() != Some(0.),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(values) => !values.is_empty(),
+    }
+}
+fn target_matches(config: &Config, host: &str) -> Result<bool> {
+    if config.target_timestamps.value_at(&[]).is_some() {
+        return Err(target_type("target_hosts is not iterable"));
+    }
+    match &config.targets {
+        Value::String(value) => Ok(value
+            .chars()
+            .any(|pattern| host_matches(host, pattern.encode_utf8(&mut [0; 4])))),
+        Value::Object(values) => {
+            for pattern in values.keys() {
+                if config.target_timestamps.key_at(&[pattern]).is_some() {
+                    return Err(target_attribute());
+                }
+                if host_matches(host, pattern) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        Value::Array(values) => {
+            for (index, pattern) in values.iter().enumerate() {
+                if config
+                    .target_timestamps
+                    .value_at(&[&index.to_string()])
+                    .is_some()
+                {
+                    return Err(target_attribute());
+                }
+                let pattern = pattern.as_str().ok_or_else(target_attribute)?;
+                if host_matches(host, pattern) {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        _ => Err(target_type("target_hosts is not iterable")),
+    }
+}
+// Assignment and hash commit precede the source's diagnostic length access.
+// Failed diagnostics retain the new targets/hash; there is no rollback.
+fn install_targets(
+    config: &mut Config,
+    targets: Value,
+    timestamps: TimestampPaths,
+    hash: Value,
+) -> Result<()> {
+    config.targets = targets;
+    config.target_timestamps = timestamps;
+    config.last_hash = hash;
+    if target_truth(config) {
+        target_count(config)?;
+    }
+    Ok(())
+}
+fn configure_declarations(
+    config: &mut Config,
+    section: Option<&Map<String, Value>>,
+    options: Options,
+) {
+    config.inject = section
+        .and_then(|section| section.get("inject_declared"))
+        .and_then(Value::as_bool)
+        .unwrap_or(options.inject_declared);
+    config.ttl_max = section
+        .and_then(|section| section.get("declared_ttl_max"))
+        .and_then(positive_integer)
+        .or_else(|| positive_integer(&options.declared_ttl))
+        .unwrap_or(Number::from(900));
+    config.options = options;
+}
+fn positive_integer(value: &Value) -> Option<Number> {
+    let number = value.as_number()?;
+    let integer = number.to_string().parse::<BigInt>().ok()?;
+    (integer > BigInt::from(0)).then(|| number.clone())
+}
+fn smaller(left: Number, right: &Number) -> Number {
+    if left.to_string().parse::<BigInt>().unwrap() < right.to_string().parse::<BigInt>().unwrap() {
+        left
+    } else {
+        right.clone()
+    }
+}
+fn check_time(now: f64) -> Result<()> {
+    if now.is_finite() {
+        Ok(())
+    } else {
+        Err(invalid("monotonic time must be finite"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Declaration {
+    pub context: Context,
+    pub expires_in: Number,
+}
+#[derive(Debug, Clone)]
+struct Record {
+    agent: String,
+    context: Context,
+    expires_at: f64,
+}
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct Stats {
+    pub active: bool,
+    pub target_hosts: usize,
+    pub checks_total: u64,
+    pub allowed_total: u64,
+    pub blocked_total: u64,
+    pub warned_total: u64,
+    pub declared_injections_total: u64,
+    pub declared_active: usize,
+}
+#[derive(Default)]
+struct State {
+    config: Config,
+    declarations: BTreeMap<String, Record>,
+    stats: Stats,
+}
+fn lookup(state: &mut State, identity: &TrustedIdentity, now: f64) -> Result<Option<Declaration>> {
+    let Some(record) = state.declarations.get(identity.source()) else {
+        return Ok(None);
+    };
+    if record.agent != identity.agent || now >= record.expires_at {
+        state.declarations.remove(identity.source());
+        return Ok(None);
+    }
+    let remaining = record.expires_at - now;
+    // Python evaluates math.ceil before max(1, ...). A stored infinite expiry
+    // is legal; only the reached remaining-TTL conversion raises Overflow.
+    if remaining.is_nan() {
+        return Err(invalid("cannot convert float NaN to integer"));
+    }
+    if remaining.is_infinite() {
+        return Err(overflow("cannot convert float infinity to integer"));
+    }
+    let seconds = remaining.ceil().max(1.);
+    Ok(Some(Declaration {
+        context: record.context.clone(),
+        expires_in: format!("{seconds:.0}")
+            .parse()
+            .expect("finite nonnegative integral float"),
+    }))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSource {
+    Header,
+    Declared,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AppliedContext {
+    pub context: Context,
+    pub source: ContextSource,
+    pub trusted_agent: Option<String>,
+    pub test_agent_match: Option<bool>,
+    /// Merge these entries into the existing metadata. Python retains optional
+    /// fields from prior metadata when the current context does not name them.
+    pub live_metadata: Map<String, Value>,
+}
+fn apply_context(
+    context: Context,
+    source: ContextSource,
+    trusted_agent: Option<&str>,
+) -> AppliedContext {
+    let mut live = Map::new();
+    live.insert(
+        "test_context".into(),
+        Value::Object(context.fields().clone()),
+    );
+    live.insert("test_context_source".into(), json!(source));
+    for (key, metadata) in CANONICAL_KEYS.into_iter().zip(LIVE_KEYS) {
+        if let Some(value) = context.get(key) {
+            live.insert(metadata.into(), json!(value));
+        }
+    }
+    let test_agent_match = trusted_agent.map(|agent| Some(agent) == context.get("agent"));
+    if let Some(value) = test_agent_match {
+        live.insert("test_agent_match".into(), json!(value));
+    }
+    AppliedContext {
+        context,
+        source,
+        trusted_agent: trusted_agent.map(str::to_owned),
+        test_agent_match,
+        live_metadata: live,
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    MissingContext,
+    MalformedContext,
+    MalformedOptionalContext,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RequestOutcome {
+    PriorResponse,
+    NotTargetHost,
+    Applied {
+        applied: AppliedContext,
+    },
+    Warn {
+        reason: Reason,
+        resolved_agent: Option<String>,
+    },
+    Block {
+        reason: Reason,
+        resolved_agent: Option<String>,
+        status: u16,
+        body: Value,
+    },
+}
+impl RequestOutcome {
+    /// The declared-fallback path resolves trusted identity even if its record
+    /// is missing or expired. The caller stamps this value before audit/recording;
+    /// explicit headers never change trusted identity.
+    pub fn trusted_identity_update(&self) -> Option<&str> {
+        match self {
+            Self::Applied { applied } if applied.source == ContextSource::Declared => {
+                applied.trusted_agent.as_deref()
+            }
+            Self::Warn { resolved_agent, .. } | Self::Block { resolved_agent, .. } => {
+                resolved_agent.as_deref()
+            }
+            _ => None,
+        }
+    }
+}
+pub struct Request<'a> {
+    pub host: &'a str,
+    pub prior_response: bool,
+    pub identity: Option<&'a TrustedIdentity>,
+    /// Existing trusted flow.metadata["agent"], used by the explicit-header path.
+    pub metadata_agent: Option<&'a str>,
+}
+pub type Header = (String, Vec<u8>);
+
+/// A selected head decision with no request counters applied yet. The result is
+/// available for immediate head blocking; other metadata must wait for begin at
+/// request EOM. Dropping this non-cloneable permit records no counters.
+#[must_use = "begin at request EOM, or discard on cancellation/early response"]
+pub struct PreparedRequest {
+    owner: TestContext,
+    result: Result<RequestOutcome>,
+    checked: bool,
+}
+impl PreparedRequest {
+    pub fn result(&self) -> &Result<RequestOutcome> {
+        &self.result
+    }
+    /// Enter the source request hook's check/application point. A selected
+    /// post-check error still increments checks; no metadata or audit is emitted
+    /// by this core. Head Block may begin immediately for the no-egress repair.
+    pub fn begin(self) -> Result<RequestApplication> {
+        if self.checked {
+            self.owner.lock()?.stats.checks_total += 1;
+        }
+        Ok(RequestApplication {
+            owner: self.owner,
+            result: self.result,
+        })
+    }
+}
+/// Begun request effects. Publish selected metadata before strict body decoding;
+/// finish only after the source audit submission point returns successfully.
+/// Dropping after decoding/an escaped callback error retains checks alone.
+#[must_use = "finish after successful request audit, or discard on failure"]
+pub struct RequestApplication {
+    owner: TestContext,
+    result: Result<RequestOutcome>,
+}
+impl RequestApplication {
+    pub fn result(&self) -> &Result<RequestOutcome> {
+        &self.result
+    }
+    /// Consume the sole terminal counter permit. Ordinary swallowed audit-sink
+    /// failure is still a successful submission boundary; callers retain their
+    /// evidence-failure signal separately. This never rereads policy/context.
+    pub fn finish(self) -> Result<RequestOutcome> {
+        match &self.result {
+            Ok(RequestOutcome::Applied { applied }) => {
+                let mut state = self.owner.lock()?;
+                state.stats.allowed_total += 1;
+                if applied.source == ContextSource::Declared {
+                    state.stats.declared_injections_total += 1;
+                }
+            }
+            Ok(RequestOutcome::Warn { .. }) => self.owner.lock()?.stats.warned_total += 1,
+            Ok(RequestOutcome::Block { .. }) => self.owner.lock()?.stats.blocked_total += 1,
+            _ => {}
+        }
+        self.result
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct TestContext {
+    state: Arc<Mutex<State>>,
+}
+impl TestContext {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {
+        self.state.lock().map_err(|_| {
+            ContextError(
+                "test-context state lock poisoned".into(),
+                ContextErrorKind::Poisoned,
+            )
+        })
+    }
+    /// None represents unavailable policy configuration: retain existing targets,
+    /// and use option fallbacks for declaration settings. No new enable flag.
+    ///
+    /// This is the request-side refresh. Targets and their hash are assigned in
+    /// source order, before the logging length check. A returned configuration
+    /// error can therefore leave new state installed; it is not a rollback.
+    /// JSON strings iterate characters, objects iterate keys, and arrays retain
+    /// invalid entries until matching reaches them. Parser-owned temporal values
+    /// must use request_current; this JSON facade has no temporal provenance.
+    pub fn configure(&self, sensor: Option<&Value>, options: Options) -> Result<()> {
+        let mut state = self.lock()?;
+        let config = &mut state.config;
+        configure_declarations(
+            config,
+            sensor
+                .and_then(|sensor| sensor.pointer("/addons/test_context"))
+                .and_then(Value::as_object),
+            options,
+        );
+        if let Some(sensor) = sensor {
+            let hash = sensor.get("policy_hash").cloned().unwrap_or(json!(""));
+            if hash != config.last_hash {
+                let section = sensor.pointer("/addons/test_context");
+                if section.is_some_and(|section| !section.is_object()) {
+                    return Err(invalid("test_context config must be an object"));
+                }
+                let targets = section
+                    .and_then(|section| section.get("target_hosts"))
+                    .cloned()
+                    .unwrap_or(json!([]));
+                install_targets(config, targets, TimestampPaths::default(), hash)?;
+            }
+        }
+        Ok(())
+    }
+    /// Refresh the independent declaration fallbacks without refreshing target
+    /// hosts/hash or rewriting existing declarations. The declaration API reads
+    /// current TTL directly; it does not call the source request reload hook.
+    pub fn configure_declarations(&self, sensor: Option<&Value>, options: Options) -> Result<()> {
+        self.configure_declaration_section(
+            sensor
+                .and_then(|sensor| sensor.pointer("/addons/test_context"))
+                .and_then(Value::as_object),
+            options,
+        )
+    }
+    /// Apply only the source's direct declaration fields from a borrowed section.
+    /// Exact bool/positive-integer checks deliberately ignore non-scalar values;
+    /// canonical date objects and datetime strings therefore use option fallbacks.
+    pub(crate) fn configure_declaration_section(
+        &self,
+        section: Option<&Map<String, Value>>,
+        options: Options,
+    ) -> Result<()> {
+        configure_declarations(&mut self.lock()?.config, section, options);
+        Ok(())
+    }
+    pub fn set_declaration(
+        &self,
+        identity: &TrustedIdentity,
+        context: Context,
+        ttl: Option<&Value>,
+        now: f64,
+    ) -> Result<Number> {
+        let mut state = self.lock()?;
+        let granted = match ttl.filter(|value| !value.is_null()) {
+            None => state.config.ttl_max.clone(),
+            Some(value) => smaller(
+                positive_integer(value).ok_or_else(|| invalid("ttl must be a positive integer"))?,
+                &state.config.ttl_max,
+            ),
+        };
+        let seconds = granted
+            .to_string()
+            .parse::<f64>()
+            .map_err(|_| overflow("integer too large to convert to float"))?;
+        if seconds.is_infinite() {
+            return Err(overflow("integer too large to convert to float"));
+        }
+        // Python float addition can yield infinity without raising. Conversion
+        // of the integer above, rather than this sum, is the failure boundary.
+        let expires_at = now + seconds;
+        state.declarations.insert(
+            identity.source.clone(),
+            Record {
+                agent: identity.agent.clone(),
+                context,
+                expires_at,
+            },
+        );
+        Ok(granted)
+    }
+    pub fn get_declaration(
+        &self,
+        identity: &TrustedIdentity,
+        now: f64,
+    ) -> Result<Option<Declaration>> {
+        let mut state = self.lock()?;
+        lookup(&mut state, identity, now)
+    }
+    pub fn clear_declaration(&self, identity: &TrustedIdentity) -> Result<bool> {
+        Ok(self
+            .lock()?
+            .declarations
+            .remove(identity.source())
+            .is_some())
+    }
+    pub fn stats(&self, now: f64) -> Result<Stats> {
+        let mut state = self.lock()?;
+        let target_hosts = target_count(&state.config)?;
+        state.declarations.retain(|_, record| {
+            !matches!(
+                now.partial_cmp(&record.expires_at),
+                Some(std::cmp::Ordering::Equal | std::cmp::Ordering::Greater)
+            )
+        });
+        let mut stats = state.stats.clone();
+        stats.target_hosts = target_hosts;
+        stats.active = stats.target_hosts > 0;
+        stats.declared_active = state.declarations.len();
+        Ok(stats)
+    }
+    /// Synchronous successful-hook facade retained for core callers. Transport
+    /// uses prepare_request and begins/finishes at its actual effect boundaries.
+    pub fn request(
+        &self,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<RequestOutcome> {
+        self.prepare_request(request, headers, now)?
+            .begin()?
+            .finish()
+    }
+    /// Synchronous current-policy facade; uses the same selection and phase
+    /// machinery as transport, without changing existing core callers.
+    pub fn request_current(
+        &self,
+        policy: Option<&Policy>,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<RequestOutcome> {
+        self.prepare_request_current(policy, request, headers, now)?
+            .begin()?
+            .finish()
+    }
+    /// Select from already configured targets without incrementing counters.
+    /// Strip all reserved header occurrences after successful target matching;
+    /// prior-response bypass and reached target errors leave them untouched.
+    pub fn prepare_request(
+        &self,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
+        if request.prior_response {
+            return Ok(self.prepared(false, Ok(RequestOutcome::PriorResponse)));
+        }
+        check_time(now)?;
+        self.prepare_inner(&mut *self.lock()?, request, headers, now)
+    }
+    /// Refresh canonical targets and select under the existing state lock. None
+    /// retains prior targets. Declaration defaults/expiries are not refreshed.
+    /// Existing lookup eviction still applies during head selection; the chosen
+    /// context/error is retained and never looked up again at begin or finish.
+    pub fn prepare_request_current(
+        &self,
+        policy: Option<&Policy>,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
+        if request.prior_response {
+            return Ok(self.prepared(false, Ok(RequestOutcome::PriorResponse)));
+        }
+        let mut state = self.lock()?;
+        if let Some(policy) = policy {
+            let view = policy.test_context_targets();
+            let hash = Value::String(view.hash().to_owned());
+            if hash != state.config.last_hash {
+                install_targets(
+                    &mut state.config,
+                    view.value().cloned().unwrap_or(json!([])),
+                    view.projected_timestamps(),
+                    hash,
+                )?;
+            }
+        }
+        check_time(now)?;
+        self.prepare_inner(&mut state, request, headers, now)
+    }
+    fn prepared(&self, checked: bool, result: Result<RequestOutcome>) -> PreparedRequest {
+        PreparedRequest {
+            owner: self.clone(),
+            result,
+            checked,
+        }
+    }
+    fn prepare_inner(
+        &self,
+        state: &mut State,
+        request: Request<'_>,
+        headers: &mut Vec<Header>,
+        now: f64,
+    ) -> Result<PreparedRequest> {
+        let target = target_matches(&state.config, request.host)?;
+        let mut value = Vec::new();
+        let mut seen = false;
+        for (_, part) in headers
+            .iter()
+            .filter(|(name, _)| name.eq_ignore_ascii_case(HEADER))
+        {
+            if seen {
+                value.extend_from_slice(b", ");
+            }
+            seen = true;
+            value.extend_from_slice(part);
+        }
+        headers.retain(|(name, _)| !name.eq_ignore_ascii_case(HEADER));
+        if !target && value.is_empty() {
+            return Ok(self.prepared(false, Ok(RequestOutcome::NotTargetHost)));
+        }
+        // Keep errors reached after this boundary inside the permit: beginning
+        // application must still count the check (for example lookup Overflow).
+        Ok(self.prepared(
+            true,
+            Self::select_context(state, request, &value, target, now),
+        ))
+    }
+    fn select_context(
+        state: &mut State,
+        request: Request<'_>,
+        value: &[u8],
+        target: bool,
+        now: f64,
+    ) -> Result<RequestOutcome> {
+        let context = std::str::from_utf8(value)
+            .ok()
+            .and_then(|value| Context::parse(value).ok());
+        let resolved_agent = (target && value.is_empty() && state.config.inject)
+            .then(|| request.identity.map(|identity| identity.agent.clone()))
+            .flatten();
+        let applied = if let Some(context) = context {
+            Some(apply_context(
+                context,
+                ContextSource::Header,
+                request.metadata_agent,
+            ))
+        } else if !target {
+            return Ok(RequestOutcome::Warn {
+                reason: Reason::MalformedOptionalContext,
+                resolved_agent: None,
+            });
+        } else if value.is_empty() && state.config.inject {
+            match request.identity {
+                Some(identity) => lookup(state, identity, now)?.map(|record| {
+                    apply_context(
+                        record.context,
+                        ContextSource::Declared,
+                        Some(identity.agent()),
+                    )
+                }),
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(applied) = applied {
+            return Ok(RequestOutcome::Applied { applied });
+        }
+        let reason = if value.is_empty() {
+            Reason::MissingContext
+        } else {
+            Reason::MalformedContext
+        };
+        if state.config.options.block {
+            let body = json!({"error":"Test context required","type":reason,"destination":request.host,"action":"add_header","header":HEADER,
+                "format":"run=<run_id>;agent=<agent_id>;test=<test_id>","example":format!("{HEADER}: run=sec1;agent=idor;test=IDOR-003"),
+                "reflection":format!("Add {HEADER} header to link this request to your test activity.")});
+            Ok(RequestOutcome::Block {
+                reason,
+                resolved_agent,
+                status: 428,
+                body,
+            })
+        } else {
+            Ok(RequestOutcome::Warn {
+                reason,
+                resolved_agent,
+            })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ApiOutcome {
+    pub status: u16,
+    pub body: Value,
+    pub audit: Option<ApiAudit>,
+}
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ApiAudit {
+    pub event: &'static str,
+    pub source_id: String,
+    pub trusted_agent: String,
+    pub details: Value,
+}
+fn response(status: u16, body: Value) -> ApiOutcome {
+    ApiOutcome {
+        status,
+        body,
+        audit: None,
+    }
+}
+// Borrow only fields the inner API consumes. No full-document conversion,
+// recursion, numeric coercion or traversal of ignored fields is needed.
+#[derive(Clone, Copy)]
+enum ApiInput<'a> {
+    Json(&'a Value),
+    Typed(&'a crate::circuits::CircuitValue),
+}
+impl<'a> ApiInput<'a> {
+    fn is_object(self) -> bool {
+        match self {
+            Self::Json(value) => value.is_object(),
+            Self::Typed(crate::circuits::CircuitValue::Other(value)) => value.is_object(),
+            Self::Typed(value) => value.as_object().is_some(),
+        }
+    }
+    fn get(self, key: &str) -> Option<Self> {
+        match self {
+            Self::Json(value) => value.get(key).map(Self::Json),
+            Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                value.get(key).map(Self::Json)
+            }
+            Self::Typed(value) => value.as_object()?.get(key).map(Self::Typed),
+        }
+    }
+    fn string(self) -> Option<&'a str> {
+        match self {
+            Self::Json(value) | Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                value.as_str()
+            }
+            _ => None,
+        }
+    }
+    fn is_null(self) -> bool {
+        matches!(
+            self,
+            Self::Json(Value::Null)
+                | Self::Typed(crate::circuits::CircuitValue::Other(Value::Null))
+        )
+    }
+    fn positive_integer(self) -> Option<Number> {
+        match self {
+            Self::Json(value) | Self::Typed(crate::circuits::CircuitValue::Other(value)) => {
+                positive_integer(value)
+            }
+            Self::Typed(crate::circuits::CircuitValue::Integer(value))
+                if *value > BigInt::from(0) =>
+            {
+                Some(value.to_string().parse().expect("integer JSON"))
+            }
+            _ => None,
+        }
+    }
+}
+/// Check the source's inner-handler prerequisites before an outer caller reads
+/// body bytes. This has no store/clock/body access and emits no audit intent.
+pub fn api_current_preflight(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+) -> Option<ApiOutcome> {
+    if agent.is_none_or(|agent| agent.is_empty() || matches!(agent, "unknown" | "default")) {
+        return Some(response(403, json!({"error":"Could not identify agent"})));
+    }
+    if source.is_none_or(|source| source.is_empty() || source == "unknown") {
+        return Some(response(403, json!({"error":"Could not identify source"})));
+    }
+    if owner.is_none() {
+        return Some(response(
+            503,
+            json!({"error":"test-context addon not loaded"}),
+        ));
+    }
+    None
+}
+/// Inner /api/test-context/current handler. The outer Agent API must authenticate
+/// its bearer before calling. Body source_id/agent fields are never authority.
+pub fn api_current(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+    method: &str,
+    body: Option<&Value>,
+    now: f64,
+) -> Result<ApiOutcome> {
+    api_current_input(owner, source, agent, method, body.map(ApiInput::Json), now)
+}
+/// Equivalent inner handler for the existing Python-compatible typed JSON body.
+/// Only context/ttl are consumed. Unused nonfinite values and nested containers
+/// are not converted or copied. Body decoding remains the caller's responsibility.
+pub fn api_current_typed(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+    method: &str,
+    body: Option<&crate::circuits::CircuitValue>,
+    now: f64,
+) -> Result<ApiOutcome> {
+    api_current_input(owner, source, agent, method, body.map(ApiInput::Typed), now)
+}
+fn api_current_input(
+    owner: Option<&TestContext>,
+    source: Option<&str>,
+    agent: Option<&str>,
+    method: &str,
+    body: Option<ApiInput<'_>>,
+    now: f64,
+) -> Result<ApiOutcome> {
+    if let Some(outcome) = api_current_preflight(owner, source, agent) {
+        return Ok(outcome);
+    }
+    let source = source.expect("source checked by preflight");
+    let agent = agent.expect("agent checked by preflight");
+    let owner = owner.expect("owner checked by preflight");
+    let identity = TrustedIdentity::new(source, agent)?;
+    match method {
+        "GET" => Ok(response(
+            200,
+            match owner.get_declaration(&identity, now)? {
+                Some(record) => {
+                    json!({"agent":agent,"context":record.context,"expires_in":record.expires_in})
+                }
+                None => json!({"agent":agent,"context":null}),
+            },
+        )),
+        "DELETE" => {
+            let existed = owner.clear_declaration(&identity)?;
+            Ok(ApiOutcome {
+                status: 200,
+                body: json!({"status":"cleared"}),
+                audit: Some(ApiAudit {
+                    event: "security.test_context_cleared",
+                    source_id: source.into(),
+                    trusted_agent: agent.into(),
+                    details: json!({"source_id":source,"trusted_agent":agent,"had_declaration":existed}),
+                }),
+            })
+        }
+        "POST" => {
+            let Some(body) = body.filter(|body| body.is_object()) else {
+                return Ok(response(400, json!({"error":"Invalid JSON body"})));
+            };
+            let Some(context) = body.get("context").and_then(ApiInput::string) else {
+                return Ok(response(
+                    400,
+                    json!({"error":"context must be a string","format":"run=<run_id>;agent=<agent_id>;test=<test_id>"}),
+                ));
+            };
+            let context = match Context::parse(context) {
+                Ok(context) => context,
+                Err(error) => {
+                    return Ok(response(
+                        400,
+                        json!({"error":"Invalid test context","detail":error.to_string(),"format":"run=<run_id>;agent=<agent_id>;test=<test_id>","example":"run=sec1;agent=idor;test=IDOR-003;intent=probe;expect=blocked"}),
+                    ));
+                }
+            };
+            let ttl = match body.get("ttl").filter(|value| !value.is_null()) {
+                None => None,
+                Some(value) => {
+                    let Some(value) = value.positive_integer() else {
+                        return Ok(response(
+                            400,
+                            json!({"error":"ttl must be a positive integer (seconds)"}),
+                        ));
+                    };
+                    Some(Value::Number(value))
+                }
+            };
+            let granted = match owner.set_declaration(&identity, context.clone(), ttl.as_ref(), now)
+            {
+                Ok(granted) => granted,
+                Err(error) if error.kind() == ContextErrorKind::Value => {
+                    return Ok(response(400, json!({"error":error.to_string()})));
+                }
+                Err(error) => return Err(error),
+            };
+            let details = json!({"source_id":source,"trusted_agent":agent,"declared_agent":context.get("agent"),"test_agent_match":context.get("agent")==Some(agent),"context":context,"requested_ttl":ttl,"granted_ttl":granted});
+            Ok(ApiOutcome {
+                status: 200,
+                body: json!({"status":"set","agent":agent,"expires_in":granted,"context":context}),
+                audit: Some(ApiAudit {
+                    event: "security.test_context_declared",
+                    source_id: source.into(),
+                    trusted_agent: agent.into(),
+                    details,
+                }),
+            })
+        }
+        _ => Ok(response(
+            405,
+            json!({"error":"Method Not Allowed","allowed":["GET","POST","DELETE"]}),
+        )),
+    }
+}
+
+pub fn capture_body(content: &[u8], max_head: usize, tail_lines: usize) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+    let head = String::from_utf8_lossy(&content[..content.len().min(max_head)]);
+    if content.len() <= max_head {
+        return head.into_owned();
+    }
+    let tail = String::from_utf8_lossy(&content[content.len().saturating_sub(8192)..]);
+    let lines: Vec<_> = tail.trim_end_matches('\n').split('\n').collect();
+    let tail = if lines.len() > tail_lines {
+        lines[if tail_lines == 0 {
+            0
+        } else {
+            lines.len() - tail_lines
+        }..]
+            .join("\n")
+    } else {
+        String::new()
+    };
+    format!(
+        "{head}\n...[truncated, {} bytes total]...\n{tail}",
+        content.len()
+    )
+}
+
+#[cfg(test)]
+#[path = "test_context/target_tests.rs"]
+mod target_tests;
+
+#[cfg(test)]
+#[path = "test_context/declaration_tests.rs"]
+mod declaration_tests;
+
+#[cfg(test)]
+#[path = "test_context/settings_tests.rs"]
+mod settings_tests;
+
+#[cfg(test)]
+#[path = "test_context/typed_target_tests.rs"]
+mod typed_target_tests;
+
+#[cfg(test)]
+#[path = "test_context/phase_tests.rs"]
+mod phase_tests;

@@ -11,6 +11,7 @@ import yaml
 # Environment variable names for path overrides (useful for testing and custom setups)
 _CONFIG_DIR_ENV = "SAFEYOLO_CONFIG_DIR"
 _LOGS_DIR_ENV = "SAFEYOLO_LOGS_DIR"
+DEFAULT_NATIVE_CONFIG = "data/native.json"
 
 
 def _get_config_dir_path() -> Path:
@@ -41,6 +42,10 @@ DEFAULT_CONFIG = {
         "upstream_proxy": "",
         # Empty means derive a stable token from this instance's coord ID.
         "via_token": "",
+        # The current package selects native Rust. Historical comparison and
+        # explicit rollback select a pinned prior package instead.
+        "backend": "rust",
+        "rust_config": DEFAULT_NATIVE_CONFIG,
     },
     "modes": {
         "credential_guard": "block",
@@ -51,6 +56,9 @@ DEFAULT_CONFIG = {
         # "auto" sizes from a local host display when one is detectable and
         # otherwise falls back to SafeYolo's generic 1280x800 geometry.
         "size": "auto",
+        # The retained operator presenter can use a fixed host loopback port
+        # when the host limits which ports its process may bind.
+        "present_host_port": 0,
     },
     "notifications": {
         "method": "none",
@@ -144,6 +152,11 @@ def get_data_dir() -> Path:
     return get_config_dir() / "data"
 
 
+def command_centre_tailnet_status_file() -> Path:
+    """Get the status file for this host's Command Centre Tailnet share."""
+    return get_data_dir() / "command-centre-tailnet-status.json"
+
+
 def get_agents_dir() -> Path:
     """Get path to agents directory."""
     return get_config_dir() / "agents"
@@ -152,6 +165,11 @@ def get_agents_dir() -> Path:
 def get_policy_toml_path() -> Path:
     """Get path to policy.toml (single policy file)."""
     return get_config_dir() / "policy.toml"
+
+
+def get_native_config_path() -> Path:
+    """Get the generated native Rust configuration for this instance."""
+    return get_data_dir() / "native.json"
 
 
 def get_admin_token_path() -> Path:
@@ -195,6 +213,17 @@ def get_desktop_size(explicit: str | None = None) -> str:
     return size
 
 
+def get_desktop_present_host_port() -> int:
+    """Return the host loopback port for operator-approved desktop previews."""
+    desktop = load_config().get("desktop", {})
+    if not isinstance(desktop, dict):
+        raise ValueError("desktop config must be a mapping")
+    port = desktop.get("present_host_port", 0)
+    if type(port) is not int or not 0 <= port <= 65535:
+        raise ValueError("desktop.present_host_port must be 0 or a port from 1 to 65535")
+    return port
+
+
 def save_config(config: dict[str, Any]) -> None:
     """Atomically save configuration to config.yaml."""
     config_path = get_config_path()
@@ -228,8 +257,8 @@ def _deep_merge(base: dict, override: dict) -> None:
             base[key] = value
 
 
-def get_admin_token() -> str | None:
-    """Get admin API token from file or environment."""
+def get_admin_token(*, token_path: Path | None = None) -> str | None:
+    """Get the environment override or the token from the selected file."""
     import os
 
     # Check environment first
@@ -238,7 +267,8 @@ def get_admin_token() -> str | None:
         return token
 
     # Check file
-    token_path = get_admin_token_path()
+    if token_path is None:
+        token_path = get_admin_token_path()
     if token_path.exists():
         return token_path.read_text().strip()
 
@@ -279,15 +309,14 @@ def get_agent_command_supervisor_state_path(name: str) -> Path:
 def get_bridge_sockets_dir() -> Path:
     """Per-agent UDS directories (`<ip>_<agent>/proxy.sock`) live here.
 
-    Owned by mitmproxy's `UnixInstance` (one per agent). Kept as
-    `get_bridge_sockets_dir` rather than renamed to preserve the
-    existing layout for agents carried across the refactor.
+    The native Rust proxy owns the bound sockets. The helper name keeps
+    the existing directory layout for agents carried across the cutover.
     """
     return get_data_dir() / "sockets"
 
 
 def get_proxy_pid_path() -> Path:
-    """Get path to the mitmproxy PID file."""
+    """Get the native proxy PID record path."""
     return get_data_dir() / "proxy.pid"
 
 

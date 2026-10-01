@@ -13,6 +13,8 @@ import logging
 import ssl
 import threading
 import time
+import uuid
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import TCPServer
@@ -20,7 +22,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from handlers import DEFAULT_HANDLER, HANDLERS, Response
-from models import CapturedRequest
+from models import CapturedRequest, ConnectionObservation
 
 log = logging.getLogger("sinkhole")
 logging.basicConfig(
@@ -66,6 +68,7 @@ class SSLSafeThreadingHTTPServer(NoReverseDNSThreadingHTTPServer):
 # Thread-safe request storage
 _lock = threading.Lock()
 _captured_requests: list[CapturedRequest] = []
+_connections: list[ConnectionObservation] = []
 
 
 def capture_request(req: CapturedRequest):
@@ -93,14 +96,67 @@ def get_requests(
     return results
 
 
+def accept_connection(client_ip: str) -> str:
+    """Record a socket accepted by the sinkhole and return its identity."""
+    observation = ConnectionObservation(
+        connection_id=uuid.uuid4().hex,
+        client_ip=client_ip,
+        accepted_at=time.time(),
+    )
+    with _lock:
+        _connections.append(observation)
+    return observation.connection_id
+
+
+def mark_connection_request(connection_id: str):
+    """Link a parsed request to its accepted connection."""
+    with _lock:
+        for observation in _connections:
+            if observation.connection_id == connection_id:
+                observation.request_state = "received"
+                observation.request_count += 1
+                return
+
+
+def close_connection(connection_id: str):
+    """Record closure and classify whether the connection carried a request."""
+    with _lock:
+        for observation in _connections:
+            if observation.connection_id == connection_id:
+                observation.state = "closed"
+                observation.closed_at = time.time()
+                if observation.request_count == 0:
+                    observation.request_state = "no_request"
+                return
+
+
+def get_connections() -> list[ConnectionObservation]:
+    """Return connection observations in accept order."""
+    with _lock:
+        return [replace(observation) for observation in _connections]
+
+
 def clear_requests():
     """Clear all captured requests."""
     with _lock:
         _captured_requests.clear()
+        _connections.clear()
 
 
 class SinkholeHandler(BaseHTTPRequestHandler):
     """HTTP handler that routes to per-host handlers and captures requests."""
+
+    def setup(self):
+        super().setup()
+        self.connection_id = accept_connection(self.client_address[0])
+
+    def finish(self):
+        try:
+            super().finish()
+        finally:
+            connection_id = getattr(self, "connection_id", None)
+            if connection_id is not None:
+                close_connection(connection_id)
 
     def log_message(self, format, *args):
         log.debug(f"{self.client_address[0]} - {format % args}")
@@ -113,18 +169,59 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             host = host.split(":")[0]
         return host
 
-    def _read_body(self) -> bytes:
+    def _read_body(self) -> tuple[bytes, int | None, bool, bool]:
         """Read request body."""
+        transfer_encoding = self.headers.get("Transfer-Encoding", "")
+        if "chunked" in {part.strip().lower() for part in transfer_encoding.split(",")}:
+            body = bytearray()
+            while True:
+                size_line = self.rfile.readline()
+                if not size_line:
+                    return bytes(body), None, False, True
+                try:
+                    size = int(size_line.split(b";", 1)[0].strip(), 16)
+                except ValueError:
+                    return bytes(body), None, False, False
+                if size == 0:
+                    trailer_line = self.rfile.readline()
+                    while trailer_line and trailer_line not in (b"\r\n", b"\n"):
+                        trailer_line = self.rfile.readline()
+                    if not trailer_line:
+                        return bytes(body), None, False, True
+                    return bytes(body), None, True, False
+                chunk = self.rfile.read(size)
+                body.extend(chunk)
+                if len(chunk) != size:
+                    return bytes(body), None, False, True
+                if self.rfile.read(2) != b"\r\n":
+                    return bytes(body), None, False, False
+
         content_length = int(self.headers.get("Content-Length", 0))
-        if content_length:
-            return self.rfile.read(content_length)
-        return b""
+        body = self.rfile.read(content_length) if content_length else b""
+        return body, content_length, len(body) == content_length, len(body) != content_length
+
+    def _raw_request_target(self) -> str:
+        """Return the request-target before BaseHTTPRequestHandler normalizes it."""
+        raw_requestline = getattr(self, "raw_requestline", b"")
+        if raw_requestline:
+            requestline = raw_requestline.decode("iso-8859-1").rstrip("\r\n")
+            words = requestline.split()
+            if len(words) >= 2:
+                return words[1]
+        return self.path
 
     def _capture_and_route(self, method: str):
         """Capture request and route to handler."""
         host = self._get_host()
-        body = self._read_body()
+        body, body_expected_bytes, body_complete, connection_closed = self._read_body()
+        raw_target = self._raw_request_target()
+        raw_query = raw_target.split("?", 1)[1] if "?" in raw_target else None
+        # Keep the historical normalized views based on ``self.path``.  In
+        # particular, BaseHTTPRequestHandler reduces a leading ``//`` to one
+        # slash before exposing it here, while raw_target remains lossless.
         parsed = urlparse(self.path)
+        raw_items = getattr(self.headers, "raw_items", None)
+        header_items = list(raw_items()) if raw_items else list(self.headers.items())
 
         # Capture the request
         captured = CapturedRequest(
@@ -136,13 +233,30 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             body=body,
             client_ip=self.client_address[0],
             query_params=parse_qs(parsed.query),
+            raw_target=raw_target,
+            raw_query=raw_query,
+            header_items=header_items,
+            body_expected_bytes=body_expected_bytes,
+            body_received_bytes=len(body),
+            body_complete=body_complete,
+            connection_accepted=True,
+            connection_closed=connection_closed,
+            connection_id=self.connection_id,
         )
+        mark_connection_request(self.connection_id)
         capture_request(captured)
         log.info(f"Captured: {method} {host}{self.path}")
 
+        p2_fixture = getattr(self.server, "p2_fixture", None)
+        if p2_fixture is not None and host == "failing.test" and p2_fixture.handle(self):
+            return
+
         # Route to handler
         handler = HANDLERS.get(host, DEFAULT_HANDLER)
-        response: Response = handler.handle(captured)
+        # HEAD describes the GET representation, while the observer keeps the
+        # actual request method. Some handlers include that method in the body.
+        response_request = replace(captured, method="GET") if method == "HEAD" else captured
+        response: Response = handler.handle(response_request)
 
         # Send response
         self.send_response(response.status)
@@ -150,7 +264,8 @@ class SinkholeHandler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.send_header("Content-Length", str(len(response.body)))
         self.end_headers()
-        self.wfile.write(response.body)
+        if method != "HEAD":
+            self.wfile.write(response.body)
 
     def do_GET(self):
         self._capture_and_route("GET")
@@ -191,9 +306,16 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        p2_fixture = getattr(self.server, "p2_fixture", None)
 
         if parsed.path == "/health":
             self._send_json({"status": "ok"})
+        elif parsed.path == "/p2/health" and p2_fixture is not None:
+            self._send_json({"status": "ready", "directory": str(p2_fixture.directory)})
+        elif parsed.path.startswith("/p2/state/") and p2_fixture is not None:
+            self._send_json(p2_fixture.state(parsed.path.removeprefix("/p2/state/")))
+        elif parsed.path.startswith("/p4/state/") and p2_fixture is not None:
+            self._send_json(p2_fixture.p4_state(parsed.path.removeprefix("/p4/state/")))
         elif parsed.path == "/requests":
             host = query.get("host", [None])[0]
             since = query.get("since", [None])[0]
@@ -205,13 +327,29 @@ class ControlAPIHandler(BaseHTTPRequestHandler):
             host = query.get("host", [None])[0]
             requests = get_requests(host=host)
             self._send_json({"count": len(requests)})
+        elif parsed.path == "/connections":
+            connections = get_connections()
+            self._send_json({"count": len(connections), "connections": [c.to_dict() for c in connections]})
         else:
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self):
+        p2_fixture = getattr(self.server, "p2_fixture", None)
         if self.path == "/requests/clear":
             clear_requests()
             self._send_json({"status": "cleared"})
+        elif self.path.startswith("/p2/release/") and p2_fixture is not None:
+            marker = self.path.removeprefix("/p2/release/")
+            if p2_fixture.release(marker):
+                self._send_json({"status": "released"})
+            else:
+                self._send_json({"error": "stream not found"}, 404)
+        elif self.path.startswith("/p4/release/") and p2_fixture is not None:
+            marker = self.path.removeprefix("/p4/release/")
+            if p2_fixture.release_p4(marker):
+                self._send_json({"status": "released"})
+            else:
+                self._send_json({"error": "held HTTP request not found"}, 404)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -244,6 +382,7 @@ def run_servers(
     cert_path: str = "/certs/sinkhole.crt",
     key_path: str = "/certs/sinkhole.key",
     extra_https_certs: Optional[list] = None,
+    p2_directory: Path | None = None,
 ):
     """Run sinkhole (HTTP + HTTPS) and control API servers.
 
@@ -262,6 +401,12 @@ def run_servers(
     """
     # HTTP sinkhole (for non-TLS tests or fallback)
     http_server = SSLSafeThreadingHTTPServer(("0.0.0.0", http_port), SinkholeHandler)
+    p2_fixture = None
+    if p2_directory is not None:
+        from p2_fixture import P2Fixture
+
+        p2_fixture = P2Fixture(p2_directory)
+    http_server.p2_fixture = p2_fixture
     log.info(f"Sinkhole HTTP server listening on port {http_port}")
 
     # HTTPS sinkhole (for proxied HTTPS requests - ground truth testing)
@@ -269,6 +414,7 @@ def run_servers(
     ssl_context = load_tls_cert(Path(cert_path), Path(key_path))
     if ssl_context:
         https_server = SSLSafeThreadingHTTPServer(("0.0.0.0", https_port), SinkholeHandler)
+        https_server.p2_fixture = p2_fixture
         https_server.socket = ssl_context.wrap_socket(https_server.socket, server_side=True)
         log.info(f"Sinkhole HTTPS server listening on port {https_port}")
 
@@ -288,6 +434,7 @@ def run_servers(
 
     # Control API (threading for concurrent health checks during tests)
     control = NoReverseDNSThreadingHTTPServer(("0.0.0.0", control_port), ControlAPIHandler)
+    control.p2_fixture = p2_fixture
     log.info(f"Control API listening on port {control_port}")
 
     # Run servers in background threads
@@ -329,6 +476,7 @@ if __name__ == "__main__":
     parser.add_argument("--control-port", type=int, default=9999, help="Port for control API")
     parser.add_argument("--cert", type=str, default="/certs/sinkhole.crt", help="TLS certificate path")
     parser.add_argument("--key", type=str, default="/certs/sinkhole.key", help="TLS key path")
+    parser.add_argument("--p2-dir", type=Path, help="Enable finite installed guest P2 fixtures in this directory")
     parser.add_argument(
         "--extra-cert", action="append", default=[],
         metavar="NAME:PORT:CERT:KEY",
@@ -351,4 +499,5 @@ if __name__ == "__main__":
         cert_path=args.cert,
         key_path=args.key,
         extra_https_certs=extras,
+        p2_directory=args.p2_dir,
     )

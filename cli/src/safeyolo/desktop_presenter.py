@@ -12,8 +12,8 @@ from .agents_store import (
     reserve_agent_tailnet_port_change,
     restore_agent_tailnet_port,
 )
-from .config import get_desktop_size
-from .platform import get_platform
+from .config import get_desktop_present_host_port, get_desktop_size
+from .platform import AgentPlatform, get_platform
 from .preview import (
     ManagedPreview,
     PreviewConfig,
@@ -43,6 +43,17 @@ class DesktopPresentation:
             "unlock_code": self.unlock_code,
             "reused": self.reused,
         }
+
+
+def _stop_failed_guest_desktop(platform: AgentPlatform, agent: str) -> None:
+    cleanup_exit = platform.exec_in_sandbox(
+        agent,
+        "/safeyolo/guest-desktop stop >/dev/null 2>&1",
+        user="agent",
+        interactive=False,
+    )
+    if cleanup_exit != 0:
+        raise DesktopPresentationError(f"Agent desktop cleanup failed (exit {cleanup_exit})")
 
 
 class DesktopPresenter:
@@ -75,6 +86,8 @@ class DesktopPresenter:
 
             tailnet_port: int | None = None
             previous_tailnet_port: int | None = None
+            desktop_was_ready = False
+            desktop_start_attempted = False
             if os.environ.get("SAFEYOLO_COMMAND_CENTRE_SHARE", "local") == "tailnet":
                 tailnet_port, previous_tailnet_port = reserve_agent_tailnet_port_change(agent)
 
@@ -84,9 +97,20 @@ class DesktopPresenter:
                     raise DesktopPresentationError(f"Agent '{agent}' is not running")
 
                 preferred_size = get_desktop_size()
+                present_host_port = get_desktop_present_host_port()
                 geometry, _detected = resolve_vnc_geometry(preferred_size)
                 stage_guest_desktop_launcher(agent, preferred_size=preferred_size)
+                desktop_was_ready = (
+                    platform.exec_in_sandbox(
+                        agent,
+                        "/safeyolo/guest-desktop status >/dev/null 2>&1",
+                        user="agent",
+                        interactive=False,
+                    )
+                    == 0
+                )
                 command = f"SAFEYOLO_PREVIEW_MANAGED=1 /safeyolo/guest-desktop start {shlex.quote(geometry)}"
+                desktop_start_attempted = True
                 exit_code = platform.exec_in_sandbox(
                     agent,
                     command,
@@ -100,19 +124,26 @@ class DesktopPresenter:
                     PreviewConfig(
                         agent=agent,
                         guest_port=6080,
-                        host_port=0,
+                        host_port=present_host_port,
                         display_path="/vnc.html#autoconnect=true&resize=remote",
                         tailnet_port=tailnet_port,
                     ),
                     platform,
                 )
             except Exception:
-                if tailnet_port is not None and tailnet_port != previous_tailnet_port:
-                    restore_agent_tailnet_port(
-                        agent,
-                        tailnet_port,
-                        previous_tailnet_port,
-                    )
+                try:
+                    # A newly started guest desktop has no managed preview to
+                    # own it if this request fails. Never stop one that was
+                    # already running before this presentation attempt.
+                    if desktop_start_attempted and not desktop_was_ready:
+                        _stop_failed_guest_desktop(platform, agent)
+                finally:
+                    if tailnet_port is not None and tailnet_port != previous_tailnet_port:
+                        restore_agent_tailnet_port(
+                            agent,
+                            tailnet_port,
+                            previous_tailnet_port,
+                        )
                 raise
             self._sessions[agent_id] = session
             return DesktopPresentation(

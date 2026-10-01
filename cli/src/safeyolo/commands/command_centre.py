@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 
 import typer
 from rich.console import Console
 
-from ..config import load_config, save_config
-from ..proxy import command_centre_tailnet_status_file
+from ..config import command_centre_tailnet_status_file, load_config, save_config
 from ..tailnet import read_tailnet_state
 
 console = Console()
@@ -52,12 +50,6 @@ def enable(
     ),
 ) -> None:
     """Enable Command Centre locally or over an explicit Tailnet share."""
-    if importlib.util.find_spec("websockets") is None:
-        console.print(
-            "[red]The Command Centre event-server dependency is missing.[/red]\nReinstall SafeYolo from this checkout."
-        )
-        raise typer.Exit(1)
-
     share = share.strip().lower()
     if share not in {"local", "tailnet"}:
         console.print("[red]--share must be local or tailnet.[/red]")

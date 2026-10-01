@@ -2,10 +2,10 @@
 
 Each platform implements the same interface:
   - macOS: Virtualization.framework microVM; egress via vsock → host UDS
-           → mitmproxy's per-agent UnixInstance (structural isolation,
+           → per-agent Rust proxy listener (structural isolation,
            no kernel firewall)
   - Linux: gVisor (runsc) container in a loopback-only netns; egress via
-           bind-mounted UDS → mitmproxy's per-agent UnixInstance;
+           bind-mounted UDS → per-agent Rust proxy listener;
            `--host-uds=open` + no external netif block any stray
            outbound traffic
 

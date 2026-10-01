@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .config import get_config_dir, get_data_dir
+from .runtime_identity import process_start_token
 
 SESSION_NAME = "safeyolo-traffic"
 
@@ -76,12 +77,74 @@ def session_process_alive(tmux: Path | None = None) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "0"
 
 
+def session_process_id(tmux: Path | None = None) -> int | None:
+    """Read the live pane's PID; exec-owned commands use it as their process ID."""
+    command = [
+        *_base_command(tmux),
+        "display-message",
+        "-p",
+        "-t",
+        f"{SESSION_NAME}:0.0",
+        "#{pane_dead} #{pane_pid}",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        # A failed tmux query cannot establish ownership of a live process.
+        return None
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
+    if len(fields) != 2 or fields[0] != "0":
+        return None
+    return _parse_pane_pid(fields[1])
+
+
+def interrupt_session_process(process_id: int, start_token: str, tmux: Path | None = None) -> None:
+    """Interrupt the identified pane through its tmux server when direct signals are denied."""
+    base = _base_command(tmux)
+    result = subprocess.run(
+        [*base, "display-message", "-p", "-t", f"{SESSION_NAME}:0.0",
+         "#{pane_dead} #{pane_pid} #{pane_id}"],
+        capture_output=True, text=True, check=True,
+    )
+    fields = result.stdout.split()
+    if (
+        len(fields) != 3 or fields[0] != "0"
+        or _parse_pane_pid(fields[1]) != process_id
+        or not fields[2].startswith("%")
+        or not fields[2][1:].isascii() or not fields[2][1:].isdecimal()
+        or process_start_token(process_id) != start_token
+    ):
+        raise RuntimeError("Cannot verify Rust proxy tmux pane identity; lifetime state has been retained")
+    # The server still has the sandbox identity that launched this pane. A
+    # terminal interrupt reaches that pane even if a later SSH session cannot
+    # signal its process directly under the macOS seatbelt.
+    subprocess.run(
+        [*base, "send-keys", "-t", fields[2], "C-c"],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def _parse_pane_pid(raw_pid: str) -> int | None:
+    if not raw_pid.isascii() or not raw_pid.isdecimal():
+        return None
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        # Decimal output can still exceed Python's integer-conversion limit.
+        return None
+    return pid if pid > 1 else None
+
+
 def start_session(
     command: list[str],
     tmux: Path | None = None,
     env: dict[str, str] | None = None,
-) -> None:
-    """Create the private server and launch one command in its PTY."""
+    exec_command: bool = False,
+    cwd: Path | None = None,
+) -> int | None:
+    """Launch one command in the PTY, optionally replacing its pane shell."""
     data_dir = get_data_dir()
     data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     data_dir.chmod(0o700)
@@ -121,7 +184,8 @@ def start_session(
                 "-k",
                 "-t",
                 f"{SESSION_NAME}:0.0",
-                shlex.join(command),
+                *(["-c", str(cwd)] if cwd is not None else []),
+                ("exec " if exec_command else "") + shlex.join(command),
             ],
             check=True,
             capture_output=True,
@@ -131,6 +195,19 @@ def start_session(
     except Exception:
         stop_session(tmux)
         raise
+    if exec_command:
+        # Observation failures after successful respawn do not own cleanup.
+        # The launcher retains pending lifetime state when the PID is unknown.
+        try:
+            result = subprocess.run(
+                [*base, "display-message", "-p", "-t", f"{SESSION_NAME}:0.0", "#{pane_pid}"],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            return None
+        if result.returncode == 0:
+            return _parse_pane_pid(result.stdout.strip())
+    return None
 
 
 def capture_session(tmux: Path | None = None) -> str:

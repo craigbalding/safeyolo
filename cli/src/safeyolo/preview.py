@@ -1419,6 +1419,7 @@ def start_managed_preview(config: PreviewConfig, platform) -> ManagedPreview:
     host, port = server.server_address
     display_path = normalize_display_path(config.display_path)
     tailnet_session: TailnetServeSession | None = None
+    session: ManagedPreview | None = None
     try:
         if config.tailnet_port is not None:
             tailnet_session = start_tailnet_serve(port, config.tailnet_port)
@@ -1452,12 +1453,17 @@ def start_managed_preview(config: PreviewConfig, platform) -> ManagedPreview:
         )
         return session
     except Exception:
-        if tailnet_session:
-            try:
-                tailnet_session.close()
-            except Exception:  # noqa: BLE001 - preserve startup error
-                log.exception("preview tailnet close failed after startup error")
-        server.server_close()
+        if session is not None:
+            # A failure after session.start (including failed open auditing)
+            # must stop the live server thread, not only close its socket.
+            session.close()
+        else:
+            if tailnet_session:
+                try:
+                    tailnet_session.close()
+                except Exception:  # noqa: BLE001 - preserve startup error
+                    log.exception("preview tailnet close failed after startup error")
+            server.server_close()
         raise
 
 

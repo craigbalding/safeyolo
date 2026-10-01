@@ -369,6 +369,86 @@ def test_nested_factory_conversation_concurrency_and_restart(attention_env, tmp_
     asyncio.run(scenario())
 
 
+def test_factory_agent_rooms_survive_restart_and_reject_observer_send(attention_env):
+    """Retain a factory handoff and keep private rooms receive-only for observers."""
+    from safeyolo.commands.factory import _ensure_factory_rooms
+
+    roles = {
+        "relay": "ag-11111111111111111111111111111111",
+        "forge": "ag-22222222222222222222222222222222",
+        "lens": "ag-33333333333333333333333333333333",
+    }
+    observer = "ag-44444444444444444444444444444444"
+    for name, agent_id in (*roles.items(), ("qa", observer)):
+        save_agent(name, {"agent_id": agent_id})
+    _ensure_factory_rooms("factory-boundary", iter(roles))
+    for name in roles:
+        _grant(f"{name}-agent", "agent", observer, ["receive"])
+
+    async def scenario() -> None:
+        target = "https://example.test/issues/1"
+        review_target = "https://example.test/pull/2/commits/" + "a" * 40
+        task = f"TASK target={target} assignee=forge"
+        review = f"REVIEW_READY target={review_target}"
+        ready = f"READY target={review_target}"
+        done = f"DONE target={target}"
+
+        async def send(name: str, room: str, body: str, notify="none"):
+            return await api.send(
+                room,
+                "agent",
+                roles[name],
+                body,
+                sender_agent_name=name,
+                notify=notify,
+            )
+
+        task_sent = await send("relay", "factory-boundary", task, ["forge"])
+        forge_page = await api.wait_for_attention(
+            roles["forge"], since_sequence=0, timeout_seconds=0.1
+        )
+        assert _edge_for(forge_page, task_sent["envelope"]["msg_id"]) is not None
+        await send("relay", "relay-agent", task)
+        review_sent = await send("forge", "factory-boundary", review, ["lens"])
+        lens_page = await api.wait_for_attention(
+            roles["lens"], since_sequence=0, timeout_seconds=0.1
+        )
+        assert _edge_for(lens_page, review_sent["envelope"]["msg_id"]) is not None
+        await send("forge", "forge-agent", review)
+
+        nr.stop_server()
+        nats_client.reset_for_tests()
+        nr.start_server(ready_timeout=8.0)
+
+        retained = await api.read_room("forge-agent", "agent", observer)
+        assert [item["body"] for item in retained["messages"]] == [review]
+        with pytest.raises(api.GrantError, match="permission 'send' denied"):
+            await api.send("forge-agent", "agent", observer, "observer must not steer")
+
+        ready_sent = await send("lens", "factory-boundary", ready, ["forge"])
+        forge_page = await api.wait_for_attention(
+            roles["forge"], since_sequence=forge_page["next_cursor"], timeout_seconds=0.1
+        )
+        assert _edge_for(forge_page, ready_sent["envelope"]["msg_id"]) is not None
+        await send("lens", "lens-agent", ready)
+        done_sent = await send("forge", "factory-boundary", done, ["relay"])
+        relay_page = await api.wait_for_attention(
+            roles["relay"], since_sequence=0, timeout_seconds=0.1
+        )
+        assert _edge_for(relay_page, done_sent["envelope"]["msg_id"]) is not None
+        await send("forge", "forge-agent", done)
+
+        for name, expected in (
+            ("relay", [task]),
+            ("forge", [review, done]),
+            ("lens", [ready]),
+        ):
+            history = await api.read_room(f"{name}-agent", "agent", observer)
+            assert [item["body"] for item in history["messages"]] == expected
+
+    asyncio.run(scenario())
+
+
 def test_targeting_visibility_feed_and_compatibility(attention_env):
     async def scenario() -> None:
         await _room("one", operator=True)

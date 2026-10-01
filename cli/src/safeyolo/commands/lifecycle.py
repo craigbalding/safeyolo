@@ -6,6 +6,7 @@ import secrets
 import shutil
 import subprocess
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +25,10 @@ from ..config import (
     save_config,
 )
 from ..proxy import (
+    check_running_backend,
     is_proxy_running,
+    prior_python_proxy_running,
+    selected_backend,
     start_proxy,
     stop_proxy,
     wait_for_healthy,
@@ -32,7 +36,6 @@ from ..proxy import (
 from ..timing import enter as _profile_enter
 from ..timing import profiled_command
 from ..vm import check_guest_images, missing_guest_images
-from .proxy import _web_tailnet_runtime
 
 console = Console()
 
@@ -114,6 +117,7 @@ def _command_supervisor_status(name: str) -> str:
 # Path to bundled templates in package
 POLICY_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "policy.toml"
 ADDONS_TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "addons.yaml"
+LISTS_TEMPLATE_DIR = Path(__file__).parent.parent / "templates" / "lists"
 
 
 _CoordStartOutcome = Literal["healthy", "repaired", "degraded"]
@@ -255,7 +259,8 @@ def _bootstrap_config(config_dir: Path) -> None:
     agent_token_path.chmod(0o600)
 
     # Write config.yaml
-    config = DEFAULT_CONFIG.copy()
+    config = deepcopy(DEFAULT_CONFIG)
+    config["proxy"]["rust_config"] = str((config_dir / "data" / "native.json").absolute())
     save_config(config)
 
     # Copy policy.toml
@@ -267,195 +272,87 @@ def _bootstrap_config(config_dir: Path) -> None:
     addons_path = config_dir / "addons.yaml"
     if ADDONS_TEMPLATE_PATH.exists():
         shutil.copy(ADDONS_TEMPLATE_PATH, addons_path)
+    if LISTS_TEMPLATE_DIR.is_dir():
+        shutil.copytree(LISTS_TEMPLATE_DIR, config_dir / "lists", dirs_exist_ok=True)
 
 
 @profiled_command("proxy start")
 def start(  # DOC: cli/README.md, docs/DEVELOPERS.md
-    wait: bool = typer.Option(
-        True,
-        "--wait/--no-wait",
-        help="Wait for healthy status",
-    ),
-    dev: bool = typer.Option(
-        False,
-        "--dev",
-        help="Run from checkout source; code changes require a proxy restart",
-    ),
-    test: bool = typer.Option(
-        False,
-        "--test",
-        help="Enable test mode (sinkhole routing, test CA -- reads test section from config.yaml)",
-    ),
-    flow_cache: int | None = typer.Option(
-        None,
-        "--flow-cache",
-        min=1,
-        help="Maximum flows retained in the shared live traffic view",
-    ),
-    flow_cache_bytes: int | None = typer.Option(
-        None,
-        "--flow-cache-bytes",
-        min=1,
-        help="Maximum combined body bytes retained in the shared live traffic view",
-    ),
-    profile: bool = typer.Option(
-        False,
-        "--profile",
-        help="Profile lifecycle phases and write a JSONL timing artifact",
-    ),
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for healthy status"),
+    profile: bool = typer.Option(False, "--profile", help="Profile lifecycle phases and write a JSONL timing artifact"),
 ) -> None:
-    """Start the SafeYolo host proxy."""
+    """Start the installed native SafeYolo proxy."""
+    del profile
     _profile_enter("configuration bootstrap and preflight")
-    first_run = False
-
-    # Check config exists, bootstrap if needed
-    config_dir = find_config_dir()
-    if not config_dir:
-        first_run = True
+    first_run = find_config_dir() is None
+    if first_run:
         config_dir = get_config_dir()
         console.print("[bold]First run setup...[/bold]")
         _bootstrap_config(config_dir)
         console.print(f"  Created {config_dir}")
-
-    # Refuse to start against an empty/malformed policy (#336). Symmetric with
-    # the guard in `agent add`; catches the case where a previous init only
-    # wrote [agents.X] blocks without host rules, leaving the compiled
-    # permissions list empty. The first-run path above just seeded from the
-    # template so we don't need to check it there.
-    if not first_run:
-        from .policy import assert_policy_has_permissions
-
-        assert_policy_has_permissions(config_dir)
-
-    # Check if already running
-    if is_proxy_running():
+    try:
+        config = load_config()
+        selected_backend(config)
+        running = check_running_backend()
+    except (OSError, ValueError, RuntimeError) as err:
+        console.print(f"[red]Cannot start proxy:[/red] {escape(str(err))}")
+        raise typer.Exit(1) from err
+    if running:
         console.print("[yellow]SafeYolo proxy is already running.[/yellow]")
-        _profile_enter("coord message plane reconciliation")
-        coord_outcome = _start_coord_best_effort()
-        if coord_outcome == "healthy":
+        coord = _start_coord_best_effort()
+        if coord == "healthy":
             console.print("[dim]Coord dependency is already healthy.[/dim]")
-        elif coord_outcome == "repaired":
+        elif coord == "repaired":
             console.print("[green]Coord dependency repaired.[/green]")
         else:
             console.print(
-                "[yellow]SafeYolo proxy remains running, but Coord is degraded.[/yellow]"
-            )
-            console.print(
-                "[dim]Run safeyolo doctor and inspect "
-                f"{get_logs_dir() / 'safeyolo.jsonl'}.[/dim]"
+                "[yellow]SafeYolo proxy remains running, but Coord is degraded.[/yellow] "
+                "Run safeyolo doctor for details."
             )
         raise typer.Exit(0)
 
-    # Check guest images (platform-aware).
-    if not check_guest_images():
-        missing = missing_guest_images()
-        console.print(f"[yellow]Guest images missing: {', '.join(missing)}[/yellow]")
-        console.print("Build and install them with: [bold]safeyolo build[/bold]")
-
-    config = load_config()
-    proxy_port = config["proxy"]["port"]
-    admin_port = config["proxy"]["admin_port"]
-
-    # Enable test mode if --test flag passed
-    if test:
-        test_cfg = config.get("test", {})
-        if not test_cfg.get("sinkhole_router"):
-            console.print("[red]--test requires test.sinkhole_router in config.yaml[/red]")
-            console.print("  Add to ~/.safeyolo/config.yaml:")
-            console.print("    test:")
-            console.print("      enabled: true")
-            console.print("      sinkhole_router: /path/to/sinkhole_router.py")
-            console.print("      ca_cert: /path/to/test-ca.crt")
-            raise typer.Exit(1)
-        config["test"]["enabled"] = True
-        save_config(config)
-        console.print("[bold]Starting SafeYolo (test mode)...[/bold]")
-    else:
-        # Ensure test mode is off
-        if config.get("test", {}).get("enabled"):
-            config["test"]["enabled"] = False
-            save_config(config)
-        console.print("[bold]Starting SafeYolo...[/bold]")
-
-    # Start host mitmproxy
-    _profile_enter("proxy process launch and readiness")
+    console.print("[bold]Starting SafeYolo (Rust proxy)...[/bold]")
+    _profile_enter("native process launch and readiness")
     try:
-        start_proxy(
-            proxy_port=proxy_port,
-            admin_port=admin_port,
-            flow_cache=flow_cache,
-            flow_cache_bytes=flow_cache_bytes,
-            dev=dev,
-        )
+        start_proxy()
     except Exception as err:
         write_event(
-            "ops.proxy_start_failed",
-            kind="ops",
-            severity="high",
-            summary="SafeYolo proxy failed during launch",
-            addon="cli.lifecycle",
+            "ops.proxy_start_failed", kind="ops", severity="high",
+            summary="SafeYolo proxy failed during launch", addon="cli.lifecycle",
             details={"phase": "launch", "error_type": type(err).__name__, "error": str(err)},
         )
-        console.print(f"[red]Failed to start proxy:[/red] {err}")
-        raise typer.Exit(1)
-
-    # No per-agent firewall setup -- egress isolation is structural (sandbox
-    # has no external interface). The bridge daemon and per-agent UDS
-    # listeners are the moving parts; they come up with the proxy itself.
+        console.print(f"[red]Failed to start proxy:[/red] {escape(str(err))}")
+        raise typer.Exit(1) from err
 
     if wait:
-        _profile_enter("admin API health check")
+        _profile_enter("native readiness and health check")
         console.print("Waiting for healthy status...", end=" ")
-        if wait_for_healthy(timeout=30, admin_port=admin_port):
-            console.print("[green]ready![/green]")
-        else:
+        if not wait_for_healthy(timeout=30):
             console.print("[red]failed[/red]")
             stop_proxy()
             write_event(
-                "ops.proxy_start_failed",
-                kind="ops",
-                severity="high",
+                "ops.proxy_start_failed", kind="ops", severity="high",
                 summary="SafeYolo proxy did not remain healthy during startup",
-                addon="cli.lifecycle",
-                details={"phase": "health", "admin_port": admin_port},
+                addon="cli.lifecycle", details={"phase": "health", "backend": "rust"},
             )
-            console.print(
-                "[red]SafeYolo did not remain healthy during startup.[/red]\n"
-                f"Check: {get_logs_dir() / 'mitmproxy.log'}"
-            )
+            console.print("[red]SafeYolo did not remain healthy during startup.[/red]\n"
+                          "Check the native launch diagnostics and proxy.rust_config JSON paths.")
             raise typer.Exit(1)
+        console.print("[green]ready![/green]")
 
-    # Coord message plane (nats-server). Best-effort: a failure here
-    # marks coord degraded, it does NOT block the proxy from being
-    # usable. `safeyolo status` and `safeyolo doctor` surface the
-    # degraded state so the operator can investigate.
     _profile_enter("coord message plane (nats-server) start")
     _start_coord_best_effort()
+    from .. import rust_proxy
 
-    # Show connection info
-    _profile_enter("render startup result")
-    web_tailnet = _web_tailnet_runtime(config)
-    tailnet_line = ""
-    if web_tailnet.get("enabled") and web_tailnet.get("url"):
-        tailnet_line = f"\nWebMITM: {web_tailnet['url']}"
-    if first_run:
-        console.print(
-            Panel(
-                f"[green]SafeYolo is running![/green]\n\n"
-                f"Proxy: http://localhost:{proxy_port}{tailnet_line}\n\n"
-                f"Next:\n"
-                f"  safeyolo agent add myproject . --host-script contrib/claude-host-setup.sh   [dim]# Add and run an agent[/dim]\n",
-                title="Ready",
-            )
-        )
-    else:
-        console.print(
-            Panel(
-                f"[green]SafeYolo is running[/green]\n\n"
-                f"Proxy: http://localhost:{proxy_port}{tailnet_line}",
-                title="Started",
-            )
-        )
+    process = rust_proxy.read_process()
+    executable = process.binary_path if process else "unknown"
+    console.print(Panel(
+        f"[green]SafeYolo Rust proxy is running.[/green]\n\n"
+        f"Executable: {escape(executable)}\n"
+        f"Native configuration: {escape(str(config['proxy'].get('rust_config', 'proxy.rust_config')))}"
+        + ("\nNext: safeyolo agent add myproject ." if first_run else ""),
+        title="Started",
+    ))
 
 
 @profiled_command("proxy stop")
@@ -477,7 +374,14 @@ def stop(  # DOC: cli/README.md
         return
 
     if not is_proxy_running():
+        if prior_python_proxy_running():
+            console.print(
+                "[red]A prior Python proxy is running.[/red] "
+                "Stop it with the pinned prior package before using this CLI."
+            )
+            raise typer.Exit(1)
         # Also reap a dead remain-on-exit traffic pane left by a failed start.
+        _stop_coord_best_effort()
         stop_proxy()
         console.print("[yellow]SafeYolo proxy is not running.[/yellow]")
         raise typer.Exit(0)
@@ -495,7 +399,7 @@ def stop(  # DOC: cli/README.md
     # Stop proxy only -- agents and bridge sockets stay intact. Agents get
     # "connection refused" on the proxy port but remain alive and accessible
     # via SSH. When the proxy restarts, connectivity resumes.
-    _profile_enter("terminate proxy traffic master")
+    _profile_enter("terminate native proxy")
     stop_proxy()
     _profile_enter("render stop result")
     console.print("[green]Stopped.[/green]")
@@ -518,6 +422,13 @@ def stop(  # DOC: cli/README.md
 
 def stop_all() -> None:
     """Stop SafeYolo proxy, all agents, and tear down networking."""
+
+    if not is_proxy_running() and prior_python_proxy_running():
+        console.print(
+            "[red]A prior Python proxy is running.[/red] "
+            "Stop it with the pinned prior package before using this CLI."
+        )
+        raise typer.Exit(1)
 
     console.print("[bold]Stopping SafeYolo...[/bold]")
 
@@ -572,9 +483,7 @@ def stop_all() -> None:
     # optional infra on top of the proxy, so tear it down first).
     _stop_coord_best_effort()
 
-    # Stop proxy. Per-agent UDS listeners are owned by mitmproxy
-    # (UnixInstance per agent) — stopping the process tears them down
-    # along with their socket files. No separate bridge process to stop.
+    # Stop proxy. Its native per-agent UDS listeners close with the process.
     if is_proxy_running():
         stop_proxy()
 
@@ -583,8 +492,6 @@ def stop_all() -> None:
 
 def status() -> None:
     """Show SafeYolo status and statistics."""
-    from ..api import APIError
-
     config_dir = find_config_dir()
     if not config_dir:
         console.print(
@@ -592,9 +499,14 @@ def status() -> None:
         )
         raise typer.Exit(1)
 
-    config = load_config()
-
     if not is_proxy_running():
+        if prior_python_proxy_running():
+            console.print(Panel(
+                "[yellow]A prior Python proxy is running.[/yellow]\n\n"
+                "Use the pinned prior package to inspect or stop it before starting Rust.",
+                title="Status",
+            ))
+            raise typer.Exit(1)
         console.print(
             Panel(
                 "[yellow]SafeYolo is not running[/yellow]\n\nRun [bold]safeyolo start[/bold] to start the proxy.",
@@ -609,24 +521,24 @@ def status() -> None:
     table.add_column("Value")
 
     table.add_row("Proxy", "[green]running[/green]")
-    table.add_row("Proxy Port", str(config["proxy"]["port"]))
-    table.add_row("Admin Port", str(config["proxy"]["admin_port"]))
-    web_tailnet = _web_tailnet_runtime(config)
-    if web_tailnet.get("enabled"):
-        state = str(web_tailnet.get("state", "unknown"))
-        style = "green" if state == "healthy" else "yellow"
-        value = f"[{style}]{state}[/{style}]"
-        if web_tailnet.get("url"):
-            value += f" · {web_tailnet['url']}"
-        table.add_row("WebMITM Tailnet", value)
-    else:
-        table.add_row("WebMITM Tailnet", "disabled")
 
-    # Guest images
-    if check_guest_images():
-        table.add_row("Guest Images", "[green]available[/green]")
+    from .. import rust_proxy
+
+    native = rust_proxy.read_process()
+    if native is None:
+        raise RuntimeError("Native proxy is running without a lifetime record")
+    ready = rust_proxy.readiness(native)
+    table.add_row("Backend", "Rust")
+    table.add_row("Executable", escape(native.binary_path or "unknown"))
+    table.add_row("PID", str(native.pid))
+    table.add_row("Readiness", "[green]ready[/green]" if ready else "[yellow]not ready[/yellow]")
+    table.add_row("Readiness File", escape(native.readiness_file))
+    if ready and ready.get("admin_port") is not None:
+        table.add_row("Admin Port", str(ready["admin_port"]))
+    elif native.admin_port is None:
+        table.add_row("Admin Port", "not configured")
     else:
-        table.add_row("Guest Images", "[yellow]missing[/yellow]")
+        table.add_row("Admin Port", f"{native.admin_port} (configured; not ready)")
 
     # Coord message plane. Degraded / not-started here means the coord
     # API will 503; the proxy stays fine. See `safeyolo doctor` for
@@ -659,56 +571,10 @@ def status() -> None:
                 "[dim](coord API will 503; run `safeyolo doctor`)[/dim]",
             )
 
-    # Host firewall row removed -- egress isolation is structural (agent
-    # sandbox has no external interface; the only path out is a per-agent
-    # UDS). iptables on Linux is a belt-and-braces guard, not the primary
-    # control, and doesn't warrant a dashboard row.
-
-    # Try to get stats from API
-    try:
-        api = get_api()
-        stats = api.stats()
-
-        cg = stats.get("credential-guard", {})
-        if cg:
-            table.add_row("", "")
-            table.add_row("Credentials Blocked", str(cg.get("violations_total", 0)))
-            table.add_row("Rules Loaded", str(cg.get("rules_count", 0)))
-
-        pending = api.pending_approvals()
-        if pending:
-            table.add_row("Pending Approvals", f"[yellow]{len(pending)}[/yellow]")
-            table.add_row("", "[dim]Run: safeyolo watch[/dim]")
-
-    except APIError:
-        table.add_row("", "")
-        table.add_row("API", "[yellow]unavailable[/yellow]")
-
     console.print(table)
 
-    # Show modes
-    try:
-        api = get_api()
-        modes = api.get_modes().get("modes", {})
-
-        mode_table = Table(title="Addon Modes", show_header=True)
-        mode_table.add_column("Addon")
-        mode_table.add_column("Mode")
-
-        for addon, mode in modes.items():
-            style = "red bold" if mode == "block" else "yellow"
-            mode_table.add_row(addon, f"[{style}]{mode}[/{style}]")
-
-        console.print()
-        console.print(mode_table)
-
-    except APIError:
-        # Proxy may be down or unreachable -- status view still shows the
-        # rest of the system; mode table simply isn't rendered.
-        pass
-
     # Running agents. The displayed IP is the agent's attribution address --
-    # what mitmproxy sees as the request source and what service_discovery
+    # what the native listener uses as the trusted request source and what service_discovery
     # maps back to the name for audit/policy. agent_map.json is the source
     # of truth on both UDS/vsock platforms.
     import json as _json
@@ -946,20 +812,31 @@ def _install_guest_artifacts(out_dir: Path, share_dir: Path) -> None:
         console.print("  Installed rootfs-tree")
 
 
-def build() -> None:  # DOC: docs/DEVELOPERS.md
+def build(  # DOC: docs/DEVELOPERS.md
+    source_checkout: Path | None = typer.Option(
+        None,
+        "--source-checkout",
+        help="Checkout containing guest/build-all.sh (needed for an installed CLI run outside the checkout).",
+    ),
+) -> None:
     """Build platform-specific guest artifacts.
 
     Linux builds an unpacked rootfs tree. macOS builds a kernel, initramfs,
     and ext4 rootfs image through Lima. Output is installed in
     ~/.safeyolo/share/.
     """
-    # Find build script
-    repo_root = Path(__file__).resolve().parents[4]
-    build_script = repo_root / "guest" / "build-all.sh"
+    package_checkout = Path(__file__).resolve().parents[4]
+    if source_checkout is not None:
+        checkout = source_checkout.expanduser().resolve()
+    elif (package_checkout / "guest" / "build-all.sh").is_file():
+        checkout = package_checkout
+    else:
+        checkout = Path.cwd().resolve()
+    build_script = checkout / "guest" / "build-all.sh"
 
-    if not build_script.exists():
-        console.print("[red]Cannot find guest/build-all.sh[/red]")
-        console.print("Run from the SafeYolo repo checkout.")
+    if not build_script.is_file():
+        console.print(f"[red]Cannot find guest/build-all.sh in {checkout}[/red]")
+        console.print("Run from a SafeYolo checkout or pass --source-checkout PATH.")
         raise typer.Exit(1)
 
     storage_failures = _preflight_linux_build_storage(build_script)
@@ -967,7 +844,7 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
         _print_linux_build_storage_failure(storage_failures)
         raise typer.Exit(1)
 
-    console.print("[bold]Building guest artifacts...[/bold]")
+    console.print(f"[bold]Building guest artifacts from {checkout}...[/bold]")
     console.print("This takes several minutes on first build.\n")
 
     try:
@@ -978,6 +855,9 @@ def build() -> None:  # DOC: docs/DEVELOPERS.md
     except subprocess.CalledProcessError as err:
         console.print(f"[red]Build failed with exit code {err.returncode}[/red]")
         raise typer.Exit(1)
+    except OSError as err:
+        console.print(f"[red]Cannot execute {build_script}: {err}[/red]")
+        raise typer.Exit(1) from err
 
     # Install to ~/.safeyolo/share/
     share_dir = get_config_dir() / "share"

@@ -20,6 +20,7 @@ import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
+from safeyolo import rust_proxy
 from safeyolo.api import AdminAPI
 from safeyolo.cli import app
 from safeyolo.commands.agent import _store_remove_agent
@@ -33,6 +34,18 @@ def _platform() -> AgentPlatform:
 
 def _api() -> AdminAPI:
     return create_autospec(AdminAPI, instance=True, spec_set=True)
+
+
+def _native_process(config_dir: Path, *, pid: int = 4321) -> rust_proxy.RustProcess:
+    return rust_proxy.RustProcess(
+        pid=pid,
+        start_token="owned",
+        readiness_file=str(config_dir / "data" / "native-ready.json"),
+        admin_port=9090,
+        admin_token_file=str(config_dir / "data" / "admin_token"),
+        config_file=str(config_dir / "data" / "native.json"),
+        binary_path="/installed/safeyolo-proxy",
+    )
 
 
 @pytest.fixture
@@ -169,7 +182,7 @@ class TestLifecycleStart:
         """A repeated start reconciles Coord and exits without proxy work."""
         with (
             patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
+                "safeyolo.commands.lifecycle.check_running_backend",
                 return_value=True,
                 autospec=True,
             ),
@@ -192,7 +205,7 @@ class TestLifecycleStart:
         mock_coord_start.return_value = outcome
         with (
             patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
+                "safeyolo.commands.lifecycle.check_running_backend",
                 return_value=True,
                 autospec=True,
             ),
@@ -215,7 +228,7 @@ class TestLifecycleStart:
         monkeypatch.setenv("SAFEYOLO_LOGS_DIR", str(logs))
 
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
@@ -227,30 +240,28 @@ class TestLifecycleStart:
         assert "first run" in result.output.lower()
         assert cfg.exists()
 
-    def test_guest_images_missing_warns_but_continues(self, runner, config_dir):
-        """Missing guest images produce a warning but don't block start."""
+    def test_native_proxy_start_does_not_require_guest_images(
+        self, runner, config_dir
+    ):
+        """The native proxy can start before guest images are installed."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False, autospec=True,),
-            patch(
-                "safeyolo.commands.lifecycle.missing_guest_images",
-                return_value=["rootfs-erofs"],
-            autospec=True,
-            ),
-            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=False, autospec=True,) as check_images,
+            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=True, autospec=True,),
         ):
             result = runner.invoke(app, ["start"])
 
         assert result.exit_code == 0
-        assert "missing" in result.output.lower()
+        check_images.assert_not_called()
+        start_proxy.assert_called_once_with()
 
     def test_proxy_start_failure_exits_one(self, runner, config_dir):
         """If start_proxy raises, prints error and exits 1."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
-            patch("safeyolo.commands.lifecycle.start_proxy", side_effect=RuntimeError("no mitmdump"), autospec=True,),
+            patch("safeyolo.commands.lifecycle.start_proxy", side_effect=RuntimeError("native executable unavailable"), autospec=True,),
         ):
             result = runner.invoke(app, ["start", "--no-wait"])
 
@@ -260,7 +271,7 @@ class TestLifecycleStart:
     def test_wait_timeout_fails_and_cleans_up(self, runner, config_dir):
         """A proxy that does not remain healthy cannot report success."""
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", return_value=False, autospec=True,),
@@ -277,7 +288,7 @@ class TestLifecycleStart:
         """--no-wait skips the health check entirely."""
         mock_wait = create_autospec(wait_for_healthy, spec_set=True)
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
             patch("safeyolo.commands.lifecycle.wait_for_healthy", mock_wait),
@@ -287,60 +298,9 @@ class TestLifecycleStart:
         assert result.exit_code == 0
         mock_wait.assert_not_called()
 
-    def test_flow_cache_is_forwarded_to_proxy_start(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
-            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
-        ):
-            result = runner.invoke(app, ["start", "--no-wait", "--flow-cache", "4321"])
-
-        assert result.exit_code == 0
-        assert start_proxy.call_args.kwargs["flow_cache"] == 4321
-
-    def test_flow_cache_bytes_is_forwarded_to_proxy_start(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
-            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
-            patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,) as start_proxy,
-        ):
-            result = runner.invoke(
-                app,
-                ["start", "--no-wait", "--flow-cache-bytes", "987654"],
-            )
-
-        assert result.exit_code == 0
-        assert start_proxy.call_args.kwargs["flow_cache_bytes"] == 987654
-
-    def test_dev_mode_is_forwarded_to_proxy_start(self, runner, config_dir):
-        with (
-            patch(
-                "safeyolo.commands.lifecycle.is_proxy_running",
-                return_value=False,
-                autospec=True,
-            ),
-            patch(
-                "safeyolo.commands.lifecycle.check_guest_images",
-                return_value=True,
-                autospec=True,
-            ),
-            patch(
-                "safeyolo.commands.lifecycle.start_proxy", autospec=True
-            ) as start_proxy,
-        ):
-            result = runner.invoke(app, ["start", "--no-wait", "--dev"])
-
-        assert result.exit_code == 0
-        assert start_proxy.call_args.kwargs["dev"] is True
-
-    def test_non_positive_flow_cache_is_rejected(self, runner, config_dir):
-        result = runner.invoke(app, ["start", "--flow-cache", "0"])
-
-        assert result.exit_code == 2
-
     def test_profile_emits_report_and_jsonl_artifact(self, runner, config_dir):
         with (
-            patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.commands.lifecycle.check_running_backend", return_value=False, autospec=True,),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.start_proxy", autospec=True,),
         ):
@@ -473,9 +433,12 @@ class TestLifecycleStatus:
         assert "not running" in result.output.lower()
 
     def test_proxy_running_shows_table(self, runner, config_dir):
-        """Proxy running shows status table with ports and guest image status."""
+        """A verified native lifetime record supplies status identity."""
+        process = _native_process(config_dir)
         with (
             patch("safeyolo.commands.lifecycle.is_proxy_running", return_value=True, autospec=True,),
+            patch("safeyolo.rust_proxy.read_process", return_value=process, autospec=True),
+            patch("safeyolo.rust_proxy.readiness", return_value={"ready": True, "admin_port": 9090}, autospec=True),
             patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True,),
             patch("safeyolo.commands.lifecycle.get_api", autospec=True,) as mock_api_factory,
             patch("safeyolo.vm.is_vm_running", return_value=False, autospec=True,),
@@ -490,6 +453,7 @@ class TestLifecycleStatus:
 
         assert result.exit_code == 0
         assert "running" in result.output.lower()
+        assert "/installed/safeyolo-proxy" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -499,56 +463,61 @@ class TestLifecycleStatus:
 
 class TestLifecycleBuild:
 
-    def test_build_script_not_found_exits_one(self, runner, config_dir, monkeypatch):
-        """If build-all.sh doesn't exist at the expected repo-relative path, exits 1."""
-        # Point the build script path to a non-existent directory
-        fake_parents = Path("/tmp/not-a-repo")
-        with patch.object(Path, "resolve", return_value=fake_parents / "cli" / "src" / "safeyolo" / "commands" / "lifecycle.py", autospec=True,):
-            # Simpler: just patch the computed script path directly
-            pass
-
-        # The function derives the path from __file__.parents[4], so we can't
-        # easily mock Path resolution. Instead, test the failure case by mocking
-        # subprocess.run to simulate a build failure.
-        with patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "build-all.sh"), autospec=True,):
-            result = runner.invoke(app, ["build"])
-
+    def test_missing_selected_checkout_exits_one(self, runner, config_dir, tmp_path):
+        """An explicit missing source cannot fall back to another checkout."""
+        result = runner.invoke(app, ["build", "--source-checkout", str(tmp_path)])
         assert result.exit_code == 1
-        assert "failed" in result.output.lower()
+        assert "Cannot find guest/build-all.sh in" in result.output
+        assert str(tmp_path) in result.output
+        assert "--source-checkout PATH" in result.output
 
-    def test_build_copies_artifacts_to_share(self, runner, config_dir, tmp_path):
-        """Successful build copies artifacts to ~/.safeyolo/share/."""
-        # Create fake build output
-        out_dir = tmp_path / "out"
-        out_dir.mkdir()
-        (out_dir / "Image").write_bytes(b"kernel")
-        (out_dir / "initramfs.cpio.gz").write_bytes(b"initramfs")
-        (out_dir / "rootfs-base.ext4").write_bytes(b"rootfs")
+    def test_bootstrap_passes_selected_checkout_to_build(
+        self, runner, config_dir, tmp_path
+    ):
+        """The installed-lane bootstrap build uses its selected checkout."""
+        with (
+            patch("safeyolo.commands.bootstrap._needs_init", return_value=False, autospec=True),
+            patch("safeyolo.commands.bootstrap._needs_build", return_value=True, autospec=True),
+            patch("safeyolo.commands.bootstrap._needs_setup", return_value=False, autospec=True),
+            patch("safeyolo.commands.bootstrap._missing_deps", return_value=([], None), autospec=True),
+            patch("safeyolo.commands.bootstrap._platform.system", return_value="Darwin", autospec=True),
+            patch("safeyolo.commands.lifecycle.build", autospec=True) as build,
+        ):
+            result = runner.invoke(
+                app, ["bootstrap", "--source-checkout", str(tmp_path)]
+            )
 
-        # Create fake build script
-        build_script = tmp_path / "build-all.sh"
+        assert result.exit_code == 0, result.output
+        build.assert_called_once_with(source_checkout=tmp_path)
+
+    def test_installed_build_defaults_to_current_checkout(
+        self, runner, config_dir, tmp_path, monkeypatch
+    ):
+        """A wheel path uses the working checkout and its output directory."""
+        from safeyolo.commands import lifecycle
+
+        checkout = tmp_path / "checkout"
+        build_script = checkout / "guest" / "build-all.sh"
+        build_script.parent.mkdir(parents=True)
         build_script.touch()
+        monkeypatch.chdir(checkout)
+        monkeypatch.setattr(
+            lifecycle,
+            "__file__",
+            str(tmp_path / "venv/lib/python3.12/site-packages/safeyolo/commands/lifecycle.py"),
+        )
 
         with (
-            patch("subprocess.run", autospec=True,),
-            patch.object(
-                Path, "exists",
-                side_effect=lambda self=None: True,
-            autospec=True,
-            ),
+            patch("safeyolo.commands.lifecycle._preflight_linux_build_storage", return_value=[], autospec=True),
+            patch("safeyolo.commands.lifecycle.subprocess.run", autospec=True) as run,
+            patch("safeyolo.commands.lifecycle._install_guest_artifacts", autospec=True) as install,
+            patch("safeyolo.commands.lifecycle.check_guest_images", return_value=True, autospec=True),
         ):
-            # This is tricky to mock because of Path resolution from __file__
-            # Testing the artifact copy logic directly instead
-            import shutil
+            result = runner.invoke(app, ["build"])
 
-            share_dir = config_dir / "share"
-            for artifact in ["Image", "initramfs.cpio.gz", "rootfs-base.ext4"]:
-                src = out_dir / artifact
-                shutil.copy2(str(src), str(share_dir / artifact))
-
-        assert (config_dir / "share" / "Image").read_bytes() == b"kernel"
-        assert (config_dir / "share" / "initramfs.cpio.gz").read_bytes() == b"initramfs"
-        assert (config_dir / "share" / "rootfs-base.ext4").read_bytes() == b"rootfs"
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with([str(build_script)], check=True)
+        install.assert_called_once_with(build_script.parent / "out", config_dir / "share")
 
     def test_install_guest_artifacts_includes_cache_paths(self, tmp_path):
         """The installer copies the Linux cache bind manifest too."""
@@ -994,6 +963,9 @@ class TestAgentAdd:
         """add calls plat.prepare_rootfs and saves metadata (no host script)."""
         folder = tmp_path / "project"
         folder.mkdir()
+        (config_dir / "config.yaml").write_text(
+            "version: 1\nsandbox: true\nproxy:\n  port: 8180\n  admin_port: 9090\n"
+        )
 
         mock_rootfs = config_dir / "agents" / "test" / "rootfs.ext4"
         mock_platform = _platform()
@@ -1011,6 +983,8 @@ class TestAgentAdd:
         assert result.exit_code == 0
         mock_platform.prepare_rootfs.assert_called_once_with("test")
         assert "added" in result.output.lower()
+        assert "Proxy: http://127.0.0.1:8080 (via in-guest forwarder)" in result.output
+        assert "Proxy: http://127.0.0.1:8180" not in result.output
 
     def test_idempotent_readd_with_same_config(self, runner, config_dir, tmp_path):
         """Re-adding with same folder + no host-script is idempotent (runs agent)."""
@@ -1420,6 +1394,25 @@ class TestRunAgent:
         assert result.exit_code == 0
         assert mock_run.call_args.kwargs["rename_tmux_window"] is False
         associate.assert_called_once_with("test-agent")
+
+    def test_run_agent_starts_native_proxy_before_guest_preflight(self, config_dir):
+        """The moved lifecycle path uses the native proxy's zero-argument start API."""
+        from safeyolo.agent_lifecycle import _run_agent_impl
+
+        platform = _platform()
+        platform.is_sandbox_running.return_value = True
+        with (
+            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value={}, autospec=True),
+            patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True),
+            patch("safeyolo.proxy.start_proxy", autospec=True) as start,
+            patch("safeyolo.proxy.wait_for_healthy", return_value=True, autospec=True) as healthy,
+            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+            pytest.raises(click.exceptions.Exit),
+        ):
+            _run_agent_impl("test-agent")
+
+        start.assert_called_once_with()
+        healthy.assert_called_once_with(timeout=30)
 
     def _committed_launch_patches(
         self, folder, rootfs, *, metadata=None, snapshot_supported=False
@@ -2733,18 +2726,24 @@ class TestDoctorProxyCheck:
         """_check_proxy_process returns pass when proxy is running."""
         from safeyolo.commands.doctor import _check_proxy_process
 
-        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=True, autospec=True,):
+        process = _native_process(config_dir)
+        with (
+            patch("safeyolo.rust_proxy.read_process", return_value=process, autospec=True),
+            patch("safeyolo.rust_proxy.is_alive", return_value=True, autospec=True),
+            patch("safeyolo.rust_proxy.readiness", return_value={"ready": True}, autospec=True),
+        ):
             result = _check_proxy_process()
 
         assert result.status == "pass"
         assert result.name == "Proxy running"
-        assert "mitmdump" in result.message.lower()
+        assert "Rust proxy PID 4321 ready" in result.message
+        assert "/installed/safeyolo-proxy" in result.detail
 
     def test_proxy_not_running_returns_fail_with_remediation(self, runner, config_dir):
         """_check_proxy_process returns fail with remediation when proxy not running."""
         from safeyolo.commands.doctor import _check_proxy_process
 
-        with patch("safeyolo.commands.doctor.is_proxy_running", return_value=False, autospec=True,):
+        with patch("safeyolo.rust_proxy.read_process", return_value=None, autospec=True):
             result = _check_proxy_process()
 
         assert result.status == "fail"
@@ -2794,7 +2793,7 @@ class TestDoctorDependencyCascade:
         from safeyolo.commands.doctor import _run_checks
 
         with (
-            patch("safeyolo.commands.doctor.is_proxy_running", return_value=False, autospec=True,),
+            patch("safeyolo.rust_proxy.read_process", return_value=None, autospec=True),
             patch("safeyolo.commands.doctor.find_config_dir", return_value=config_dir, autospec=True,),
             patch("safeyolo.commands.doctor.load_config", return_value={"proxy": {"port": 8080, "admin_port": 9090}}, autospec=True,),
         ):
@@ -3075,32 +3074,35 @@ class TestCreateAgentRootfs:
 
 class TestIsProxyRunning:
 
-    def test_no_pid_file_returns_false(self, config_dir):
-        """Returns False when no PID file exists."""
+    def test_no_native_lifetime_record_returns_false(self, config_dir):
+        """Returns False when the native lifetime record is absent."""
         from safeyolo.proxy import is_proxy_running
 
         assert is_proxy_running() is False
 
-    def test_stale_pid_cleans_up(self, config_dir):
-        """Stale PID (dead process) returns False and removes PID file."""
+    def test_stale_native_record_is_not_reported_running(self, config_dir):
+        """A dead process is not running; start owns stale-record cleanup."""
         from safeyolo.proxy import is_proxy_running
 
-        pid_file = config_dir / "data" / "proxy.pid"
-        pid_file.write_text("99999999")
+        process = _native_process(config_dir, pid=99999999)
+        record = config_dir / "data" / "proxy-rust.json"
+        record.write_text(json.dumps(vars(process)))
 
-        assert is_proxy_running() is False
-        assert not pid_file.exists()
+        with patch("safeyolo.rust_proxy.is_alive", return_value=False, autospec=True) as alive:
+            assert is_proxy_running() is False
+        alive.assert_called_once_with(process)
+        assert record.exists()
 
-    def test_live_pid_returns_true(self, config_dir):
-        """Live PID returns True."""
-        import os
-
+    def test_verified_native_owner_returns_true(self, config_dir):
+        """A matching native lifetime record reports the process as running."""
         from safeyolo.proxy import is_proxy_running
 
-        pid_file = config_dir / "data" / "proxy.pid"
-        pid_file.write_text(str(os.getpid()))
+        process = _native_process(config_dir)
+        (config_dir / "data" / "proxy-rust.json").write_text(json.dumps(vars(process)))
 
-        assert is_proxy_running() is True
+        with patch("safeyolo.rust_proxy.is_alive", return_value=True, autospec=True) as alive:
+            assert is_proxy_running() is True
+        alive.assert_called_once_with(process)
 
 
 # ---------------------------------------------------------------------------

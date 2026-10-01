@@ -299,7 +299,7 @@ class TestDispatchApprove:
         dispatch.deny(event, api)
         api.log_denial.assert_called_once_with(
             destination="api.openai.com", cred_id="hmac:abc123",
-            reason="user_denied",
+            reason="user_denied", approval_request_id=None,
         )
 
     def test_gateway_deny(self):

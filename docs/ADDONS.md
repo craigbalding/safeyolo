@@ -1,58 +1,20 @@
-# SafeYolo Addons Reference
+# Historical Python addons reference
 
-Complete documentation for SafeYolo's mitmproxy addons.
+This document records the former Python/mitmproxy addon design. It is not an
+exact source map for one rollback checkpoint. The current SafeYolo package
+starts Rust and does not ship this addon chain. Use
+[configuration](CONFIGURATION.md) for current operator settings,
+[developer architecture](DEVELOPERS.md#architecture-overview) for the native
+implementation, and [first-release traffic scope](proxy-parity.md#first-release-traffic-scope)
+for retained inspection and exports. Commands and extension examples below
+belong to the historical implementation; do not use them to configure a
+current Rust installation.
 
-## How It Works
-
-```
-                    ┌─────────────────────┐
-                    │      Internet       │
-                    │  api.openai.com     │
-                    │  api.anthropic.com  │
-                    │  github.com         │
-                    └──────────▲──────────┘
-                               │
-┌──────────────────────────────┼──────────────────────────────┐
-│                      Your Machine                           │
-│                              │                              │
-│  ┌────────────────┐  ┌───────┴───────────────────────────┐  │
-│  │  safeyolo CLI  │  │      SafeYolo Container (:8080)   │  │
-│  │                │  │                                   │  │
-│  │  start, watch, │  │  network_guard    - deny/limit?   │  │
-│  │  agent add     │  │  credential_guard - wrong dest?   │  │
-│  │                │  │  pattern_scanner  - secrets?      │  │
-│  │                │  │  test_context     - tagged test?  │  │
-│  └───────┬────────┘  │  circuit_breaker  - unhealthy?    │  │
-│          │           └───────────────────▲───────────────┘  │
-│          │ manages                       │                  │
-│          ▼                               │ all traffic      │
-│  ┌───────────────────────────────────────┼───────────────┐  │
-│  │  ~/.safeyolo/                         │               │  │
-│  │    config.yaml    ┌───────────────────┴────────────┐  │  │
-│  │    policy.toml  │                                │  │  │
-│  │    policies/      │  ┌──────────┐  ┌──────────┐    │  │  │
-│  │    logs/          │  │  Claude  │  │  Codex   │ ...│  │  │
-│  │                   │  └──────────┘  └──────────┘    │  │  │
-│  │                   │         Agent Containers       │  │  │
-│  └───────────────────┴────────────────────────────────┴──┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Agent sandboxes have no direct internet access — structurally. All traffic routes through SafeYolo, where addons inspect, control, and log requests.
-
-Production addon lifecycle is owned by `safeyolo.traffic_master`. It imports
-the package modules in `mitm_addons.ADDON_CHAIN` and registers their `addons`
-lists directly with mitmproxy's addon manager. The production command does not
-use mitmproxy's watched `-s` script path: addon code and imported `safeyolo.*`
-modules remain on one process generation until the traffic process restarts.
-Configuration watchers described below are separate and continue to reload
-their data. A `safeyolo stop && safeyolo start` loads changed code together
-without restarting running agents.
-
-`SAFEYOLO_ADDONS_DIR=/path/to/checkout/cli/src/safeyolo/mitm_addons` selects
-that checkout's containing `safeyolo` package for the traffic process. This
-keeps addons and their `safeyolo.*` dependencies on the same checkout; edits
-to the selected checkout take effect together on the next proxy restart.
+The former `safeyolo.traffic_master` imported
+`mitm_addons.ADDON_CHAIN` and registered its addons with mitmproxy for one
+process generation. The old `SAFEYOLO_ADDONS_DIR` checkout override selected
+that Python package on the next proxy restart. The current CLI has neither
+that source override nor a Python proxy fallback.
 
 ## Overview
 
@@ -329,7 +291,7 @@ Maps client IPs to projects for per-project credential policy isolation.
 - CLI manages services.yaml when adding agents (`safeyolo agent add`)
 - Pro teams provide their own services.yaml with IP ranges
 
-**Setup:** See [SERVICE_DISCOVERY.md](SERVICE_DISCOVERY.md) for configuration.
+**Historical setup:** See [the former Python service-discovery guide](SERVICE_DISCOVERY.md).
 
 **Options:**
 ```bash
@@ -624,10 +586,15 @@ Approvals are stored in the policy file as host entries:
 
 ```bash
 --set credguard_block=true          # Block mode (default: true)
---set credguard_scan_urls=false     # Scan URL query params (default: false)
---set credguard_scan_bodies=false   # Scan request bodies (default: false)
---set credguard_log_path=/path.jsonl # Separate log file (optional)
 ```
+
+The Python credential guard registers `credguard_scan_urls` and
+`credguard_scan_bodies` with a default of `false`, but its request hook does not
+read them. Setting either option to `true` does not enable credential scanning
+of URLs or request bodies. The native proxy has no equivalent options. The
+separate pattern scanner has its own URL and body rules and inspection limits.
+The Python addon also does not register `credguard_log_path`; that setting
+cannot select a separate log file.
 
 ### Related Features
 

@@ -17,6 +17,7 @@ from rich.table import Table
 
 from ..agent_configuration import (
     DEFAULT_AGENT_MEMORY_MB,
+    GUEST_PROXY_PORT,
     _parse_mount,
     _validate_instance_name,
 )
@@ -589,8 +590,9 @@ def add(  # DOC: README.md, docs/AGENTS.md
         panel_lines.append(f"Mounts: {len(parsed_mounts)}")
         for m in parsed_mounts:
             panel_lines.append(f"  {m}")
-    cfg = load_config()
-    panel_lines.append(f"Proxy: http://127.0.0.1:{cfg.get('proxy', {}).get('port', 8080)} (via in-guest forwarder)")
+    panel_lines.append(
+        f"Proxy: http://127.0.0.1:{GUEST_PROXY_PORT} (via in-guest forwarder)"
+    )
     console.print(Panel("\n".join(panel_lines), title="Success"))
 
     event_details: dict = {"folder": folder_str}
@@ -744,7 +746,7 @@ def remove(
     # plain shutil.rmtree can't clean up.
     plat.remove_agent_dir(name)
     _store_remove_agent(name)
-    # Drop the per-agent UnixInstance if mitmproxy is running.
+    # Remove the CLI-managed native listener if the proxy is running.
     config = load_config()
     admin_port = config.get("proxy", {}).get("admin_port", 9090)
     from ..proxy import sync_proxy_modes
@@ -1345,10 +1347,10 @@ def diag(
 ) -> None:
     """Probe agent egress and, on macOS, the shell and VM helper control paths.
 
-    Runs through the hops from the agent out to mitmproxy and back,
+    Runs through the hops from the agent out to the Rust proxy and back,
     checking each link:
         agent map entry → proxy socket → attribution IP →
-        mitmproxy process → VM process → command supervisor → proxy transport →
+        Rust proxy process → VM process → command supervisor → proxy transport →
         authenticated Agent API + source attribution
 
     On macOS, also require a bounded SSH banner and inspect the running helper's
@@ -1867,8 +1869,8 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
 ) -> None:
     """Authorize an agent to use a service.
 
-    Resolves the service, picks a capability, stores the credential, and updates
-    policy.toml. Capabilities with operator-sourced contract bindings require a
+    Resolves the service, picks a capability, stores a credential when the
+    service requires one, and updates policy.toml. Operator-sourced bindings require a
     separate agent-side binding submission and operator approval.
 
     Examples:
@@ -1931,8 +1933,9 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
             console.print("[red]Error:[/red] Invalid selection")
             raise typer.Exit(1)
 
-    # Auth type comes from service-level auth (v1 schema)
-    auth_config = svc.get("auth", {})
+    auth_config = svc.get("auth")
+    requires_credential = auth_config is not None
+    auth_config = auth_config or {}
     auth_type = auth_config.get("type", "bearer")
 
     # 4. Resolve credential
@@ -1940,7 +1943,9 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
     VaultCredential = None
     cred_name = None
 
-    if credential_name:
+    if not requires_credential and not (credential_name or token or token_file or token_env):
+        pass
+    elif credential_name:
         # Reuse existing vault entry
         vault, VaultCredential = _load_vault()
         existing = vault.get(credential_name)
@@ -2032,20 +2037,23 @@ def authorize(  # DOC: docs/SERVICE_DISCOVERY.md
             raise typer.Exit(1) from exc
         log.warning("Admin API unavailable (%s), falling back to local write", exc)
         services = metadata.setdefault("services", {})
-        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        services[service_name] = {"capability": selected_cap}
+        if cred_name is not None:
+            services[service_name]["token"] = cred_name
         save_agent(agent_name, metadata)
     except OSError as exc:
         log.warning("Admin API unavailable (%s), falling back to local write", exc)
         services = metadata.setdefault("services", {})
-        services[service_name] = {"capability": selected_cap, "token": cred_name}
+        services[service_name] = {"capability": selected_cap}
+        if cred_name is not None:
+            services[service_name]["token"] = cred_name
         save_agent(agent_name, metadata)
 
     esc_agent = escape(agent_name)
     esc_svc = escape(service_name)
     esc_cap = escape(selected_cap)
-    esc_cred = escape(cred_name)
-
-    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}, credential={esc_cred})")
+    credential_summary = f", credential={escape(cred_name)}" if cred_name is not None else ""
+    console.print(f"\n[green]Authorized:[/green] {esc_agent} → {esc_svc} (capability={esc_cap}{credential_summary})")
 
     selected_cap_config = capabilities[selected_cap]
     contract_config = (

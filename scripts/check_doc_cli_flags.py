@@ -158,7 +158,9 @@ def _validate_line(
             attempted = " ".join(path + [token])
             return f"unknown command: `safeyolo {attempted}` — no such command"
 
-    allowed = surface.get(key, set()) | surface.get("", set())  # inherit global opts
+    # Click supplies help to each command even though it is absent from the
+    # declared parameter list returned by Typer introspection.
+    allowed = surface.get(key, set()) | surface.get("", set()) | {"--help"}
 
     # Walk remaining tokens; validate flags
     for tok in tokens[i:]:

@@ -1,0 +1,1793 @@
+{
+  "schema_version": 1,
+  "python_version": "3.12.14",
+  "mitmproxy_version": "12.2.3",
+  "flow_format_version": 21,
+  "source_sha256": {
+    "mitmproxy/addons/save.py": "17b7a70618709ed0aeb341080950964095b2bed20689557c6a56214d2702d85c",
+    "mitmproxy/addons/view.py": "54cc43abd5540dc38353e9e0e738accdb3808c83400ddc8fdf0808c957eb4c59",
+    "mitmproxy/connection.py": "e8e7f3a695e17cd134be6728258a98bdcbda52304655532595b31564732ca726",
+    "mitmproxy/coretypes/serializable.py": "81bf863ac8a53f22f3e0d54c40c47ca76169c8ea6efeff870cbdd59a9cb61dc5",
+    "mitmproxy/flow.py": "7d013511593f0c4fa370cd58118edb52d0841a1b81a0f846ea512482fbcd9c63",
+    "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+    "mitmproxy/io/compat.py": "558abe50055398f1b488658cff090d2af440a4c18e1ff7350f86771bf4250515",
+    "mitmproxy/io/har.py": "0cfdcda6dc7c7b9ab2cde238c1cdf02074d4c61b3c1e861546ea0b094011414f",
+    "mitmproxy/io/io.py": "b1f1419041687b24b764a918e202b72365e008674b11e51098c6890738c803d6",
+    "mitmproxy/io/tnetstring.py": "bc190a77ac6d4212a3fe54c4a66882ff871d728c2eaab4fdd6904ef3b3d35938",
+    "mitmproxy/tcp.py": "f55c48c7660df4f5d5e059a20391c3c9bf78c0d74626ae347233c59bf8396389",
+    "mitmproxy/version.py": "081de8d22ceeea6267ddf573b39c6f33b79d90dd2e18265e1f74a135124c64fe",
+    "mitmproxy/websocket.py": "efdfc38b017f36e14fa3f58d8c101493af58f4469edd115ce690fb17e0eaba7b"
+  },
+  "scalar_controls": [
+    {
+      "name": "null",
+      "value": null,
+      "wire_hex": "303a7e"
+    },
+    {
+      "name": "empty_bytes",
+      "value": {
+        "bytes_hex": ""
+      },
+      "wire_hex": "303a2c"
+    },
+    {
+      "name": "empty_text",
+      "value": "",
+      "wire_hex": "303a3b"
+    },
+    {
+      "name": "binary",
+      "value": {
+        "bytes_hex": "ff"
+      },
+      "wire_hex": "313aff2c"
+    },
+    {
+      "name": "unicode",
+      "value": "\u00e9",
+      "wire_hex": "323ac3a93b"
+    },
+    {
+      "name": "integer",
+      "value": -7,
+      "wire_hex": "323a2d3723"
+    },
+    {
+      "name": "float",
+      "value": 1.5,
+      "wire_hex": "333a312e355e"
+    },
+    {
+      "name": "boolean",
+      "value": true,
+      "wire_hex": "343a7472756521"
+    },
+    {
+      "name": "sequence",
+      "value": [
+        null,
+        {
+          "bytes_hex": ""
+        }
+      ],
+      "wire_hex": "363a303a7e303a2c5d"
+    }
+  ],
+  "records": [
+    {
+      "name": "rich",
+      "state": {
+        "version": 21,
+        "type": "http",
+        "id": "flow-rich",
+        "error": null,
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-rich",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-rich",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": true,
+        "is_replay": "request",
+        "marked": ":star:",
+        "metadata": {
+          "text": "caf\u00e9",
+          "bytes": {
+            "bytes_hex": "ff"
+          },
+          "nested": [
+            null,
+            true,
+            7,
+            1.5
+          ]
+        },
+        "comment": "changed note",
+        "timestamp_created": 4.0,
+        "backup": {
+          "version": 21,
+          "type": "http",
+          "id": "flow-rich",
+          "error": null,
+          "client_conn": {
+            "peername": [
+              "192.0.2.10",
+              1234
+            ],
+            "sockname": [
+              "192.0.2.20",
+              8080
+            ],
+            "id": "client-rich",
+            "transport_protocol": "tcp",
+            "error": null,
+            "tls": false,
+            "certificate_list": [],
+            "alpn": null,
+            "alpn_offers": [],
+            "cipher": null,
+            "cipher_list": [],
+            "tls_version": null,
+            "sni": null,
+            "timestamp_start": 1.0,
+            "timestamp_end": null,
+            "timestamp_tls_setup": null,
+            "mitmcert": null,
+            "proxy_mode": "regular"
+          },
+          "server_conn": {
+            "peername": [
+              "198.51.100.20",
+              8081
+            ],
+            "sockname": null,
+            "id": "server-rich",
+            "transport_protocol": "tcp",
+            "error": null,
+            "tls": false,
+            "certificate_list": [],
+            "alpn": null,
+            "alpn_offers": [],
+            "cipher": null,
+            "cipher_list": [],
+            "tls_version": null,
+            "sni": null,
+            "timestamp_start": 2.0,
+            "timestamp_end": null,
+            "timestamp_tls_setup": null,
+            "address": [
+              "source.fixture.invalid",
+              8081
+            ],
+            "timestamp_tcp_setup": 3.0,
+            "via": null
+          },
+          "intercepted": true,
+          "is_replay": "request",
+          "marked": ":star:",
+          "metadata": {
+            "text": "caf\u00e9",
+            "bytes": {
+              "bytes_hex": "ff"
+            },
+            "nested": [
+              null,
+              true,
+              7,
+              1.5
+            ]
+          },
+          "comment": "owned note",
+          "timestamp_created": 4.0,
+          "backup": null,
+          "request": {
+            "http_version": {
+              "bytes_hex": "485454502f312e31"
+            },
+            "headers": [
+              [
+                {
+                  "bytes_hex": "582d447570"
+                },
+                {
+                  "bytes_hex": "6f6e65"
+                }
+              ],
+              [
+                {
+                  "bytes_hex": "782d647570"
+                },
+                {
+                  "bytes_hex": "ff"
+                }
+              ]
+            ],
+            "content": {
+              "bytes_hex": "00ff72657175657374"
+            },
+            "trailers": [
+              [
+                {
+                  "bytes_hex": "582d547261696c6572"
+                },
+                {
+                  "bytes_hex": "80"
+                }
+              ]
+            ],
+            "timestamp_start": 5.0,
+            "timestamp_end": 6.0,
+            "host": "source.fixture.invalid",
+            "port": 8081,
+            "method": {
+              "bytes_hex": "504f5354"
+            },
+            "scheme": {
+              "bytes_hex": "68747470"
+            },
+            "authority": {
+              "bytes_hex": ""
+            },
+            "path": {
+              "bytes_hex": "2f613f713d3126713d32"
+            }
+          },
+          "response": {
+            "http_version": {
+              "bytes_hex": "485454502f312e31"
+            },
+            "headers": [
+              [
+                {
+                  "bytes_hex": "582d5265706c79"
+                },
+                {
+                  "bytes_hex": "74776f"
+                }
+              ],
+              [
+                {
+                  "bytes_hex": "636f6e74656e742d6c656e677468"
+                },
+                {
+                  "bytes_hex": "35"
+                }
+              ]
+            ],
+            "content": {
+              "bytes_hex": "7265706c79"
+            },
+            "trailers": [],
+            "timestamp_start": 7.0,
+            "timestamp_end": 8.0,
+            "status_code": 299,
+            "reason": {
+              "bytes_hex": "53796e74686574696320ff"
+            }
+          },
+          "websocket": null
+        },
+        "request": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d447570"
+              },
+              {
+                "bytes_hex": "6f6e65"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "782d647570"
+              },
+              {
+                "bytes_hex": "ff"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": "00ff72657175657374"
+          },
+          "trailers": [
+            [
+              {
+                "bytes_hex": "582d547261696c6572"
+              },
+              {
+                "bytes_hex": "80"
+              }
+            ]
+          ],
+          "timestamp_start": 5.0,
+          "timestamp_end": 6.0,
+          "host": "source.fixture.invalid",
+          "port": 8081,
+          "method": {
+            "bytes_hex": "504f5354"
+          },
+          "scheme": {
+            "bytes_hex": "68747470"
+          },
+          "authority": {
+            "bytes_hex": ""
+          },
+          "path": {
+            "bytes_hex": "2f613f713d3126713d32"
+          }
+        },
+        "response": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d5265706c79"
+              },
+              {
+                "bytes_hex": "74776f"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "636f6e74656e742d6c656e677468"
+              },
+              {
+                "bytes_hex": "35"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": "7265706c79"
+          },
+          "trailers": [],
+          "timestamp_start": 7.0,
+          "timestamp_end": 8.0,
+          "status_code": 299,
+          "reason": {
+            "bytes_hex": "53796e74686574696320ff"
+          }
+        },
+        "websocket": null
+      },
+      "wire_hex": "333230393a393a776562736f636b65743b303a7e383a726573706f6e73653b3231323a363a726561736f6e3b31313a53796e74686574696320ff2c31313a7374617475735f636f64653b333a3239392331333a74696d657374616d705f656e643b333a382e305e31353a74696d657374616d705f73746172743b333a372e305e383a747261696c6572733b303a5d373a636f6e74656e743b353a7265706c792c373a686561646572733b34363a31363a373a582d5265706c792c333a74776f2c5d32323a31343a636f6e74656e742d6c656e6774682c313a352c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d373a726571756573743b3239353a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b32303a31363a393a582d547261696c65722c313a802c5d5d373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b313630323a393a776562736f636b65743b303a7e383a726573706f6e73653b3231323a363a726561736f6e3b31313a53796e74686574696320ff2c31313a7374617475735f636f64653b333a3239392331333a74696d657374616d705f656e643b333a382e305e31353a74696d657374616d705f73746172743b333a372e305e383a747261696c6572733b303a5d373a636f6e74656e743b353a7265706c792c373a686561646572733b34363a31363a373a582d5265706c792c333a74776f2c5d32323a31343a636f6e74656e742d6c656e6774682c313a352c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d373a726571756573743b3239353a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b32303a31363a393a582d547261696c65722c313a802c5d5d373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b31303a6f776e6564206e6f74653b383a6d657461646174613b36303a363a6e65737465643b32303a303a7e343a7472756521313a3723333a312e355e5d353a62797465733b313aff2c343a746578743b353a636166c3a93b7d363a6d61726b65643b363a3a737461723a3b393a69735f7265706c61793b373a726571756573743b31313a696e7465726365707465643b343a747275652131313a7365727665725f636f6e6e3b3339303a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31313a7365727665722d726963683b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336323a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31313a636c69656e742d726963683b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b393a666c6f772d726963683b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b31323a6368616e676564206e6f74653b383a6d657461646174613b36303a363a6e65737465643b32303a303a7e343a7472756521313a3723333a312e355e5d353a62797465733b313aff2c343a746578743b353a636166c3a93b7d363a6d61726b65643b363a3a737461723a3b393a69735f7265706c61793b373a726571756573743b31313a696e7465726365707465643b343a747275652131313a7365727665725f636f6e6e3b3339303a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31313a7365727665722d726963683b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336323a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31313a636c69656e742d726963683b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b393a666c6f772d726963683b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d"
+    },
+    {
+      "name": "empty",
+      "state": {
+        "version": 21,
+        "type": "http",
+        "id": "flow-empty",
+        "error": null,
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-empty",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-empty",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": false,
+        "is_replay": null,
+        "marked": "",
+        "metadata": {},
+        "comment": "",
+        "timestamp_created": 4.0,
+        "backup": null,
+        "request": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d447570"
+              },
+              {
+                "bytes_hex": "6f6e65"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "782d647570"
+              },
+              {
+                "bytes_hex": "ff"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": ""
+          },
+          "trailers": null,
+          "timestamp_start": 5.0,
+          "timestamp_end": 6.0,
+          "host": "source.fixture.invalid",
+          "port": 8081,
+          "method": {
+            "bytes_hex": "504f5354"
+          },
+          "scheme": {
+            "bytes_hex": "68747470"
+          },
+          "authority": {
+            "bytes_hex": ""
+          },
+          "path": {
+            "bytes_hex": "2f613f713d3126713d32"
+          }
+        },
+        "response": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d5265706c79"
+              },
+              {
+                "bytes_hex": "74776f"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "636f6e74656e742d6c656e677468"
+              },
+              {
+                "bytes_hex": "35"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": ""
+          },
+          "trailers": null,
+          "timestamp_start": 7.0,
+          "timestamp_end": 8.0,
+          "status_code": 299,
+          "reason": {
+            "bytes_hex": "53796e74686574696320ff"
+          }
+        },
+        "websocket": null
+      },
+      "wire_hex": "313438373a393a776562736f636b65743b303a7e383a726573706f6e73653b3230373a363a726561736f6e3b31313a53796e74686574696320ff2c31313a7374617475735f636f64653b333a3239392331333a74696d657374616d705f656e643b333a382e305e31353a74696d657374616d705f73746172743b333a372e305e383a747261696c6572733b303a7e373a636f6e74656e743b303a2c373a686561646572733b34363a31363a373a582d5265706c792c333a74776f2c5d32323a31343a636f6e74656e742d6c656e6774682c313a352c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d373a726571756573743b3236353a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b303a2c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339313a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31323a7365727665722d656d7074793b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336333a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31323a636c69656e742d656d7074793b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b31303a666c6f772d656d7074793b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d"
+    },
+    {
+      "name": "missing",
+      "state": {
+        "version": 21,
+        "type": "http",
+        "id": "flow-missing",
+        "error": null,
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-missing",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-missing",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": false,
+        "is_replay": null,
+        "marked": "",
+        "metadata": {},
+        "comment": "",
+        "timestamp_created": 4.0,
+        "backup": null,
+        "request": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d447570"
+              },
+              {
+                "bytes_hex": "6f6e65"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "782d647570"
+              },
+              {
+                "bytes_hex": "ff"
+              }
+            ]
+          ],
+          "content": null,
+          "trailers": null,
+          "timestamp_start": 5.0,
+          "timestamp_end": null,
+          "host": "source.fixture.invalid",
+          "port": 8081,
+          "method": {
+            "bytes_hex": "504f5354"
+          },
+          "scheme": {
+            "bytes_hex": "68747470"
+          },
+          "authority": {
+            "bytes_hex": ""
+          },
+          "path": {
+            "bytes_hex": "2f613f713d3126713d32"
+          }
+        },
+        "response": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d5265706c79"
+              },
+              {
+                "bytes_hex": "74776f"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "636f6e74656e742d6c656e677468"
+              },
+              {
+                "bytes_hex": "35"
+              }
+            ]
+          ],
+          "content": null,
+          "trailers": null,
+          "timestamp_start": 7.0,
+          "timestamp_end": null,
+          "status_code": 299,
+          "reason": {
+            "bytes_hex": "53796e74686574696320ff"
+          }
+        },
+        "websocket": null
+      },
+      "wire_hex": "313438373a393a776562736f636b65743b303a7e383a726573706f6e73653b3230343a363a726561736f6e3b31313a53796e74686574696320ff2c31313a7374617475735f636f64653b333a3239392331333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a372e305e383a747261696c6572733b303a7e373a636f6e74656e743b303a7e373a686561646572733b34363a31363a373a582d5265706c792c333a74776f2c5d32323a31343a636f6e74656e742d6c656e6774682c313a352c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d373a726571756573743b3236323a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b303a7e373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339333a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31343a7365727665722d6d697373696e673b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336353a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31343a636c69656e742d6d697373696e673b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b31323a666c6f772d6d697373696e673b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d"
+    },
+    {
+      "name": "failed",
+      "state": {
+        "version": 21,
+        "type": "http",
+        "id": "flow-failed",
+        "error": {
+          "msg": "owned failure",
+          "timestamp": 9.0
+        },
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-failed",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-failed",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": false,
+        "is_replay": null,
+        "marked": "",
+        "metadata": {},
+        "comment": "",
+        "timestamp_created": 4.0,
+        "backup": null,
+        "request": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d447570"
+              },
+              {
+                "bytes_hex": "6f6e65"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "782d647570"
+              },
+              {
+                "bytes_hex": "ff"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": "00ff72657175657374"
+          },
+          "trailers": null,
+          "timestamp_start": 5.0,
+          "timestamp_end": 6.0,
+          "host": "source.fixture.invalid",
+          "port": 8081,
+          "method": {
+            "bytes_hex": "504f5354"
+          },
+          "scheme": {
+            "bytes_hex": "68747470"
+          },
+          "authority": {
+            "bytes_hex": ""
+          },
+          "path": {
+            "bytes_hex": "2f613f713d3126713d32"
+          }
+        },
+        "response": null,
+        "websocket": null
+      },
+      "wire_hex": "313333323a393a776562736f636b65743b303a7e383a726573706f6e73653b303a7e373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339323a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a7365727665722d6661696c65643b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336343a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a636c69656e742d6661696c65643b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b34313a393a74696d657374616d703b333a392e305e333a6d73673b31333a6f776e6564206661696c7572653b7d323a69643b31313a666c6f772d6661696c65643b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d"
+    },
+    {
+      "name": "websocket",
+      "state": {
+        "version": 21,
+        "type": "http",
+        "id": "flow-websocket",
+        "error": null,
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-websocket",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-websocket",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": false,
+        "is_replay": null,
+        "marked": "",
+        "metadata": {},
+        "comment": "",
+        "timestamp_created": 4.0,
+        "backup": null,
+        "request": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d447570"
+              },
+              {
+                "bytes_hex": "6f6e65"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "782d647570"
+              },
+              {
+                "bytes_hex": "ff"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": "00ff72657175657374"
+          },
+          "trailers": null,
+          "timestamp_start": 5.0,
+          "timestamp_end": 6.0,
+          "host": "source.fixture.invalid",
+          "port": 8081,
+          "method": {
+            "bytes_hex": "504f5354"
+          },
+          "scheme": {
+            "bytes_hex": "68747470"
+          },
+          "authority": {
+            "bytes_hex": ""
+          },
+          "path": {
+            "bytes_hex": "2f613f713d3126713d32"
+          }
+        },
+        "response": {
+          "http_version": {
+            "bytes_hex": "485454502f312e31"
+          },
+          "headers": [
+            [
+              {
+                "bytes_hex": "582d5265706c79"
+              },
+              {
+                "bytes_hex": "74776f"
+              }
+            ],
+            [
+              {
+                "bytes_hex": "636f6e74656e742d6c656e677468"
+              },
+              {
+                "bytes_hex": "35"
+              }
+            ]
+          ],
+          "content": {
+            "bytes_hex": "7265706c79"
+          },
+          "trailers": null,
+          "timestamp_start": 7.0,
+          "timestamp_end": 8.0,
+          "status_code": 101,
+          "reason": {
+            "bytes_hex": "53796e74686574696320ff"
+          }
+        },
+        "websocket": {
+          "messages": [
+            [
+              1,
+              true,
+              {
+                "bytes_hex": "6f7574676f696e67"
+              },
+              10.0,
+              false,
+              false
+            ],
+            [
+              2,
+              false,
+              {
+                "bytes_hex": "ff00"
+              },
+              11.0,
+              true,
+              false
+            ],
+            [
+              1,
+              false,
+              {
+                "bytes_hex": "ff"
+              },
+              12.0,
+              false,
+              true
+            ]
+          ],
+          "closed_by_client": false,
+          "close_code": 1001,
+          "close_reason": "owned close",
+          "timestamp_end": 13.0
+        }
+      },
+      "wire_hex": "313736393a393a776562736f636b65743b3235343a31333a74696d657374616d705f656e643b343a31332e305e31323a636c6f73655f726561736f6e3b31313a6f776e656420636c6f73653b31303a636c6f73655f636f64653b343a313030312331363a636c6f7365645f62795f636c69656e743b353a66616c736521383a6d657373616765733b3133343a34353a313a3123343a7472756521383a6f7574676f696e672c343a31302e305e353a66616c736521353a66616c7365215d33393a313a3223353a66616c736521323aff002c343a31312e305e343a7472756521353a66616c7365215d33383a313a3123353a66616c736521313aff2c343a31322e305e353a66616c736521343a74727565215d5d7d383a726573706f6e73653b3231323a363a726561736f6e3b31313a53796e74686574696320ff2c31313a7374617475735f636f64653b333a3130312331333a74696d657374616d705f656e643b333a382e305e31353a74696d657374616d705f73746172743b333a372e305e383a747261696c6572733b303a7e373a636f6e74656e743b353a7265706c792c373a686561646572733b34363a31363a373a582d5265706c792c333a74776f2c5d32323a31343a636f6e74656e742d6c656e6774682c313a352c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339353a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31363a7365727665722d776562736f636b65743b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336373a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31363a636c69656e742d776562736f636b65743b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b31343a666c6f772d776562736f636b65743b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d"
+    },
+    {
+      "name": "tcp",
+      "state": {
+        "version": 21,
+        "type": "tcp",
+        "id": "flow-tcp",
+        "error": null,
+        "client_conn": {
+          "peername": [
+            "192.0.2.10",
+            1234
+          ],
+          "sockname": [
+            "192.0.2.20",
+            8080
+          ],
+          "id": "client-tcp",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 1.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "mitmcert": null,
+          "proxy_mode": "regular"
+        },
+        "server_conn": {
+          "peername": [
+            "198.51.100.20",
+            8081
+          ],
+          "sockname": null,
+          "id": "server-tcp",
+          "transport_protocol": "tcp",
+          "error": null,
+          "tls": false,
+          "certificate_list": [],
+          "alpn": null,
+          "alpn_offers": [],
+          "cipher": null,
+          "cipher_list": [],
+          "tls_version": null,
+          "sni": null,
+          "timestamp_start": 2.0,
+          "timestamp_end": null,
+          "timestamp_tls_setup": null,
+          "address": [
+            "source.fixture.invalid",
+            8081
+          ],
+          "timestamp_tcp_setup": 3.0,
+          "via": null
+        },
+        "intercepted": false,
+        "is_replay": null,
+        "marked": "",
+        "metadata": {},
+        "comment": "",
+        "timestamp_created": 4.0,
+        "backup": null,
+        "messages": [
+          [
+            false,
+            {
+              "bytes_hex": "736572766572206669727374"
+            },
+            10.0
+          ],
+          [
+            true,
+            {
+              "bytes_hex": "00ff"
+            },
+            11.0
+          ]
+        ]
+      },
+      "wire_hex": "313033343a383a6d657373616765733b35383a33313a353a66616c73652131323a7365727665722066697273742c343a31302e305e5d31393a343a7472756521323a00ff2c343a31312e305e5d5d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3338393a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31303a7365727665722d7463703b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336313a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31303a636c69656e742d7463703b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b303a7e323a69643b383a666c6f772d7463703b343a747970653b333a7463703b373a76657273696f6e3b323a3231237d"
+    }
+  ],
+  "concatenated_ids": [
+    "flow-rich",
+    "flow-empty",
+    "flow-missing",
+    "flow-failed",
+    "flow-websocket",
+    "flow-tcp"
+  ],
+  "read_errors": {
+    "empty_file": {
+      "wire_hex": "",
+      "states": [],
+      "error": null
+    },
+    "non_mapping_record": {
+      "wire_hex": "343a313a31235d",
+      "states": [],
+      "error": {
+        "type": "FlowReadException",
+        "message": "Invalid flow: loaded=[1]"
+      }
+    },
+    "truncated_record": {
+      "wire_hex": "313333323a393a776562736f636b65743b303a7e383a726573706f6e73653b303a7e373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339323a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a7365727665722d6661696c65643b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336343a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a636c69656e742d6661696c65643b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b34313a393a74696d657374616d703b333a392e305e333a6d73673b31333a6f776e6564206661696c7572653b7d323a69643b31313a666c6f772d6661696c65643b343a747970653b343a687474703b373a76657273696f6e3b323a323123",
+      "states": [],
+      "error": {
+        "type": "FlowReadException",
+        "message": "Invalid data format."
+      }
+    },
+    "future_version": {
+      "wire_hex": "313333323a393a776562736f636b65743b303a7e383a726573706f6e73653b303a7e373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339323a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a7365727665722d6661696c65643b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336343a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a636c69656e742d6661696c65643b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b34313a393a74696d657374616d703b333a392e305e333a6d73673b31333a6f776e6564206661696c7572653b7d323a69643b31313a666c6f772d6661696c65643b343a747970653b343a687474703b373a76657273696f6e3b323a3232237d",
+      "states": [],
+      "error": {
+        "type": "FlowReadException",
+        "message": "mitmproxy 12.2.3 cannot read files with flow format version 22, please update mitmproxy."
+      }
+    },
+    "unknown_type": {
+      "wire_hex": "313334323a393a776562736f636b65743b303a7e383a726573706f6e73653b303a7e373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339323a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a7365727665722d6661696c65643b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336343a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a636c69656e742d6661696c65643b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b34313a393a74696d657374616d703b333a392e305e333a6d73673b31333a6f776e6564206661696c7572653b7d323a69643b31313a666c6f772d6661696c65643b343a747970653b31333a6f776e65642d756e6b6e6f776e3b373a76657273696f6e3b323a3231237d",
+      "states": [],
+      "error": {
+        "type": "FlowReadException",
+        "message": "Unknown flow type: owned-unknown"
+      }
+    },
+    "valid_then_corrupt": {
+      "wire_hex": "313333323a393a776562736f636b65743b303a7e383a726573706f6e73653b303a7e373a726571756573743b3237343a343a706174683b31303a2f613f713d3126713d322c393a617574686f726974793b303a2c363a736368656d653b343a687474702c363a6d6574686f643b343a504f53542c343a706f72743b343a3830383123343a686f73743b32323a736f757263652e666978747572652e696e76616c69643b31333a74696d657374616d705f656e643b333a362e305e31353a74696d657374616d705f73746172743b333a352e305e383a747261696c6572733b303a7e373a636f6e74656e743b393a00ff726571756573742c373a686561646572733b33343a31343a353a582d4475702c333a6f6e652c5d31323a353a782d6475702c313aff2c5d5d31323a687474705f76657273696f6e3b383a485454502f312e312c7d363a6261636b75703b303a7e31373a74696d657374616d705f637265617465643b333a342e305e373a636f6d6d656e743b303a3b383a6d657461646174613b303a7d363a6d61726b65643b303a3b393a69735f7265706c61793b303a7e31313a696e7465726365707465643b353a66616c73652131313a7365727665725f636f6e6e3b3339323a333a7669613b303a7e31393a74696d657374616d705f7463705f73657475703b333a332e305e373a616464726573733b33333a32323a736f757263652e666978747572652e696e76616c69643b343a38303831235d31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a322e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a7365727665722d6661696c65643b383a736f636b6e616d653b303a7e383a706565726e616d653b32343a31333a3139382e35312e3130302e32303b343a38303831235d7d31313a636c69656e745f636f6e6e3b3336343a31303a70726f78795f6d6f64653b373a726567756c61723b383a6d69746d636572743b303a7e31393a74696d657374616d705f746c735f73657475703b303a7e31333a74696d657374616d705f656e643b303a7e31353a74696d657374616d705f73746172743b333a312e305e333a736e693b303a7e31313a746c735f76657273696f6e3b303a7e31313a6369706865725f6c6973743b303a5d363a6369706865723b303a7e31313a616c706e5f6f66666572733b303a5d343a616c706e3b303a7e31363a63657274696669636174655f6c6973743b303a5d333a746c733b353a66616c736521353a6572726f723b303a7e31383a7472616e73706f72745f70726f746f636f6c3b333a7463703b323a69643b31333a636c69656e742d6661696c65643b383a736f636b6e616d653b32313a31303a3139322e302e322e32303b343a38303830235d383a706565726e616d653b32313a31303a3139322e302e322e31303b343a31323334235d7d353a6572726f723b34313a393a74696d657374616d703b333a392e305e333a6d73673b31333a6f776e6564206661696c7572653b7d323a69643b31313a666c6f772d6661696c65643b343a747970653b343a687474703b373a76657273696f6e3b323a3231237d696e76616c6964",
+      "states": [
+        {
+          "version": 21,
+          "type": "http",
+          "id": "flow-failed",
+          "error": {
+            "msg": "owned failure",
+            "timestamp": 9.0
+          },
+          "client_conn": {
+            "peername": [
+              "192.0.2.10",
+              1234
+            ],
+            "sockname": [
+              "192.0.2.20",
+              8080
+            ],
+            "id": "client-failed",
+            "transport_protocol": "tcp",
+            "error": null,
+            "tls": false,
+            "certificate_list": [],
+            "alpn": null,
+            "alpn_offers": [],
+            "cipher": null,
+            "cipher_list": [],
+            "tls_version": null,
+            "sni": null,
+            "timestamp_start": 1.0,
+            "timestamp_end": null,
+            "timestamp_tls_setup": null,
+            "mitmcert": null,
+            "proxy_mode": "regular"
+          },
+          "server_conn": {
+            "peername": [
+              "198.51.100.20",
+              8081
+            ],
+            "sockname": null,
+            "id": "server-failed",
+            "transport_protocol": "tcp",
+            "error": null,
+            "tls": false,
+            "certificate_list": [],
+            "alpn": null,
+            "alpn_offers": [],
+            "cipher": null,
+            "cipher_list": [],
+            "tls_version": null,
+            "sni": null,
+            "timestamp_start": 2.0,
+            "timestamp_end": null,
+            "timestamp_tls_setup": null,
+            "address": [
+              "source.fixture.invalid",
+              8081
+            ],
+            "timestamp_tcp_setup": 3.0,
+            "via": null
+          },
+          "intercepted": false,
+          "is_replay": null,
+          "marked": "",
+          "metadata": {},
+          "comment": "",
+          "timestamp_created": 4.0,
+          "backup": null,
+          "request": {
+            "http_version": {
+              "bytes_hex": "485454502f312e31"
+            },
+            "headers": [
+              [
+                {
+                  "bytes_hex": "582d447570"
+                },
+                {
+                  "bytes_hex": "6f6e65"
+                }
+              ],
+              [
+                {
+                  "bytes_hex": "782d647570"
+                },
+                {
+                  "bytes_hex": "ff"
+                }
+              ]
+            ],
+            "content": {
+              "bytes_hex": "00ff72657175657374"
+            },
+            "trailers": null,
+            "timestamp_start": 5.0,
+            "timestamp_end": 6.0,
+            "host": "source.fixture.invalid",
+            "port": 8081,
+            "method": {
+              "bytes_hex": "504f5354"
+            },
+            "scheme": {
+              "bytes_hex": "68747470"
+            },
+            "authority": {
+              "bytes_hex": ""
+            },
+            "path": {
+              "bytes_hex": "2f613f713d3126713d32"
+            }
+          },
+          "response": null,
+          "websocket": null
+        }
+      ],
+      "error": {
+        "type": "FlowReadException",
+        "message": "Invalid data format."
+      }
+    }
+  },
+  "file_workflows": {
+    "overwrite_ids": [
+      "flow-failed"
+    ],
+    "append_ids": [
+      "flow-rich",
+      "flow-empty"
+    ],
+    "missing_parent_created": false,
+    "har_suffix_writes_dump": true,
+    "repeat_load_count_including_existing": 3,
+    "loaded_ids_are_fresh_and_unique": true,
+    "loaded_state_preserved_except_id": true,
+    "loaded_live": false,
+    "count_after_valid_then_corrupt_load": 4
+  },
+  "har_reader": {
+    "normalization": "omit generated flow/client/server IDs and flow creation time only",
+    "repeated_reads_have_fresh_ids": true,
+    "cases": {
+      "json": {
+        "wire_hex": "7b226c6f67223a207b2276657273696f6e223a2022312e32222c2022656e7472696573223a205b7b22737461727465644461746554696d65223a2022313937302d30312d30315430303a30303a31302b30303a3030222c202274696d65223a20323530302c2022736572766572495041646472657373223a20223139382e35312e3130302e3430222c202274696d696e6773223a207b22636f6e6e656374223a203130302c202273656e64223a203230302c202277616974223a203330302c202272656365697665223a20313930307d2c202272657175657374223a207b226d6574686f64223a2022504f5354222c202275726c223a2022687474703a2f2f736f757263652e666978747572652e696e76616c69643a383038312f696d706f72743f713d6f6e6526713d74776f222c20226874747056657273696f6e223a2022485454502f312e30222c202268656164657273223a205b7b226e616d65223a2022582d447570222c202276616c7565223a20226f6e65227d2c205b22782d647570222c202274776f225d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31227d5d2c2022706f737444617461223a207b226d696d6554797065223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31222c202274657874223a20226361665c7530306539227d7d2c2022726573706f6e7365223a207b22737461747573223a203239392c202273746174757354657874223a20224f776e656420637573746f6d20726561736f6e222c20226874747056657273696f6e223a2022687474702f322e30222c202268656164657273223a205b7b226e616d65223a2022436f6e74656e742d456e636f64696e67222c202276616c7565223a2022677a6970227d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a20226170706c69636174696f6e2f6f637465742d73747265616d227d5d2c2022636f6e74656e74223a207b22656e636f64696e67223a2022626173653634222c202274657874223a20224150383d227d7d2c20225f776562536f636b65744d65737361676573223a205b7b2274797065223a202273656e64222c202274696d65223a2031312e302c20226f70636f6465223a20312c202264617461223a20226f776e6564206d657373616765227d5d7d5d7d7d",
+        "flows": [
+          {
+            "state": {
+              "version": 21,
+              "type": "http",
+              "error": null,
+              "client_conn": {
+                "peername": [
+                  "127.0.0.1",
+                  0
+                ],
+                "sockname": [
+                  "127.0.0.1",
+                  0
+                ],
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "timestamp_tls_setup": null,
+                "mitmcert": null,
+                "proxy_mode": "regular"
+              },
+              "server_conn": {
+                "peername": null,
+                "sockname": null,
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": null,
+                "timestamp_end": null,
+                "timestamp_tls_setup": null,
+                "address": [
+                  "198.51.100.40",
+                  80
+                ],
+                "timestamp_tcp_setup": null,
+                "via": null
+              },
+              "intercepted": false,
+              "is_replay": null,
+              "marked": "",
+              "metadata": {},
+              "comment": "",
+              "backup": null,
+              "request": {
+                "http_version": {
+                  "bytes_hex": "485454502f312e31"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "582d447570"
+                    },
+                    {
+                      "bytes_hex": "6f6e65"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "782d647570"
+                    },
+                    {
+                      "bytes_hex": "74776f"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "746578742f706c61696e3b20636861727365743d69736f2d383835392d31"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "34"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "636166e9"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "host": "source.fixture.invalid",
+                "port": 8081,
+                "method": {
+                  "bytes_hex": "504f5354"
+                },
+                "scheme": {
+                  "bytes_hex": "68747470"
+                },
+                "authority": {
+                  "bytes_hex": ""
+                },
+                "path": {
+                  "bytes_hex": "2f696d706f72743f713d6f6e6526713d74776f"
+                }
+              },
+              "response": {
+                "http_version": {
+                  "bytes_hex": "485454502f32"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "6170706c69636174696f6e2f6f637465742d73747265616d"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "32"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "00ff"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "status_code": 299,
+                "reason": {
+                  "bytes_hex": ""
+                }
+              },
+              "websocket": null
+            },
+            "live": false
+          }
+        ],
+        "error": null
+      },
+      "utf8_bom": {
+        "wire_hex": "efbbbf7b226c6f67223a207b2276657273696f6e223a2022312e32222c2022656e7472696573223a205b7b22737461727465644461746554696d65223a2022313937302d30312d30315430303a30303a31302b30303a3030222c202274696d65223a20323530302c2022736572766572495041646472657373223a20223139382e35312e3130302e3430222c202274696d696e6773223a207b22636f6e6e656374223a203130302c202273656e64223a203230302c202277616974223a203330302c202272656365697665223a20313930307d2c202272657175657374223a207b226d6574686f64223a2022504f5354222c202275726c223a2022687474703a2f2f736f757263652e666978747572652e696e76616c69643a383038312f696d706f72743f713d6f6e6526713d74776f222c20226874747056657273696f6e223a2022485454502f312e30222c202268656164657273223a205b7b226e616d65223a2022582d447570222c202276616c7565223a20226f6e65227d2c205b22782d647570222c202274776f225d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31227d5d2c2022706f737444617461223a207b226d696d6554797065223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31222c202274657874223a20226361665c7530306539227d7d2c2022726573706f6e7365223a207b22737461747573223a203239392c202273746174757354657874223a20224f776e656420637573746f6d20726561736f6e222c20226874747056657273696f6e223a2022687474702f322e30222c202268656164657273223a205b7b226e616d65223a2022436f6e74656e742d456e636f64696e67222c202276616c7565223a2022677a6970227d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a20226170706c69636174696f6e2f6f637465742d73747265616d227d5d2c2022636f6e74656e74223a207b22656e636f64696e67223a2022626173653634222c202274657874223a20224150383d227d7d2c20225f776562536f636b65744d65737361676573223a205b7b2274797065223a202273656e64222c202274696d65223a2031312e302c20226f70636f6465223a20312c202264617461223a20226f776e6564206d657373616765227d5d7d5d7d7d",
+        "flows": [
+          {
+            "state": {
+              "version": 21,
+              "type": "http",
+              "error": null,
+              "client_conn": {
+                "peername": [
+                  "127.0.0.1",
+                  0
+                ],
+                "sockname": [
+                  "127.0.0.1",
+                  0
+                ],
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "timestamp_tls_setup": null,
+                "mitmcert": null,
+                "proxy_mode": "regular"
+              },
+              "server_conn": {
+                "peername": null,
+                "sockname": null,
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": null,
+                "timestamp_end": null,
+                "timestamp_tls_setup": null,
+                "address": [
+                  "198.51.100.40",
+                  80
+                ],
+                "timestamp_tcp_setup": null,
+                "via": null
+              },
+              "intercepted": false,
+              "is_replay": null,
+              "marked": "",
+              "metadata": {},
+              "comment": "",
+              "backup": null,
+              "request": {
+                "http_version": {
+                  "bytes_hex": "485454502f312e31"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "582d447570"
+                    },
+                    {
+                      "bytes_hex": "6f6e65"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "782d647570"
+                    },
+                    {
+                      "bytes_hex": "74776f"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "746578742f706c61696e3b20636861727365743d69736f2d383835392d31"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "34"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "636166e9"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "host": "source.fixture.invalid",
+                "port": 8081,
+                "method": {
+                  "bytes_hex": "504f5354"
+                },
+                "scheme": {
+                  "bytes_hex": "68747470"
+                },
+                "authority": {
+                  "bytes_hex": ""
+                },
+                "path": {
+                  "bytes_hex": "2f696d706f72743f713d6f6e6526713d74776f"
+                }
+              },
+              "response": {
+                "http_version": {
+                  "bytes_hex": "485454502f32"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "6170706c69636174696f6e2f6f637465742d73747265616d"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "32"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "00ff"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "status_code": 299,
+                "reason": {
+                  "bytes_hex": ""
+                }
+              },
+              "websocket": null
+            },
+            "live": false
+          }
+        ],
+        "error": null
+      },
+      "leading_whitespace": {
+        "wire_hex": "200a7b226c6f67223a207b2276657273696f6e223a2022312e32222c2022656e7472696573223a205b7b22737461727465644461746554696d65223a2022313937302d30312d30315430303a30303a31302b30303a3030222c202274696d65223a20323530302c2022736572766572495041646472657373223a20223139382e35312e3130302e3430222c202274696d696e6773223a207b22636f6e6e656374223a203130302c202273656e64223a203230302c202277616974223a203330302c202272656365697665223a20313930307d2c202272657175657374223a207b226d6574686f64223a2022504f5354222c202275726c223a2022687474703a2f2f736f757263652e666978747572652e696e76616c69643a383038312f696d706f72743f713d6f6e6526713d74776f222c20226874747056657273696f6e223a2022485454502f312e30222c202268656164657273223a205b7b226e616d65223a2022582d447570222c202276616c7565223a20226f6e65227d2c205b22782d647570222c202274776f225d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31227d5d2c2022706f737444617461223a207b226d696d6554797065223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31222c202274657874223a20226361665c7530306539227d7d2c2022726573706f6e7365223a207b22737461747573223a203239392c202273746174757354657874223a20224f776e656420637573746f6d20726561736f6e222c20226874747056657273696f6e223a2022687474702f322e30222c202268656164657273223a205b7b226e616d65223a2022436f6e74656e742d456e636f64696e67222c202276616c7565223a2022677a6970227d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a20226170706c69636174696f6e2f6f637465742d73747265616d227d5d2c2022636f6e74656e74223a207b22656e636f64696e67223a2022626173653634222c202274657874223a20224150383d227d7d2c20225f776562536f636b65744d65737361676573223a205b7b2274797065223a202273656e64222c202274696d65223a2031312e302c20226f70636f6465223a20312c202264617461223a20226f776e6564206d657373616765227d5d7d5d7d7d",
+        "flows": [],
+        "error": {
+          "type": "FlowReadException",
+          "message": "Invalid data format."
+        }
+      },
+      "zlib_is_not_autodetected": {
+        "wire_hex": "78da8d93516fd3301485ff4ae4075e6812a7ac901455686248f080566911421a0879ce5d6b91d8ae7dd316aafe77aeed56654202143ff8d83ec7f6e79b03ebcd8acdb303db82f3ca68eab3aa98b249c640a353e069e4fec03c0a87d0dd0884560d109735af78ce2b6a2de7736a157f1e3bc18c69d174c639290f8ef23f2cafbbce81f7c95d17b3aaa8382faece0ea5573e1e461aad4122f5ab935f77212d8a9d5061e645140e24a86dd8aa6a383fc691cd081e63ce00b836c1c996b7776dd865747d906b443b2f4b6f4627a178547b1c1d144a6f45afba79cdebaa5483350edf6c1646c3b3cd027726f883f1d305d5fbb65d9655112fb006d1d14ce2a54582f439bf196d98a5e4318e501ca373deb37ddea5a910fd75925d4c6f8d46a29fb73f2c3cf122ecb1b4bd50fa7526d7c279c085f226afeb599357ec4829cc1a8ff44c2201a0678829ff364fd28ab0528ac72f23e7d0b06322eaadd11e622215028ee192d3a6092f13657b32deee3474991c3d9a2173203c51fa135a90e5f42fd0cef77fa7a5e9a8289e3058fd543600fc0f5cc2da5e4981b46f692402e61ee954430225932dde0ace3b91eb41787879f53b8feb65bd4828beede0e1cec8ef801fa98ec5eafc7be089712cd44bf957541aa48ca5f4a84974e96d9889ac86144327a2eff80ba1af17b7",
+        "flows": [],
+        "error": {
+          "type": "FlowReadException",
+          "message": "Invalid data format."
+        }
+      },
+      "malformed_json": {
+        "wire_hex": "7b226c6f67223a",
+        "flows": [],
+        "error": {
+          "type": "FlowReadException",
+          "message": "Unable to read HAR file. Please provide a valid HAR file"
+        }
+      },
+      "empty_entries": {
+        "wire_hex": "7b226c6f67223a7b22656e7472696573223a5b5d7d7d",
+        "flows": [],
+        "error": null
+      },
+      "valid_then_invalid_entry": {
+        "wire_hex": "7b226c6f67223a207b22656e7472696573223a205b7b22737461727465644461746554696d65223a2022313937302d30312d30315430303a30303a31302b30303a3030222c202274696d65223a20323530302c2022736572766572495041646472657373223a20223139382e35312e3130302e3430222c202274696d696e6773223a207b22636f6e6e656374223a203130302c202273656e64223a203230302c202277616974223a203330302c202272656365697665223a20313930307d2c202272657175657374223a207b226d6574686f64223a2022504f5354222c202275726c223a2022687474703a2f2f736f757263652e666978747572652e696e76616c69643a383038312f696d706f72743f713d6f6e6526713d74776f222c20226874747056657273696f6e223a2022485454502f312e30222c202268656164657273223a205b7b226e616d65223a2022582d447570222c202276616c7565223a20226f6e65227d2c205b22782d647570222c202274776f225d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31227d5d2c2022706f737444617461223a207b226d696d6554797065223a2022746578742f706c61696e3b20636861727365743d69736f2d383835392d31222c202274657874223a20226361665c7530306539227d7d2c2022726573706f6e7365223a207b22737461747573223a203239392c202273746174757354657874223a20224f776e656420637573746f6d20726561736f6e222c20226874747056657273696f6e223a2022687474702f322e30222c202268656164657273223a205b7b226e616d65223a2022436f6e74656e742d456e636f64696e67222c202276616c7565223a2022677a6970227d2c207b226e616d65223a2022436f6e74656e742d54797065222c202276616c7565223a20226170706c69636174696f6e2f6f637465742d73747265616d227d5d2c2022636f6e74656e74223a207b22656e636f64696e67223a2022626173653634222c202274657874223a20224150383d227d7d2c20225f776562536f636b65744d65737361676573223a205b7b2274797065223a202273656e64222c202274696d65223a2031312e302c20226f70636f6465223a20312c202264617461223a20226f776e6564206d657373616765227d5d7d2c207b7d5d7d7d",
+        "flows": [
+          {
+            "state": {
+              "version": 21,
+              "type": "http",
+              "error": null,
+              "client_conn": {
+                "peername": [
+                  "127.0.0.1",
+                  0
+                ],
+                "sockname": [
+                  "127.0.0.1",
+                  0
+                ],
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "timestamp_tls_setup": null,
+                "mitmcert": null,
+                "proxy_mode": "regular"
+              },
+              "server_conn": {
+                "peername": null,
+                "sockname": null,
+                "transport_protocol": "tcp",
+                "error": null,
+                "tls": false,
+                "certificate_list": [],
+                "alpn": null,
+                "alpn_offers": [],
+                "cipher": null,
+                "cipher_list": [],
+                "tls_version": null,
+                "sni": null,
+                "timestamp_start": null,
+                "timestamp_end": null,
+                "timestamp_tls_setup": null,
+                "address": [
+                  "198.51.100.40",
+                  80
+                ],
+                "timestamp_tcp_setup": null,
+                "via": null
+              },
+              "intercepted": false,
+              "is_replay": null,
+              "marked": "",
+              "metadata": {},
+              "comment": "",
+              "backup": null,
+              "request": {
+                "http_version": {
+                  "bytes_hex": "485454502f312e31"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "582d447570"
+                    },
+                    {
+                      "bytes_hex": "6f6e65"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "782d647570"
+                    },
+                    {
+                      "bytes_hex": "74776f"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "746578742f706c61696e3b20636861727365743d69736f2d383835392d31"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "34"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "636166e9"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "host": "source.fixture.invalid",
+                "port": 8081,
+                "method": {
+                  "bytes_hex": "504f5354"
+                },
+                "scheme": {
+                  "bytes_hex": "68747470"
+                },
+                "authority": {
+                  "bytes_hex": ""
+                },
+                "path": {
+                  "bytes_hex": "2f696d706f72743f713d6f6e6526713d74776f"
+                }
+              },
+              "response": {
+                "http_version": {
+                  "bytes_hex": "485454502f32"
+                },
+                "headers": [
+                  [
+                    {
+                      "bytes_hex": "436f6e74656e742d54797065"
+                    },
+                    {
+                      "bytes_hex": "6170706c69636174696f6e2f6f637465742d73747265616d"
+                    }
+                  ],
+                  [
+                    {
+                      "bytes_hex": "636f6e74656e742d6c656e677468"
+                    },
+                    {
+                      "bytes_hex": "32"
+                    }
+                  ]
+                ],
+                "content": {
+                  "bytes_hex": "00ff"
+                },
+                "trailers": null,
+                "timestamp_start": 10.0,
+                "timestamp_end": 12.5,
+                "status_code": 299,
+                "reason": {
+                  "bytes_hex": ""
+                }
+              },
+              "websocket": null
+            },
+            "live": false
+          }
+        ],
+        "error": {
+          "type": "FlowReadException",
+          "message": "Unable to read HAR file. Please provide a valid HAR file"
+        }
+      }
+    }
+  }
+}

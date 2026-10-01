@@ -1,10 +1,19 @@
 """Admin API client for SafeYolo proxy."""
 
+import os
+import stat
+import sys
+import tempfile
+import threading
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
+from . import rust_proxy
 from .config import get_admin_token, load_config
+from .core.identifiers import validate_task_id
 
 
 class APIError(Exception):
@@ -13,6 +22,98 @@ class APIError(Exception):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+class ExportCancelled(Exception):
+    """The caller abandoned an in-progress traffic export."""
+
+
+class ExportPublicationState:
+    """Coordinate cancellation with the final local publication commit."""
+
+    def __init__(self):
+        self._cancel_event = threading.Event()
+        self._publication_lock = threading.Lock()
+
+    def is_set(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def set(self) -> None:
+        with self._publication_lock:
+            self._cancel_event.set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._cancel_event.wait(timeout)
+
+    def publish(self, temporary: Path, destination: Path) -> None:
+        """Replace the destination unless detach won the same boundary."""
+        with self._publication_lock:
+            if self._cancel_event.is_set():
+                raise ExportCancelled()
+            os.replace(temporary, destination)
+
+
+class TrafficExportResult:
+    """Metadata for a completed local traffic export."""
+
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        content_type: str,
+        bytes_written: int,
+        cleanup_warning: str | None = None,
+    ):
+        self.status_code = status_code
+        self.content_type = content_type
+        self.bytes_written = bytes_written
+        self.cleanup_warning = cleanup_warning
+
+
+def _content_length(headers: httpx.Headers) -> int | None:
+    value = headers.get("content-length")
+    if value is None:
+        return None
+    try:
+        length = int(value)
+    except (TypeError, ValueError) as exc:
+        raise APIError("Traffic export response had an invalid length") from exc
+    if length < 0:
+        raise APIError("Traffic export response had an invalid length")
+    return length
+
+
+def _destination_details(destination: Path) -> tuple[Path, int | None]:
+    """Resolve a symlink target and retain an existing target's mode."""
+    try:
+        previous = destination.stat()
+    except FileNotFoundError:
+        previous = None
+    except OSError as exc:
+        raise APIError("Cannot inspect traffic export destination") from exc
+    try:
+        publication_path = destination.resolve(strict=False) if destination.is_symlink() else destination
+    except (OSError, RuntimeError) as exc:
+        raise APIError("Cannot resolve traffic export destination") from exc
+    mode = stat.S_IMODE(previous.st_mode) if previous is not None else None
+    return publication_path, mode
+
+
+def _check_export_cancel(cancel_event: threading.Event | ExportPublicationState | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ExportCancelled()
+
+
+def _publish_export(
+    cancel_event: threading.Event | ExportPublicationState | None,
+    temporary: Path,
+    destination: Path,
+) -> None:
+    if isinstance(cancel_event, ExportPublicationState):
+        cancel_event.publish(temporary, destination)
+    else:
+        _check_export_cancel(cancel_event)
+        os.replace(temporary, destination)
 
 
 class AdminAPI:
@@ -27,18 +128,72 @@ class AdminAPI:
         """Initialize API client.
 
         Args:
-            base_url: Admin API URL (default: from config)
-            token: Auth token (default: from config/env)
+            base_url: Admin API URL (default: the recorded Rust listener or Python config)
+            token: Auth token (default: environment override or the selected listener's file)
             timeout: Request timeout in seconds
         """
+        self._rust_process: rust_proxy.RustProcess | None = None
+        self._token_override = token
         if base_url is None:
-            config = load_config()
-            port = config["proxy"]["admin_port"]
-            base_url = f"http://localhost:{port}"
+            base_url, self._rust_process = self._default_connection()
 
         self.base_url = base_url.rstrip("/")
-        self.token = token or get_admin_token()
+        self.token = token or self._default_token(self._rust_process)
         self.timeout = timeout
+
+    def _default_connection(self, *, require_rust: bool = False) -> tuple[str, rust_proxy.RustProcess | None]:
+        try:
+            process = rust_proxy.read_process()
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise APIError(f"Cannot read Rust proxy ownership: {exc}") from exc
+        if process is None:
+            if require_rust:
+                raise APIError("The Rust proxy has no current process record")
+            config = load_config()
+            return f"http://localhost:{config['proxy']['admin_port']}", None
+        self._check_rust_process(process)
+        port = process.admin_port
+        if port is None:
+            raise APIError("The running Rust proxy has no admin listener configured")
+        if port == 0:
+            try:
+                marker = rust_proxy.readiness(process)
+            except OSError as exc:
+                raise APIError("Cannot read the Rust proxy's admin listener readiness") from exc
+            if marker is None:
+                raise APIError("The Rust proxy has not published its admin listener port yet")
+            port = marker["admin_port"]
+            self._check_rust_process(process)
+        return f"http://127.0.0.1:{port}", process
+
+    def _default_token(self, process: rust_proxy.RustProcess | None) -> str | None:
+        if process is None:
+            return get_admin_token()
+        if process.admin_token_file is None:
+            return os.environ.get("SAFEYOLO_ADMIN_TOKEN") or None
+        try:
+            return get_admin_token(token_path=Path(process.admin_token_file))
+        except (OSError, UnicodeError) as exc:
+            raise APIError("Cannot read the Rust proxy's admin token file") from exc
+
+    def _check_rust_process(self, process: rust_proxy.RustProcess) -> None:
+        try:
+            alive = rust_proxy.is_alive(process)
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise APIError(f"Cannot verify Rust proxy process identity: {exc}") from exc
+        if not alive:
+            raise APIError("The recorded Rust proxy process has exited or changed")
+
+    def _refresh_rust_connection(self) -> None:
+        """Follow a recorded native restart while rejecting stale ownership."""
+        previous = self._rust_process
+        if previous is None:
+            return
+        base_url, process = self._default_connection(require_rust=True)
+        assert process is not None
+        if (process.pid, process.start_token) != (previous.pid, previous.start_token):
+            token = self._token_override or self._default_token(process)
+            self.base_url, self.token, self._rust_process = base_url, token, process
 
     def _headers(self) -> dict[str, str]:
         """Get request headers with auth."""
@@ -55,6 +210,7 @@ class AdminAPI:
         require_auth: bool = True,
     ) -> Any:
         """Make an API request."""
+        self._refresh_rust_connection()
         url = f"{self.base_url}{path}"
         headers = self._headers() if require_auth else {}
 
@@ -66,11 +222,11 @@ class AdminAPI:
         except httpx.RemoteProtocolError:
             raise APIError(
                 "Server disconnected unexpectedly - admin API may have crashed. "
-                "Check ~/.local/state/safeyolo/mitmproxy.log for details."
+                "Run safeyolo doctor for details."
             )
         except httpx.ReadError:
             raise APIError(
-                f"Connection lost while reading response from {self.base_url}. Check ~/.local/state/safeyolo/mitmproxy.log for errors."
+                f"Connection lost while reading response from {self.base_url}. Run safeyolo doctor for details."
             )
         except httpx.TimeoutException:
             raise APIError(
@@ -103,8 +259,139 @@ class AdminAPI:
     def get_traffic_scope(self) -> dict[str, Any]:
         return self._request("GET", "/admin/traffic/scope")
 
+    @property
+    def is_native(self) -> bool:
+        """Whether the default client selected a recorded Rust process."""
+        return self._rust_process is not None
+
+    def traffic_flows(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/traffic/flows")
+
+    def traffic_flow(self, flow_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}")
+
+    def traffic_body(self, flow_id: str, side: str) -> dict[str, Any]:
+        if side not in {"request", "response"}:
+            raise ValueError("body side must be request or response")
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/body?side={side}")
+
+    def traffic_export(
+        self,
+        flow_id: str,
+        format_name: str,
+        destination: Path,
+        *,
+        cancel_event: threading.Event | ExportPublicationState | None = None,
+    ) -> TrafficExportResult:
+        """Stream one retained flow export to a local file atomically.
+
+        The destination is used only by this client.  The server receives the
+        frozen flow ID and format in the request path/query and never sees the
+        local path.  A sibling temporary file is published only after the
+        response stream, file write, and file close all complete.
+        """
+        _check_export_cancel(cancel_event)
+        self._refresh_rust_connection()
+        encoded_id = quote(flow_id, safe="")
+        encoded_format = quote(format_name, safe="")
+        url = f"{self.base_url}/admin/traffic/flows/{encoded_id}/export?format={encoded_format}"
+        headers = self._headers()
+        try:
+            return self._write_traffic_export(url, headers, destination, cancel_event)
+        except (APIError, ExportCancelled):
+            raise
+        except httpx.HTTPError as exc:
+            raise APIError("Traffic export stream failed") from exc
+        except OSError as exc:
+            raise APIError("Cannot write traffic export") from exc
+
+    def _write_traffic_export(
+        self,
+        url: str,
+        headers: dict[str, str],
+        destination: Path,
+        cancel_event: threading.Event | ExportPublicationState | None,
+    ) -> TrafficExportResult:
+        publication_path, existing_mode = _destination_details(destination)
+        temporary_dir = tempfile.TemporaryDirectory(
+            prefix=".export-",
+            dir=publication_path.parent,
+        )
+        result = None
+        try:
+            temporary = Path(temporary_dir.name) / publication_path.name
+            status_code, content_type, bytes_written = self._stream_traffic_export(
+                url, headers, temporary, cancel_event
+            )
+            if existing_mode is not None:
+                os.chmod(temporary, existing_mode)
+            _publish_export(cancel_event, temporary, publication_path)
+            result = TrafficExportResult(
+                status_code=status_code,
+                content_type=content_type,
+                bytes_written=bytes_written,
+            )
+        finally:
+            active_exception = sys.exc_info()[0] is not None
+            try:
+                temporary_dir.cleanup()
+            except OSError:
+                if result is not None:
+                    result.cleanup_warning = "staging cleanup warning"
+                elif not active_exception:
+                    raise
+        assert result is not None
+        return result
+
+    def _stream_traffic_export(
+        self,
+        url: str,
+        headers: dict[str, str],
+        temporary: Path,
+        cancel_event: threading.Event | ExportPublicationState | None,
+    ) -> tuple[int, str, int]:
+        bytes_written = 0
+        with temporary.open("wb") as output:
+            _check_export_cancel(cancel_event)
+            with httpx.Client(timeout=self.timeout) as client:
+                _check_export_cancel(cancel_event)
+                with client.stream("GET", url, headers=headers) as response:
+                    status_code = response.status_code
+                    if status_code != 200:
+                        raise APIError(f"Traffic export failed (HTTP {status_code})", status_code)
+                    content_type = response.headers.get("content-type", "")
+                    expected_length = _content_length(response.headers)
+                    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                        _check_export_cancel(cancel_event)
+                        if not isinstance(chunk, bytes):
+                            raise APIError("Traffic export returned an invalid byte chunk")
+                        output.write(chunk)
+                        bytes_written += len(chunk)
+                    if expected_length is not None and bytes_written != expected_length:
+                        raise APIError("Traffic export stream was truncated")
+                    output.flush()
+                    os.fsync(output.fileno())
+        return status_code, content_type, bytes_written
+
+    def traffic_websocket_messages(self, flow_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/websocket/messages")
+
+    def traffic_websocket_message_body(self, flow_id: str, message_id: int, offset: int = 0) -> dict[str, Any]:
+        if type(offset) is not int or offset < 0:
+            raise ValueError("message body offset must be a nonnegative integer")
+        message = quote(str(message_id), safe="")
+        return self._request(
+            "GET", f"/admin/traffic/flows/{quote(flow_id, safe='')}/websocket/messages/{message}/body?offset={offset}",
+        )
+
+    def traffic_facets(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/traffic/facets")
+
     def set_traffic_scope(self, **scope: Any) -> dict[str, Any]:
         return self._request("PUT", "/admin/traffic/scope", json=scope)
+
+    def set_traffic_filter(self, expression: str) -> dict[str, Any]:
+        return self._request("PUT", "/admin/traffic/filter", json={"user_filter": expression})
 
     def metrics(self) -> str:
         """Get Prometheus format metrics."""
@@ -142,6 +429,19 @@ class AdminAPI:
     def set_policy(self, project: str, policy: dict[str, Any]) -> dict[str, Any]:
         """Write/update policy for a project."""
         return self._request("PUT", f"/admin/policy/{project}", json={"policy": policy})
+
+    def activate_task_policy(self, task_id: str) -> dict[str, Any]:
+        """Activate one registered task policy at the native policy boundary."""
+        task_id = validate_task_id(task_id)
+        return self._request(
+            "POST",
+            f"/admin/policy/task/{quote(task_id, safe='')}/activate",
+        )
+
+    def clear_task_policy(self, task_id: str) -> dict[str, Any]:
+        """Clear one registered task policy and its active overlay."""
+        task_id = validate_task_id(task_id)
+        return self._request("DELETE", f"/admin/policy/task/{quote(task_id, safe='')}")
 
     def add_approval(
         self,
@@ -272,7 +572,7 @@ class AdminAPI:
         agent: str,
         service: str,
         capability: str,
-        credential: str,
+        credential: str | None = None,
     ) -> dict[str, Any]:
         """Authorize an agent to use a service.
 
@@ -280,7 +580,7 @@ class AdminAPI:
             agent: Agent name (e.g., "boris")
             service: Service name (e.g., "gmail")
             capability: Capability name (e.g., "readonly")
-            credential: Vault credential name (e.g., "gmail-oauth2")
+            credential: Vault credential name for services with auth.
         """
         return self._request(
             "POST",
@@ -288,7 +588,7 @@ class AdminAPI:
             json={
                 "service": service,
                 "capability": capability,
-                "credential": credential,
+                **({"credential": credential} if credential is not None else {}),
             },
         )
 

@@ -1,0 +1,246 @@
+name: Rust proxy migration
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    paths:
+      - "cli/src/safeyolo/rust_proxy.py"
+      - "cli/tests/test_rust_proxy.py"
+      - "proxy/**"
+      - "tests/proxy_migration/**"
+      - "tests/blackbox/proxy_backend.py"
+      - "tests/blackbox/run-tests.sh"
+      - "tests/test_blackbox_harness.py"
+      - "tests/test_proxy_rust_coord_fixture.py"
+      - "tests/test_proxy_rust_ci_events.py"
+      - "tests/test_proxy_cutover_deletion_map.py"
+      - "tests/blackbox/sinkhole/server.py"
+      - "tests/test_blackbox_sinkhole.py"
+      - "tests/test_workflow_action_pins.py"
+      - "tools/proxy_migration/**"
+      - "cli/src/safeyolo/desktop_presenter*.py"
+      - "cli/src/safeyolo/preview.py"
+      - "cli/tests/test_agent_preview.py"
+      - "cli/tests/test_desktop_presenter*.py"
+      - ".github/workflows/proxy-rust.yml"
+      - "scripts/cargo_with_space.sh"
+  push:
+    # Relay advances this ref to an exact integrated commit for a full checkpoint.
+    branches: [master, main, ci/proxy-rust-620]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A feature PR's ready transition has no job; keep its in-flight focused check.
+  cancel-in-progress: ${{ github.event.action != 'ready_for_review' }}
+
+jobs:
+  focused-pr:
+    name: Focused Rust proxy (Ubuntu)
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.base_ref != 'master' && github.base_ref != 'main' &&
+      github.event.action != 'ready_for_review'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Verify the exact pull-request head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: rustup show active-toolchain
+
+      - name: Check Rust formatting and lint
+        working-directory: proxy
+        run: |
+          ../scripts/cargo_with_space.sh fmt --all -- --check
+          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.8"
+          prune-cache: true
+
+      - name: Install the native CLI test environment
+        run: |
+          uv python install 3.12
+          uv sync --frozen --group dev --python 3.12
+
+      - name: Install preview test system dependency
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends socat
+
+      - name: Test workflow, fixture, deletion, and blackbox runner boundaries
+        run: |
+          uv run --frozen pytest -q \
+            cli/tests/test_rust_proxy.py \
+            cli/tests/test_sockets.py \
+            tests/test_blackbox_harness.py \
+            tests/proxy_migration/test_readiness.py \
+            tests/test_proxy_rust_coord_fixture.py \
+            tests/test_proxy_rust_ci_events.py \
+            tests/test_proxy_cutover_deletion_map.py \
+            tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
+            tests/test_workflow_action_pins.py
+
+      - name: Test the desktop presenter protocol
+        run: |
+          uv run --frozen pytest -q \
+            cli/tests/test_desktop_presenter.py \
+            cli/tests/test_desktop_presenter_rpc.py \
+            cli/tests/test_agent_preview.py
+
+      - name: Test focused native boundaries
+        timeout-minutes: 10
+        working-directory: proxy
+        run: |
+          ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
+          ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
+
+  http-slice:
+    name: HTTP migration (${{ matrix.os }})
+    # Run on default/checkpoint pushes and ready release PRs into master or main.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       (github.base_ref == 'master' || github.base_ref == 'main') &&
+       github.event.pull_request.draft == false)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify the event's exact head
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+
+      - name: Install the pinned Rust toolchain
+        working-directory: proxy
+        run: rustup show active-toolchain
+
+      - name: Check Rust formatting and lint
+        working-directory: proxy
+        run: |
+          ../scripts/cargo_with_space.sh fmt --all -- --check
+          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.8"
+          prune-cache: true
+
+      - name: Install the native CLI test environment
+        run: |
+          uv python install 3.12.14
+          uv sync --frozen --group dev --python 3.12.14
+
+      - name: Start the Python-owned Coord fixture
+        env:
+          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
+        run: |
+          fixture_root="$SAFEYOLO_COORD_DATA_DIR"
+          fixture_ready="$fixture_root/fixture.ready"
+          fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
+          test ! -e "$fixture_root" || {
+            echo "Coord fixture path already exists: $fixture_root" >&2
+            exit 1
+          }
+          uv run --frozen python proxy/tests/coord_fixture.py \
+            --ready-file "$fixture_ready" > "$fixture_log" 2>&1 &
+          fixture_pid=$!
+          for attempt in $(seq 1 100); do
+            if test -f "$fixture_ready"; then
+              exit 0
+            fi
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then
+              teardown_status=0
+              uv run --frozen python proxy/tests/coord_fixture.py --teardown || teardown_status=$?
+              cat "$fixture_log"
+              if test "$teardown_status" -ne 0; then
+                echo "Coord fixture teardown failed after startup failure" >&2
+              fi
+              exit 1
+            fi
+            sleep 0.1
+          done
+          teardown_status=0
+          uv run --frozen python proxy/tests/coord_fixture.py --teardown || teardown_status=$?
+          cat "$fixture_log"
+          if test "$teardown_status" -ne 0; then
+            echo "Coord fixture teardown failed after startup timeout" >&2
+          fi
+          exit 1
+
+      - name: Test and build the Rust proxy
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 10 }}
+        working-directory: proxy
+        env:
+          SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          export SAFEYOLO_PROXY_COORD_DATA_DIR="$RUNNER_TEMP/safeyolo-coord-fixture"
+          export SAFEYOLO_PROXY_NATS_TEST_INSTANCE=proxy-rust-fixture
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$host_target"
+          runner_target="$(printf '%s' "$host_target" | tr '[:lower:]-' '[:upper:]_')"
+          runner_variable="CARGO_TARGET_${runner_target}_RUNNER"
+          export CARGO_BUILD_TARGET="$host_target"
+          export "$runner_variable=$GITHUB_WORKSPACE/proxy/tests/coord_test_runner.sh"
+          ../scripts/cargo_with_space.sh test --locked
+          ../scripts/cargo_with_space.sh build --locked
+          rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
+          test -x "$rust_proxy"
+          printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+
+      - name: Stop the Python-owned Coord fixture
+        if: always()
+        env:
+          SAFEYOLO_COORD_DATA_DIR: ${{ runner.temp }}/safeyolo-coord-fixture
+          SAFEYOLO_NATS_TEST_INSTANCE: proxy-rust-fixture
+        run: |
+          fixture_log="$RUNNER_TEMP/safeyolo-coord-fixture.log"
+          fixture_stopped="$SAFEYOLO_COORD_DATA_DIR/fixture.stopped"
+          if test ! -e "$SAFEYOLO_COORD_DATA_DIR"; then
+            exit 0
+          fi
+          uv run --frozen python proxy/tests/coord_fixture.py --teardown
+          for attempt in $(seq 1 100); do
+            if test -f "$fixture_stopped"; then
+              cat "$fixture_log"
+              exit 0
+            fi
+            sleep 0.1
+          done
+          cat "$fixture_log"
+          echo "Coord fixture did not finish its ownership-verified teardown" >&2
+          exit 1
+
+      - name: Provide the macOS owned HTTP peer address
+        if: matrix.os == 'macos-latest'
+        run: |
+          sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
+          /sbin/ifconfig lo0 | grep -F '127.0.0.2'
+
+      - name: Run shared HTTP contracts against native Rust
+        env:
+          PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
+        run: uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust

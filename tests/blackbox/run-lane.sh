@@ -6,6 +6,10 @@
 #   ./tests/blackbox/run-lane.sh kvm     [run-tests.sh options]
 #   ./tests/blackbox/run-lane.sh vz      [run-tests.sh options]
 #   ./tests/blackbox/run-lane.sh proxy   [run-tests.sh options]
+#
+# Backend selection is forwarded to run-tests.sh. A native VM lane uses the
+# Rust executable packaged by install.sh for the same installed CLI:
+#   ./tests/blackbox/run-lane.sh systrap --proxy-impl rust
 
 set -euo pipefail
 
@@ -18,6 +22,20 @@ if [ -z "$LANE" ]; then
     exit 2
 fi
 shift
+
+# A frozen pilot may install a pinned source checkout while exercising the
+# current blackbox harness. The packaged CLI and native binary still come
+# from the same install.sh invocation.
+INSTALL_ROOT="$REPO_ROOT"
+if [ "${1:-}" = "--install-checkout" ]; then
+    if [ "$#" -lt 2 ] || [ ! -f "$2/install.sh" ]; then
+        echo "ERROR: --install-checkout requires a SafeYolo source checkout" >&2
+        exit 2
+    fi
+    INSTALL_ROOT="$(cd "$2" && pwd -P)"
+    shift 2
+fi
+export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$INSTALL_ROOT"
 
 case "$LANE" in
     systrap|kvm)
@@ -60,15 +78,15 @@ fi
 # `reinstall` is safe on persistent hosts and equivalent to a first install on
 # an ephemeral host after uv reports that no prior tool environment exists.
 if uv tool list | grep -q '^safeyolo '; then
-    "$REPO_ROOT/install.sh" reinstall
+    "$INSTALL_ROOT/install.sh" reinstall
 else
-    "$REPO_ROOT/install.sh" install
+    "$INSTALL_ROOT/install.sh" install
 fi
 
 # Host-side blackbox pytest uses the development dependency group.  The
 # product CLI still comes from install.sh's isolated uv tool environment.
 uv sync --frozen --group dev
-export PATH="$HOME/.local/bin:$REPO_ROOT/.venv/bin:$PATH"
+export PATH="$(uv tool dir --bin):$REPO_ROOT/.venv/bin:$PATH"
 
 if [ "$LANE" != "proxy" ]; then
     if [ "$(uname -s)" = "Linux" ]; then
@@ -134,13 +152,39 @@ PY
     if [ "$LANE" = "vz" ]; then
         # bootstrap builds the guest artifacts; the source install deliberately
         # leaves this host-native Swift helper as an explicit macOS step.
-        make -C "$REPO_ROOT/vm" install
+        make -C "$INSTALL_ROOT/vm" install
     fi
 
-    safeyolo bootstrap
+    safeyolo bootstrap --source-checkout "$INSTALL_ROOT"
 fi
 
 if [ "$LANE" = "proxy" ]; then
+    # The installed lane must test the binary packaged with this CLI. The
+    # direct run-tests.sh selector retains its explicit debug-binary default.
+    ARGS=("$@")
+    SELECTED_BACKEND=""
+    EXPLICIT_RUST_BIN=false
+    for ((i = 0; i < ${#ARGS[@]}; i++)); do
+        if [ "${ARGS[i]}" = "--proxy-impl" ] && [ "$((i + 1))" -lt "${#ARGS[@]}" ]; then
+            SELECTED_BACKEND="${ARGS[i + 1]}"
+        fi
+        if [ "${ARGS[i]}" = "--rust-bin" ]; then
+            EXPLICIT_RUST_BIN=true
+        fi
+    done
+    if { [ "$SELECTED_BACKEND" = "rust" ] || [ "$SELECTED_BACKEND" = "both" ]; } && \
+       [ "$EXPLICIT_RUST_BIN" = false ]; then
+        INSTALLED_RUST_BIN="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+from installed_host_smoke import _installed_rust_binary
+
+binary, _ = _installed_rust_binary(sys.argv[2])
+print(binary)
+PY
+)"
+        set -- "$@" --rust-bin "$INSTALLED_RUST_BIN"
+    fi
     exec "$SCRIPT_DIR/run-tests.sh" --proxy "$@"
 else
     exec "$SCRIPT_DIR/run-tests.sh" --expect-platform "$LANE" "$@"

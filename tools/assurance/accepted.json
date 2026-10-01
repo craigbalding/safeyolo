@@ -2,7 +2,7 @@
   "checker_sha256": "0e29b2012d85109ecd724fdcdacd1863c5b205ec11fab41b5312cffc828aca8d",
   "checker_version": "2",
   "codeowners_sha256": "0de1d0b02eb10c7a9fabf8e4f1d57890e6f79620fc768cd835293e9e6e530d76",
-  "function_count": 4512,
+  "function_count": 4523,
   "inputs": {
     "cli/src/safeyolo/guest-proxy-forwarder.sh": "6aa3dcd35264bdeac5d47e7c9e76ddcdd1f4884613f74d929dda3e7bfd317490",
     "guest/build-rootfs.sh": "980493b29cc05dfde8c1e6632c1b8c3c8b274f2bbd9c8e16f736255bcfd830fa",
@@ -233,8 +233,10 @@
     "vm/Sources/SafeYoloVM/VSockTerminal.swift": "88d9a6a365509301570c1d6cc0b62a3205c06c68c082a41a64ef5e59f668cd74",
     "vm/Sources/SafeYoloVM/main.swift": "2e6e47a3f4b9ecfb85e07959e739fc350509e68ce808910b4fb9d8b717f88e39"
   },
-  "map_sha256": "1163a3b921dc430c70b7dbbcc78222c74f798e2c1f2b783cf3b1a1e02cb288e9",
+  "map_sha256": "92214adaf82f83065591a67b07ba12d437677daf7a7eabb46bb077f7b2d5d04f",
   "mapped_functions": {
+    "cli/src/safeyolo/commands/agent.py::authorize": "c2ca5349dd8ffc4d0592515b5db4c6d3bd6c40013797416a462f8d2bf5b90e73",
+    "cli/src/safeyolo/provider_stream.py::main": "3eeddd6113fa532ac9e8a13efa2c3c37b13c33b26a69dfcf8bfbfe37a5ebab2c",
     "cli/src/safeyolo/proxy.py::selected_backend": "363e32df84449fa8103c0086aa9026615bef1d65b7b716605114b23461ef9e19",
     "cli/src/safeyolo/rust_proxy.py::_agent_listeners": "44a46466200b6e7c09f144b34c42fc0b3331baf4c7e69d0d490724a6ae67268f",
     "cli/src/safeyolo/rust_proxy.py::_binary": "b1ea8b57fc11f2c260fb889b442911a46bb8aa2d4a723955d83d2430c89c6c3a",
@@ -242,9 +244,12 @@
     "cli/src/safeyolo/rust_proxy.py::_sync_running_listeners": "5f6490f78bf54713cd2308ea5d6613ef1706ab8aebd658b8ec1c2d5826837e04",
     "cli/src/safeyolo/rust_proxy.py::_wait_ready": "9bcffbf6636a421f3901c6f2d43c5f24fbdaf5101c4d562331e0117377ff97f2",
     "cli/src/safeyolo/rust_proxy.py::prepare": "04ffe2b13f74baa31fd3dd9d4bc485ca9319fae91dc4f973546ab32e9f8d819a",
+    "cli/src/safeyolo/rust_proxy.py::start": "7cc8370358cdc22dba324b27772c6521dfda59073847f0a2be98bcf59d7f5a0d",
     "cli/src/safeyolo/sockets.py::directory_for": "33dcc3728307d280eacb075b5f80863adffb4d8c1074fea8654ceac4c90b9b2f",
     "proxy/src/admin_api.rs::authenticate": "6b1b4b8147fcd19036433f57078c8d3fa55f99552c7ab7aee4e763d5abb74795",
     "proxy/src/admin_api.rs::respond_with_context": "652a18a65d23478ff491711f311c309c6e0397c8fdacdc333d4b12cd5cbbfad3",
+    "proxy/src/admin_api/services.rs::authorize": "bf243bf3c86365c5f8673c49ace839d30a57482bb43b39aa369c79e26f98887e",
+    "proxy/src/admin_api/services.rs::persist": "bd5a09d293857215af8d38ee9746cebb8d457b063b52fc8060310bfa17901e09",
     "proxy/src/admin_listener.rs::serve_events": "5df9127b5590d778de6dc22e06a62a2c5d5bf774b7940c86ddb12196a372d8d7",
     "proxy/src/admin_shield.rs::blocks_address": "be118d9e964fa19b6db375041887f43494a26a58e4b9f9d96e54d12078f5046c",
     "proxy/src/admin_shield.rs::blocks_host": "5bf6c8b0cc8f76b3d643a5688bd111495cc3b23d8b1c18081b1dfd0024432f59",
@@ -262,7 +267,7 @@
     "proxy/src/credential_guard.rs::evaluate": "b6df60a205c0bf576de538754a483fc2140a48e35dc55397d868d03eef6557c9",
     "proxy/src/credential_hmac.rs::close": "a3729eafaee7d2d0d3a74944bc4cf8f5cc35dd172f70b2b7f928b9f71202a3a0",
     "proxy/src/credential_injection.rs::apply": "86072ab446095bd7fed523d0ea21a6eb2a1bd6f7e5a73da6698fcd0f11db78e1",
-    "proxy/src/credential_injection.rs::prepare": "900a5453c2e8ad6903c2cc129ddf69bcbb550bcf4947a10e71bf07828c8f9101",
+    "proxy/src/credential_injection.rs::prepare": "9ed285009b81b8ea97e310dd536f45002932e9bb53dc0addccb1487bc7605a21",
     "proxy/src/credentials.rs::expose_secret": "bcf47129935923dcadc21036cb134434f43241c68eb38500979d634f8c31afcf",
     "proxy/src/credentials.rs::unlock": "e0fd45445c928a4390f01cda2be7ba32eb37a2ebd9f6c18cd9b0fed8eef554ef",
     "proxy/src/flow_store.rs::record": "8c24a019a94e8d7987d9256dcd117946485b7955310ab7a6e62acc12c91d8232",
@@ -270,11 +275,11 @@
     "proxy/src/grants.rs::finish_response": "780df18b2d9e84a38faa8cf83b322a5950e0e8110a82470870a51ae54725531c",
     "proxy/src/http.rs::decide": "b9ded1790134617a16de135ae8d47c8a7f06b1a22b3777c6c1b2d457ee68f269",
     "proxy/src/http.rs::enforce_response_decision": "fa87118c709cb8d3e455096ac6eaeb250a903f6d7450060b9b9fd9b8ed4a8b06",
-    "proxy/src/http.rs::execute_refresh": "3b53e17e66315147f6bd085671543855b1f1b3d034a1d7797bc4336708b11af9",
-    "proxy/src/http.rs::forward": "207d9b1751dd53482df336b92f4e25aac86dc4076993600717c6b5a806acc8a1",
+    "proxy/src/http.rs::execute_refresh": "156c741a4fca6588f1b1b8d78b3a05f7abc53ba7e2538668c1549947683fe407",
+    "proxy/src/http.rs::forward": "23910341954fe89daad606931a65b2f5ad852b16463de40d20806a98513ddb80",
     "proxy/src/http.rs::local_agent_api": "a5152c5fe8675bff6c883a0d0442a5315028907ae8c10e1893b807d8290d260c",
     "proxy/src/http.rs::open_egress_for_flow": "7d0fba6cb8621bf24bec7bfae38132974935ca4acf027a9e2234f1ecab3efa33",
-    "proxy/src/http.rs::open_outbound": "bb4a6061ca15e24a85833d3dfc7a494ce18d29027b9ffcf846a5d1fd738e10a2",
+    "proxy/src/http.rs::open_outbound": "8373c7ae489dc8b7708c8b2528508ee49f1d0e47550f0df0de7c2e03bb921ab3",
     "proxy/src/http.rs::resolve_and_connect_egress": "04f7be2773581f25834153f4cec48142fe2792b26d684cbfbe2daf49a7a0b3dc",
     "proxy/src/http.rs::serve_request": "6d4010cff8ba221e79c5e7ce2d13fd03bfa0cfe46233508201faf2ee33367553",
     "proxy/src/http.rs::serve_tunnel_http": "c21b7f12230402ed4c30c665761f33bf833f29b2a32415cbbb6c44fe306bafef",
@@ -291,6 +296,9 @@
     "proxy/src/network_guard.rs::evaluate_policy": "bde05cd6bfd241e058bfcf86ab2e8b8700f4c9b810b0c779b580b647ee54b3e2",
     "proxy/src/policy.rs::evaluate": "3c796c5ae8e3ee401efc68415732ce2c16cbaaafa85db49586284a43ef8ce9d8",
     "proxy/src/policy_runtime.rs::load": "f0d4c7cf7aea9c46869e40d003691b8dee2848909914569c211a573cd4d88806",
+    "proxy/src/provider_stream.rs::open": "18113337e6d35d68d6cd577819bfec694d26f4c2ade378eeac2189c8b7836900",
+    "proxy/src/services.rs::GatewaySnapshot::configured_agent_id": "1e24f4e39a9b18dab33890b9f4b06075db03b1f9a886cd6e676bcdebf81c02a3",
+    "proxy/src/services.rs::GatewaySnapshot::provider_for_host": "1e86dd089c3289d6f06585f41277e075bcfba22430f2fe88377e5214279c0a61",
     "proxy/src/services.rs::select": "7c604c875058a559b5c4e5eec8b17fb8f473928552f3de7d05d9b1be95e838ad",
     "proxy/src/test_context.rs::select_context": "9197866d505c72cbd9d5d019c3bd9b50fc7524ca8e4e0b7fef621e059e8d4368",
     "proxy/src/tls.rs::CertificateAuthority::from_pem": "3244cae621da7fe814d59da42658fdeedf246d9a6600e6f770252f63bd61fe6a",
@@ -1832,6 +1840,27 @@
       "rule": "python-output",
       "symbol": "client_to_guest",
       "text": "proc.stdin.write(data)"
+    },
+    {
+      "digest": "352d1679780198dfe945b07ea505bd40d0dffc05da0a51ff15b7a36404fa445e",
+      "path": "cli/src/safeyolo/provider_stream.py",
+      "rule": "python-output",
+      "symbol": "_copy_available_bytes",
+      "text": "target.write(remaining)"
+    },
+    {
+      "digest": "ddc2b9d511892457c6db48bfe845fa63c348578718efbfdacac86ecfdfa31f15",
+      "path": "cli/src/safeyolo/provider_stream.py",
+      "rule": "python-output",
+      "symbol": "main",
+      "text": "sys.stdout.buffer.write(b\"\\x01\")"
+    },
+    {
+      "digest": "ed3fc85c792dc53e5da5514c5470394ca94edc9c73c1ec44ed526305ccb2abf0",
+      "path": "cli/src/safeyolo/provider_stream.py",
+      "rule": "python-output",
+      "symbol": "main",
+      "text": "sys.stdout.buffer.write(b\"\\x00\")"
     },
     {
       "digest": "a2cf9ae637256e887d9ea30573daa718d072c3ce058d7b9897f8c595a526606d",
@@ -3752,11 +3781,11 @@
       "text": "services.insert(\n                &authorization.service,\n                Item::Value(toml_edit::Value::InlineTable(binding)),\n            )"
     },
     {
-      "digest": "fca2c373f59948789aefac468608e03b764fe088f23b7f1f946f2b3612b3313d",
+      "digest": "cb7ba8fe3d1afb04e136c09f1a6e3196b7ccb9f24845dfb5f710a1e5705c9831",
       "path": "proxy/src/admin_api/services.rs",
       "rule": "rust-output",
       "symbol": "persist",
-      "text": "binding.insert(\n                \"token\",\n                toml_edit::Value::from(authorization.credential.as_str()),\n            )"
+      "text": "binding.insert(\n                    \"token\",\n                    toml_edit::Value::from(authorization.credential.as_str()),\n                )"
     },
     {
       "digest": "e315c3b9826b27f6cc0edba27c17419949c9236a8b74f0b14030c31dd5b3d434",
@@ -5066,6 +5095,13 @@
       "rule": "rust-output",
       "symbol": "forward",
       "text": "upstream\n            .headers_mut()\n            .insert(\"x-safeyolo-evidence-error\", \"true\".parse()?)"
+    },
+    {
+      "digest": "37f06a8b5c029163543184b169a482547e9b3c0c85b9e796be72183fe93c02cd",
+      "path": "proxy/src/http.rs",
+      "rule": "rust-output",
+      "symbol": "forward",
+      "text": "request.headers_mut().insert(&name, value.clone())"
     },
     {
       "digest": "43891fe37cf2c6092e09baa377cc318eba732035ab57457c001cb16fd195ca3a",
@@ -7267,6 +7303,13 @@
     },
     {
       "digest": "abe962f3f8882ca2e4c83b3528086161ac893ad21c32b7d98ab06c1f8dbb8f64",
+      "path": "proxy/src/provider_stream.rs",
+      "rule": "rust-process-ffi",
+      "symbol": "open",
+      "text": "Command::new(python)"
+    },
+    {
+      "digest": "abe962f3f8882ca2e4c83b3528086161ac893ad21c32b7d98ab06c1f8dbb8f64",
       "path": "proxy/src/python_json.rs",
       "rule": "rust-process-ffi",
       "symbol": "json_presentation_matches_python_scalars_and_binary64_samples",
@@ -7395,6 +7438,7 @@
     "cli/src/safeyolo/policy/toml_normalize.py",
     "cli/src/safeyolo/policy/toml_roundtrip.py",
     "cli/src/safeyolo/preview.py",
+    "cli/src/safeyolo/provider_stream.py",
     "cli/src/safeyolo/proxy.py",
     "cli/src/safeyolo/repo_map.py",
     "cli/src/safeyolo/runtime_identity.py",
@@ -7498,6 +7542,7 @@
     "proxy/src/policy/watch.rs",
     "proxy/src/policy/watch/expiry_replay.rs",
     "proxy/src/policy_runtime.rs",
+    "proxy/src/provider_stream.rs",
     "proxy/src/python_json.rs",
     "proxy/src/python_text.rs",
     "proxy/src/request_headers.rs",
@@ -7521,7 +7566,7 @@
     "proxy/src/websocket.rs",
     "proxy/src/websocket_relay.rs"
   ],
-  "source_revision": "05e5e243afc0c959599618089825801dfb1b146e",
+  "source_revision": "8ba22365616d83b8b8b18b87781f0e9b9ad1e439",
   "stale_symbols": [],
   "tool_lock_sha256": "d5e5be721172aad87c4d98b065f7ed3009ec086989fa64dd7b9b5b3fde764a20",
   "workflow_sha256": "c02870a9036657ba654d49f596aa89a184a33543b180994b72f3f03fcc24f39a"

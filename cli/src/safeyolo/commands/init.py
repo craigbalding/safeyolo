@@ -2,6 +2,7 @@
 
 import secrets
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
 import typer
@@ -28,7 +29,7 @@ def _generate_admin_token(config_dir: Path) -> tuple[str, bool]:
     """Return (token, was_preserved).
 
     Preserves the existing admin token when a proxy is already running
-    (#338): the running mitmproxy holds the old token in memory and would
+    (#338): the running proxy holds the old token in memory and would
     reject the new one, breaking the `sync_proxy_modes()` PUT that fires
     at the end of every `agent add` / `agent remove`. A fresh token here
     would leave the CLI unable to talk to its own proxy until the
@@ -72,8 +73,8 @@ def init(  # DOC: cli/README.md
     """Initialize SafeYolo configuration.
 
     Creates configuration files for the SafeYolo security proxy. Agents run
-    in isolated Linux sandboxes with structural egress control: the only path
-    out is through SafeYolo's mitmproxy.
+    in isolated sandboxes with structural egress control: their outbound
+    requests use SafeYolo's Rust proxy.
 
     Examples:
 
@@ -125,7 +126,8 @@ def init(  # DOC: cli/README.md
         console.print("  [green]Created[/green] admin token")
 
     # Write config.yaml
-    config = DEFAULT_CONFIG.copy()
+    config = deepcopy(DEFAULT_CONFIG)
+    config["proxy"]["rust_config"] = str((config_dir / "data" / "native.json").absolute())
     save_config(config)
     console.print(f"  [green]Created[/green] {config_path}")
 

@@ -14,6 +14,7 @@ from .mount_protection import is_path_protected
 console = Console()
 
 DEFAULT_AGENT_MEMORY_MB = 4096
+GUEST_PROXY_PORT = 8080
 
 # RFC 1123 hostname: lowercase alphanumeric, hyphens allowed (not at start/end), max 63 chars
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")

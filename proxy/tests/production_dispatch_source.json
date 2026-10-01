@@ -1,0 +1,649 @@
+{
+  "rows": [
+    {
+      "mode": "production_container",
+      "case": "valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1
+    },
+    {
+      "mode": "production_container",
+      "case": "request_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "response_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "both_content_errors",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_normal500",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.open",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_comparison_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 0,
+        "state": null,
+        "failure_count": null,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_after_commit_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 0,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.open"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "request_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError",
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "response_content_error",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": []
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request"
+      ],
+      "errors": [
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "separate_addons_control",
+      "case": "both_content_errors",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "ValueError",
+          "ValueError"
+        ]
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 1,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [],
+      "errors": [
+        "ValueError",
+        "ValueError",
+        "ValueError",
+        "ValueError"
+      ],
+      "persisted_rows": 0
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_valid",
+      "request": {
+        "context_applied": true,
+        "context_allowed": 1,
+        "logger": {
+          "requests_total": 1,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [
+          "security.test_context",
+          "traffic.request"
+        ],
+        "errors": [],
+        "context_checks": 1,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": false,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 1,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 1,
+        "errors": 0,
+        "skipped": 0,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "security.test_context",
+        "traffic.request",
+        "ops.circuit_breaker.reopen",
+        "security.test_context",
+        "traffic.response"
+      ],
+      "errors": [],
+      "persisted_rows": 1,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_error",
+      "request": {
+        "context_applied": false,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "TypeError"
+        ],
+        "context_checks": 0,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": true,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "ops.circuit_breaker.reopen",
+        "traffic.response"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    },
+    {
+      "mode": "production_container",
+      "case": "circuit_request_error_missing_context",
+      "request": {
+        "context_applied": false,
+        "context_allowed": 0,
+        "logger": {
+          "requests_total": 0,
+          "requests_quieted": 0,
+          "responses_total": 0,
+          "blocks_total": 0
+        },
+        "events": [],
+        "errors": [
+          "TypeError"
+        ],
+        "context_checks": 0,
+        "request_id_present": true,
+        "start_time_present": true,
+        "context_header_present": false,
+        "local_response": false
+      },
+      "logger": {
+        "requests_total": 0,
+        "requests_quieted": 0,
+        "responses_total": 1,
+        "blocks_total": 0
+      },
+      "recorder": {
+        "recorded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "queue_dropped": 0,
+        "write_errors": 0
+      },
+      "events": [
+        "ops.circuit_breaker.reopen",
+        "traffic.response"
+      ],
+      "errors": [
+        "TypeError"
+      ],
+      "persisted_rows": 0,
+      "circuit": {
+        "checks": 1,
+        "opens": 1,
+        "state": "open",
+        "failure_count": 1,
+        "response_status": 500,
+        "response_body": "response"
+      }
+    }
+  ],
+  "network_attempts": 0,
+  "writer_threads_joined": true,
+  "boundary": "real AddonManager trigger_event with ProductionAddons.__new__ container and four real children, plus actual CircuitBreaker in six controls; synthetic completed flows, captured audit enqueue only; no full startup or transport proof",
+  "metadata": {
+    "python": "3.12.14",
+    "mitmproxy": "12.2.3",
+    "sha256": {
+      "cli/src/safeyolo/traffic_master.py": "783d8d3981f94f2658a7acc3a29df98644f6225d5076506ac47cdf88b727d00b",
+      "cli/src/safeyolo/mitm_addons/__init__.py": "d241944dd66ae8dfe6df2b460a11230afc04b1a0174ec0e024cea95f67403a00",
+      "cli/src/safeyolo/mitm_addons/request_id.py": "ff780ba0898a2ea0b309e8ae30b44958b5f382bc7dc962a339b84a5d17dd97a6",
+      "cli/src/safeyolo/mitm_addons/circuit_breaker.py": "8c77aec89932ac75edec0fac17c5ea211869f1ff2b59645c73d8a60d2fa1fe12",
+      "cli/src/safeyolo/mitm_addons/test_context.py": "0c34f07a1bedf17645c1e7fe6cf1582852c545ca376c73e10d935a821cefbd33",
+      "cli/src/safeyolo/mitm_addons/flow_recorder.py": "3425d0b9c38453c93f723aa2b2bdc36e311b59246170dc36f435c999986d1419",
+      "cli/src/safeyolo/mitm_addons/request_logger.py": "71b31e77a81fb679e189426221645c413cbdc0208275d3671530ee72a1ec4d6b",
+      "cli/src/safeyolo/core/trace.py": "7574231ab6c7d597b24c28c84bbd75dd9fdf1e9596e7d9350dee196fb00ef1ff",
+      "cli/src/safeyolo/core/flow_writer.py": "481b336b5d34dc2bb4712ad74244e324bfe0e6bf5a173fca3a91dc0017e45f8f",
+      "cli/src/safeyolo/storage/flow_store.py": "2dfa78c11eba2a4a29aed7b911bb3ed56515990e0528e97614534111ddb51ab0",
+      "mitmproxy/addonmanager.py": "1dc72e4f560c8873a587a750ca6253b32bdff5a07cc1bb4aa574eabede923a78",
+      "mitmproxy/http.py": "f8ff6ff9e8f095eccce799eb04ec172227e56953b32d13775e556f65b2dd4fc9",
+      "mitmproxy/net/encoding.py": "ed6466bd018082ec59f4cbdf43139b6d0235bfe802119f3177323c94796e57ea"
+    }
+  },
+  "temporary_stores_removed": true
+}

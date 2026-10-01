@@ -1838,7 +1838,7 @@ def test_unavailable_resume_preserves_work_and_starts_fresh_next(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
     )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
@@ -1898,7 +1898,11 @@ def test_recovered_work_preserves_thread_after_successful_handoff(
         }
     ]
     module.save_state(state_path, state)
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
 
     def invoke(config, state, current_path, room_ids, codex_args):
@@ -1938,7 +1942,7 @@ def test_empty_external_wait_does_not_launch_codex(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
     )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     waits = []
@@ -2068,7 +2072,11 @@ def test_actionable_external_attention_launches_one_codex_turn(
     attention_id = "attn-" + "5" * 32
     state_path = tmp_path / "state.json"
     module.save_state(state_path, module.empty_state())
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2108,7 +2116,11 @@ def test_new_external_work_preserves_thread_after_outbound_handoff(
     state["thread_id"] = "healthy-thread"
     module.save_state(state_path, state)
     config = _factory_config(module, tmp_path, "owner")
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2218,7 +2230,11 @@ def test_brief_only_external_attention_does_not_launch_codex(
     attention_id = "attn-" + "6" * 32
     state_path = tmp_path / "state.json"
     module.save_state(state_path, module.empty_state())
-    monkeypatch.setattr(module, "preflight", lambda config, state=None: {"room-1": "backlog"})
+    monkeypatch.setattr(
+        module,
+        "preflight",
+        lambda config, state=None, harness_args=(): {"room-1": "backlog"},
+    )
     monkeypatch.setattr(module, "reconcile_terminals", lambda config, current: False)
     monkeypatch.setattr(
         module,
@@ -2512,7 +2528,7 @@ def test_successful_initial_preflight_avoids_rechecking_login_each_cycle(
     monkeypatch.setattr(
         module,
         "preflight",
-        lambda config, state=None: calls.append("initial") or {"room-1": "backlog"},
+        lambda config, state=None, harness_args=(): calls.append("initial") or {"room-1": "backlog"},
     )
     monkeypatch.setattr(
         module,
@@ -2832,10 +2848,94 @@ def _stage_preflight(monkeypatch, module, tmp_path, *, tool_timeout=330, login="
 def test_preflight_requires_chatgpt_subscription(supervisor_module, tmp_path, monkeypatch):
     module = supervisor_module
     _stage_preflight(monkeypatch, module, tmp_path, login="Logged in using an API key")
-    monkeypatch.setattr(module, "_api_json", lambda *args, **kwargs: {"agent_api": "ok"})
+    def api(path, **_kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        return {"room_id": "room-1", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module, "_api_json", api)
 
     with pytest.raises(module.SupervisorError, match="ChatGPT subscription"):
         module.preflight(_config(module, tmp_path))
+
+
+def test_preflight_accepts_explicit_command_authenticated_external_provider(
+    supervisor_module, tmp_path, monkeypatch
+):
+    module = supervisor_module
+    codex_home = tmp_path / "codex-home"
+    launcher = tmp_path / "coord-launcher"
+    codex_home.mkdir()
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
+    (codex_home / "config.toml").write_text(
+        "forced_chatgpt_auth = false\n"
+        "[mcp_servers.safeyolo-coord]\n"
+        f'command = "{launcher}"\n'
+        "tool_timeout_sec = 330\n"
+    )
+    (codex_home / "opencode-go-review.config.toml").write_text(
+        'model_provider = "opencode_go_review"\n'
+        'model = "deepseek-v4.1-flash"\n'
+        "[model_providers.opencode_go_review]\n"
+        'base_url = "https://opencode.ai/zen/go/v1"\n'
+        'wire_api = "responses"\n'
+        "[model_providers.opencode_go_review.auth]\n"
+        'command = "sh"\n'
+        'args = ["-c", "cat $HOME/.codex/secrets/opencode-go.key"]\n'
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    def api(path, **_kwargs):
+        if path == "/health":
+            return {"agent_api": "ok"}
+        return {"room_id": "room-1", "permissions": ["send", "receive"]}
+
+    monkeypatch.setattr(module, "_api_json", api)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("ChatGPT login status must not run for the external provider"),
+    )
+
+    rooms = module.preflight(
+        _config(module, tmp_path),
+        module.empty_state(),
+        [
+            "--profile",
+            "opencode-go-review",
+            "-c",
+            'model_provider="opencode_go_review"',
+            "-c",
+            'model="deepseek-v4.1-flash"',
+        ],
+    )
+
+    assert rooms
+
+
+def test_supervisor_passes_codex_launch_arguments_to_initial_preflight(
+    supervisor_module, tmp_path, monkeypatch
+):
+    module = supervisor_module
+    state_path = tmp_path / "state.json"
+    module.save_state(state_path, module.empty_state())
+    launch_args = ["--profile", "external-review", "-c", 'model_provider="external"']
+    observed = []
+
+    def checked_preflight(config, state, harness_args):
+        observed.append((config.harness, list(harness_args)))
+        return {"room-1": "backlog"}
+
+    monkeypatch.setattr(module, "preflight", checked_preflight)
+    monkeypatch.setattr(
+        module,
+        "wait_for_attention_page",
+        lambda _config, state: {"objects": [], "next_cursor": state["safe_cursor"]},
+    )
+    supervisor = module.Supervisor(_config(module, tmp_path), state_path, launch_args)
+
+    assert supervisor.cycle() is True
+    assert observed == [("codex", launch_args)]
 
 
 def test_pi_preflight_checks_the_selected_subscription_and_coord(
@@ -3363,6 +3463,50 @@ def test_recovery_object_uses_stdin_not_process_arguments(supervisor_module, tmp
     assert result.saw_turn_completed is True
     assert secret_task_text not in argv_file.read_text()
     assert secret_task_text in stdin_file.read_text()
+
+
+@pytest.mark.parametrize("thread_id", [None, "0199c1e6-1234-7000-8000-000000000001"])
+def test_codex_launcher_options_precede_exec_for_fresh_and_resumed_turns(
+    supervisor_module,
+    tmp_path,
+    monkeypatch,
+    thread_id,
+):
+    module = supervisor_module
+    argv_file = tmp_path / "argv.json"
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['TEST_ARGV']).write_text(json.dumps(sys.argv[1:]))\n"
+        "sys.stdin.read()\n"
+        f"print(json.dumps({{'type':'thread.started','thread_id':'{thread_id or 'new-thread'}'}}), flush=True)\n"
+        "print(json.dumps({'type':'turn.started'}), flush=True)\n"
+        "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CODEX_BIN", str(fake_codex))
+    monkeypatch.setenv("TEST_ARGV", str(argv_file))
+    state = module.empty_state()
+    state["thread_id"] = thread_id
+
+    result = module.run_invocation(
+        _config(module, tmp_path),
+        state,
+        tmp_path / "state.json",
+        {"room-1": "backlog"},
+        ["--profile", "opencode-go-review", "-c", "model_reasoning_effort=max"],
+    )
+
+    assert result.saw_turn_completed is True
+    argv = json.loads(argv_file.read_text())
+    assert argv[:4] == ["--profile", "opencode-go-review", "-c", "model_reasoning_effort=max"]
+    assert argv[4] == "exec"
+    if thread_id is None:
+        assert argv[5:7] == ["--json", "--cd"]
+    else:
+        assert argv[5:8] == ["resume", "--json", thread_id]
 
 
 def test_agent_room_receives_each_codex_stdout_event_and_coalesces_stderr_chunk(

@@ -1,0 +1,152 @@
+"""Keep the Rust proxy's focused and final GitHub Actions events distinct."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "proxy-rust.yml"
+
+
+def rust_workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_workflow() -> None:
+    workflow = rust_workflow()
+    # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.
+    events = workflow[True]
+    assert set(events) == {"pull_request", "push"}
+    assert set(events["pull_request"]["types"]) == {
+        "opened",
+        "reopened",
+        "synchronize",
+        "ready_for_review",
+    }
+    assert set(events["push"]["branches"]) == {"master", "main", "ci/proxy-rust-620"}
+    assert "paths" not in events["push"]
+    paths = events["pull_request"]["paths"]
+    for path in (
+        "cli/src/safeyolo/rust_proxy.py",
+        "cli/tests/test_rust_proxy.py",
+        "proxy/**",
+        "tests/blackbox/proxy_backend.py",
+        "tests/blackbox/run-tests.sh",
+        "tests/test_blackbox_harness.py",
+        "tests/test_proxy_rust_ci_events.py",
+        "tests/test_proxy_rust_coord_fixture.py",
+        "cli/src/safeyolo/desktop_presenter*.py",
+        "cli/src/safeyolo/preview.py",
+        "cli/tests/test_agent_preview.py",
+        "cli/tests/test_desktop_presenter*.py",
+        ".github/workflows/proxy-rust.yml",
+        "scripts/cargo_with_space.sh",
+    ):
+        assert path in paths
+
+
+def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
+    workflow = rust_workflow()
+    assert workflow["concurrency"]["group"] == "${{ github.workflow }}-${{ github.ref }}"
+    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event.action != 'ready_for_review' }}"
+    assert "ready_for_review" in workflow[True]["pull_request"]["types"]
+    assert "github.event.action != 'ready_for_review'" in workflow["jobs"]["focused-pr"]["if"]
+
+
+def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
+    job = rust_workflow()["jobs"]["focused-pr"]
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'pull_request' && "
+        "github.base_ref != 'master' && github.base_ref != 'main' && "
+        "github.event.action != 'ready_for_review'"
+    )
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["env"]["CARGO_BUILD_JOBS"] == "1"
+    checkout = job["steps"][0]
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+    assert "git rev-parse HEAD" in job["steps"][1]["run"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    assert "socat" in steps["Install preview test system dependency"]["run"]
+    step_names = list(steps)
+    assert step_names.index("Install preview test system dependency") < step_names.index(
+        "Test the desktop presenter protocol"
+    )
+    native = steps["Test focused native boundaries"]
+    assert "--ignored" not in native["run"]
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    for required in (
+        "cargo_with_space.sh fmt --all -- --check",
+        "cargo_with_space.sh clippy --locked --all-targets -- -D warnings",
+        "cli/tests/test_rust_proxy.py",
+        "cli/tests/test_sockets.py",
+        "tests/test_proxy_rust_coord_fixture.py",
+        "tests/test_proxy_cutover_deletion_map.py",
+        "cli/tests/test_desktop_presenter.py",
+        "cli/tests/test_desktop_presenter_rpc.py",
+        "cli/tests/test_agent_preview.py",
+        "tests/test_blackbox_harness.py",
+        "tests/proxy_migration/test_readiness.py",
+        "cargo_with_space.sh test --locked --test agent_api_audit",
+        "cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
+    ):
+        assert required in runs
+    assert "cargo_with_space.sh test --locked --lib" not in runs
+    # The concurrent resource observation remains in the final full suite;
+    # it does not turn each intermediate PR's focused check into a load probe.
+    assert "repeated_service_oauth_activity_runs_concurrently" not in runs
+    full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["http-slice"]["steps"])
+    assert "cargo_with_space.sh test --locked" in full_runs
+    assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
+
+
+def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
+    job = rust_workflow()["jobs"]["http-slice"]
+    assert " ".join(job["if"].split()) == (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'pull_request' && "
+        "(github.base_ref == 'master' || github.base_ref == 'main') && "
+        "github.event.pull_request.draft == false)"
+    )
+    assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
+    checkout = job["steps"][0]
+    expected_head = "${{ github.event.pull_request.head.sha || github.sha }}"
+    assert checkout["with"]["ref"] == expected_head
+    assert job["steps"][1]["env"]["EXPECTED_HEAD"] == expected_head
+    assert "git rev-parse HEAD" in job["steps"][1]["run"]
+    steps = {step.get("name"): step for step in job["steps"]}
+    assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
+        "${{ matrix.os == 'macos-latest' && 20 || 10 }}"
+    )
+    assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
+    peer = steps["Provide the macOS owned HTTP peer address"]
+    assert peer["if"] == "matrix.os == 'macos-latest'"
+    assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
+    assert job["steps"].index(peer) < job["steps"].index(
+        steps["Run shared HTTP contracts against native Rust"]
+    )
+    short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}"
+    assert steps["Run shared HTTP contracts against native Rust"]["env"][
+        "PYTEST_ADDOPTS"
+    ] == short_tmp
+    assert (
+        "--proxy-backend rust"
+        in steps["Run shared HTTP contracts against native Rust"]["run"]
+    )
+
+
+def test_full_matrix_uses_only_the_native_proxy() -> None:
+    steps = rust_workflow()["jobs"]["http-slice"]["steps"]
+    named = {step.get("name"): step for step in steps}
+    assert named["Install uv"]["with"]["version"] == "0.12.8"
+    installation = named["Install the native CLI test environment"]["run"]
+    assert "uv python install 3.12.14" in installation
+    assert "uv sync --frozen --group dev --python 3.12.14" in installation
+    assert named["Test and build the Rust proxy"]["env"]["SAFEYOLO_PYTHON"] == (
+        "${{ github.workspace }}/.venv/bin/python"
+    )
+    rendered = str(steps)
+    assert "--proxy-backend python" not in rendered
+    assert "-- --ignored" not in rendered
+    assert "git fetch --no-tags --depth=1 origin" not in rendered
+    assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
