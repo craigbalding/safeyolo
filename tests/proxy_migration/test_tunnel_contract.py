@@ -640,6 +640,24 @@ def wait_for_passthrough_audit(directory, count):
     raise AssertionError(f"timed out waiting for {count} passthrough events: {rows!r}")
 
 
+def wait_for_http_audit(directory, required, timeout=5):
+    """Wait for the HTTP records that the separate audit writer publishes."""
+    deadline = time.monotonic() + timeout
+    while True:
+        rows = [row for row in read_events(directory / "audit.jsonl")
+                if row["event"] in {"traffic.request", "traffic.response"}]
+        observed = {(row["event"], row["details"].get("path")) for row in rows}
+        missing = required - observed
+        if not missing:
+            return rows
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"timed out waiting for HTTP audit events: missing={sorted(missing)!r}; "
+                f"observed={rows!r}"
+            )
+        time.sleep(0.01)
+
+
 def fragmented_tls_request(stream, authority, ca, first):
     context = ssl.create_default_context(cafile=ca)
     context.set_alpn_protocols(["http/1.1"])
@@ -840,10 +858,11 @@ def test_configured_tls_passthrough_scope_and_interception_failure(proxy_backend
             assert successful <= inner <= successful | {failed_tls}
             if proxy_backend == "rust":
                 assert failed_tls in inner
-            audit = read_events(directory / "audit.jsonl")
-            http_audit = [row for row in audit if row["event"] in {
-                "traffic.request", "traffic.response",
-            }]
+            http_audit = wait_for_http_audit(directory, {
+                ("traffic.request", "/same-host"), ("traffic.response", "/same-host"),
+                ("traffic.request", "/other-host"), ("traffic.response", "/other-host"),
+                ("traffic.request", "/untrusted"),
+            })
             assert {row["details"].get("path") for row in http_audit} == {
                 "/same-host", "/other-host", "/untrusted",
             }
