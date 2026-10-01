@@ -313,9 +313,145 @@ async fn native_admin_desktop_starts_reuses_unlocks_and_closes() {
             .is_err()
     );
 
+    // An installed Commander request uses the durable ID returned by list,
+    // even though the agent listener is named alice. Tailnet share must give
+    // the remote Commander a reachable URL and own the Serve mapping.
+    fs::write(
+        root.path().join("instance_id"),
+        "sy-22222222222222222222222222222222\n",
+    )
+    .unwrap();
+    let tailscale = root.path().join("bin/tailscale");
+    fs::write(
+        &tailscale,
+        r#"#!/bin/sh
+root=$FAKE_TAILSCALE_STATE_DIR
+/bin/mkdir -p "$root"
+if [ "$1" = status ] && [ "$2" = --json ]; then
+    if [ -e "$root/disconnected" ]; then
+        printf '{"BackendState":"Stopped"}\n'
+    else
+        printf '{"BackendState":"Running","Self":{"DNSName":"host.test.ts.net."}}\n'
+    fi
+elif [ "$1" = serve ] && [ "$2" = status ] && [ "$3" = --json ]; then
+    if [ -f "$root/8443.target" ]; then
+        target=$(/bin/cat "$root/8443.target")
+        printf '{"TCP":{"8443":{"HTTPS":true}},"Web":{"8443":{"Handlers":{"/":{"Proxy":"%s"}}}}}\n' "$target"
+    else
+        printf '{}\n'
+    fi
+elif [ "$1" = serve ] && [ "$2" = --yes ]; then
+    marker=$root/${3#--https=}.target
+    trap '/bin/rm -f "$marker"; exit 0' TERM
+    printf '%s' "$4" > "$marker"
+    while :; do /bin/sleep 0.1; done
+else
+    exit 2
+fi
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&tailscale, fs::Permissions::from_mode(0o755)).unwrap();
+    unsafe {
+        std::env::set_var(
+            "SAFEYOLO_OPERATOR_INSTANCE_ID_FILE",
+            root.path().join("instance_id"),
+        );
+        std::env::set_var("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet");
+        std::env::set_var("FAKE_TAILSCALE_STATE_DIR", root.path().join("tailnet"));
+    }
+    let installed = Proxy::start(config(root.path())).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let listed = request(admin_port, "GET", "/admin/agents", &admin_headers, b"").await;
+    assert_eq!(status(&listed), 200);
+    let listed_id = body(&listed)["agents"][0]["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(listed_id, ID);
+    let unknown = request(
+        admin_port,
+        "POST",
+        "/admin/agents/ag-99999999999999999999999999999999/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&unknown), 404);
+    let listener_name = request(
+        admin_port,
+        "POST",
+        "/admin/agents/alice/desktop/present",
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&listener_name), 404);
+    let presented = request(
+        admin_port,
+        "POST",
+        &format!("/admin/agents/{listed_id}/desktop/present"),
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(
+        status(&presented),
+        200,
+        "{}",
+        String::from_utf8_lossy(&presented)
+    );
+    assert_eq!(body(&presented)["agent_id"], listed_id);
+    assert!(
+        body(&presented)["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("https://host.test.ts.net:8443/vnc.html")
+    );
+    let reused = request(
+        admin_port,
+        "POST",
+        &format!("/admin/agents/{listed_id}/desktop/present"),
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&reused), 200);
+    assert_eq!(body(&reused)["reused"], true);
+    assert_eq!(body(&reused)["url"], body(&presented)["url"]);
+    assert!(root.path().join("tailnet/8443.target").exists());
+    installed.shutdown().await;
+    assert!(!root.path().join("tailnet/8443.target").exists());
+
+    fs::remove_file(root.path().join("desktop-ready")).unwrap();
+    fs::write(root.path().join("tailnet/disconnected"), "").unwrap();
+    let disconnected = Proxy::start(config(root.path())).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&fs::read(root.path().join("ready.json")).unwrap()).unwrap();
+    let admin_port = ready["admin_port"].as_u64().unwrap() as u16;
+    let failed_tailnet = request(
+        admin_port,
+        "POST",
+        &format!("/admin/agents/{listed_id}/desktop/present"),
+        &admin_headers,
+        b"",
+    )
+    .await;
+    assert_eq!(status(&failed_tailnet), 409);
+    assert!(root.path().join("desktop-stopped").exists());
+    assert!(!root.path().join("desktop-ready").exists());
+    assert!(!root.path().join("tailnet/8443.target").exists());
+    disconnected.shutdown().await;
+    unsafe {
+        std::env::remove_var("SAFEYOLO_OPERATOR_INSTANCE_ID_FILE");
+        std::env::remove_var("SAFEYOLO_COMMAND_CENTRE_SHARE");
+        std::env::remove_var("FAKE_TAILSCALE_STATE_DIR");
+    }
+
     // A preview bind failure after the guest desktop starts must roll back
     // that newly started desktop and leave no owned presentation behind.
-    fs::remove_file(root.path().join("desktop-ready")).unwrap();
     let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     fs::write(
         root.path().join("config.yaml"),

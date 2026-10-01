@@ -591,7 +591,7 @@ def _command_centre_options(config: dict) -> dict:
     if type(events_port) is not int or not 1 <= events_port <= 65535:
         raise ValueError("Command Centre event port must be an integer from 1 to 65535")
     share = options.get("share", "local")
-    if share not in {"local", "tailnet"}:
+    if not isinstance(share, str) or share not in {"local", "tailnet"}:
         raise ValueError("command_centre.share must be local or tailnet")
     if share == "tailnet":
         if any(type(port) is not int or not 1 <= port <= 65535
@@ -677,6 +677,7 @@ def start(config: dict) -> None:
     env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] = str(instance_id_file().absolute())
     for name in (
         "SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT",
+        "SAFEYOLO_COMMAND_CENTRE_SHARE",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT",
         "SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE",
@@ -684,6 +685,7 @@ def start(config: dict) -> None:
         env.pop(name, None)
     if command_centre["enabled"]:
         env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] = str(command_centre["events_port"])
+        env["SAFEYOLO_COMMAND_CENTRE_SHARE"] = command_centre["share"]
         if command_centre["share"] == "tailnet":
             env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] = str(command_centre["tailnet_admin_port"])
             env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] = str(command_centre["tailnet_events_port"])

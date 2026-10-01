@@ -196,8 +196,8 @@ fn response(id: &str, name: &str, preview: &Preview, code: String, reused: bool)
     json!({"agent_id":id, "agent":name, "url":preview.url, "unlock_code":code, "reused":reused})
 }
 
-pub(crate) async fn present(listener_name: String) -> Result<Value, Error> {
-    if !valid_agent_id(&listener_name) {
+pub(crate) async fn present(agent_id: String, allow_listener_name: bool) -> Result<Value, Error> {
+    if !valid_agent_id(&agent_id) {
         return Err(Error::Failed);
     }
     if !available() {
@@ -209,8 +209,12 @@ pub(crate) async fn present(listener_name: String) -> Result<Value, Error> {
         .map_err(|_| Error::Failed)?;
     let agent = agents
         .iter()
-        .find(|agent| agent.id == listener_name)
-        .or_else(|| agents.iter().find(|agent| agent.name == listener_name))
+        .find(|agent| agent.id == agent_id)
+        .or_else(|| {
+            allow_listener_name
+                .then(|| agents.iter().find(|agent| agent.name == agent_id))
+                .flatten()
+        })
         .cloned()
         .ok_or(Error::NotFound)?;
     let id = agent.id;

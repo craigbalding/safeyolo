@@ -1662,9 +1662,11 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 None,
             ));
         }
-        if !listeners
-            .iter()
-            .any(|listener| listener.agent_id == agent_id)
+        let standalone = command_centre.is_none();
+        if standalone
+            && !listeners
+                .iter()
+                .any(|listener| listener.agent_id == agent_id)
         {
             return Ok(desktop_failure(
                 agent_id,
@@ -1706,7 +1708,7 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 ));
             }
         };
-        let result = match crate::desktop_present::present(agent_id.to_owned()).await {
+        let result = match crate::desktop_present::present(agent_id.to_owned(), standalone).await {
             Ok(value) => value,
             Err(crate::desktop_present::Error::NotFound) => {
                 return Ok(desktop_failure(

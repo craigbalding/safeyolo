@@ -161,6 +161,7 @@ def test_installed_launch_passes_command_centre_ports_and_durable_host_identity(
         assert env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"] == str(rust_proxy.instance_id_file().absolute())
         assert Path(env["SAFEYOLO_OPERATOR_INSTANCE_ID_FILE"]).read_text().startswith("sy-")
         assert env["SAFEYOLO_COMMAND_CENTRE_EVENTS_PORT"] == "9191"
+        assert env["SAFEYOLO_COMMAND_CENTRE_SHARE"] == "tailnet"
         assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_ADMIN_PORT"] == "10443"
         assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_EVENTS_PORT"] == "10444"
         assert env["SAFEYOLO_COMMAND_CENTRE_TAILNET_STATUS_FILE"] == str(
@@ -174,10 +175,30 @@ def test_installed_launch_passes_command_centre_ports_and_durable_host_identity(
     assert rust_proxy.read_process().pid == PID
 
 
+@pytest.mark.parametrize(("command_centre", "expected_share"), [
+    ({"enabled": True, "share": "local"}, "local"),
+    ({"enabled": False}, None),
+])
+def test_native_launch_uses_validated_local_or_disabled_share(
+    launch, monkeypatch, command_centre, expected_share,
+):
+    launch.config["command_centre"] = command_centre
+    monkeypatch.setenv("SAFEYOLO_COMMAND_CENTRE_SHARE", "tailnet")
+
+    def launched(*_args, **kwargs):
+        assert kwargs["env"].get("SAFEYOLO_COMMAND_CENTRE_SHARE") == expected_share
+        launch.ready.write_text(json.dumps(marker()))
+        return PID
+
+    launch.begin.side_effect = launched
+    proxy.start_proxy()
+
+
 @pytest.mark.parametrize("options", [
     {"enabled": "yes"},
     {"enabled": True, "events_port": True},
     {"enabled": True, "share": "public"},
+    {"enabled": True, "share": []},
     {"enabled": True, "share": "tailnet", "tailnet_admin_port": 9444, "tailnet_events_port": 9444},
 ])
 def test_invalid_command_centre_configuration_fails_before_native_launch(launch, options):
