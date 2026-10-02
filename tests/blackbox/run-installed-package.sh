@@ -40,7 +40,21 @@ config = yaml.safe_load(path.read_text())
 config['proxy'].update(port=0, admin_port=0, web_port=0, upstream_proxy='')
 path.write_text(yaml.safe_dump(config, sort_keys=False))
 PY
-safeyolo agent add bbpackage "$REPO_ROOT" --no-run
+# Host-only registration uses the installed package's metadata writer. The
+# ordinary agent-add path provisions a guest rootfs even with --no-run.
+python3 - "$(command -v safeyolo)" "$SAFEYOLO_CONFIG_DIR" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+python = Path(sys.argv[1]).read_text().splitlines()[0][2:]
+subprocess.run([python, '-I', '-c', '''
+import json,sys
+from pathlib import Path
+from safeyolo.agents_store import save_agent
+save_agent('bbpackage', {'agent_id':'ag-installed-package'})
+(Path(sys.argv[1])/'data/agent_map.json').write_text(json.dumps({'bbpackage':{'ip':'10.4.0.2'}}))
+''', sys.argv[2]], check=True)
+PY
 INSTALLED_BINARY="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])
