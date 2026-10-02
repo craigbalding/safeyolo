@@ -11,8 +11,12 @@ composition; it does not establish guest or hardware isolation.
 
 The independent Linux replacement receipt is
 [the #320 replacement disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
-The macOS installed replacement remains unproved. The maintained runner selects
-continuity on Linux and hosted macOS, but selection is not a passing observation.
+The independent macOS replacement receipt is
+[the current package/HTTPS/native-continuity disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5959049462).
+It records installed host observations on Bristol at
+`d96be08333e8a44d3ee7d534f3c90ee0fcda6e3f`; physical VZ remains pending.
+The maintained runner selects continuity on Linux and hosted macOS, but
+selection alone is not a passing observation.
 The native CA import fixture in `proxy/tests/tls.rs` accepts both supported RSA
 PEM key encodings, preserves the supplied bytes on reload and rejects a missing
 root without creating a replacement. Current circuit reload/restart controls
@@ -256,28 +260,29 @@ status without secret values. That component fixture alone did not exercise
 the installed OAuth refresh or user catalog paths; the installed transition
 above exercises those selected paths.
 
-The pre-deletion installed-instance rollback selection
+The retired installed-instance rollback selection
 `tests/blackbox/installed_host_smoke.py --mode smoke --rollback-python`
-switched backends in one old package; it is not
-a package-return command for the current release. Use the separate old and
-Rust package paths in the focused command above. In that historical lane, the
-script starts Rust, writes one allowed and
-one denied host rule through the authenticated native admin writer, checks
-200/403 behavior through the real UDS, stops Rust, selects the retained
-Python comparator in the same installation, and checks the saved host rules
-and the same 200/403 behavior there. The allowed origin uses a loopback
-host-and-port endpoint that is absent from the starting policy, so the
-successful request proves the newly written rule. After each write or backend
-start, the lane polls that allowed request for up to five seconds while the
-existing policy watcher publishes the change; the denied request remains an
-explicit 403 assertion. It then selects Rust again, repeats the behavior
-check, and stops both processes cleanly. The lane changes only
-`proxy.backend` in the disposable `config.yaml`, removes
-`SAFEYOLO_RUST_PROXY` for the rollback start, records the durable policy hash,
-asserts the exact `host:port` key in both the persisted policy and
-`policy show --section hosts`, and restores the caller's original selector
+is preserved in the audited Stage A source above. Its retirement follows the
+independent macOS replacement disposition above. It switched backends in one
+old package; it is not a package-return command for the current release. Use
+the separate old and Rust package paths in the focused command above. In that historical lane, the
+script started Rust, wrote one allowed and
+one denied host rule through the authenticated native admin writer, checked
+200/403 behavior through the real UDS, stopped Rust, selected the retained
+Python comparator in the same installation, and checked the saved host rules
+and the same 200/403 behavior there. The allowed origin used a loopback
+host-and-port endpoint that was absent from the starting policy, so the
+successful request proved the newly written rule. After each write or backend
+start, the lane polled that allowed request for up to five seconds while the
+existing policy watcher published the change; the denied request remained an
+explicit 403 assertion. It then selected Rust again, repeated the behavior
+check, and stopped both processes cleanly. The lane changed only
+`proxy.backend` in the disposable `config.yaml`, removed
+`SAFEYOLO_RUST_PROXY` for the rollback start, recorded the durable policy hash,
+asserted the exact `host:port` key in both the persisted policy and
+`policy show --section hosts`, and restored the caller's original selector
 bytes. Its report marked this
 rollback sequence `passed` while the overall smoke result remained partial
-because guest isolation and platform acceptance are separate requirements. It
-does not claim that the Python comparator, guest isolation, or a platform lane
-has passed as a full release gate.
+because guest isolation and platform acceptance were separate requirements. It
+did not claim that the Python comparator, guest isolation, or a platform lane
+had passed as a full release gate.
