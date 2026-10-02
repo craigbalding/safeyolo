@@ -238,7 +238,7 @@ def env_for(root: Path) -> dict:
     env["SAFEYOLO_CONFIG_DIR"] = str(root)
     env["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     env["SAFEYOLO_COORD_DATA_DIR"] = str(root / "data" / "coord")
-    env["SAFEYOLO_NATS_TEST_INSTANCE"] = "installed-continuity-" + root.name
+    env["SAFEYOLO_NATS_TEST_INSTANCE"] = "continuity-" + hashlib.sha256(os.fsencode(root)).hexdigest()[:16]
     return env
 
 
@@ -888,12 +888,12 @@ def main() -> None:
         (root / "data/agent_map.json").write_text(json.dumps({
             "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
         installed_python(args.old_cli, old_env, """
-import json
+import json,sys
 from safeyolo.agents_store import save_agent
-save_agent('alice',{'agent_id':'ag-r638-alice'})
-save_agent('bob',{'agent_id':'ag-r638-bob'})
+save_agent('alice',{'agent_id':'ag-r638-alice','folder':sys.argv[1]})
+save_agent('bob',{'agent_id':'ag-r638-bob','folder':sys.argv[1]})
 print(json.dumps({'agents':'registered'}))
-""")
+""", str(root))
         # The old writer creates the canonical encrypted file and its key.
         installed_python(args.old_cli, old_env, """
 import json,sys
@@ -982,11 +982,13 @@ def update(doc):
     doc['agents']=tomlkit.table()
     doc['agents']['alice']=tomlkit.table()
     doc['agents']['alice']['agent_id']='ag-r638-alice'
+    doc['agents']['alice']['folder']=str(Path(sys.argv[1]).parent)
     doc['agents']['alice']['hosts']=tomlkit.table()
     tls_host=tomlkit.inline_table(); tls_host['egress']='allow'; tls_host['rate']=600
     doc['agents']['alice']['hosts']['127.0.0.2:'+sys.argv[2]]=tls_host
     doc['agents']['bob']=tomlkit.table()
     doc['agents']['bob']['agent_id']='ag-r638-bob'
+    doc['agents']['bob']['folder']=str(Path(sys.argv[1]).parent)
     doc['addons']=tomlkit.table()
     doc['addons']['test_context']=tomlkit.table()
     doc['addons']['test_context']['target_hosts']=['127.0.0.2']
@@ -1298,8 +1300,8 @@ print(json.dumps({'test_context':'removed_after_flow'}))
                                      "AND status_code=200 ORDER BY id DESC LIMIT 1").fetchone()
         check(row is not None, "native did not retain the exact flow in old SQLite path")
         flow_id, flow_request_id = row
-        status, native_flow = json_request(alice, "GET", f"/api/flows/{flow_id}", agent_token)
-        check(status == 200 and native_flow is not None, "native flow consumer failed")
+        status, recorded_flow = json_request(alice, "GET", f"/api/flows/{flow_id}", agent_token)
+        check(status == 200 and recorded_flow is not None, "native flow consumer failed")
         status, native_tag = json_request(alice, "POST", f"/api/flows/{flow_id}/tag",
                                           agent_token, {"tag": "native", "value": "owned"})
         check(status == 200, f"native flow tag writer failed: {status} {native_tag}")
@@ -1366,6 +1368,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         old_task_status, old_task_body = request(alice, "GET", task_target)
         check(old_task_status == 200 and old_task_body == BODY,
               "old Python inherited the native active task overlay")
+        replacement_initial_task_status = old_task_status
         policy_before_old_task = sha(root / "policy.toml")
         task_status, old_registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
                                             {"policy": TASK_POLICY}, backend=prior_backend)
@@ -1379,9 +1382,20 @@ print(json.dumps({'test_context':'removed_after_flow'}))
                                backend=prior_backend)
         check(task_status == (200 if args.native else 404),
               "replacement task activation returned an unexpected result")
+        before = len(origin.seen)
         old_task_status, old_task_body = request(alice, "GET", task_target)
-        check(old_task_status == 200 and old_task_body == BODY,
-              "old Python registration changed a request without task context")
+        if args.native:
+            check(old_task_status == 403 and len(origin.seen) == before,
+                  "replacement active task did not deny before origin delivery")
+            task_status, cleared = admin(root, "DELETE", f"/admin/policy/task/{TASK_ID}")
+            check(task_status == 200 and cleared.get("status") == "cleared",
+                  "replacement task clear failed")
+            restored_status, restored_body = request(alice, "GET", task_target)
+            check(restored_status == 200 and restored_body == BODY,
+                  "replacement task clear did not restore scoped host approval")
+        else:
+            check(old_task_status == 200 and old_task_body == BODY,
+                  "old Python registration changed a request without task context")
         check(sha(root / "policy.toml") == policy_before_old_task,
               "old Python task registration changed durable policy")
         rollback_tls = trusted_tls_request(alice, tls_origin.server_port, root)
@@ -1520,8 +1534,8 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         check(f"127.0.0.2:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
               "old Python writer did not revoke scoped host approval")
         print(json.dumps({"python_rollback": stages[-1], "gateway_status": old_gateway_status,
-                          "task_reset_status": old_task_status,
-                          "task_registered_without_activation": True,
+                          "task_reset_status": replacement_initial_task_status,
+                          "task_registered_without_activation": not args.native,
                           "gateway_response": summary_value(old_gateway_bytes),
                           "old_consumer": old_read, "oauth_provider_calls": len(oauth.seen),
                           "coord": old_coord_read, "plumb_read_count": len(plumb_old["messages"]),
@@ -1529,6 +1543,20 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
                           "circuit_reset_status": old_recovered_status,
                           "host_approval_revoked": True}),
               flush=True)
+        if args.native:
+            # Leave an active task in the replaced process. Its earlier
+            # deny/clear controls establish the effect; the fresh process must
+            # discard this registration and activation.
+            policy_before_return_task = sha(root / "policy.toml")
+            task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                            {"policy": TASK_POLICY})
+            check(task_status == 200 and registered.get("permission_count") == 1,
+                  "replacement could not register the task before its final stop")
+            task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+            check(task_status == 200 and activated.get("permission_count") == 1,
+                  "replacement could not activate the task before its final stop")
+            check(sha(root / "policy.toml") == policy_before_return_task,
+                  "replacement task activation changed durable policy")
         stop(active, root, old_env)
         active = None
         ensure_nats(args.old_cli, old_env)

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "proxy-rust.yml"
@@ -163,6 +166,37 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     assert "--test native_runtime_dependency" in runs
     assert "tests/proxy_contracts --proxy-backend rust" not in runs
     assert "install.sh" not in runs and "bootstrap" not in runs
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("cli/src/safeyolo/platform/linux.py", {"linux": "true"}),
+    ("cli/src/safeyolo/platform/darwin.py", {"macos": "true"}),
+    ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}),
+    ("docs/DEVELOPERS.md", {}),
+])
+def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected):
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
+
+    git("init", "-q")
+    (tmp_path / "base").touch()
+    git("add", "base")
+    git("-c", "user.name=Runner test", "-c", "user.email=runner@example.invalid",
+        "commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    changed = tmp_path / path
+    changed.parent.mkdir(parents=True)
+    changed.touch()
+    git("add", path)
+    git("-c", "user.name=Runner test", "-c", "user.email=runner@example.invalid",
+        "commit", "-qm", "change")
+    output = tmp_path / "outputs"
+    step = next(step for step in rust_workflow()["jobs"]["focused-pr"]["steps"]
+                if step.get("id") == "changes")
+    subprocess.run(["bash", "-eu", "-c", step["run"]], cwd=tmp_path, check=True,
+                   env=dict(os.environ, BASE=base, RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output)))
+    actual = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
+    assert actual == expected
 
 
 def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():

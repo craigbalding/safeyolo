@@ -18,6 +18,7 @@ import yaml
 
 from tests.blackbox import installed_lifecycle as pilot
 from tests.blackbox import installed_sections
+from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.installed_ingress import installed_identity
 from tests.blackbox.isolation import installed_access as guest
@@ -1210,3 +1211,14 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_path, monkeypatch):
+    from safeyolo.coord import nats_runtime
+
+    root = tmp_path / ("installed-native-continuity-" + "x" * 80)
+    env = continuity.env_for(root)
+    for key in ("SAFEYOLO_NATS_TEST_INSTANCE", "SAFEYOLO_COORD_DATA_DIR"):
+        monkeypatch.setenv(key, env[key])
+    assert nats_runtime.nats_root() == root / "data/coord/nats"
+    assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]

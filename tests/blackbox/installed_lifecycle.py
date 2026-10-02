@@ -357,6 +357,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--install-commit", default=FROZEN_R)
     args = parser.parse_args()
+    os.environ["SAFEYOLO_BLACKBOX_PLATFORM"] = args.platform
     config_dir = args.config_dir.resolve()
     checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     assert checked(["git", "-C", str(checkout), "rev-parse", "HEAD"]).stdout.strip() == args.install_commit

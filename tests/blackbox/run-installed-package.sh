@@ -3,6 +3,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)"
+if [ "$(uname -s)" = "Linux" ] && ! command -v runsc >/dev/null 2>&1; then
+    echo "ERROR: the current installed Linux launcher requires runsc, even for this host-only witness" >&2
+    exit 2
+fi
 REVISION="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 PACKAGE_DIR="$(mktemp -d "$HOME/sy-package.XXXXXX")"
 export UV_TOOL_DIR="$PACKAGE_DIR/uv-tools"
@@ -51,7 +55,7 @@ subprocess.run([python, '-I', '-c', '''
 import json,sys
 from pathlib import Path
 from safeyolo.agents_store import save_agent
-save_agent('bbpackage', {'agent_id':'ag-installed-package'})
+save_agent('bbpackage', {'agent_id':'ag-installed-package','folder':sys.argv[1]})
 (Path(sys.argv[1])/'data/agent_map.json').write_text(json.dumps({'bbpackage':{'ip':'10.4.0.2'}}))
 ''', sys.argv[2]], check=True)
 PY

@@ -1435,7 +1435,8 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         started = True  # A failed start can still have spawned an owned process.
         result = _run([cli_path, "start", "--wait"], env=env, cwd=cwd, timeout=45)
         if result.returncode:
-            raise SmokeError(f"installed native start failed (exit {result.returncode})")
+            raise SmokeError(f"installed native start failed (exit {result.returncode}): "
+                             f"{result.stdout.strip()} {result.stderr.strip()}")
         native_path = config_dir / "data/native.json"
         native = _native_config(native_path, cwd)
         runtime = _runtime_observation(config_dir, native, candidate_path,

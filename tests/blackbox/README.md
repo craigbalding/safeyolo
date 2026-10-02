@@ -209,13 +209,14 @@ executable until Lens independently verifies this native replacement.
 ## Short installed host-package witness
 
 From a clean exact checkout on a disposable Linux or hosted Mac, with uv and
-Cargo available, run:
+Cargo available, run the command below. On Linux, the current installed launcher
+also requires `runsc`; this witness does not install or boot a guest rootfs.
+On macOS, prepare the owned `127.0.0.2` loopback alias first, as the workflow does.
 
 ```sh
 ./tests/blackbox/run-installed-package.sh
 ```
 
-On macOS, prepare the owned `127.0.0.2` loopback alias first, as the workflow does.
 This installs the current wheel/native binary without rootfs bootstrap, uses the
 normal launcher/configuration, authenticates exact running identity, observes
 native allow/deny at two owned HTTP origins and verifies stop/cleanup. Success
