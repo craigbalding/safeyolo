@@ -32,6 +32,7 @@ import time
 import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from cryptography import x509
@@ -60,8 +61,6 @@ else:
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
 TASK_ID = "r638-process-local"
-TASK_POLICY = {"permissions": [{"action": "network:request", "resource": "127.0.0.2/*",
-                                 "effect": "deny", "condition": {"agent": "alice"}}]}
 
 
 class PreparationError(RuntimeError):
@@ -176,7 +175,7 @@ def request(socket_path: Path, method: str, target: str, *, token: str | None = 
     connection = UnixHTTP(socket_path)
     fields = {"Host": "_safeyolo.proxy.internal" if target in ("/health", "/circuits")
               or target.startswith("/api/") or target.startswith("/gateway/")
-              or target.startswith("/plumb/") else "127.0.0.2"}
+              or target.startswith("/plumb/") else urlsplit(target).netloc}
     if token:
         fields["Authorization"] = f"Bearer {token}"
     if body:
@@ -341,7 +340,7 @@ def native_flow(root: Path, listener: Path, token: str, flow_id: int, tag: str) 
     return flow
 
 
-def https_origin(root: Path) -> tuple[Origin, Path]:
+def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0) -> tuple[Origin, Path]:
     root_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     root_name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "r638-owned-root")])
     now = datetime.now(UTC)
@@ -371,7 +370,7 @@ def https_origin(root: Path) -> tuple[Origin, Path]:
         .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]),
             critical=False)
         .add_extension(x509.SubjectAlternativeName(
-            [x509.IPAddress(ipaddress.ip_address("127.0.0.2"))]), critical=False)
+            [x509.IPAddress(ipaddress.ip_address(host))]), critical=False)
         .sign(root_key, hashes.SHA256()))
     cert_path = root / "owned-origin-root.pem"
     leaf_path = root / "owned-origin-cert.pem"
@@ -381,28 +380,29 @@ def https_origin(root: Path) -> tuple[Origin, Path]:
     key_path.write_bytes(leaf_key.private_bytes(serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
     key_path.chmod(0o600)
-    server = Origin(("127.0.0.2", 0))
+    server = Origin((host, port))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(leaf_path), str(key_path))
     server.socket = context.wrap_socket(server.socket, server_side=True)
     return server, cert_path
 
 
-def trusted_tls_request(socket_path: Path, origin_port: int, root: Path) -> dict:
+def trusted_tls_request(socket_path: Path, origin_port: int, root: Path,
+                        host: str = "127.0.0.2") -> dict:
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(5)
         connection.connect(str(socket_path))
-        connection.sendall((f"CONNECT 127.0.0.2:{origin_port} HTTP/1.1\r\n"
-                            f"Host: 127.0.0.2:{origin_port}\r\n\r\n").encode())
+        connection.sendall((f"CONNECT {host}:{origin_port} HTTP/1.1\r\n"
+                            f"Host: {host}:{origin_port}\r\n\r\n").encode())
         response = bytearray()
         while b"\r\n\r\n" not in response and len(response) < 8192:
             response.extend(connection.recv(4096))
         check(response.startswith(b"HTTP/1.1 200") or response.startswith(b"HTTP/1.0 200"),
               f"proxy CONNECT failed: {response[:100]!r}")
         context = ssl.create_default_context(cafile=str(root / "certs/mitmproxy-ca-cert.pem"))
-        with context.wrap_socket(connection, server_hostname="127.0.0.2") as secured:
+        with context.wrap_socket(connection, server_hostname=host) as secured:
             peer = secured.getpeercert(binary_form=True)
-            secured.sendall((f"GET /tls HTTP/1.1\r\nHost: 127.0.0.2:{origin_port}\r\n"
+            secured.sendall((f"GET /tls HTTP/1.1\r\nHost: {host}:{origin_port}\r\n"
                              "X-SafeYolo-Test-Context: run=owned;agent=alice;test=R638\r\n"
                              "Connection: close\r\n\r\n").encode())
             reply = http.client.HTTPResponse(secured)
@@ -423,7 +423,14 @@ def main() -> None:
     parser.add_argument("--config-dir", type=Path, help="New isolated directory for the native procedure")
     parser.add_argument("--output", type=Path, help="Bounded native result report")
     parser.add_argument("--prepared-config", type=Path, help="Prepared product's verified NATS executable")
+    parser.add_argument("--origin-host", default="127.0.0.2", help="HTTP/TLS fixture bind address and policy host")
+    parser.add_argument("--http-port", type=int, default=0, help="HTTP fixture port (default: ephemeral)")
+    parser.add_argument("--https-port", type=int, default=0, help="TLS fixture port (default: ephemeral)")
+    parser.add_argument("--oauth-port", type=int, default=0, help="OAuth fixture port (default: ephemeral)")
+    parser.add_argument("--admin-port", type=int, default=0, help="Installed admin listener port (default: ephemeral)")
     args = parser.parse_args()
+    task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
+                                    "effect": "deny", "condition": {"agent": "alice"}}]}
     package_id = installed_identity(args.cli, args.rust_revision)
     args.state_parent.mkdir(parents=True, exist_ok=True)
     if args.config_dir is not None:
@@ -437,9 +444,9 @@ def main() -> None:
     stages: list[dict] = []
     active: Path | None = None
     nats_started = False
-    origin = Origin(("127.0.0.2", 0))
-    oauth = Origin(("127.0.0.1", 0), oauth=True)
-    tls_origin, tls_cert_path = https_origin(root)
+    origin = Origin((args.origin_host, args.http_port))
+    oauth = Origin(("127.0.0.1", args.oauth_port), oauth=True)
+    tls_origin, tls_cert_path = https_origin(root, args.origin_host, args.https_port)
     threads = [threading.Thread(target=server.serve_forever, daemon=True)
                for server in (origin, oauth, tls_origin)]
     for thread in threads:
@@ -449,7 +456,7 @@ def main() -> None:
         (root / ".safeyolo-platform-smoke").touch()
         config = yaml.safe_load((root / "config.yaml").read_text())
         config["proxy"].update({"port": 0,
-                                "admin_port": 0,
+                                "admin_port": args.admin_port,
                                 "web_port": 0,
                                 "upstream_ca_cert": str(tls_cert_path)})
         config["proxy"]["upstream_proxy"] = ""
@@ -480,9 +487,9 @@ print(json.dumps({'names':v.list_names()}))
         # A service file is an operator-authored input, shared by both releases.
         service_dir = root / "services"
         service_dir.mkdir(exist_ok=True)
-        (service_dir / "contract.yaml").write_text("""schema_version: 1
+        (service_dir / "contract.yaml").write_text(f"""schema_version: 1
 name: contract
-default_host: 127.0.0.2
+default_host: {args.origin_host}
 auth:
   type: bearer
   header: Authorization
@@ -532,10 +539,10 @@ capabilities:
         state_enforcement: declared
 """)
         catalog_override = service_dir / "gmail.yaml"
-        catalog_override.write_text("""schema_version: 1
+        catalog_override.write_text(f"""schema_version: 1
 name: gmail
 description: r638 disposable user override
-default_host: 127.0.0.2
+default_host: {args.origin_host}
 capabilities:
   reader:
     routes:
@@ -548,20 +555,20 @@ from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
 def update(doc):
     host=tomlkit.inline_table(); host['service']='contract'
-    doc['hosts']['127.0.0.2']=host
+    doc['hosts'][sys.argv[3]]=host
     doc['agents']=tomlkit.table()
     doc['agents']['alice']=tomlkit.table()
     doc['agents']['alice']['agent_id']='ag-r638-alice'
     doc['agents']['alice']['folder']=str(Path(sys.argv[1]).parent)
     doc['agents']['alice']['hosts']=tomlkit.table()
     tls_host=tomlkit.inline_table(); tls_host['egress']='allow'; tls_host['rate']=600
-    doc['agents']['alice']['hosts']['127.0.0.2:'+sys.argv[2]]=tls_host
+    doc['agents']['alice']['hosts'][sys.argv[3]+':'+sys.argv[2]]=tls_host
     doc['agents']['bob']=tomlkit.table()
     doc['agents']['bob']['agent_id']='ag-r638-bob'
     doc['agents']['bob']['folder']=str(Path(sys.argv[1]).parent)
     doc['addons']=tomlkit.table()
     doc['addons']['test_context']=tomlkit.table()
-    doc['addons']['test_context']['target_hosts']=['127.0.0.2']
+    doc['addons']['test_context']['target_hosts']=[sys.argv[3]]
     doc['addons']['test_context']['inject_declared']=True
     doc['addons']['credential_guard']=tomlkit.table()
     doc['addons']['credential_guard']['enabled']=True
@@ -578,7 +585,7 @@ def update(doc):
     doc['addons']['circuit_breaker']['jitter_factor']=0
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
-""", str(root / "policy.toml"), str(tls_origin.server_port))
+""", str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host)
         run([str(args.cli), "policy", "egress", "set", "deny"], env)
         check(tomllib.loads((root / "policy.toml").read_text())["hosts"]["*"]["egress"] == "deny",
               "installed policy writer did not set wildcard egress deny")
@@ -625,7 +632,7 @@ print(json.dumps(asyncio.run(exercise())))
               f"initial native process plumb pending writer failed: {plumb_status} {pending}")
         plumb_request_id = pending["request_id"]
         status, denied = request(alice, "GET",
-                                 f"http://127.0.0.2:{origin.server_port}/initial")
+                                 f"http://{args.origin_host}:{origin.server_port}/initial")
         check(status in (403, 428, 429) and not origin.seen,
               f"initial native process did not deny unapproved origin: {status}")
         ca = root / "certs/mitmproxy-ca.pem"
@@ -635,7 +642,7 @@ print(json.dumps(asyncio.run(exercise())))
         check(len(ca_snapshot) >= 2, "installed launcher did not create CA and key files")
         for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
             private_file(path)
-        initial_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        initial_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         initial_state = {"ca_sha256": sha(ca), "hmac_sha256": sha(hmac),
                          "hmac_fingerprint": key_fingerprint(hmac),
                          "vault_sha256": sha(root / "data/vault.yaml.enc"),
@@ -663,7 +670,7 @@ print(json.dumps(asyncio.run(exercise())))
               "Rust changed the Python CA files, HMAC key, or synthetic fingerprint")
         private_file(root / "data/vault.yaml.enc")
         private_file(hmac)
-        native_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        native_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         bob = socket_for(root, "bob")
         coord_status, coord_page = json_request(
             bob, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
@@ -717,18 +724,18 @@ print(json.dumps(asyncio.run(exercise())))
                   for item in services["available"]),
               "Rust did not select old user catalog override")
         status, denied = request(alice, "GET",
-                                 f"http://127.0.0.2:{origin.server_port}/initial-rust")
+                                 f"http://{args.origin_host}:{origin.server_port}/initial-rust")
         check(status in (403, 428) and not origin.seen,
               f"Rust did not keep initial denial: {status}")
         status, approved = admin(root, "POST", "/admin/policy/host/allow",
-                                 {"host": "127.0.0.2", "port": origin.server_port,
+                                 {"host": args.origin_host, "port": origin.server_port,
                                   "agent": "alice", "rate": 600})
         check(status == 200, f"Rust host approval failed: {status} {approved}")
         check(tomllib.loads((root / "policy.toml").read_text())["hosts"]["*"]["egress"] == "deny",
               "Rust host approval changed wildcard egress")
         def approved_request():
             value, data = request(alice, "POST",
-                                  f"http://127.0.0.2:{origin.server_port}/flow",
+                                  f"http://{args.origin_host}:{origin.server_port}/flow",
                                   body=b"owned-r638-request-needle",
                                   headers={"X-SafeYolo-Test-Context":
                                            "run=owned;agent=alice;test=R638"})
@@ -738,23 +745,23 @@ print(json.dumps(asyncio.run(exercise())))
         check(allowed_bytes == BODY and origin.seen[-1]["body"] == b"owned-r638-request-needle",
               "approved request bytes changed")
         before = len(origin.seen)
-        bob_status, _ = request(bob, "GET", f"http://127.0.0.2:{origin.server_port}/bob")
+        bob_status, _ = request(bob, "GET", f"http://{args.origin_host}:{origin.server_port}/bob")
         check(bob_status in (403, 428) and len(origin.seen) == before,
               "Alice's scoped approval leaked to Bob")
         wrong_port_status, _ = request(alice, "GET",
-                                       f"http://127.0.0.2:{origin.server_port + 1}/wrong-port")
+                                       f"http://{args.origin_host}:{origin.server_port + 1}/wrong-port")
         check(wrong_port_status in (403, 428), "scoped approval leaked to another port")
-        task_target = f"http://127.0.0.2:{origin.server_port}/task-lifetime"
+        task_target = f"http://{args.origin_host}:{origin.server_port}/task-lifetime"
         task_headers = {"X-SafeYolo-Test-Context": "run=owned;agent=alice;test=R638"}
         policy_before_task = sha(root / "policy.toml")
         task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
         check(task_status == 404, "native task registry was not initially empty")
         task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                        {"policy": TASK_POLICY})
+                                        {"policy": task_policy})
         check(task_status == 200 and registered.get("permission_count") == 1,
               f"native task registration failed: {task_status} {registered}")
         task_status, saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
-        check(task_status == 200 and saved_task.get("policy") == TASK_POLICY,
+        check(task_status == 200 and saved_task.get("policy") == task_policy,
               "native task registry did not retain the registered document")
         registered_status, registered_body = request(alice, "GET", task_target,
                                                      headers=task_headers)
@@ -811,7 +818,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         gateway_token = eventually(current_gateway_token, "native service authorization not active")
         before = len(origin.seen)
         status, _ = request(alice, "POST",
-                            f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+                            f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
                             token=gateway_token, body=b'{"project":"alpha"}')
         check(status in (403, 428) and len(origin.seen) == before,
               f"risky route crossed without binding/grant: {status}")
@@ -836,7 +843,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
             if token is None:
                 return None
             value, body = request(alice, "POST",
-                                  f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+                                  f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
                                   token=token, body=b'{"project":"alpha"}')
             last_gateway_response[:] = [value, body[:300].decode(errors="replace")]
             if len(first_gateway_responses) < 8:
@@ -884,21 +891,21 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         for _ in range(2):
             origin.next_status = 500
             failure_status, _ = request(
-                alice, "GET", f"http://127.0.0.2:{origin.server_port}/circuit-failure")
+                alice, "GET", f"http://{args.origin_host}:{origin.server_port}/circuit-failure")
             check(failure_status == 500, f"native failure did not reach origin: {failure_status}")
         circuit_status, native_circuit = json_request(alice, "GET", "/circuits", agent_token)
         check(circuit_status == 200 and
-              native_circuit.get("domains", {}).get("127.0.0.2", {}).get("state") == "open",
+              native_circuit.get("domains", {}).get(args.origin_host, {}).get("state") == "open",
               f"native circuit did not open: {circuit_status} {native_circuit}")
         before = len(origin.seen)
         blocked_status, _ = request(
-            alice, "GET", f"http://127.0.0.2:{origin.server_port}/circuit-blocked")
+            alice, "GET", f"http://{args.origin_host}:{origin.server_port}/circuit-blocked")
         check(blocked_status == 503 and len(origin.seen) == before,
               "native open circuit reached origin")
         # Leave an active registration in the native process at replacement.
         policy_before_task = sha(root / "policy.toml")
         task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                        {"policy": TASK_POLICY})
+                                        {"policy": task_policy})
         check(task_status == 200 and registered.get("permission_count") == 1,
               f"native task re-registration failed: {task_status} {registered}")
         task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
@@ -918,18 +925,18 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         private_file(hmac)
         replacement_circuit_status, replacement_circuit = json_request(alice, "GET", "/circuits", agent_token)
         check(replacement_circuit_status == 200 and
-              replacement_circuit.get("domains", {}).get("127.0.0.2", {}).get("state") == "open",
+              replacement_circuit.get("domains", {}).get(args.origin_host, {}).get("state") == "open",
               f"replacement native process did not load native open circuit: {replacement_circuit_status} {replacement_circuit}")
         before = len(origin.seen)
         replacement_blocked_status, _ = request(
-            alice, "GET", f"http://127.0.0.2:{origin.server_port}/old-circuit-blocked")
+            alice, "GET", f"http://{args.origin_host}:{origin.server_port}/old-circuit-blocked")
         check(replacement_blocked_status == 503 and len(origin.seen) == before,
               "replacement native process open circuit reached origin")
         reset_status, reset = admin(root, "POST", "/admin/circuit-breaker/reset",
-                                    {"host": "127.0.0.2"})
+                                    {"host": args.origin_host})
         check(reset_status == 200, f"replacement native process circuit reset failed: {reset_status} {reset}")
         replacement_recovered_status, old_recovered = request(
-            alice, "GET", f"http://127.0.0.2:{origin.server_port}/old-after-reset")
+            alice, "GET", f"http://{args.origin_host}:{origin.server_port}/old-after-reset")
         check(replacement_recovered_status == 200 and old_recovered == BODY,
               "replacement native process circuit reset did not restore origin use")
         task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
@@ -940,11 +947,11 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         replacement_initial_task_status = old_task_status
         policy_before_old_task = sha(root / "policy.toml")
         task_status, old_registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                            {"policy": TASK_POLICY})
+                                            {"policy": task_policy})
         check(task_status == 200 and old_registered.get("permission_count") == 1,
               f"replacement native process task registration failed: {task_status} {old_registered}")
         task_status, old_saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
-        check(task_status == 200 and old_saved_task.get("policy") == TASK_POLICY,
+        check(task_status == 200 and old_saved_task.get("policy") == task_policy,
               "replacement native process did not retain its own task registration")
         task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
         check(task_status == 200,
@@ -961,7 +968,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               "replacement task clear did not restore scoped host approval")
         check(sha(root / "policy.toml") == policy_before_old_task,
               "replacement native process task registration changed durable policy")
-        replacement_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        replacement_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         replacement_catalog_status, replacement_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
         check(replacement_catalog_status == 200 and replacement_catalog.get("authorized", {}).get("contract"),
               f"replacement native process did not read native service authorization: {replacement_catalog_status}")
@@ -971,7 +978,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               "replacement native process did not read user catalog override")
         old_gateway_token = replacement_catalog["authorized"]["contract"]["token"]
         replacement_gateway_status, old_gateway_bytes = request(
-            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+            alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
             token=old_gateway_token, body=b'{"project":"alpha"}')
         check(replacement_gateway_status == 200 and old_gateway_bytes == BODY,
               f"replacement native process did not use native grant/binding: {replacement_gateway_status}")
@@ -1045,10 +1052,10 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
         check(sha(provider_snapshot) == provider_hash,
               "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
-        run([str(args.cli), "policy", "host", "remove", "127.0.0.2",
+        run([str(args.cli), "policy", "host", "remove", args.origin_host,
              "--port", str(origin.server_port), "--agent", "alice"], env)
         host_policy = tomllib.loads((root / "policy.toml").read_text())
-        check(f"127.0.0.2:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
+        check(f"{args.origin_host}:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
               "replacement native process writer did not revoke scoped host approval")
         print(json.dumps({"native_replacement": stages[-1], "gateway_status": replacement_gateway_status,
                           "task_reset_status": replacement_initial_task_status,
@@ -1061,7 +1068,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
               flush=True)
         policy_before_return_task = sha(root / "policy.toml")
         task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                        {"policy": TASK_POLICY})
+                                        {"policy": task_policy})
         check(task_status == 200 and registered.get("permission_count") == 1,
               "replacement could not register the task before its final stop")
         task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
@@ -1084,13 +1091,13 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
               "return Rust changed CA/HMAC identity")
         for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
             private_file(path)
-        returned_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        returned_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         status, returned_circuit = json_request(alice, "GET", "/circuits", agent_token)
-        check(status == 200 and returned_circuit.get("domains", {}).get("127.0.0.2", {})
+        check(status == 200 and returned_circuit.get("domains", {}).get(args.origin_host, {})
               .get("state", "closed") != "open", "return Rust resurrected open circuit")
         before = len(origin.seen)
         host_revoked_status, _ = request(
-            alice, "GET", f"http://127.0.0.2:{origin.server_port}/after-host-revocation")
+            alice, "GET", f"http://{args.origin_host}:{origin.server_port}/after-host-revocation")
         check(host_revoked_status in (403, 428) and len(origin.seen) == before,
               "return Rust resurrected replacement-revoked scoped host approval")
         status, returned_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
@@ -1102,7 +1109,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
               "return Rust retained removed user catalog override")
         before = len(origin.seen)
         revoked_status, _ = request(
-            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+            alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
             token=gateway_token, body=b'{"project":"alpha"}')
         check(revoked_status in (403, 428) and len(origin.seen) == before,
               "return Rust crossed replacement-revoked grant/binding")
@@ -1128,12 +1135,12 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
             "native-written-plumb", "python-rollback-plumb"],
               f"return Rust lost plumb history: {status} {returned_plumb}")
         approval_status, _ = admin(root, "POST", "/admin/policy/host/allow",
-                                   {"host": "127.0.0.2", "port": origin.server_port,
+                                   {"host": args.origin_host, "port": origin.server_port,
                                     "agent": "alice", "rate": 600})
         check(approval_status == 200, "return Rust could not reapprove scoped host")
         def returned_circuit_request():
             value, body = request(alice, "GET",
-                                  f"http://127.0.0.2:{origin.server_port}/after-circuit-reset")
+                                  f"http://{args.origin_host}:{origin.server_port}/after-circuit-reset")
             return (value, body) if value == 200 else None
         return_circuit_status, return_circuit_body = eventually(
             returned_circuit_request, "return Rust did not use replacement reset circuit")
@@ -1161,7 +1168,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
             if token is None:
                 return None
             value, body = request(
-                alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
+                alice, "POST", f"http://{args.origin_host}:{origin.server_port}/v1/write?ticket=T-1",
                 token=token, body=b'{"project":"alpha"}')
             return (value, body) if value == 200 else None
         final_status, final_bytes = eventually(
@@ -1236,6 +1243,8 @@ print(json.dumps({'nats':'stopped'}))
             raise PreparationError("owned cleanup failed: " + "; ".join(cleanup_errors))
     report = {
         "result": "installed_native_continuity_passed", "source_revision": args.rust_revision,
+        "fixture_bindings": {"http": list(origin.server_address), "https": list(tls_origin.server_address),
+                             "oauth": list(oauth.server_address)},
         "state": str(root), "runtimes": stages, "agents_started": 0,
         "flow": {"id": flow_id, "request_body_bytes": len(b"owned-r638-request-needle"),
                  "response_body_bytes": len(BODY), "audit_correlated": True,

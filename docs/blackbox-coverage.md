@@ -74,7 +74,7 @@ the same guest handshake, payload and close helper.
 
 ### Installed host package
 
-`run-installed-package.sh` runs installed_host_smoke.py in smoke mode: current installed launcher, exact wheel/native executable, authenticated runtime identity, owned HTTP allow/deny origins and verified stop. It boots no guest and proves no guest isolation.
+`run-installed-package.sh` runs installed_host_smoke.py in smoke mode: current installed launcher, exact wheel/native executable, authenticated runtime identity, owned HTTP allow/deny authorities and verified stop. It boots no guest and proves no guest isolation.
 
 The package also selects `tests/proxy_contracts/test_https_contract.py::test_https_origin_verification` against its packaged executable.
 

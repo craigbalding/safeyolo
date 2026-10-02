@@ -3,6 +3,7 @@
 import hashlib
 import http.client
 import json
+import os
 import socket
 import ssl
 import threading
@@ -168,7 +169,7 @@ def test_https_origin_verification(proxy_backend, tmp_path, certificate_host, tr
     origin_ca.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(server_pem)
-    origin = Origin()
+    origin = Origin(port=int(os.environ.get("SAFEYOLO_TEST_HTTPS_PORT", "0")))
     origin.socket = context.wrap_socket(origin.socket, server_side=True)
     thread = threading.Thread(target=origin.serve_forever, daemon=True)
     thread.start()

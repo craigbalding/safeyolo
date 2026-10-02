@@ -11,6 +11,8 @@ caller-created disposable config directory marked with
 .safeyolo-platform-smoke; it starts and stops that instance through the
 selected CLI, authenticates exact runtime identity and Agent API health, and
 checks native allow/deny with delivery/no-delivery at owned HTTP origins.
+The current smoke uses one loopback listener for the allowed IP authority and
+denied localhost authority. --http-port selects a fixed fixture port when needed.
 Verified process, listener and origin cleanup completes the host-only claim.
 The historical --rollback-python sequence remains temporarily for #320's
 independent replacement check; it is not the current package selection.
@@ -1408,7 +1410,7 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
 
     class OriginHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib callback
-            self.server.requests.append(self.path)
+            self.server.requests.append({"host": self.headers.get("Host"), "path": self.path})
             payload = b"installed-origin-ok\n"
             self.send_response(200)
             self.send_header("Content-Length", str(len(payload)))
@@ -1420,15 +1422,24 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             return
 
     try:
-        for _ in range(2):
-            origin = http.server.ThreadingHTTPServer((ROLLBACK_ORIGIN_HOST, 0), OriginHandler)
-            origin.requests = []
-            thread = threading.Thread(target=origin.serve_forever, daemon=True)
-            servers.append(origin)
-            threads.append(thread)
-            thread.start()
-        allowed, denied = servers
-        endpoints = [f"{ROLLBACK_ORIGIN_HOST}:{server.server_port}" for server in servers]
+        origin = http.server.ThreadingHTTPServer(("127.0.0.1", args.http_port), OriginHandler)
+        origin.requests = []
+        thread = threading.Thread(target=origin.serve_forever, daemon=True)
+        servers.append(origin)
+        threads.append(thread)
+        thread.start()
+        endpoints = [f"{host}:{origin.server_port}" for host in ("127.0.0.1", "localhost")]
+        # Both policy authorities must reach the same known-live fixture.
+        for host in ("127.0.0.1", "localhost"):
+            connection = http.client.HTTPConnection(host, origin.server_port, timeout=5)
+            try:
+                connection.request("GET", "/origin-ready")
+                response = connection.getresponse()
+                if response.status != 200 or response.read() != b"installed-origin-ok\n":
+                    raise SmokeError("HTTP fixture authority did not reach the owned origin")
+            finally:
+                connection.close()
+        origin.requests.clear()
         for action, endpoint in (("add", endpoints[0]), ("deny", endpoints[1])):
             result = _run([cli_path, "policy", "host", action, endpoint], env=env, cwd=cwd)
             if result.returncode:
@@ -1456,14 +1467,16 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if status != expected:
                 raise AssertionError(f"installed host origin returned HTTP {status}, expected {expected}")
             outcomes.append(status)
-        if allowed.requests != ["/installed-package"] or denied.requests:
+        if origin.requests != [{"host": endpoints[0], "path": "/installed-package"}]:
             raise AssertionError("installed allow/deny response disagrees with owned origin delivery")
-        report["origin"] = {"allowed_status": outcomes[0], "allowed_deliveries": len(allowed.requests),
-                            "denied_status": outcomes[1], "denied_deliveries": len(denied.requests)}
+        report["origin"] = {"bind": list(origin.server_address), "authorities": endpoints,
+                            "allowed_status": outcomes[0], "allowed_deliveries": len(origin.requests),
+                            "denied_status": outcomes[1], "denied_deliveries": sum(
+                                row["host"] == endpoints[1] for row in origin.requests)}
         report["status"] = "host_package_passed"
     except AssertionError as exc:
         report.update(status="assertion_failure", error=str(exc))
-    except (SmokeError, OSError) as exc:
+    except (SmokeError, OSError, http.client.HTTPException, OverflowError) as exc:
         report["error"] = str(exc)
     finally:
         cleanup_errors = []
@@ -1515,6 +1528,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--working-directory", default=os.getcwd(), help="working directory used for relative native paths")
     parser.add_argument("--agent", help="agent name for the UDS health probe")
     parser.add_argument("--install-commit", help="exact source revision stamped in the installed wheel")
+    parser.add_argument("--http-port", type=int, default=0,
+                        help="current package smoke's loopback HTTP fixture port (default: ephemeral)")
     parser.add_argument(
         "--rollback-python",
         action="store_true",

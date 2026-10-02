@@ -221,7 +221,8 @@ in their original issues; they are not recurring execution requirements.
 From a clean exact checkout on a disposable Linux or hosted Mac, with uv and
 Cargo available, run the command below. On Linux, the current installed launcher
 also requires `runsc`; this witness does not install or boot a guest rootfs.
-On macOS, prepare the owned `127.0.0.2` loopback alias first, as the workflow does.
+On macOS, the default continuity fixture needs the owned `127.0.0.2` loopback
+alias, as prepared by the workflow.
 
 ```sh
 ./tests/blackbox/run-installed-package.sh
@@ -229,7 +230,9 @@ On macOS, prepare the owned `127.0.0.2` loopback alias first, as the workflow do
 
 This installs the current wheel/native binary without rootfs bootstrap, uses the
 normal launcher/configuration, authenticates exact running identity, observes
-native allow/deny at two owned HTTP origins and verifies stop/cleanup. Success
+native allow/deny at two authorities on one owned HTTP listener and verifies
+stop/cleanup. The allowed IP and denied localhost authorities both reach that
+known-live fixture before the policy probe. Success
 is for this host-package claim; no guest boots and guest isolation is explicitly
 unproved. It then runs the three existing `test_https_origin_verification` nodes
 against the packaged executable: trusted localhost reaches the origin, wrong
@@ -237,6 +240,15 @@ SAN and untrusted origin return 502 without origin delivery. It does not repeat
 the complete component matrix against the package.
 The same prepared product then runs the separate native host-continuity
 procedure above, with fresh config/data/cert/log/origin state.
+
+If a prepared-package witness requires fixed ports, `installed_host_smoke.py`
+accepts `--http-port`. The three packaged HTTPS nodes use
+`SAFEYOLO_TEST_HTTPS_PORT` for their TLS origin. The continuity procedure accepts
+`--origin-host`, `--http-port`, `--https-port`, `--oauth-port` and `--admin-port`.
+Its selected HTTP/TLS host is also used in request authorities, the certificate
+SAN, catalog, scoped grants, task policy and circuit checks. These are test
+bindings; the default ports remain ephemeral. Each procedure keeps its own
+state and verifies owned cleanup before another procedure runs.
 
 `installed_host_smoke.py --mode discover` identifies prerequisites;
 `--mode attached` authenticates an already running installed proxy without

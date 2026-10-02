@@ -5,6 +5,8 @@ import http.client
 import json
 import os
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -1100,3 +1102,36 @@ def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_
         monkeypatch.setenv(key, env[key])
     assert nats_runtime.nats_root() == root / "data/coord/nats"
     assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2"])
+def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_path, host):
+    with socket.socket() as reserve:
+        reserve.bind((host, 0))
+        port = reserve.getsockname()[1]
+    origin, root_cert = continuity.https_origin(tmp_path, host, port)
+    assert origin.server_address == (host, port)
+    thread = threading.Thread(target=origin.serve_forever)
+    thread.start()
+    context = ssl.create_default_context(cafile=root_cert)
+    try:
+        with socket.create_connection((host, port), timeout=3) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as secured:
+                connection = http.client.HTTPConnection(host, port, timeout=3)
+                connection.sock = secured
+                try:
+                    connection.request("GET", "/selected-host")
+                    response = connection.getresponse()
+                    assert response.status == 200 and response.read() == continuity.BODY
+                finally:
+                    connection.close()
+        wrong_host = "127.0.0.2" if host == "127.0.0.1" else "127.0.0.1"
+        with socket.create_connection((host, port), timeout=3) as raw:
+            with pytest.raises(ssl.SSLCertVerificationError):
+                context.wrap_socket(raw, server_hostname=wrong_host)
+        assert [row["path"] for row in origin.seen] == ["/selected-host"]
+    finally:
+        origin.shutdown()
+        origin.server_close()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
