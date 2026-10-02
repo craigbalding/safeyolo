@@ -379,6 +379,9 @@ if [ "$PROXY_IMPL" = "both" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; 
     exit 2
 fi
 
+# A setup command can itself return 1. Until assertions begin, report that
+# failure as infrastructure rather than allowing it to look like a failed test.
+trap 'exit 2' ERR
 export SAFEYOLO_BLACKBOX_PROXY_BACKEND="$PROXY_IMPL"
 export SAFEYOLO_BLACKBOX_PLATFORM="$EXPECTED_PLATFORM"
 INSTALLED_CLI=""
@@ -735,7 +738,7 @@ stop_owned_pid_file() {
 
 cleanup() {
     local section_exit=$? cleanup_failed=false
-    trap - EXIT
+    trap - EXIT ERR
     set +e
     # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
     # config) intact for post-mortem analysis of failures.
@@ -1087,6 +1090,7 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
+trap - ERR
 if [ "$KVM_P1" = true ]; then
     python3 "$SCRIPT_DIR/installed_ingress.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \

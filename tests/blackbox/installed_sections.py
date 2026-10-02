@@ -1,9 +1,10 @@
 """Prepare one installed product and run sections with separate writable state.
 
 Use a disposable host from a clean checkout. systrap runs isolation, workloads,
-access and lifecycle. KVM runs isolation, guest ingress and workloads. Physical
-Apple Silicon VZ runs isolation, access and lifecycle. Each section retains
-its own report and logs. No hosted proxy result is an isolation result.
+access, lifecycle and host continuity. KVM runs isolation, guest ingress and
+workloads. Physical Apple Silicon VZ runs isolation, access, lifecycle and
+host continuity. Each section retains its own report and logs. No hosted
+proxy or host-continuity result is an isolation result.
 """
 
 from __future__ import annotations

@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Discover and lightly exercise an installed Rust proxy on a supported host.
 
-This is the stage-A companion to run-lane.sh. It deliberately uses the
-existing installed safeyolo start/stop commands and the existing per-agent UDS
-layout. It never installs SafeYolo, builds a binary, starts a VM, or treats a
-host-driven UDS request as guest-isolation evidence.
+Use the installed safeyolo start/stop commands and per-agent UDS layout.
+This probe never installs SafeYolo, builds a binary, starts a VM, or treats a
+host-driven UDS request as guest-isolation evidence. run-installed-package.sh
+prepares the package before invoking this probe.
 
-discover is read-only apart from its evidence file. smoke requires a
+discover is read-only apart from its report. smoke requires a
 caller-created disposable config directory marked with
 .safeyolo-platform-smoke; it starts and stops that instance through the
-selected CLI and performs one authenticated Agent API health request through
-one existing UDS listener. With --rollback-python it also runs the bounded
-Rust → Python → Rust state and behavior sequence described in
-docs/state-compatibility.md.
+selected CLI, authenticates exact runtime identity and Agent API health, and
+checks native allow/deny with delivery/no-delivery at owned HTTP origins.
+Verified process, listener and origin cleanup completes the host-only claim.
+The historical --rollback-python sequence remains temporarily for #320's
+independent replacement check; it is not the current package selection.
 """
 
 from __future__ import annotations

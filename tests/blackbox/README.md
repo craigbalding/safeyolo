@@ -199,8 +199,9 @@ replace, revoke and deliberately recover access. Return processes must retain
 SQLite ownership, exact bodies, tags and correlated audit; enforce an open
 circuit before operator reset and avoid resurrecting it afterward; retain
 catalogue, policy, grants and scoped host/service revocations; preserve Coord
-messages/attention and provider-owned leases without changing their snapshot;
-and retain approved Plumb messages before close returns 403. The same sequence
+messages/attention and the provider-owned lease snapshot; the fresh native
+process must report unknown lease state without inventing held ownership.
+It retains approved Plumb messages before close returns 403. The same sequence
 checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
 0600 private state and process-local task reset. Each process, listener, NATS
 server and owned origin must stop. The historical cross-backend path remains

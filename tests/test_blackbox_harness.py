@@ -957,6 +957,24 @@ def test_p3_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch
     ]
 
 
+def test_installed_setup_command_failure_is_infrastructure(tmp_path):
+    cli = tmp_path / "safeyolo"
+    cli.write_text("#!/bin/sh\necho 'deliberate init failure' >&2\nexit 1\n")
+    cli.chmod(0o755)
+    environment = {**os.environ,
+                   "PATH": f"{tmp_path}:{Path(sys.executable).parent}:{os.environ['PATH']}",
+                   "SAFEYOLO_CONFIG_DIR": str(tmp_path / "prepared"),
+                   "SAFEYOLO_TEST_CONFIG_DIR": str(tmp_path / "section")}
+    result = subprocess.run(
+        [str(ROOT / "tests/blackbox/run-tests.sh"), "--expect-platform", "systrap",
+         "--access-config-only"],
+        env=environment, capture_output=True, text=True, check=False, timeout=20,
+    )
+    assert "deliberate init failure" in result.stderr
+    assert result.returncode == 2
+    assert "Starting sinkhole" not in result.stdout
+
+
 def test_held_guest_keeps_preamble_and_observation(monkeypatch):
     observation = {
         "phase": "drain",
