@@ -98,10 +98,10 @@ def package_and_repo(marker: str, package_sha: str, repo_commit: str, agent: str
             "repository_commit": repo_commit, "repository_marker": marker}
 
 
-def _event(stream: socket.socket) -> bytes:
+def _event(response: http.client.HTTPResponse) -> bytes:
     message = bytearray()
     while not message.endswith(b"\n\n"):
-        data = stream.recv(1)
+        data = response.read(1)
         assert data, "SSE stream ended before the next event"
         message.extend(data)
         assert len(message) < 8192, "SSE event exceeded the P2 bound"
@@ -114,14 +114,15 @@ def sse(marker: str, agent: str) -> dict:
         stream.sendall((f"GET http://{HOST}/p2/sse/{marker} HTTP/1.1\r\n"
                         f"Host: {HOST}\r\nX-SafeYolo-Test-Context: {context(agent)}\r\n"
                         "Connection: close\r\n\r\n").encode())
-        head, headers = read_head(stream)
-        assert head.split()[1] == "200" and headers["content-type"] == ["text/event-stream"]
-        first = _event(stream)
+        response = http.client.HTTPResponse(stream)
+        response.begin()
+        assert response.status == 200 and response.getheader("Content-Type") == "text/event-stream"
+        first = _event(response)
         assert first == f"data: first:{marker}\n\n".encode()
         print("P2_SSE_FIRST=" + json.dumps({"marker": marker, "event": first.decode()}), flush=True)
-        last = _event(stream)
+        last = _event(response)
         assert last == f"data: last:{marker}\n\n".encode()
-        assert stream.recv(1) == b"", "SSE origin did not complete"
+        assert response.read(1) == b"", "SSE origin did not complete"
     return {"first": first.decode(), "last": last.decode()}
 
 

@@ -105,14 +105,15 @@ def sse(marker: str) -> dict:
         stream.sendall(
             (f"GET http://{FIXTURE}/p2/sse/{marker} HTTP/1.1\r\nHost: {FIXTURE}\r\nConnection: close\r\n\r\n").encode()
         )
-        head, _ = read_head(stream)
-        assert head.split()[1] == "200", head
-        first = _event(stream)
+        response = http.client.HTTPResponse(stream)
+        response.begin()
+        assert response.status == 200, response.status
+        first = _event(response)
         assert first == f"data: first:{marker}\n\n".encode(), first
         print("P4_READY=sse", flush=True)
-        last = _event(stream)
+        last = _event(response)
         assert last == f"data: last:{marker}\n\n".encode(), last
-        assert stream.recv(1) == b""
+        assert response.read(1) == b""
     return {"first": first.decode(), "last": last.decode()}
 
 
@@ -157,9 +158,10 @@ def drain(marker: str) -> dict:
                 f"GET http://{FIXTURE}/p2/sse/{sse_marker} HTTP/1.1\r\nHost: {FIXTURE}\r\nConnection: close\r\n\r\n"
             ).encode()
         )
-        head, _ = read_head(event)
-        assert head.split()[1] == "200", head
-        first_event = _event(event)
+        event_response = http.client.HTTPResponse(event)
+        event_response.begin()
+        assert event_response.status == 200, event_response.status
+        first_event = _event(event_response)
         assert first_event == f"data: first:{sse_marker}\n\n".encode()
 
         ws = socket.create_connection(PROXY, timeout=10)
@@ -184,7 +186,7 @@ def drain(marker: str) -> dict:
 
         last_http = f"last:{http_marker}\n".encode()
         assert held.read() == last_http
-        assert _event(event) == f"data: last:{sse_marker}\n\n".encode()
+        assert _event(event_response) == f"data: last:{sse_marker}\n\n".encode()
         close_opcode, close_payload = peer.receive()
         assert close_opcode == 8 and close_payload == struct.pack("!H", 1001), (close_opcode, close_payload)
         try:

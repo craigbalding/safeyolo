@@ -702,6 +702,19 @@ print(json.dumps(owned_processes(Path(sys.argv[2]))))
 PY_SNAPSHOT
 )" || cleanup_failed=true
 
+    if [ "${P4:-false}" = true ] && [ -n "${SAFEYOLO_P4_OWNER_CONFIG_DIR:-}" ]; then
+        python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" "$SAFEYOLO_P4_OWNER_CONFIG_DIR" <<'PY_OWNER' || cleanup_failed=true
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from installed_sections import cleanup_instance
+failures = cleanup_instance(Path(sys.argv[2]), Path(sys.argv[3]), owner=True)
+for error in failures:
+    print(error, file=sys.stderr)
+raise SystemExit(bool(failures))
+PY_OWNER
+    fi
+
     if [ "$STARTED_VM" = true ]; then
         echo "Stopping $AGENT_NAME..."
         safeyolo agent stop "$AGENT_NAME" || cleanup_failed=true

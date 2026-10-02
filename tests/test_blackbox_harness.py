@@ -25,8 +25,11 @@ from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.installed_ingress import installed_identity
 from tests.blackbox.isolation import installed_access as guest
+from tests.blackbox.isolation import installed_lifecycle as guest_lifecycle
+from tests.blackbox.isolation import installed_workloads as guest_workloads
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
+from tests.proxy_contracts.websocket_peer import read_head
 
 
 @pytest.fixture
@@ -715,6 +718,70 @@ def test_held_guest_reports_exit_before_ready(monkeypatch):
         pilot.held_guest("unused", "bbtest", "drain", "p4-" + "a" * 32)
 
 
+@pytest.mark.parametrize("client", [guest_workloads, guest_lifecycle], ids=["workloads", "lifecycle"])
+@pytest.mark.parametrize("chunked", [False, True], ids=["close-delimited", "chunked"])
+def test_guest_sse_decodes_http_before_reporting_admitted_event(monkeypatch, client, chunked):
+    marker = "p2-" + "a" * 32
+    first, last = (f"data: {position}:{marker}\n\n".encode() for position in ("first", "last"))
+    admitted = threading.Event()
+    errors = []
+
+    def report(*_args, **_kwargs):
+        admitted.set()
+
+    def serve(listener):
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(3)
+                _, headers = read_head(connection)
+                assert headers["host"] == ["failing.test"]
+                framing = b"Transfer-Encoding: chunked\r\n" if chunked else b""
+                connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                                   + framing + b"Connection: close\r\n\r\n")
+
+                def send_event(payload):
+                    for part in (payload[:7], payload[7:-1], payload[-1:]):
+                        connection.sendall(f"{len(part):x}\r\n".encode() + part + b"\r\n" if chunked else part)
+
+                send_event(first)
+                assert admitted.wait(3), "guest did not admit the first event before origin release"
+                send_event(last)
+                if chunked:
+                    connection.sendall(b"0\r\n\r\n")
+        except (OSError, AssertionError) as exc:
+            errors.append(exc)
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        listener.settimeout(3)
+        monkeypatch.setattr(client, "PROXY", listener.getsockname())
+        monkeypatch.setattr(client, "print", report, raising=False)
+        server = threading.Thread(target=serve, args=(listener,))
+        server.start()
+        try:
+            result = client.sse(marker, "bbtest") if client is guest_workloads else client.sse(marker)
+            assert result == {"first": first.decode(), "last": last.decode()}
+        finally:
+            admitted.set()
+            server.join(timeout=5)
+        assert not server.is_alive()
+        assert errors == []
+
+
+@pytest.mark.parametrize("body,message", [(b"data: truncated", "ended before"), (b"x" * 8192, "exceeded")])
+def test_guest_sse_rejects_incomplete_or_oversized_events(body, message):
+    reader, writer = socket.socketpair()
+    with reader, writer:
+        writer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + body)
+        writer.shutdown(socket.SHUT_WR)
+        response = http.client.HTTPResponse(reader)
+        response.begin()
+        with pytest.raises(AssertionError, match=message):
+            guest_workloads._event(response)
+
+
 def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_path):
     revision = POST_DELETION
     checkout = tmp_path / "source"
@@ -897,8 +964,9 @@ def test_installed_sections_do_not_continue_across_unclean_boundary(
 
 @pytest.mark.parametrize("leave_process_live,section_exit", [(True, 1), (False, 1), (False, 3)],
                          ids=["survivor", "clean-assertion-failure", "clean-pytest-internal-error"])
+@pytest.mark.parametrize("owner", [False, True], ids=["subject", "lifecycle-owner"])
 def test_installed_sections_preserve_inner_cleanup_outcome(
-    tmp_path, monkeypatch, installed_section_commands, leave_process_live, section_exit
+    tmp_path, monkeypatch, installed_section_commands, leave_process_live, section_exit, owner
 ):
     """Run the real inner trap and outer loop when stop removes a PID marker."""
     repository = installed_section_commands
@@ -926,6 +994,8 @@ if marker.exists():
     trap_start = runner.index("cleanup() {")
     trap_end = runner.index("\n# --- Clean stale state", trap_start)
     section = scripts / "run-tests.sh"
+    first_section = "lifecycle" if owner else "isolation"
+    owned_root = '"${SAFEYOLO_CONFIG_DIR%/*}/lifecycle-owner"' if owner else '"$SAFEYOLO_CONFIG_DIR"'
     section.write_text(
         "#!/bin/bash\nset -euo pipefail\n"
         "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"
@@ -936,11 +1006,15 @@ if marker.exists():
         "    exit 0\n"
         "fi\n"
         f"SCRIPT_DIR={str(ROOT / 'tests/blackbox')!r}\n"
-        "STARTED_VM=false\nSTARTED_PROXY=true\nSTARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
+        f"STARTED_VM=false\nSTARTED_PROXY={'false' if owner else 'true'}\n"
+        "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
         "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nPROXY_IMPL=rust\nAGENT_NAME=bbtest\n"
+        f"P4={'true' if owner else 'false'}\n"
         + _runner_cleanup_helpers()
         + runner[trap_start:trap_end]
-        + "\nprintf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$SAFEYOLO_CONFIG_DIR/data/proxy-rust.json\"\n"
+        + f"\nowned_root={owned_root}\n"
+        + 'mkdir -p "$owned_root/data"\ntouch "$owned_root/config.yaml"\n'
+        + "printf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$owned_root/data/proxy-rust.json\"\n"
         f"exit {section_exit}\n"
     )
     section.chmod(0o755)
@@ -951,11 +1025,11 @@ if marker.exists():
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")
     try:
         result = installed_sections.run_sections(
-            "systrap", ("isolation", "access"), repository, "a" * 40, directory, artifacts
+            "systrap", (first_section, "access"), repository, "a" * 40, directory, artifacts
         )
         report = json.loads((artifacts / "installed-sections.json").read_text())
         first = report["sections"][0]
-        assert not (directory / "isolation/data/proxy-rust.json").exists()
+        assert not (directory / ("lifecycle-owner" if owner else "isolation") / "data/proxy-rust.json").exists()
         if leave_process_live:
             assert process.poll() is None, "the injected stop must leave the owned lifetime live"
             assert result == 2
