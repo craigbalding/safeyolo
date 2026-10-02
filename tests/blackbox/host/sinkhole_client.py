@@ -1,5 +1,6 @@
 """Client for sinkhole control API."""
 
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -152,12 +153,17 @@ class SinkholeClient:
 
     def wait_for_receiver_ready(
         self,
-        receiver_url: str = "http://127.0.0.1:18080",
+        receiver_url: str | None = None,
         *,
         probe_host: str = "__sinkhole_receiver_ready__.test",
         timeout: float = 30.0,
     ):
-        """Wait for the HTTP receiver and its capture path to be usable."""
+        """Wait for the HTTP receiver and its capture path to be usable.
+
+        Use the runner's SINKHOLE_RECEIVER when no explicit URL is supplied.
+        """
+        if receiver_url is None:
+            receiver_url = os.environ.get("SINKHOLE_RECEIVER", "http://127.0.0.1:18080")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             nonce = uuid.uuid4().hex

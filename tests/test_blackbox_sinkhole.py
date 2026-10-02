@@ -114,7 +114,8 @@ def test_sinkhole_receiver_readiness_probe_gates_clean_observations():
         control_thread.join(timeout=5)
 
 
-def test_vz_fixture_accepts_readiness_probe_but_rejects_unknown_host():
+@pytest.mark.parametrize("explicit_receiver", [False, True])
+def test_vz_fixture_accepts_readiness_probe_but_rejects_unknown_host(monkeypatch, explicit_receiver):
     from tests.blackbox.harness.vz_fixture import Parent, VZRequest
     from tests.blackbox.host.sinkhole_client import SinkholeClient
 
@@ -127,7 +128,13 @@ def test_vz_fixture_accepts_readiness_probe_but_rejects_unknown_host():
     try:
         client.wait_for_ready(timeout=2)
         client.clear_requests()
-        client.wait_for_receiver_ready(client.base_url, timeout=2)
+        monkeypatch.setenv(
+            "SINKHOLE_RECEIVER", "http://127.0.0.1:1" if explicit_receiver else client.base_url
+        )
+        if explicit_receiver:
+            client.wait_for_receiver_ready(client.base_url, timeout=2)
+        else:
+            client.wait_for_receiver_ready(timeout=2)
         requests = client.get_requests(host="__sinkhole_receiver_ready__.test")
         assert len(requests) == 1
         assert requests[0].path.startswith("/__sinkhole_receiver_ready__/")
