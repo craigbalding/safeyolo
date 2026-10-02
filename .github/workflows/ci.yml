@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   test-addons:
-    name: Python checks (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,7 +57,7 @@ jobs:
         run: uv run --frozen pytest tests/ -v --tb=short --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
 
   test-cli:
-    name: CLI checks (${{ matrix.os }})
+    name: Test CLI${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     strategy:
       fail-fast: false
       matrix:
