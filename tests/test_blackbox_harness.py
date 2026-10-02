@@ -1173,3 +1173,37 @@ def test_continuity_owned_parent_routes_only_its_tls_origin(tmp_path):
         for thread in threads:
             thread.join(timeout=3)
             assert not thread.is_alive()
+
+
+def test_continuity_owned_parent_keeps_oauth_provider_separate():
+    origin = continuity.Origin(("127.0.0.1", 0))
+    oauth = continuity.Origin(("127.0.0.1", 0), oauth=True)
+    origin.oauth_address = oauth.server_address
+    threads = [threading.Thread(target=server.serve_forever) for server in (origin, oauth)]
+    for thread in threads:
+        thread.start()
+    connection = http.client.HTTPConnection(*origin.server_address, timeout=3)
+    try:
+        connection.request("POST", f"http://127.0.0.1:{oauth.server_port}/oauth/token",
+                           body=b"grant_type=refresh_token&refresh_token=synthetic-test")
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == 200 and payload["access_token"] == "synthetic-r638-access-v1"
+        assert len(oauth.seen) == 1 and oauth.seen[0]["path"] == "/oauth/token"
+        assert oauth.seen[0]["body"] == b"grant_type=refresh_token&refresh_token=synthetic-test"
+        assert not origin.seen
+        connection.request("POST", f"http://127.0.0.2:{origin.server_port}/ordinary?item=one",
+                           body=b"separate-origin-body")
+        response = connection.getresponse()
+        assert response.status == 200 and response.read() == continuity.BODY
+        assert origin.seen == [{"method": "POST", "path": "/ordinary?item=one",
+                                "body": b"separate-origin-body", "authorization": ""}]
+        assert len(oauth.seen) == 1
+    finally:
+        connection.close()
+        for server in (origin, oauth):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=3)
+            assert not thread.is_alive()

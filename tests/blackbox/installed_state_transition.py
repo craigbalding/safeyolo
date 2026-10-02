@@ -119,6 +119,7 @@ class Origin(http.server.ThreadingHTTPServer):
         self.oauth_generation = 1
         self.tls_target = None
         self.tls_address = None
+        self.oauth_address = None
 
 
 class OriginHandler(http.server.BaseHTTPRequestHandler):
@@ -137,13 +138,21 @@ class OriginHandler(http.server.BaseHTTPRequestHandler):
     do_CONNECT = ParentRequest.do_CONNECT
 
     def _peer(self, host, port, *, tls_origin):
-        if not tls_origin or (host, port) != self.server.tls_target:
-            raise ValueError("CONNECT target is outside the owned TLS fixture")
-        return socket.create_connection(self.server.tls_address, timeout=5), False
+        if tls_origin and (host, port) == self.server.tls_target:
+            address = self.server.tls_address
+        elif not tls_origin and (host, port) == self.server.oauth_address:
+            address = self.server.oauth_address
+        else:
+            raise ValueError("parent target is outside the owned fixtures")
+        return socket.create_connection(address, timeout=5), False
 
     def respond(self):
-        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         target = urlsplit(self.path)
+        if target.scheme == "http" and (target.hostname, target.port) == self.server.oauth_address:
+            # Host credential refresh follows the configured parent too.
+            ParentRequest._forward_http(self)
+            return
+        body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         path = ((target.path or "/") + (f"?{target.query}" if target.query else "")
                 if target.scheme else self.path)
         self.server.seen.append({
@@ -469,6 +478,7 @@ def main() -> None:
     if origin_bind != args.origin_host:
         origin.tls_target = (args.origin_host, tls_origin.server_port)
         origin.tls_address = tls_origin.server_address
+        origin.oauth_address = oauth.server_address
         parent = f"http://{origin_bind}:{origin.server_port}"
     threads = [threading.Thread(target=server.serve_forever, daemon=True)
                for server in (origin, oauth, tls_origin)]

@@ -249,8 +249,9 @@ accepts `--http-port`. The three packaged HTTPS nodes use
 Its selected HTTP/TLS host is also used in request authorities, the certificate
 SAN, catalog, scoped grants, task policy and circuit checks. These are test
 bindings; the default ports remain ephemeral. If `--origin-bind` differs from
-the authority, the HTTP fixture also acts as its owned parent and tunnels only
-the selected TLS origin. This lets the authority remain `127.0.0.2`, which
+the authority, the HTTP fixture also acts as its owned parent, tunnels only
+the selected TLS origin and forwards refresh calls to the separate OAuth
+fixture. This lets the authority remain `127.0.0.2`, which
 counts in the circuit probe, while the listeners bind to `127.0.0.1`.
 Each procedure keeps its own
 state and verifies owned cleanup before another procedure runs.
