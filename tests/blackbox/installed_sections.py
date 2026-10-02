@@ -25,6 +25,9 @@ SECTIONS = {
     "kvm": ("isolation", "ingress", "workloads"),
     "vz": ("isolation", "access", "lifecycle", "continuity"),
 }
+# run-tests.sh reserves this result for failed cleanup when invoked by this
+# loop. Its ordinary public infrastructure/cleanup exit remains 2.
+INNER_CLEANUP_FAILURE_EXIT = 3
 
 
 def copy_prepared_nats(source: Path, root: Path) -> None:
@@ -160,6 +163,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         instance = directory / section
         section_artifacts = artifacts / section
         section_env = dict(env, SAFEYOLO_TEST_CONFIG_DIR=str(instance), SAFEYOLO_TEST_AGENT="bbtest",
+                           SAFEYOLO_BLACKBOX_SECTION_RUN="1",
                            SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(section_artifacts),
                            SAFEYOLO_COORD_DATA_DIR=str(instance / "data/coord"),
                            SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex,
@@ -191,8 +195,14 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             failures = cleanup_instance(cli, instance)
             if section == "lifecycle":
                 failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
+        if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
+            # An inner stop can remove its markers while leaving a process
+            # live. A later empty inspection cannot clear that known failure.
+            failures.insert(0, "section runner reported an owned cleanup failure")
+            section_exit = 2
         row = {"section": section, "config_dir": str(instance), "prepared_config_dir": str(source),
-               "exit": section_exit, "result": "passed" if section_exit == 0 else
+               "exit": section_exit, "result": "cleanup_failure" if failures else
+               "passed" if section_exit == 0 else
                "assertion_failure" if section_exit == 1 else "preparation_failure",
                "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures}
         if error is not None:

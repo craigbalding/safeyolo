@@ -1184,6 +1184,88 @@ def test_installed_sections_do_not_continue_across_unclean_boundary(
     assert not (directory / "access").exists()
 
 
+@pytest.mark.parametrize("leave_process_live,section_exit", [(True, 1), (False, 1), (False, 3)],
+                         ids=["survivor", "clean-assertion-failure", "clean-pytest-internal-error"])
+def test_installed_sections_preserve_inner_cleanup_outcome(
+    tmp_path, monkeypatch, installed_section_commands, leave_process_live, section_exit
+):
+    """Run the real inner trap and outer loop when stop removes a PID marker."""
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    stop_script = f"#!{sys.executable}\n" + f"""
+import json, os, pathlib, signal, sys, time
+sys.path.insert(0, {str(ROOT)!r})
+from tests.blackbox.installed_host_smoke import _pid_alive
+root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+marker = root / 'data/proxy-rust.json'
+if marker.exists():
+    pid = json.loads(marker.read_text())['pid']
+    marker.unlink()
+    if os.environ['LEAVE_PROCESS_LIVE'] == '0':
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _pid_alive(pid)
+"""
+    prepare = scripts / "run-lane.sh"
+    prepare.write_text(prepare.read_text()
+                       + f"(binary_dir / 'safeyolo').write_text({stop_script!r})\n")
+    runner = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    trap_start = runner.index("cleanup() {")
+    trap_end = runner.index("\n# --- Clean stale state", trap_start)
+    section = scripts / "run-tests.sh"
+    section.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        "export SAFEYOLO_CONFIG_DIR=\"$SAFEYOLO_TEST_CONFIG_DIR\"\n"
+        "mkdir -p \"$SAFEYOLO_CONFIG_DIR/data\"\n"
+        "touch \"$SAFEYOLO_CONFIG_DIR/config.yaml\"\n"
+        "if [ \"${SAFEYOLO_CONFIG_DIR##*/}\" = access ]; then\n"
+        "    touch \"$SAFEYOLO_CONFIG_DIR/access-started\"\n"
+        "    exit 0\n"
+        "fi\n"
+        f"SCRIPT_DIR={str(ROOT / 'tests/blackbox')!r}\n"
+        "STARTED_VM=false\nSTARTED_PROXY=true\nSTARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
+        "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nPROXY_IMPL=rust\nAGENT_NAME=bbtest\n"
+        + _runner_cleanup_helpers()
+        + runner[trap_start:trap_end]
+        + "\nprintf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$SAFEYOLO_CONFIG_DIR/data/proxy-rust.json\"\n"
+        f"exit {section_exit}\n"
+    )
+    section.chmod(0o755)
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    monkeypatch.setenv("OWNED_TEST_PID", str(process.pid))
+    monkeypatch.setenv("LEAVE_PROCESS_LIVE", "1" if leave_process_live else "0")
+    monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")
+    try:
+        result = installed_sections.run_sections(
+            "systrap", ("isolation", "access"), repository, "a" * 40, directory, artifacts
+        )
+        report = json.loads((artifacts / "installed-sections.json").read_text())
+        first = report["sections"][0]
+        assert not (directory / "isolation/data/proxy-rust.json").exists()
+        if leave_process_live:
+            assert process.poll() is None, "the injected stop must leave the owned lifetime live"
+            assert result == 2
+            assert first["result"] == "cleanup_failure" and first["cleanup"] == "failed"
+            assert len(report["sections"]) == 1
+            assert not (directory / "access/access-started").exists()
+        else:
+            process.wait(timeout=5)
+            expected = 1 if section_exit == 1 else 2
+            assert result == expected
+            assert first["exit"] == expected
+            assert first["result"] == ("assertion_failure" if expected == 1 else "preparation_failure")
+            assert first["cleanup"] == "stopped"
+            assert len(report["sections"]) == 2
+            assert (directory / "access/access-started").is_file()
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
+
+
 def test_installed_sections_attribute_preparation_failure_without_starting_section(
     tmp_path, monkeypatch, installed_section_commands
 ):

@@ -74,7 +74,9 @@ Exit 0 means the selected checks and cleanup passed; 1 means an assertion
 failed; 2 means preparation, execution infrastructure or cleanup failed.
 Another independent section may run after a failed assertion or setup only
 when owned cleanup establishes a clean boundary. A cleanup failure stops the
-remaining sections. Stop the proxy and each disposable guest: `safeyolo stop`
+remaining sections and is recorded as `cleanup_failure`. A later inspection
+with no markers cannot clear an inner cleanup failure that already detected a
+surviving owned process. Stop the proxy and each disposable guest: `safeyolo stop`
 alone does not stop a guest.
 
 ## Cadence and hardware evidence

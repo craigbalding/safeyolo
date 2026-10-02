@@ -814,9 +814,19 @@ raise SystemExit(bool(failures))
 PY_SURVIVORS
     if [ "$cleanup_failed" = true ]; then
         echo "ERROR: owned cleanup failed; another section must not start" >&2
+        if [ "${SAFEYOLO_BLACKBOX_SECTION_RUN:-}" = "1" ]; then
+            # Preserve the known failure through the outer continuation
+            # decision even when stop already removed a surviving PID marker.
+            exit 3
+        fi
         exit 2
     fi
     echo "Cleanup complete"
+    # Keep pytest internal-error/usage/collection and other infrastructure
+    # exits distinct from the private cleanup-failure signal above.
+    if [ "$section_exit" -gt 1 ]; then
+        exit 2
+    fi
     exit "$section_exit"
 }
 trap cleanup EXIT
