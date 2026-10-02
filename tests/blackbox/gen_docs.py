@@ -2,8 +2,8 @@
 """Generate docs/blackbox-coverage.md from maintained runner selections.
 
 Extract pytest Title/What/Why and the selected installed procedure docstrings.
-Historical host/proxy tests are retained during replacement review but excluded
-from native execution, so they must not inflate current native coverage.
+Completed migration receipts are historical observations, not current native
+coverage. This inventory follows the maintained selectors and procedure owners.
 
 The goal is an operator-facing answer to "what does SafeYolo's blackbox
 suite actually verify?" — no drift, because the docstrings are the

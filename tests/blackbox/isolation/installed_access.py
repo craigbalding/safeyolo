@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run selected P3 consumer calls through a real guest's proxy forwarder."""
+"""Run installed access calls through a real guest's proxy forwarder."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def exchange(
         client.request(method, target, body=body, headers=fields)
         response = client.getresponse()
         content = response.read(MAX_BODY + 1)
-        assert len(content) <= MAX_BODY, f"{target} response exceeded the P3 bound"
+        assert len(content) <= MAX_BODY, f"{target} response exceeded the access bound"
         return response.status, {name.lower(): value for name, value in response.getheaders()}, content
     finally:
         client.close()
@@ -76,7 +76,7 @@ def access() -> dict:
         payload={
             "service": "p3_basic",
             "capability": "reader",
-            "reason": "finite P3 pilot",
+            "reason": "installed access test",
         },
     )
     assert basic[0] == 202 and basic[1].get("x-safeyolo-request-id", "").startswith("req-"), basic
@@ -86,7 +86,7 @@ def access() -> dict:
         payload={
             "service": "p3_contract",
             "capability": "writer",
-            "reason": "finite P3 pilot",
+            "reason": "installed access test",
         },
     )
     assert challenge[0] == 200 and challenge[2].get("decision") == "needs_contract_binding", challenge
@@ -385,7 +385,7 @@ def main() -> None:
         case "websocket":
             result = websocket("p2-" + args.marker[3:], args.agent, tls=False)
         case _:
-            raise AssertionError(f"unknown P3 phase: {args.phase}")
+            raise AssertionError(f"unknown access phase: {args.phase}")
     print(
         "P3_OBSERVATION="
         + json.dumps(

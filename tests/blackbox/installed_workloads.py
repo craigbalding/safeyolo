@@ -34,12 +34,12 @@ from pathlib import Path
 if __package__:
     from .host.sinkhole_client import SinkholeClient
     from .installed_host_smoke import _sha256
-    from .installed_ingress import FROZEN_R, installed_identity, runsc_identity
+    from .installed_ingress import installed_identity, runsc_identity
     from .isolation.installed_ingress import is_mounted_forwarder
 else:
     from host.sinkhole_client import SinkholeClient
     from installed_host_smoke import _sha256
-    from installed_ingress import FROZEN_R, installed_identity, runsc_identity
+    from installed_ingress import installed_identity, runsc_identity
     from isolation.installed_ingress import is_mounted_forwarder
 from urllib.parse import urlsplit
 
@@ -89,7 +89,7 @@ def prepare_repository(directory: Path, marker: str) -> str:
 def owned_ssh(directory: Path, config_dir: Path, agent: str, marker: str):
     ssh = shutil.which("sshd") or ("/usr/sbin/sshd" if Path("/usr/sbin/sshd").is_file() else None)
     keygen = shutil.which("ssh-keygen")
-    assert ssh and keygen, "P2 host requires sshd and ssh-keygen"
+    assert ssh and keygen, "workloads host requires sshd and ssh-keygen"
     private = directory / "ssh"
     private.mkdir(mode=0o700)
     forced = private / "marker-command"
@@ -277,19 +277,19 @@ def check_origin(sinkhole: SinkholeClient, marker: str, package_sha: str, repo_c
 
 def main() -> None:
     # The runner's bounded timeout must unwind the disposable SSH fixture.
-    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit("P2 pilot timed out"))
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit("workloads test timed out"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--platform", choices=("kvm", "systrap"), required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--install-commit", default=FROZEN_R)
+    parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == args.install_commit, f"pilot installed {revision}, expected {args.install_commit}"
+    assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     assert runtime["host"]["system"] == "Linux"
@@ -338,10 +338,8 @@ def main() -> None:
         "runtime_config": {"path": str(config_dir / "data/native.json"),
         "parent_proxy": native["parent_proxy"], "upstream_ca_file": native["upstream_ca_file"]},
     }
-    if args.install_commit == FROZEN_R:
-        report["frozen_revision"] = FROZEN_R
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"Linux {args.platform} P2: installed guest package, repository, early SSE, "
+    print(f"Linux {args.platform} workloads: installed guest package, repository, early SSE, "
           f"WSS, deny and pinned SSH verified ({args.output})")
 
 

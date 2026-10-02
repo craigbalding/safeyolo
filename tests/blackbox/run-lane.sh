@@ -23,8 +23,7 @@ if [ -z "$LANE" ]; then
 fi
 shift
 
-# A frozen pilot may install a pinned source checkout while exercising the
-# current blackbox harness. The packaged CLI and native binary still come
+# The selected source checkout may differ from the current blackbox harness. The packaged CLI and native binary still come
 # from the same install.sh invocation.
 INSTALL_ROOT="$REPO_ROOT"
 if [ "${1:-}" = "--install-checkout" ]; then

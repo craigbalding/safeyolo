@@ -46,7 +46,6 @@ from safeyolo.coord.nats_runtime import is_healthy
 from safeyolo.operator_approvals import approve
 from safeyolo.traffic_inspector import TrafficInspector
 
-FROZEN_R = "2faba3306de7c099e2913e0eebc8907ff3eba148"
 ROOM = "p3-owned-room"
 PEER = "bbpeer"
 
@@ -232,7 +231,7 @@ def inspect_traffic(api: AdminAPI, output: Path, primary: str, marker: str) -> d
     inspector.select(index)
     asyncio.run(inspector.refresh())
     assert inspector.detail and inspector.detail["id"] == selected["id"]
-    exported = output.parent / f"p3-selected-{marker}.raw_request"
+    exported = output.parent / f"access-selected-{marker}.raw_request"
     inspector.queue_export(selected["id"], "raw_request", str(exported))
     asyncio.run(inspector.refresh())
     assert exported.is_file() and b"/p3/read" in exported.read_bytes(), inspector.export_report
@@ -286,8 +285,8 @@ def check_origin(sinkhole: SinkholeClient, credential: str, marker: str) -> dict
 
 
 def main() -> None:
-    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit("P3 pilot timed out"))
-    signal.signal(signal.SIGALRM, lambda _signum, _frame: sys.exit("P3 pilot exceeded eight minutes"))
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit("access test timed out"))
+    signal.signal(signal.SIGALRM, lambda _signum, _frame: sys.exit("access test exceeded eight minutes"))
     signal.alarm(8 * 60)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", type=Path, required=True)
@@ -295,12 +294,12 @@ def main() -> None:
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--platform", choices=("systrap", "vz"), required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--install-commit", default=FROZEN_R)
+    parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
     revision = checked(["git", "-C", str(install_checkout), "rev-parse", "HEAD"]).stdout.strip()
-    assert revision == args.install_commit, f"pilot installed {revision}, expected {args.install_commit}"
+    assert revision == args.install_commit, f"installed {revision}, expected {args.install_commit}"
     runtime = json.loads(args.runtime.read_text())
     identity = installed_identity(runtime, install_checkout, expected_revision=args.install_commit)
     native = json.loads((config_dir / "data/native.json").read_text())
@@ -424,10 +423,8 @@ def main() -> None:
             "origin": origin,
             "inspector": inspector,
         }
-        if args.install_commit == FROZEN_R:
-            report["frozen_revision"] = FROZEN_R
         args.output.write_text(json.dumps(report, indent=2) + "\n")
-        print(f"{args.platform} P3: six installed guest journeys and operator effects verified ({args.output})")
+        print(f"{args.platform} access: six installed guest journeys and operator effects verified ({args.output})")
     finally:
         stolen_token_file.unlink(missing_ok=True)
         sinkhole.close()

@@ -106,10 +106,14 @@ probe, cleared before denied-no-origin checks. A connection alone is not a
 captured request. Process, guest, listener, NATS and fixture cleanup are owned;
 a local fixture stop cannot establish a physical Mac's ports are free.
 
-Historical comparator/frozen wrappers and the full installed state-transition
-inventory remain during #320's replacement-before-deletion verification.
-Enduring installed flow/body/tag/audit, circuit, catalog/revocation/grant,
-Coord/attention/provider lease/Plumb, private file modes, OAuth stored use and
-task reset must retain their boundary. Lens independently verifies each named
-replacement before the matching duplicate is removed, under the
+Current installed continuity owns flow/body/tag/audit, circuit,
+catalog/revocation/grant, Coord/attention/provider lease/Plumb, private file
+modes, OAuth stored use and task reset. The named installed sections retain
+their guest/operator boundaries. Completed comparator executors, migration
+wrappers and frozen defaults are retired after Lens's bounded replacement
+assessments, under the
 [approved finite disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
+The [state inventory](state-compatibility.md) preserves historical writers,
+receipts and explicit package recovery; it does not add recurring migration
+gates. Physical observations and their unexecuted assertions remain attributed
+in the [VZ replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767).

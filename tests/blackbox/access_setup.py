@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare disposable service and policy inputs for the installed P3 pilot."""
+"""Prepare disposable service and policy inputs for installed access."""
 
 from __future__ import annotations
 

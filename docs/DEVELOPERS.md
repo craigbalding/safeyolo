@@ -27,7 +27,8 @@ The instance policy file is the source of truth for durable permissions.
 - `cli/src/safeyolo/templates/` contains initial policy, addon settings, and
   named lists consumed by native policy loading.
 - `tests/proxy_contracts/` contains native process/protocol contracts.
-  Historical comparator executors remain only during #320 replacement review.
+  Completed comparator receipts and their source references remain in
+  [the historical state inventory](state-compatibility.md).
 - `tests/blackbox/` contains installed host and sandbox lane probes.
 - `docs/proxy-parity.md` records migration discrepancies and disposition.
 

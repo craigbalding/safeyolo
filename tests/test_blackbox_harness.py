@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
-from tests.blackbox import installed_lifecycle as pilot
+from tests.blackbox import installed_lifecycle as lifecycle
 from tests.blackbox import installed_sections
 from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
@@ -85,11 +85,11 @@ def test_installed_native_vm_lane_fails_before_instance_setup_without_packaged_b
 
 
 @pytest.mark.parametrize("options", [
-    ["--expect-platform", "vz", "--proxy-impl", "rust", "--p2"],
-    ["--expect-platform", "kvm", "--proxy-impl", "python", "--p2"],
-    ["--expect-platform", "kvm", "--proxy-impl", "rust", "--p2", "--kvm-p1"],
+    ["--expect-platform", "vz", "--proxy-impl", "rust", "--workloads"],
+    ["--expect-platform", "kvm", "--proxy-impl", "python", "--workloads"],
+    ["--expect-platform", "kvm", "--proxy-impl", "rust", "--workloads", "--ingress"],
 ])
-def test_linux_p2_rejects_a_different_lane_before_setup(tmp_path, options):
+def test_workloads_reject_a_different_lane_before_setup(tmp_path, options):
     config_dir = tmp_path / "test-instance"
     result = subprocess.run(
         [str(Path(__file__).parent / "blackbox" / "run-tests.sh"), *options],
@@ -100,7 +100,7 @@ def test_linux_p2_rejects_a_different_lane_before_setup(tmp_path, options):
     if "python" in options:
         assert "unsupported proxy implementation" in result.stderr
     else:
-        assert "--p2 requires --expect-platform kvm|systrap --proxy-impl rust" in result.stderr
+        assert "--workloads requires --expect-platform kvm|systrap --proxy-impl rust" in result.stderr
     assert not config_dir.exists()
 
 
@@ -586,11 +586,11 @@ def test_selected_rust_runner_requires_native_policy_provenance(tmp_path, monkey
 ROOT = Path(__file__).resolve().parents[1]
 REQUEST_ID = "req-" + "a" * 32
 MARKER = "p3-" + "b" * 32
-FROZEN_R = "2faba3306de7c099e2913e0eebc8907ff3eba148"
-POST_DELETION = "d680ef82e4cdd9f1b725a421bccf8496123fd55a"
+OTHER_REVISION = "b" * 40
+SELECTED_REVISION = "a" * 40
 
 
-def test_p3_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch):
+def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch):
     """Run the launcher's final addon rewrite and capture the guest's calls."""
     source = tmp_path / "source-instance"
     instance = tmp_path / "test-instance"
@@ -658,7 +658,7 @@ def test_p3_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch
         ("GET", guest.BASIC_HOST, True),
     ]
     assert targets == ["failing.test"], (
-        "P3 needs an owned activation target without mandatory context on ordinary hosts"
+        "access needs an owned activation target without mandatory context on ordinary hosts"
     )
     assert all(host not in targets or has_context for _, host, has_context in calls)
     assert guest.BASIC_HOST not in targets, "the explicit header must exercise a non-target host"
@@ -701,21 +701,21 @@ def test_held_guest_keeps_preamble_and_observation(monkeypatch):
         "print('P4_READY=drain', flush=True); "
         f"print('P4_OBSERVATION=' + {json.dumps(json.dumps(observation))}, flush=True)"
     )
-    monkeypatch.setattr(pilot, "guest_command", lambda *_args: [sys.executable, "-u", "-c", script])
+    monkeypatch.setattr(lifecycle, "guest_command", lambda *_args: [sys.executable, "-u", "-c", script])
 
-    process, first = pilot.held_guest("unused", "bbtest", "drain", "p4-" + "a" * 32)
-    assert pilot.finish_guest(process, first, "drain", "bbtest") == observation["result"]
+    process, first = lifecycle.held_guest("unused", "bbtest", "drain", "p4-" + "a" * 32)
+    assert lifecycle.finish_guest(process, first, "drain", "bbtest") == observation["result"]
 
 
 def test_held_guest_reports_exit_before_ready(monkeypatch):
     monkeypatch.setattr(
-        pilot,
+        lifecycle,
         "guest_command",
         lambda *_args: [sys.executable, "-u", "-c", "print('shell preamble', flush=True); raise SystemExit(4)"],
     )
 
     with pytest.raises(AssertionError, match="exited before its admitted-work boundary"):
-        pilot.held_guest("unused", "bbtest", "drain", "p4-" + "a" * 32)
+        lifecycle.held_guest("unused", "bbtest", "drain", "p4-" + "a" * 32)
 
 
 @pytest.mark.parametrize("client", [guest_workloads, guest_lifecycle], ids=["workloads", "lifecycle"])
@@ -783,7 +783,7 @@ def test_guest_sse_rejects_incomplete_or_oversized_events(body, message):
 
 
 def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_path):
-    revision = POST_DELETION
+    revision = SELECTED_REVISION
     checkout = tmp_path / "source"
     built = checkout / "proxy/target/release/safeyolo-proxy"
     built.parent.mkdir(parents=True)
@@ -830,7 +830,7 @@ def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_p
     assert selected["build_identity"]["source_revision"] == revision
     assert selected["cli_diagnostics"]["detail"] == "PID 4242"
     with pytest.raises(AssertionError, match="selected source build identity"):
-        installed_identity(runtime, checkout, expected_revision=FROZEN_R)
+        installed_identity(runtime, checkout, expected_revision=OTHER_REVISION)
     wrong_diagnostic = {"checks": [{**diagnostic["checks"][0], "message": "Running /wrong/proxy"}]}
     cli.write_text(
         "#!/usr/bin/env python3\n"
@@ -842,9 +842,9 @@ def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_p
         installed_identity(runtime, checkout, expected_revision=revision)
 
 
-def test_install_commit_option_needs_an_installed_pilot(tmp_path):
+def test_install_commit_option_needs_an_installed_selection(tmp_path):
     result = subprocess.run(
-        [str(ROOT / "tests/blackbox/run-tests.sh"), "--install-commit", POST_DELETION],
+        [str(ROOT / "tests/blackbox/run-tests.sh"), "--install-commit", SELECTED_REVISION],
         cwd=ROOT,
         env={
             "PATH": "/usr/bin:/bin",
@@ -858,6 +858,41 @@ def test_install_commit_option_needs_an_installed_pilot(tmp_path):
     assert result.returncode == 2
     assert "requires an installed ingress, workloads, access, or lifecycle selection" in result.stderr
     assert not (tmp_path / "test-instance").exists()
+
+
+@pytest.mark.parametrize("selection", ["default", "matching", "mismatched", "missing_checkout"])
+def test_direct_installed_selection_resolves_current_source_before_setup(tmp_path, selection):
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / "source.txt").write_text("selected source\n")
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+         "commit", "-qm", "Selected source"], check=True,
+    )
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    instance = tmp_path / "test-instance"
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "SAFEYOLO_TEST_CONFIG_DIR": str(instance)}
+    if selection != "missing_checkout":
+        env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
+    options = ["--expect-platform", "systrap", "--workloads"]
+    if selection != "default":
+        options += ["--install-commit", OTHER_REVISION if selection == "mismatched" else revision]
+    result = subprocess.run(
+        [str(ROOT / "tests/blackbox/run-tests.sh"), *options], env=env,
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    assert result.returncode == 2
+    if selection in {"default", "matching"}:
+        assert f"Installed source: {revision}" in result.stdout
+        assert "installed safeyolo CLI is required" in result.stderr
+    elif selection == "mismatched":
+        assert "install checkout must contain the exact full selected commit" in result.stderr
+        assert "Installed source:" not in result.stdout
+    else:
+        assert "installed sections need SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" in result.stderr
+    assert not instance.exists()
 
 
 @pytest.fixture
@@ -1009,7 +1044,7 @@ if marker.exists():
         f"STARTED_VM=false\nSTARTED_PROXY={'false' if owner else 'true'}\n"
         "STARTED_PARENT=false\nSTARTED_SINKHOLE=false\n"
         "PARENT_PID=\nSINKHOLE_PID=\nHOST_LISTENER_PID=\nPROXY_IMPL=rust\nAGENT_NAME=bbtest\n"
-        f"P4={'true' if owner else 'false'}\n"
+        f"LIFECYCLE={'true' if owner else 'false'}\n"
         + _runner_cleanup_helpers()
         + runner[trap_start:trap_end]
         + f"\nowned_root={owned_root}\n"

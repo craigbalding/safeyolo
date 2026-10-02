@@ -20,11 +20,11 @@
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl rust
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
-#   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
-#   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --p2
-#   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p3
-#   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p4
-#   ./run-tests.sh --expect-platform systrap --proxy-impl rust --p3-config-only
+#   ./run-tests.sh --expect-platform kvm --proxy-impl rust --ingress
+#   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --workloads
+#   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --access
+#   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --lifecycle
+#   ./run-tests.sh --expect-platform systrap --proxy-impl rust --access-config-only
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
 #   ./run-tests.sh --proxy -- --collect-only
 #   ./run-tests.sh --verbose    # Verbose pytest output
@@ -83,11 +83,11 @@ AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
 EXPECTED_PLATFORM=""
 PROXY_IMPL="rust"
 RUST_BIN=""
-KVM_P1=false
-P2=false
-P3=false
-P4=false
-P3_CONFIG_ONLY=false
+INGRESS=false
+WORKLOADS=false
+ACCESS=false
+LIFECYCLE=false
+ACCESS_CONFIG_ONLY=false
 INSTALL_COMMIT=""
 PYTEST_FORWARD_ARGS=()
 
@@ -143,20 +143,20 @@ while [[ $# -gt 0 ]]; do
             RUST_BIN="$2"
             shift 2
             ;;
-        --ingress|--kvm-p1)
-            KVM_P1=true
+        --ingress)
+            INGRESS=true
             shift
             ;;
-        --workloads|--p2)
-            P2=true
+        --workloads)
+            WORKLOADS=true
             shift
             ;;
-        --access|--p3)
-            P3=true
+        --access)
+            ACCESS=true
             shift
             ;;
-        --lifecycle|--p4)
-            P4=true
+        --lifecycle)
+            LIFECYCLE=true
             shift
             ;;
         --install-commit)
@@ -167,9 +167,9 @@ while [[ $# -gt 0 ]]; do
             INSTALL_COMMIT="$2"
             shift 2
             ;;
-        --access-config-only|--p3-config-only)
-            P3=true
-            P3_CONFIG_ONLY=true
+        --access-config-only)
+            ACCESS=true
+            ACCESS_CONFIG_ONLY=true
             shift
             ;;
         --)
@@ -185,42 +185,62 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -n "$INSTALL_COMMIT" ] && [ "$KVM_P1" != true ] && [ "$P2" != true ] && [ "$P3" != true ] && [ "$P4" != true ]; then
+if [ -n "$INSTALL_COMMIT" ] && [ "$INGRESS" != true ] && [ "$WORKLOADS" != true ] && [ "$ACCESS" != true ] && [ "$LIFECYCLE" != true ]; then
     echo "ERROR: --install-commit requires an installed ingress, workloads, access, or lifecycle selection" >&2
     exit 2
+fi
+if [ "$INGRESS" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --ingress requires --expect-platform kvm --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+if [ "$WORKLOADS" = true ] && { [ "$INGRESS" = true ] || \
+   [ "$ACCESS" = true ] || [ "$LIFECYCLE" = true ] || \
+   { [ "$EXPECTED_PLATFORM" != "kvm" ] && [ "$EXPECTED_PLATFORM" != "systrap" ]; } || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --workloads requires --expect-platform kvm|systrap --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+if [ "$ACCESS" = true ] && { [ "$INGRESS" = true ] || [ "$LIFECYCLE" = true ] || \
+   { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --access requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+if [ "$LIFECYCLE" = true ] && { [ "$INGRESS" = true ] || \
+   { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
+   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
+   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
+    echo "ERROR: --lifecycle requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
+    exit 2
+fi
+
+# Installed procedures use the source selected by run-lane.sh/run-installed.sh,
+# never a completed migration's frozen default. Resolve its HEAD before setup;
+# an explicit selection must agree with that checkout and the installed stamp.
+if { [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ] || \
+     [ "$ACCESS" = true ] || [ "$LIFECYCLE" = true ]; } && [ "$ACCESS_CONFIG_ONLY" = false ]; then
+    if [ -z "${SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT:-}" ]; then
+        echo "ERROR: installed sections need SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT; use run-installed.sh or run-lane.sh" >&2
+        exit 2
+    fi
+    if ! SELECTED_REVISION="$(git -C "$SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT" rev-parse HEAD)"; then
+        echo "ERROR: cannot resolve the selected install checkout" >&2
+        exit 2
+    fi
+    INSTALL_COMMIT="${INSTALL_COMMIT:-$SELECTED_REVISION}"
+    if [[ ! "$INSTALL_COMMIT" =~ ^[0-9a-f]{40}$ ]] || [ "$INSTALL_COMMIT" != "$SELECTED_REVISION" ]; then
+        echo "ERROR: install checkout must contain the exact full selected commit" >&2
+        exit 2
+    fi
+    echo "Installed source: $INSTALL_COMMIT"
 fi
 INSTALL_COMMIT_ARGS=()
 if [ -n "$INSTALL_COMMIT" ]; then
     INSTALL_COMMIT_ARGS=(--install-commit "$INSTALL_COMMIT")
-fi
-
-if [ "$KVM_P1" = true ] && { [ "$EXPECTED_PLATFORM" != "kvm" ] || \
-   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
-   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
-    echo "ERROR: --kvm-p1 requires --expect-platform kvm --proxy-impl rust and no suite override" >&2
-    exit 2
-fi
-if [ "$P2" = true ] && { [ "$KVM_P1" = true ] || \
-   [ "$P3" = true ] || [ "$P4" = true ] || \
-   { [ "$EXPECTED_PLATFORM" != "kvm" ] && [ "$EXPECTED_PLATFORM" != "systrap" ]; } || \
-   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
-   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
-    echo "ERROR: --p2 requires --expect-platform kvm|systrap --proxy-impl rust and no suite override" >&2
-    exit 2
-fi
-if [ "$P3" = true ] && { [ "$KVM_P1" = true ] || [ "$P4" = true ] || \
-   { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
-   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
-   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
-    echo "ERROR: --p3 requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
-    exit 2
-fi
-if [ "$P4" = true ] && { [ "$KVM_P1" = true ] || \
-   { [ "$EXPECTED_PLATFORM" != "systrap" ] && [ "$EXPECTED_PLATFORM" != "vz" ]; } || \
-   [ "$PROXY_IMPL" != "rust" ] || [ "$RUN_PROXY" != true ] || \
-   [ "$RUN_ISOLATION" != true ] || [ "${#PYTEST_FORWARD_ARGS[@]}" -ne 0 ]; }; then
-    echo "ERROR: --p4 requires --expect-platform systrap|vz --proxy-impl rust and no suite override" >&2
-    exit 2
 fi
 
 # The physical VZ test account has six assigned localhost TCP ports. All
@@ -239,7 +259,7 @@ if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ]; then
     # Rust uses agent UDS listeners; 46370 and 46372 are available for
     # this disposable instance's NATS client and ownership monitor.
     export SAFEYOLO_NATS_TEST_PORTS=46370,46372
-    export SAFEYOLO_P4_OWNER_ADMIN_PORT=46375
+    export SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT=46375
 fi
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
 export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
@@ -249,12 +269,12 @@ export SAFEYOLO_SINKHOLE_HTTP_PORT="$SINKHOLE_HTTP_PORT"
 export SAFEYOLO_SINKHOLE_HTTPS_PORT="$SINKHOLE_HTTPS_PORT"
 
 # Command-line paths are interpreted relative to the caller's directory even
-# though the legacy runner changes into tests/blackbox for its setup.
+# though the runner changes into tests/blackbox for its setup.
 if [ -n "$RUST_BIN" ] && [[ "$RUST_BIN" != /* ]] && [[ "$RUST_BIN" != "~/"* ]]; then
     RUST_BIN="$CALLER_DIR/$RUST_BIN"
 fi
 
-# The VM compatibility lane accepts a command string, so quote forwarded
+# The VM lane accepts a command string, so quote forwarded
 # pytest arguments before embedding them in that string.  Host-side pytest
 # calls below continue to use the original array directly.
 PYTEST_FORWARD_SHELL=""
@@ -334,7 +354,7 @@ export SAFEYOLO_BLACKBOX_PROXY_BACKEND="$PROXY_IMPL"
 export SAFEYOLO_BLACKBOX_PLATFORM="$EXPECTED_PLATFORM"
 INSTALLED_CLI=""
 INSTALLED_RUST_BIN=""
-if [ "$PROXY_IMPL" = "rust" ] && [ "$P3_CONFIG_ONLY" = false ]; then
+if [ "$PROXY_IMPL" = "rust" ] && [ "$ACCESS_CONFIG_ONLY" = false ]; then
     INSTALLED_CLI="$(command -v safeyolo || true)"
     if [ -z "$INSTALLED_CLI" ]; then
         echo "ERROR: the installed safeyolo CLI is required for the native VM lane" >&2
@@ -404,16 +424,16 @@ copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
 fi
 
-if [ "$KVM_P1" = true ] || [ "$P2" = true ]; then
+if [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ]; then
     # This rule belongs only to the disposable instance and is loaded before
     # the native process starts. The owned parent maps evil.com to the same
     # sinkhole, so its absence there is a meaningful denial observation.
     safeyolo policy host deny evil.com
 fi
-if [ "$P2" = true ]; then
+if [ "$WORKLOADS" = true ]; then
     safeyolo policy host add failing.test
 fi
-if [ "$P4" = true ]; then
+if [ "$LIFECYCLE" = true ]; then
     safeyolo policy host deny evil.com
     safeyolo policy host add failing.test
     safeyolo policy host add future-leaf.test
@@ -422,10 +442,10 @@ if [ "$P4" = true ]; then
     safeyolo policy host add self-signed.test
     safeyolo policy host add expired-leaf.test
 fi
-if [ "$P3" = true ]; then
+if [ "$ACCESS" = true ]; then
     export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
     export SAFEYOLO_NATS_TEST_INSTANCE="${SAFEYOLO_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
-    python3 "$SCRIPT_DIR/p3_setup.py" "$SAFEYOLO_CONFIG_DIR"
+    python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR"
 fi
 
 # Restore a parent selected by an interrupted native run before reading or
@@ -448,7 +468,7 @@ config['test']['ca_cert'] = '$SAFEYOLO_TEST_CERT_DIR/ca.crt'
 config_path.write_text(yaml.dump(config, default_flow_style=False))
 "
 
-# Configure test_context targets before the native process starts. P3's
+# Configure test_context targets before the native process starts. Access's
 # basic and contract hosts send no context header; its explicit context
 # header still opts the non-target request into provenance and recording.
 python3 -c "
@@ -456,11 +476,11 @@ import yaml
 from pathlib import Path
 addons_path = Path('$SAFEYOLO_CONFIG_DIR/addons.yaml')
 addons = yaml.safe_load(addons_path.read_text())
-if '$P3' == 'true':
+if '$ACCESS' == 'true':
     targets = ['failing.test']
 else:
     targets = ['httpbin.org']
-if '$P2' == 'true':
+if '$WORKLOADS' == 'true':
     targets.append('failing.test')
 addons.setdefault('addons', {}).setdefault('test_context', {})['target_hosts'] = targets
 addons_path.write_text(yaml.dump(addons, default_flow_style=False))
@@ -468,8 +488,8 @@ addons_path.write_text(yaml.dump(addons, default_flow_style=False))
 
 # Focused launcher probe: the final addon file above is the one the installed
 # proxy would load. No proxy, fixture, or guest has been started yet.
-if [ "$P3_CONFIG_ONLY" = true ]; then
-    echo "P3 configuration prepared; no proxy or guest started"
+if [ "$ACCESS_CONFIG_ONLY" = true ]; then
+    echo "Access configuration prepared; no proxy or guest started"
     exit 0
 fi
 
@@ -702,8 +722,8 @@ print(json.dumps(owned_processes(Path(sys.argv[2]))))
 PY_SNAPSHOT
 )" || cleanup_failed=true
 
-    if [ "${P4:-false}" = true ] && [ -n "${SAFEYOLO_P4_OWNER_CONFIG_DIR:-}" ]; then
-        python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" "$SAFEYOLO_P4_OWNER_CONFIG_DIR" <<'PY_OWNER' || cleanup_failed=true
+    if [ "${LIFECYCLE:-false}" = true ] && [ -n "${SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR:-}" ]; then
+        python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" "$SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR" <<'PY_OWNER' || cleanup_failed=true
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -810,7 +830,7 @@ safeyolo stop 2>/dev/null || true
 # --- Phase 1: Start infrastructure (idempotent) ---
 
 # Sinkhole (shared — not instance-specific)
-if { [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ] || [ "$VZ_FIXED_PORTS" = true ]; } && \
+if { [ "$WORKLOADS" = true ] || [ "$ACCESS" = true ] || [ "$LIFECYCLE" = true ] || [ "$VZ_FIXED_PORTS" = true ]; } && \
    curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
     echo "ERROR: selected lane requires its own owned sinkhole; control port $SINKHOLE_CONTROL_PORT is already in use" >&2
     exit 2
@@ -819,15 +839,15 @@ if curl -sf "$SINKHOLE_API/health" >/dev/null 2>&1; then
     echo "Sinkhole already running"
 else
     echo "Starting sinkhole..."
-    P2_SINKHOLE_ARGS=()
-    P4_CERT_ARGS=()
-    if [ "$P2" = true ] || [ "$P3" = true ] || [ "$P4" = true ]; then
+    GUEST_FIXTURE_ARGS=()
+    LIFECYCLE_CERT_ARGS=()
+    if [ "$WORKLOADS" = true ] || [ "$ACCESS" = true ] || [ "$LIFECYCLE" = true ]; then
         rm -rf "$SAFEYOLO_CONFIG_DIR/p2-fixture"
         mkdir -m 0700 "$SAFEYOLO_CONFIG_DIR/p2-fixture"
-        P2_SINKHOLE_ARGS=(--p2-dir "$SAFEYOLO_CONFIG_DIR/p2-fixture")
+        GUEST_FIXTURE_ARGS=(--p2-dir "$SAFEYOLO_CONFIG_DIR/p2-fixture")
     fi
-    if [ "$P4" = true ]; then
-        P4_CERT_ARGS=(--extra-cert "future:18452:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key")
+    if [ "$LIFECYCLE" = true ]; then
+        LIFECYCLE_CERT_ARGS=(--extra-cert "future:18452:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key")
     fi
     if [ "$VZ_FIXED_PORTS" = true ]; then
         ORIGINAL_PARENT="$(python3 "$SCRIPT_DIR/harness/native_parent_config.py" current "$SAFEYOLO_CONFIG_DIR")"
@@ -848,7 +868,7 @@ else
             --extra-cert "self-signed.test:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
             --extra-cert "aia-only.test:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
             --extra-cert "future-leaf.test:$SAFEYOLO_TEST_CERT_DIR/future_chain.pem:$SAFEYOLO_TEST_KEY_DIR/future_chain.key" \
-            "${P2_SINKHOLE_ARGS[@]+"${P2_SINKHOLE_ARGS[@]}"}" \
+            "${GUEST_FIXTURE_ARGS[@]+"${GUEST_FIXTURE_ARGS[@]}"}" \
             "${VZ_PARENT_ARGS[@]+"${VZ_PARENT_ARGS[@]}"}" &
     else
     PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 "$SINKHOLE_SCRIPT" \
@@ -865,8 +885,8 @@ else
         --extra-cert "wrong-san:18449:$SAFEYOLO_TEST_CERT_DIR/wrong_san_chain.pem:$SAFEYOLO_TEST_KEY_DIR/wrong_san_chain.key" \
         --extra-cert "self-signed:18450:$SAFEYOLO_TEST_CERT_DIR/self_signed_chain.pem:$SAFEYOLO_TEST_KEY_DIR/self_signed_chain.key" \
         --extra-cert "aia-only:18451:$SAFEYOLO_TEST_CERT_DIR/aia_chain.pem:$SAFEYOLO_TEST_KEY_DIR/aia_chain.key" \
-        "${P4_CERT_ARGS[@]+"${P4_CERT_ARGS[@]}"}" \
-        "${P2_SINKHOLE_ARGS[@]+"${P2_SINKHOLE_ARGS[@]}"}" \
+        "${LIFECYCLE_CERT_ARGS[@]+"${LIFECYCLE_CERT_ARGS[@]}"}" \
+        "${GUEST_FIXTURE_ARGS[@]+"${GUEST_FIXTURE_ARGS[@]}"}" \
         &
     fi
     SINKHOLE_PID=$!
@@ -913,7 +933,7 @@ if [ "$PROXY_IMPL" = "rust" ]; then
         if [ -n "$ORIGINAL_PARENT_CA" ]; then
             PARENT_ARGS+=(--ca-file "$ORIGINAL_PARENT_CA")
         fi
-        if [ "$P2" = true ]; then
+        if [ "$WORKLOADS" = true ]; then
             PARENT_ARGS+=(--p2-ssh-port-file "$SAFEYOLO_CONFIG_DIR/p2-fixture/ssh.port")
         fi
         python3 "$SCRIPT_DIR/harness/sinkhole_parent.py" "${PARENT_ARGS[@]}" &
@@ -1049,7 +1069,7 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
 fi
 
 trap - ERR
-if [ "$KVM_P1" = true ]; then
+if [ "$INGRESS" = true ]; then
     python3 "$SCRIPT_DIR/installed_ingress.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
@@ -1057,7 +1077,7 @@ if [ "$KVM_P1" = true ]; then
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
-if [ "$P2" = true ]; then
+if [ "$WORKLOADS" = true ]; then
     timeout --signal=TERM --kill-after=10s 6m python3 "$SCRIPT_DIR/installed_workloads.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
@@ -1066,7 +1086,7 @@ if [ "$P2" = true ]; then
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
-if [ "$P3" = true ]; then
+if [ "$ACCESS" = true ]; then
     python3 "$SCRIPT_DIR/installed_access.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
@@ -1075,7 +1095,7 @@ if [ "$P3" = true ]; then
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
-if [ "$P4" = true ]; then
+if [ "$LIFECYCLE" = true ]; then
     python3 "$SCRIPT_DIR/installed_lifecycle.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \

@@ -63,6 +63,12 @@ Individual procedural compositions remain intact.
 | `vz` | isolation, access, lifecycle, host continuity |
 
 `--section NAME` runs just that supported section; repeat it to select several.
+For example, run access on the software-isolation host:
+
+```sh
+./tests/blackbox/run-installed.sh systrap --section access
+```
+
 `--install-checkout PATH` uses another clean source checkout at the selected
 commit. `--artifacts PATH` changes the ordinary report directory, which defaults
 to `tests/blackbox/artifacts/`. `installed-sections.json` attributes product
@@ -139,15 +145,25 @@ state, verifies `doctor --json` platform selection, and records the installed
 wheel, packaged executable, actual process/start identity, authenticated admin
 runtime identity and per-agent listener before guest assertions. `--workloads`,
 `--access`, `--lifecycle` and KVM `--ingress` select procedures and exit before
-the full pytest phases. Pass pytest arguments after `--`; the runner forwards
-argument boundaries without shell reinterpretation.
+the full pytest phases. `run-lane.sh` supplies their selected source checkout.
+For a direct prepared procedural run, also set
+`SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT` to the checkout that produced the installed
+wheel and native binary. The runner resolves its HEAD; `--install-commit FULL_SHA`
+must match that checkout before setup. The wheel stamp and live executable
+are checked against the same selection. For pytest selections, pass arguments
+after `--`; the runner forwards argument boundaries without shell reinterpretation.
 
-Historical P1/P2/P3/P4/B2 wrappers and explicit comparator selectors remain
-only during #320's replacement verification. They retain their historical
-source choices and are not the current native execution interface. Do not use
-a retired Python proxy as a production fallback. Their accepted observations
-and the finite pruning scope are recorded in the
+The completed migration wrappers, frozen source defaults and comparator
+selectors are retired. Use the named sections above for current installed
+work. The
+[audited Stage A source](https://github.com/craigbalding/safeyolo/tree/e91f69ef85df55341db530bab421f67c4afb83f5)
+preserves historical executors; their accepted observations and the finite
+pruning scope remain in the
 [approved disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
+Lens's [physical replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767)
+records the VZ isolation, access and lifecycle observations at their actual
+commits, including the five unexecuted isolation assertions. Explicit package
+recovery remains in the [CLI guide](../../cli/README.md#return-to-the-prior-python-package).
 
 ## What each installed selection observes
 

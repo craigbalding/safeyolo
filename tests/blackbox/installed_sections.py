@@ -168,8 +168,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                            SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(section_artifacts),
                            SAFEYOLO_COORD_DATA_DIR=str(instance / "data/coord"),
                            SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex,
-                           SAFEYOLO_P4_OWNER_CONFIG_DIR=str(directory / "lifecycle-owner"),
-                           SAFEYOLO_P4_SOURCE_CONFIG_DIR=str(source))
+                           SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR=str(directory / "lifecycle-owner"),
+                           SAFEYOLO_LIFECYCLE_SOURCE_CONFIG_DIR=str(source))
         section_artifacts.mkdir(parents=True, exist_ok=True)
         args = [str(REPOSITORY / "tests/blackbox/run-tests.sh"), "--expect-platform", lane,
                 "--proxy-impl", "rust"]

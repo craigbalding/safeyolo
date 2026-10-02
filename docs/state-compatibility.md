@@ -10,11 +10,16 @@ reset, trusted TLS, private file modes and owned cleanup. This is installed host
 composition; it does not establish guest or hardware isolation.
 
 The independent Linux replacement receipt is
-[the #320 replacement disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
+[the installed continuity disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5953726186).
 The independent macOS replacement receipt is
 [the current package/HTTPS/native-continuity disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5959049462).
 It records installed host observations on Bristol at
-`d96be08333e8a44d3ee7d534f3c90ee0fcda6e3f`; physical VZ remains pending.
+`d96be08333e8a44d3ee7d534f3c90ee0fcda6e3f`.
+The separate [physical VZ replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767)
+records isolation at `a94285c9`, two-live-guest access at `356fcd5e`, and
+lifecycle's five default-guest-trust TLS cases, mixed drain and three subject
+cycles with a separate live owner at `1deaaee7`. Five platform-specific
+isolation assertions were skipped and remain unproved by those runs.
 The maintained runner selects continuity on Linux and hosted macOS, but
 selection alone is not a passing observation.
 The native CA import fixture in `proxy/tests/tls.rs` accepts both supported RSA

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Selected P4 traffic through one installed guest bridge."""
+"""Run installed lifecycle traffic through one real guest bridge."""
 
 from __future__ import annotations
 

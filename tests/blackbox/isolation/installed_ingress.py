@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Send the KVM P1 controls from inside the real blackbox guest."""
+"""Send installed ingress controls from inside the real KVM guest."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def request(proxy_host: str, proxy_port: int, target: str, headers: dict[str, st
         connection.request("GET", target, headers=headers)
         response = connection.getresponse()
         body = response.read(1_000_001)
-        assert len(body) <= 1_000_000, "proxy response exceeded the P1 bound"
+        assert len(body) <= 1_000_000, "proxy response exceeded the ingress bound"
         return {
             "status": response.status,
             "headers": [(name.lower(), value) for name, value in response.getheaders()],

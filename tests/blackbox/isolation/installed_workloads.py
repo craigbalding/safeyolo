@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the finite P2 clients from the installed SafeYolo Linux guest."""
+"""Run installed workloads from the real SafeYolo Linux guest."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def proxy_get(path: str, agent: str) -> tuple[bytes, str]:
         request_id = response.getheader("X-SafeYolo-Request-Id")
         assert request_id and request_id.startswith("req-"), "package fetch has no request ID"
         body = response.read(2_000_001)
-        assert len(body) <= 2_000_000, "P2 package response exceeded its bound"
+        assert len(body) <= 2_000_000, "workloads package response exceeded its bound"
         token = Path("/app/agent_token").read_text().strip()
         traced = request(PROXY[0], PROXY[1], f"{AGENT_API}/trace?request_id={request_id}", {
             "Host": "_safeyolo.proxy.internal", "Authorization": f"Bearer {token}",
@@ -104,7 +104,7 @@ def _event(response: http.client.HTTPResponse) -> bytes:
         data = response.read(1)
         assert data, "SSE stream ended before the next event"
         message.extend(data)
-        assert len(message) < 8192, "SSE event exceeded the P2 bound"
+        assert len(message) < 8192, "SSE event exceeded the workloads bound"
     return bytes(message)
 
 
@@ -182,7 +182,7 @@ def ssh_command(marker: str, username: str, agent: str) -> dict:
         key.write_bytes(Path("/safeyolo/p2-client-key").read_bytes())
         key.chmod(0o600)
         known = Path("/safeyolo/p2-known-hosts")
-        assert known.is_file(), "pinned P2 SSH host key is missing"
+        assert known.is_file(), "pinned workloads SSH host key is missing"
         bridge = shlex.join([
             "python3", "-m", "tests.proxy_contracts.ssh_bridge",
             "8080", f"{HOST}:22", "--tcp-proxy", "--test-context", context(agent),

@@ -28,9 +28,6 @@ else:
     from isolation.installed_ingress import is_mounted_forwarder
 
 
-FROZEN_R = "a1f85d90bacdb271fc9681847ad2202b46c0e4ad"
-
-
 def runsc_identity(
     config_dir: Path, agent: str, listener: Path, *, platform: str = "kvm"
 ) -> dict:
@@ -53,7 +50,7 @@ def runsc_identity(
     return {"pid": pid, "platform": platform, "bundle": str(agent_dir), "proxy_mount": mount}
 
 
-def installed_identity(runtime: dict, install_checkout: Path, *, expected_revision: str = FROZEN_R) -> dict:
+def installed_identity(runtime: dict, install_checkout: Path, *, expected_revision: str) -> dict:
     assert runtime["status"] == "attached_ready", "installed runtime was not attached and ready"
     cli = runtime["cli"]
     candidate = runtime["candidate"]
@@ -74,7 +71,7 @@ def installed_identity(runtime: dict, install_checkout: Path, *, expected_revisi
         "installed native binary differs from the selected source release build"
     )
     assert Path(install_checkout).resolve() != Path.cwd().resolve(), (
-        "selected install checkout must be separate from the pilot harness"
+        "selected install checkout must be separate from the blackbox harness"
     )
     status = subprocess.run([cli["path"], "status"], capture_output=True, text=True, check=False, timeout=15)
     assert status.returncode == 0 and "running" in status.stdout and str(running["pid"]) in status.stdout, (
@@ -88,19 +85,18 @@ def installed_identity(runtime: dict, install_checkout: Path, *, expected_revisi
         "native": runtime["native"],
         "cli_status": status.stdout.strip(),
     }
-    if expected_revision != FROZEN_R:
-        doctor = subprocess.run(
-            [cli["path"], "doctor", "--json"], capture_output=True, text=True, check=False, timeout=45
-        )
-        checks = json.loads(doctor.stdout)["checks"]
-        runtime_checks = [row for row in checks if row["name"] == "Runtime identity"]
-        assert len(runtime_checks) == 1 and runtime_checks[0]["status"] == "pass", (
-            "installed CLI diagnostics did not identify the native process"
-        )
-        check = runtime_checks[0]
-        assert Path(check["message"].removeprefix("Running ")).resolve() == packaged
-        assert check["detail"] == f"PID {running['pid']}"
-        identity["cli_diagnostics"] = check
+    doctor = subprocess.run(
+        [cli["path"], "doctor", "--json"], capture_output=True, text=True, check=False, timeout=45
+    )
+    checks = json.loads(doctor.stdout)["checks"]
+    runtime_checks = [row for row in checks if row["name"] == "Runtime identity"]
+    assert len(runtime_checks) == 1 and runtime_checks[0]["status"] == "pass", (
+        "installed CLI diagnostics did not identify the native process"
+    )
+    check = runtime_checks[0]
+    assert Path(check["message"].removeprefix("Running ")).resolve() == packaged
+    assert check["detail"] == f"PID {running['pid']}"
+    identity["cli_diagnostics"] = check
     return identity
 
 
@@ -185,7 +181,7 @@ def main() -> None:
     parser.add_argument("--agent", required=True)
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--install-commit", default=FROZEN_R)
+    parser.add_argument("--install-commit", required=True)
     args = parser.parse_args()
     config_dir = args.config_dir.resolve()
     install_checkout = Path(os.environ["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"]).resolve()
@@ -242,7 +238,7 @@ def main() -> None:
     }
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(
-        f"KVM P1: installed R, authenticated native runtime, real KVM guest, "
+        f"KVM ingress: selected package, authenticated native runtime, real KVM guest, "
         f"origin marker and local denial verified ({args.output})"
     )
 
