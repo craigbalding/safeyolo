@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from tests.blackbox.isolation import p3_guest_journeys as guest
+from tests.blackbox.isolation import installed_access as guest
 
 ROOT = Path(__file__).resolve().parents[2]
 REQUEST_ID = "req-" + "a" * 32

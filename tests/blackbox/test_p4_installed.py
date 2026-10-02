@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from tests.blackbox import p4_installed as pilot
+from tests.blackbox import installed_lifecycle as pilot
 
 
 def test_held_guest_keeps_preamble_and_observation(monkeypatch):

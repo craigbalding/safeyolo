@@ -1,641 +1,289 @@
-# Black Box Tests
+# Installed blackbox tests
 
-SafeYolo's trust anchor. These tests prove two things:
+Use this suite to check the installed SafeYolo package, real guest isolation,
+agent workloads, access approvals and lifecycle. Native proxy process and
+protocol contracts live in [`tests/proxy_contracts`](../proxy_contracts/).
+A hosted process or package result does not prove KVM or Apple VZ isolation.
 
-1. **SafeYolo does what it claims** — credentials are blocked, domains are enforced, rate limits work
-2. **A malicious agent cannot escape** — including an agent with intentional guest-root access
+Run installed acceptance on a disposable supported host, from a clean checkout
+of the exact commit being tested. Install uv and select Rust 1.94.0 from
+[`proxy/rust-toolchain.toml`](../../proxy/rust-toolchain.toml); Cargo must be on
+`PATH`. Linux preparation needs noninteractive host sudo, subordinate IDs
+covering 100000–165535, and the bootstrap dependency plan. The workloads
+section additionally needs `dpkg-deb` and `openssh-server` on its host. KVM
+requires a fresh libvirt guest with usable `/dev/kvm`. VZ requires physical
+Apple Silicon and the Swift helper build prerequisites in the
+[installation reference](../../cli/README.md#installation).
 
-Passing evidence is meaningful only when it names the runtime that was tested.
-A KVM run which silently fell back to systrap is not KVM evidence.
+## Run installed sections with one preparation
 
-## Transition assessment
+Choose the host's actual mechanism. From the repository root, the following
+runs the checked-out HEAD; `--install-commit FULL_SHA` checks an explicit full
+commit before installing anything.
 
-The post-Docker test work was **not** starting from scratch. Before this lane
-refresh, `master` already contained a substantial current-architecture suite:
-host tests drove the native proxy, isolation tests ran inside real gVisor/VZ
-agents, Linux identity checks inspected the rootless uid map, lifecycle tests
-covered persistent agent state, and guest root was partially recognized as an
-intentional package-management capability.
+```sh
+./tests/blackbox/run-installed.sh systrap
+```
 
-The stale part was execution infrastructure and its public contract. The old
-GitHub workflow still tried to transfer Linux-built artifacts into a hosted
-macOS VZ job, did not exercise the current `install.sh`/bootstrap path, did not
-build the source-only VZ helper, and could not prove which isolation mechanism
-actually ran. The lane wrapper, platform evidence gate, root-capability pass,
-and host/cadence matrix below close those gaps while reusing the existing test
-suite.
+On a fresh KVM-capable acceptance guest:
 
-## Runtime lanes
+```sh
+./tests/blackbox/run-installed.sh kvm
+```
 
-The guest isolation and lifecycle suite runs against all three production
-isolation mechanisms. Blackbox tests are intentionally not triggered for every
-pull request. The nightly GitHub workflow runs the full `systrap` lane, its
-installed P2, P3, and P4 journeys, and a native proxy-only macOS job. Each job
-tests the selected commit and publishes a GitHub Actions artifact. Trusted
-manual dispatch can select a ref. KVM and VZ remain manual/on-demand acceptance
-lanes for high-risk changes and releases.
+On the physical Apple Silicon host:
+
+```sh
+./tests/blackbox/run-installed.sh vz
+```
+
+The runner creates a disk-backed directory under the operator's home. It calls
+`run-lane.sh --prepare-only` once: the supported `install.sh` wheel/native
+build, locked host test dependencies, bootstrap prerequisites, kernel/rootfs,
+and (VZ) source-built helper. Linux preparation reads
+`bootstrap --check --json` rather than maintaining another dependency list.
+For KVM it grants the current operator UID access to `/dev/kvm`; product
+bootstrap supplies the persistent udev rule and subordinate-UID ACL. Systrap
+is explicitly selected even when the host exposes KVM. KVM must pass actual
+auto-detection instead of forcing a KVM label.
+
+Each section then borrows the same compatible guest artifacts and installed
+CLI/native executable. Each gets a fresh agent, config, data, logs, public and
+private fixture certificates, overlay, origins, captures, approvals, tokens,
+Coord test instance and writable state. The lifecycle section's separate live
+owner also gets its own instance. Sharing preparation does not share live
+scenario state. NATS executable bytes are prepared once and reverified by the
+installed launcher in each instance; credentials and JetStream data are private.
+Individual procedural compositions remain intact.
+
+| Lane | Independent sections |
+|---|---|
+| `systrap` | isolation, workloads, access, lifecycle, host continuity |
+| `kvm` | isolation, ingress, workloads |
+| `vz` | isolation, access, lifecycle, host continuity |
+
+`--section NAME` runs just that supported section; repeat it to select several.
+`--install-checkout PATH` uses another clean source checkout at the selected
+commit. `--artifacts PATH` changes the ordinary report directory, which defaults
+to `tests/blackbox/artifacts/`. `installed-sections.json` attributes product
+preparation, each section's exit/result, and owned cleanup separately. Section
+reports are below their behavior-named directories. Failed state/logs remain
+in the printed private instance directory for diagnosis.
+
+Exit 0 means the selected checks and cleanup passed; 1 means an assertion
+failed; 2 means preparation, execution infrastructure or cleanup failed.
+Another independent section may run after a failed assertion or setup only
+when owned cleanup establishes a clean boundary. A cleanup failure stops the
+remaining sections. Stop the proxy and each disposable guest: `safeyolo stop`
+alone does not stop a guest.
+
+## Cadence and hardware evidence
+
+Normal PRs run quick checks and relevant platform tests for platform changes.
+Complete retained Python/CLI and native component families run overnight on
+supported hosts. The full Mac proxy protocol family runs once, in
+[`proxy-rust.yml`](../../.github/workflows/proxy-rust.yml). The separate hosted
+Mac installed job runs the short package witness below. Full-suite success is
+not a routine PR gate; discovering regression the next morning is accepted.
+
+The approved overnight scope includes systrap, KVM-backed gVisor and physical
+Apple Silicon VZ. Current GitHub automation schedules systrap and hosted
+package/component checks. Hardware scheduling/publication remains
+[#889](https://github.com/craigbalding/safeyolo/issues/889); this restructuring
+supplies its maintained runners without claiming that automation is complete.
 
 <!-- blackbox-cadence-contract:start -->
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
-|------|---------------|----------|-----------|-----------------|----------|
-| `systrap` | GitHub-hosted Ubuntu | Full host + gVisor isolation + lifecycle; installed P2, P3, and P4 journeys | yes | Nightly and trusted manual dispatch | Per-job GitHub Actions artifacts |
-| `kvm` | Fresh libvirt guest on the KVM VPS via the acceptance harness | Full host + gVisor/KVM isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
-| `vz` | Physical Apple Silicon Mac mini | Full native proxy + Apple VZ isolation + lifecycle | no | Manual/on-demand for high-risk changes and releases | Harness/operator evidence; not continuously published on GitHub |
+|---|---|---|---|---|---|
+| `systrap` | GitHub-hosted Ubuntu | Installed isolation, workloads, access and lifecycle | yes | Overnight and trusted manual dispatch | Sanitized GitHub Actions artifacts, including failures |
+| `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
+| `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
 <!-- blackbox-cadence-contract:end -->
 
-The `proxy` lane runs on any supported host. The nightly workflow runs its
-native Rust selection on GitHub macOS. It is not a full isolation acceptance
-lane.
+Hosted macOS cannot supply physical VZ evidence, and hosted KVM availability is
+not an acceptance guarantee. Hardware runs require a fresh disposable host,
+trusted schedule or explicit operator dispatch, resource/owner prechecks,
+exact selected commit and binary, actual platform identity, observed result,
+owned cleanup and sanitized publication. Public PR code must not execute on a
+persistent hardware host through an untrusted trigger. A stale ref or another
+owner's live resource does not satisfy those prechecks. Before release, retain
+exact-release-commit results for all three actual isolation mechanisms.
+Historical #640 receipts remain historical acceptance; #320 does not reopen them.
 
-GitHub-hosted macOS is useful for the `proxy` lane and for compiling the Swift
-helper, but it cannot provide VZ isolation evidence because the hosted machine
-does not support nested virtualization. Full VZ evidence comes from the
-physical Mac mini. GitHub-hosted KVM is similarly not treated as acceptance
-evidence because nested virtualization is not a supported runner guarantee.
+## Existing single-section entry points
 
-Before a release, all three full lanes (`systrap`, `kvm`, and `vz`) must pass
-against the release commit. That release gate is independent of automation
-cadence: manual exact-ref KVM and VZ evidence is required even though those
-hardware lanes are not scheduled. Today that evidence is retained by the
-acceptance harness/operator, rather than continuously published as a GitHub
-artifact.
+`run-lane.sh` remains the supported install/bootstrap plus one test selection
+entry point, including the full installed isolation lane used by acceptance
+hosts. From the repository root on the matching disposable host:
 
-## Execution Model
-
-Tests are split across two execution domains:
-
-**Host-side pytest** (`host/`) — proxy functional tests. Runs on the host where
-sinkhole, admin API, and proxy are directly accessible on localhost. Sends
-requests through the proxy and verifies what the sinkhole captured.
-
-**Sandbox-side pytest** (`isolation/`) — isolation tests. Runs inside the real
-agent sandbox via `safeyolo agent shell`: a gVisor sandbox on Linux or an Apple
-VZ microVM on macOS. The suite runs in both the default agent context and an
-explicit `agent shell --root` context. Guest root is expected to work; the
-tests prove that its privilege stops at the sandbox or microVM boundary.
-
-```
-Host (pytest)                          Sandbox (pytest via agent shell)
-├── proxy_client → proxy:8080          ├── test_vm_isolation.py
-├── sinkhole.get_requests() → :19999   │   ├── curl --noproxy '*' ...
-├── admin_client → :9090               │   └── default-user hardening
-└── no VM interaction needed           ├── test_root_containment.py (--root)
-                                       │   ├── UID 0 and local package install
-                                       │   ├── direct egress/host listener blocked
-                                       │   └── host share and /dev/kvm inaccessible
-                                       └── test_key_isolation.py (user + root)
-                                           └── no private key material
+```sh
+./tests/blackbox/run-lane.sh systrap --verbose
 ```
 
-## Design Principles
+If the product is already installed and bootstrapped, run a section without
+reinstalling. `SAFEYOLO_CONFIG_DIR` names the prepared source instance;
+`SAFEYOLO_TEST_CONFIG_DIR` names the separate live test instance:
 
-**Host tests verify the proxy, VM tests verify isolation.** The host has
-access to the sinkhole control API and admin API. The VM's firewall correctly
-blocks both — which is a security property we test, not a problem to work around.
-
-**Platform-independent assertions.** Tests assert outcomes, never mechanisms.
-`curl --noproxy '*' http://1.1.1.1` fails regardless of whether pf or
-iptables dropped it.
-
-**Never duplicate production logic.** Tests use the real proxy, real addons,
-real firewall rules, real TLS. No mocks, no shortcuts.
-
-**Guest root is a feature, not an escape.** The normal shell starts as uid
-1000, while in-guest `sudo` and the operator's `agent shell --root` provide uid
-0 for package management and repair. On gVisor, guest uid 0 maps to an
-unprivileged subordinate host uid; on VZ it is root only inside the microVM.
-Acceptance requires both that root works and that root cannot bypass egress,
-reach host services, mutate the host config share, or obtain host key material.
-
-**Ground truth TLS.** A dedicated test CA signs sinkhole certificates.
-The proxy verifies these the same way it verifies production certs.
-See `certs/README.md`.
-
-## Test Suites
-
-### Proxy Functional Tests (`host/`)
-
-| Test | Attack Scenario | Security Property |
-|------|----------------|-------------------|
-| Credential to authorized host | Normal operation | Forwarded with credential intact |
-| Credential to unauthorized host | Exfiltration attempt | 428 + sinkhole receives nothing |
-| Request without credentials | Normal operation | Passes through |
-| Allowed domain | Normal operation | 200 response |
-| Rate limit within budget | Normal operation | All requests succeed |
-| Proxy-Authorization header | Header exfiltration | Stripped before forwarding |
-| Block response content | Audit trail | Contains event_id and approval guidance |
-
-### VM Isolation Tests (`isolation/`)
-
-| Test | Attack Vector | Expected Result |
-|------|--------------|-----------------|
-| Direct HTTP bypass | `curl --noproxy '*' http://1.1.1.1` | Connection dropped |
-| Direct HTTPS bypass | `curl --noproxy '*' https://8.8.8.8` | Connection dropped |
-| DNS exfiltration | UDP to 8.8.8.8:53 | Blocked |
-| Raw socket | `SOCK_RAW` ICMP | PermissionError |
-| Proxy reachable | `curl` through proxy | 200 |
-| Default shell identity | `id -u` | 1000 |
-| Guest-root availability | `agent shell --root`; `id -u` | 0 |
-| Package-management capability | Build/install/purge a local `.deb` | Succeeds without network |
-| Root direct egress | `curl --noproxy '*'` as guest root | Connection blocked |
-| Root host reachability | Connect to known-live host listener as root | Connection blocked |
-| Root host-state mutation | Write `/safeyolo` as root | Read-only failure |
-| Root host device access (gVisor) | Inspect `/dev/kvm` as root | Not present |
-| No kernel modules | `init_module` syscall | ENOSYS |
-| No /dev/mem | Check path | Not found |
-| No eBPF | BPF syscall | Returns -1 |
-| Config share read-only | Write to /safeyolo | EROFS |
-| No unexpected private keys | Filesystem scan | Only exact guest sshd host-key paths allowed |
-| Guest trust isolation | Add a guest-only trust anchor and call its upstream | Host proxy returns 502 |
-| Public cert present | Check trust store | safeyolo.crt exists |
-
-## Installation and preparation
-
-Acceptance runs exercise the supported installation path rather than creating
-a parallel CI-only installation recipe:
-
-1. `install.sh` installs or reinstalls the CLI with the current security pins.
-2. `safeyolo bootstrap --check --json` supplies the current Linux package
-   prerequisites; the lane wrapper installs missing apt packages on fresh CI
-   and KVM VPS guests.
-3. The KVM lane wrapper grants its current operator UID access to
-   `/dev/kvm`, replacing the interactive `kvm`-group logout/login step. Product
-   bootstrap remains responsible for the persistent udev rule and UID 100000
-   ACL required by rootless gVisor.
-4. `safeyolo bootstrap` initializes, builds guest artifacts, and applies host
-   setup. The VZ lane also builds the source-only Swift helper with
-   `make -C vm install`.
-5. `run-tests.sh --expect-platform ...` records `doctor --json` and refuses a
-   runtime mismatch before running isolation tests.
-
-The systrap wrapper explicitly selects `SAFEYOLO_RUNSC_PLATFORM=systrap`, so
-that lane remains deterministic if a runner happens to expose `/dev/kvm`.
-The KVM lane never forces a label: it must pass auto-detection and prove both
-operator and sandbox subordinate-UID access to the device.
-
-This makes changes to `install.sh`, bootstrap dependency detection, guest
-builds, platform setup, and the guest-root/package installation path part of
-acceptance coverage.
-
-## Running a lane
-
-Run these from the repository root as the operator on a disposable supported
-host. The wrapper installs or reinstalls this checkout in the caller's `uv`
-tool environment, prepares guest artifacts, and creates an isolated test
-instance. Select the command for the host's actual guest mechanism:
-
-Install uv and select Rust 1.94.0 from `proxy/rust-toolchain.toml` first; the
-installer needs `cargo` on `PATH`. The physical Mac needs the Swift helper
-build prerequisites described in the [installation reference](../../cli/README.md#installation).
-
-```bash
-# GitHub/other Linux VM without KVM
-./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
-
-# Fresh nested-KVM guest on the KVM VPS
-./tests/blackbox/run-lane.sh kvm --proxy-impl rust --verbose
-
-# Physical Apple Silicon Mac mini
-./tests/blackbox/run-lane.sh vz --proxy-impl rust --verbose
-
-# Proxy-only smoke (no sandbox boot)
-./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose
+```sh
+SAFEYOLO_CONFIG_DIR=/path/to/prepared \
+SAFEYOLO_TEST_CONFIG_DIR=/path/to/disposable-test \
+  ./tests/blackbox/run-tests.sh --expect-platform systrap --verbose
 ```
 
-`run-lane.sh` is idempotent on persistent hosts. It calls `install.sh`, uses the
-product bootstrap plan for prerequisites, and then delegates to
-`run-tests.sh`.
+The native Rust package is the default. The runner refuses to use its source
+instance, the operator's normal instance or an ambiguous live config as test
+state. It links compatible `share/` and `bin/` inputs, creates fresh writable
+state, verifies `doctor --json` platform selection, and records the installed
+wheel, packaged executable, actual process/start identity, authenticated admin
+runtime identity and per-agent listener before guest assertions. `--workloads`,
+`--access`, `--lifecycle` and KVM `--ingress` select procedures and exit before
+the full pytest phases. Pass pytest arguments after `--`; the runner forwards
+argument boundaries without shell reinterpretation.
 
-The native lane uses the Rust executable inside the installed CLI package.
-Its host selection is a focused ingress check. The historical Python host
-suite requires an explicitly selected prior package and environment; it is
-not part of the normal installed native command.
-It verifies the live process, authenticated operator identity, and guest
-listener before host and guest tests run. A missing package binary or a
-different running process stops the lane. The native host check sends an
-allowed request through the agent listener to the owned sinkhole, checks its
-captured marker, then checks a denied management request on that listener.
-The runner selects a local sinkhole parent for synthetic hosts and chains all
-other destinations through the test instance's configured parent, if present.
-It adds the owned test CA to the disposable instance's upstream trust, retains
-any configured CA, and restores the original route and trust after the run.
-For the native VZ lane and selected P3/P4 pilots, the parent, HTTP origin, and
-sinkhole control API share port 46373. The HTTPS origin and its certificate variants share port
-46374 through server name indication (SNI). The native proxy serves agents
-through Unix sockets. Its admin API uses 46371; the disposable Coord server
-uses 46370 and 46372. P4 uses 46375 for its separate owner admin API.
-The runner refuses an occupied VZ fixture port and stops only the fixture
-process it started. The guest still probes the live
-admin, origin, and control paths for direct reachability.
-The retained Python host proxy suite still uses its sinkhole
-router. The lane records its installed runtime in
-`tests/blackbox/artifacts/installed-rust-runtime.json`. An installed lane
-does not replace the separate finite consumer pilot for issue #637.
+Historical P1/P2/P3/P4/B2 wrappers and explicit comparator selectors remain
+only during #320's replacement verification. They retain their historical
+source choices and are not the current native execution interface. Do not use
+a retired Python proxy as a production fallback. Their accepted observations
+and the finite pruning scope are recorded in the
+[approved disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
 
-## Running an already-prepared checkout
+## What each installed selection observes
 
-Use `run-tests.sh` directly from the repository root when the host is already
-installed and bootstrapped and the live installation must remain untouched.
-It creates a separate
-`~/.safeyolo-test` instance, generates test certificates beneath that instance,
-uses distinct proxy, admin, and web ports, and borrows the live `share/` and
-`bin/` artifacts without rebuilding them. The harness refuses to proceed if
-the test and source config paths resolve to the same directory.
+The **isolation** section selects host `native/`, `security/`, `identity/` and
+`lifecycle/`, then ordinary guest `isolation/` excluding root containment, then
+guest-root containment and key isolation. Root is intentional for package
+management and repair: Linux guest UID 0 maps to subordinate host UID 100000;
+VZ root stays inside its microVM. Tests observe direct egress, a known-live host
+listener, protected host/config/key/device boundaries, real package/root
+capabilities, and the installed identity/lifecycle chain. Platform/fixture
+skips are limitations, not passes. The generated
+[coverage inventory](../../docs/blackbox-coverage.md) distinguishes selected
+methods, repeated identities and procedural selections from execution receipts.
 
-```bash
-# All suites
-./tests/blackbox/run-tests.sh --proxy-impl rust
+The KVM **ingress** section binds a real guest's localhost forwarder to its
+mounted per-agent Unix domain socket (UDS), checks actual KVM runsc arguments,
+then correlates an exact allowed marker with the owned origin and a denied
+request with no origin delivery. Local management API boundaries remain checked.
 
-# Proxy functional tests only (host-side)
-./tests/blackbox/run-tests.sh --proxy --proxy-impl rust
+Linux **workloads** retains package fetch/hash/query/install/payload/purge,
+read-only Git clone/commit/marker, SSE first-event and held control/release
+ordering, WS/WSS echo and peer-close state, denied-upgrade canary without origin
+delivery, and SSH through CONNECT. SSH uses a disposable fixture key, pinned
+host key and restricted selected command; forwarding and fixture processes are
+owned and cleaned up. The key fixture never borrows an operator credential.
 
-# VM isolation tests only (in-VM)
-./tests/blackbox/run-tests.sh --isolation --proxy-impl rust
+**Access** stays one composition with two live guests, an operator, native proxy,
+NATS and inspector. It checks service approval, contract binding and risky-route
+approval/retry, exact credential injection, live peer denial, test context and
+trace, populated exact owner-positive/live-peer-negative flow search/detail,
+Coord messages and resolved attention, Plumb approval/exchange/closure,
+WebSocket peer effects, inspector filtering, transcript and export. Raw inspector
+exports may contain disposable gateway tokens and stay in private instance state;
+the workflow publishes selected reports instead of raw exports.
 
-# Verbose
-./tests/blackbox/run-tests.sh --proxy-impl rust --verbose
+**Lifecycle** keeps listener add/remove and primary-listener continuity, policy
+changes while SSE is admitted, and all five installed guest-default-trust TLS
+cases: valid cross-signed, wrong SAN, self-signed, not yet valid and expired.
+Allowed TLS reaches the owned origin; invalid TLS produces no origin delivery
+and no silent passthrough. A separate scoped `ignore_hosts` case checks a held
+session, removal, new-connection rejection and rejection after restart. The
+runner keeps stable CA/upstream-trust/policy observations, mixed HTTP/SSE/WS/CONNECT
+drain, three subject start/stop/recovery cycles and the separate live owner's
+process, policy and controls throughout. Stop verifies readiness, lifetime
+receipt, process start identity, UDS and guest cleanup. The VZ guest verifies
+its actual vsock forwarder instead of requiring a Linux socket mount.
 
-# Fail unless the requested isolation mechanism is selected
-./tests/blackbox/run-tests.sh --expect-platform kvm --proxy-impl rust --verbose
+**Continuity** selects `installed_state_transition.py --native` in its own
+host instance without booting guests. Four identified native processes write,
+replace, revoke and deliberately recover access. Return processes must retain
+SQLite ownership, exact bodies, tags and correlated audit; enforce an open
+circuit before operator reset and avoid resurrecting it afterward; retain
+catalogue, policy, grants and scoped host/service revocations; preserve Coord
+messages/attention and provider-owned leases without changing their snapshot;
+and retain approved Plumb messages before close returns 403. The same sequence
+checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
+0600 private state and process-local task reset. Each process, listener, NATS
+server and owned origin must stop. The historical cross-backend path remains
+executable until Lens independently verifies this native replacement.
 
-# Full physical Apple Silicon Mac run without reinstall/bootstrap
-./tests/blackbox/run-tests.sh --expect-platform vz --proxy-impl rust --verbose
+## Short installed host-package witness
+
+From a clean exact checkout on a disposable Linux or hosted Mac, with uv and
+Cargo available, run:
+
+```sh
+./tests/blackbox/run-installed-package.sh
 ```
 
-Do not use `run-lane.sh` for this case: acceptance lanes deliberately exercise
-`install.sh`, bootstrap, and (for VZ) host-helper installation.
+On macOS, prepare the owned `127.0.0.2` loopback alias first, as the workflow does.
+This installs the current wheel/native binary without rootfs bootstrap, uses the
+normal launcher/configuration, authenticates exact running identity, observes
+native allow/deny at two owned HTTP origins and verifies stop/cleanup. Success
+is for this host-package claim; no guest boots and guest isolation is explicitly
+unproved. It then runs the three existing `test_https_origin_verification` nodes
+against the packaged executable: trusted localhost reaches the origin, wrong
+SAN and untrusted origin return 502 without origin delivery. It does not repeat
+the complete component matrix against the package.
+The same prepared product then runs the separate native host-continuity
+procedure above, with fresh config/data/cert/log/origin state.
 
-### Selecting a proxy backend
+`installed_host_smoke.py --mode discover` identifies prerequisites;
+`--mode attached` authenticates an already running installed proxy without
+restarting it. Their JSON statuses and limitations must be read; merely writing
+a report is not a pass. Discovery/attached guest claims require their actual
+substrate and listener; the host-only smoke does not claim one.
 
-The prepared-host runner still defaults to Python for historical comparison,
-so name `--proxy-impl rust` for a current-package run. Explicit proxy runs use
-the existing `tests/proxy_migration` process harness, which starts a fresh
-selected process and its owned UDS/origin fixtures for every test.  Assertions
-stay shared between implementations. From `tests/blackbox` in the test-suite
-checkout, with `pytest` installed, replace the paths below with a Python
-checkout containing `cli/src/safeyolo` and an already built Rust proxy. The
-focused Rust command uses `proxy/target/debug/safeyolo-proxy` from the test-suite
-checkout unless `SAFEYOLO_RUST_PROXY` names another executable.
+## Owned origins and observation fidelity
 
-```bash
-# Run the focused acceptance against the selected source checkout.
-./run-tests.sh --proxy --proxy-impl python \
-  --python-source /path/to/python-checkout --verbose
+The native runner routes synthetic hosts through its owned parent and sinkhole,
+chains other destinations through the instance's configured parent, adds its
+owned test CA to upstream trust and restores the previous route/trust. Host-side
+control inspection is separate from guest traffic. Guest traffic uses the real
+localhost UDS (gVisor) or vsock (VZ) bridge; direct host/control reachability tests
+do not open a second authorized egress path.
 
-# Run it against an explicitly built native executable.
-./run-tests.sh --proxy --proxy-impl rust \
-  --rust-bin /path/to/rust-checkout/target/debug/safeyolo-proxy --verbose
+Linux full/installed lanes use proxy/admin/web ports 8180/9190/8181, HTTP origin
+18080, TLS fixtures 18443–18452 and control 19999. Physical VZ uses only
+46370–46375: Coord client/admin/Coord monitor on 46370/46371/46372, combined
+parent/HTTP/control on 46373, SNI-selected HTTPS variants on 46374, and the
+lifecycle owner admin on 46375. TCP proxy/web listeners are unbound in that VZ
+configuration. Precheck the actual host ports, refuse occupied fixtures, and
+stop only owned processes with verified identity. A Linux fixture's cleanup
+does not prove that a physical Mac port is free.
 
-# Execute independent Python and Rust runs, retaining separate artifacts.
-./run-tests.sh --proxy --proxy-impl both \
-  --python-source /path/to/python-checkout \
-  --rust-bin /path/to/rust-checkout/target/debug/safeyolo-proxy --verbose
+The sinkhole retains UTF-8 replacement `body` and lossless `body_hex`;
+`CapturedRequest.body_bytes` checks arbitrary bytes including invalid UTF-8.
+`raw_target`, `raw_query` and ordered `header_items` preserve exact targets,
+queries and duplicate fields. `body_received_bytes`, `body_expected_bytes`,
+`body_complete` and `connection_closed` distinguish complete fixed/chunked
+receipt from early close. A connection with no request is not a delivery.
+Receiver readiness requires a direct probe observed through the control API,
+then clears that separate observer increment before negative assertions.
 
-# Forward focused pytest arguments after `--`.
-./run-tests.sh --proxy --proxy-impl rust -- \
-  ../proxy_migration/test_http_contract.py -k attribution
+Fixture private keys stay in the disposable config outside the repository;
+only public certificates are exposed read-only to guests. Test-only interception
+roots and isolated test-context configuration never change an operator's live
+CA or policy. Approved writable mounts remain operator data; these tests do not
+create a new restriction on what an operator may mount.
+
+## Native component development and adding tests
+
+From the repository root, prepare the locked development environment and native
+binary, then select a relevant test module:
+
+```sh
+uv sync --frozen --group dev
+CARGO_BUILD_JOBS=1 scripts/cargo_with_space.sh build --locked --manifest-path proxy/Cargo.toml
+SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
+  uv run --frozen pytest -q tests/proxy_contracts/test_https_contract.py --proxy-backend rust
 ```
 
-The selector validates the requested checkout or executable before starting
-pytest.  Rust selection runs its `--version` command and records the binary
-SHA-256; each backend artifact also records the pytest launcher, Python
-package location, source and test-suite revision/dirty state, platform and
-machine. When the selector verifies a Python interpreter from the launcher's
-shebang, the artifact records that interpreter and version. For a wrapper or
-unreadable launcher, those fields are null because the selector cannot identify
-the interpreter used by pytest.
-Missing binaries, failed readiness, or a failed selected backend are errors.
-`both` still starts the second backend after a first-run failure and returns a
-nonzero result if either run fails. The `both` and source/binary overrides
-remain proxy-only comparison options. The full `systrap`, `kvm`, and `vz`
-lanes select one installed backend with `--proxy-impl python|rust`; Python is
-the prepared-host default. Rust VM runs reject a supplied `--rust-bin` and use
-the executable packaged with the selected installed CLI.
-
-The inexpensive runner self-tests cover invalid selectors, missing or wrong
-executables, readiness markers and stale listeners, independent second-backend
-execution after a failure, byte-preserving argument forwarding, and owned
-cleanup. From the repository root with the native uv development group
-installed, run:
-
-```bash
-uv run --frozen pytest -q tests/test_blackbox_harness.py tests/proxy_migration/test_readiness.py
-```
-
-These tests use temporary fake processes and do not install SafeYolo, boot a
-VM, or build Rust. A selected-backend validation failure writes its
-`proxy-<backend>-runtime.json` artifact with `status: infrastructure_failure`;
-in `both` mode the other backend still runs and retains its own JUnit and
-runtime artifacts.
-
-Selected Rust runs set native policy mode for every migration fixture.  Each
-fixture writes `native-policy-provenance.json`, which records the policy file
-and confirms that no temporary Python policy adapter was started. Direct Rust
-pytest invocations use the same native policy path. Historical Python runs
-require an explicit pinned source checkout.
-
-### Sinkhole observation fidelity
-
-The sinkhole control API keeps its historical UTF-8 replacement `body` field
-and also publishes `body_hex`. `SinkholeClient.get_requests()` exposes the
-lossless value as `CapturedRequest.body_bytes`, allowing shared migration and
-gateway scenarios to assert arbitrary request bytes, including invalid UTF-8,
-without changing the existing observer API. Raw request-target and exact
-query representation are exposed as `CapturedRequest.raw_target` and
-`CapturedRequest.raw_query`; ordered duplicate fields are exposed as
-`CapturedRequest.header_items`. `CapturedRequest.body_received_bytes`,
-`body_expected_bytes`, `body_complete`, and `connection_closed` distinguish a
-complete fixed/chunked body from an accepted connection that closes during
-receipt; a connection that sends no request produces no captured request.
-The host sinkhole fixture waits for both control health and a direct receiver
-probe observed through the control API, then clears that probe before negative
-traffic assertions. Receiver readiness is a separate observer increment.
-
-### Installed-host stage-A smoke
-
-Use installed_host_smoke.py on a supported Linux or macOS host when a
-supplied native executable and an already prepared SafeYolo instance need
-identity and ingress checks. The script never runs install.sh, builds the
-Rust executable, boots a guest, or changes the selected operator instance.
-Keep the evidence file outside the checkout.
-
-The read-only discovery mode requires the installed CLI, native JSON
-configuration, and native executable. It records their paths, versions,
-SHA-256 values, source revisions where available, the host substrate
-(runsc on Linux or safeyolo-vm on macOS), the native readiness receipt, and
-the configured listener state:
-
-~~~bash
-python3 tests/blackbox/installed_host_smoke.py \
-  --mode discover \
-  --cli /path/to/safeyolo \
-  --rust-bin /path/to/safeyolo-proxy \
-  --rust-config /path/to/proxy.json \
-  --config-dir /path/to/prepared-instance \
-  --output /path/to/evidence/installed-discovery.json
-~~~
-
-The lifecycle smoke requires a disposable instance that has already been
-prepared through the existing CLI path. Before running it, stop that
-instance, confirm that it is not the normal ~/.safeyolo directory, and
-create .safeyolo-platform-smoke in the disposable directory. The instance
-must select proxy.backend: rust, point to the supplied native JSON file, and
-contain at least one registered agent listener and its token. The script
-then runs safeyolo start --wait, validates the actual Rust process,
-readiness marker, executable, listener sockets, and authenticated Agent API
-health response, and runs safeyolo stop:
-
-~~~bash
-python3 tests/blackbox/installed_host_smoke.py \
-  --mode smoke \
-  --cli /path/to/safeyolo \
-  --rust-bin /path/to/safeyolo-proxy \
-  --rust-config /path/to/proxy.json \
-  --config-dir /path/to/disposable-instance \
-  --output /path/to/evidence/installed-smoke.json
-~~~
-
-The command fails when the selected executable is missing, reports another
-program, publishes a stale or mismatched readiness marker, serves a different
-process, or cannot stop cleanly. It never retries with Python. Host checks may
-complete with status partial_unexecuted and a nonzero exit: the UDS request is
-host-driven ingress evidence, not guest-isolation evidence, and therefore
-cannot signal Acceptance-A. The read-only `attached` mode also checks the
-authenticated operator runtime identity against the process-bound readiness
-marker. The report leaves guest origin requests, cross-guest socket access,
-and unsupported hardware explicitly for the retained pilot.
-
-### Finite installed Linux P2 pilot for issue #637
-
-Run this selection on each operator-owned disposable Ubuntu host: the supported
-systrap host and the fresh libvirt guest on the KVM VPS. The default pilot
-installs frozen revision `a1f85d90bacdb271fc9681847ad2202b46c0e4ad`;
-`--install-commit FULL_SHA` selects an exact current source commit instead.
-Use a clean checkout that contains the selected revision.
-The KVM target must expose a usable `/dev/kvm`; the systrap target selects
-software isolation. The host needs `uv`, `git`, `dpkg-deb`, `ssh-keygen`,
-`sshd`, and the normal `run-lane.sh` bootstrap prerequisites. The operator
-account needs noninteractive host `sudo` for bootstrap and KVM setup. Neither
-the disposable proxy nor its `bbtest` guest needs to be running before the
-command. Local control port 19999 must be free; the wrapper fails if another
-sinkhole owns it.
-
-From the repository root on the selected host, run one command for its actual
-guest mechanism:
-
-```bash
-./tests/blackbox/run-p2-linux.sh systrap
-```
-
-```bash
-./tests/blackbox/run-p2-linux.sh kvm
-```
-
-The wrapper installs the selected source through `install.sh` in an isolated
-`uv` tool directory. It starts a separate native test proxy and a real guest.
-The guest fetches and installs a disposable Debian package, clones an owned
-read-only repository, receives the first held SSE event before the host
-releases completion, exchanges exact WS and WSS markers, checks a blocked
-WebSocket canary, and runs one OpenSSH command over CONNECT with a pinned
-fixture host key. The disposable SSH server accepts only the selected marker
-command and disables forwarding. The origin uses the reserved `failing.test`
-hostname routed to the owned sinkhole. The wrapper keeps the caller's parent
-proxy and CA settings.
-It removes the disposable SSH keys and stops both the test proxy and guest.
-On KVM, the existing lane also grants the operator account access to
-`/dev/kvm`; that disposable-host ACL remains until the device or host resets.
-
-Expect `Linux <platform> P2: ... verified` followed by
-`Linux <platform> P2 result: exit 0`. The printed observations directory
-contains `linux-<platform>-p2.json`. Check `status: passed` and
-`cleanup: stopped`, then inspect the recorded installed binary, guest bridge,
-owned origin deliveries, early SSE state, WS/WSS peer markers, denied canary,
-and SSH command marker. A failed or timed-out run reports a nonzero exit. If
-cleanup reports a failure, run the two exact cleanup commands printed by the
-wrapper. They stop `bbtest` and then the disposable proxy; check that the
-guest PID, native receipt, and agent socket are gone before reusing the host.
-The wrapper's status does not mark P2 accepted; the actual KVM and systrap
-runs and independent review supply that result. macOS/VZ P2 remains a
-separate host execution.
-
-### Finite installed P3 consumer pilot for issue #637
-
-Run `run-p3.sh` on an operator-owned disposable host with a clean checkout that
-contains frozen revision `2faba3306de7c099e2913e0eebc8907ff3eba148`.
-Use a disposable Ubuntu systrap host or a physical Apple Silicon Mac with
-Virtualization.framework. The host needs `uv`, `git`, Python 3, the
-prerequisites for `run-lane.sh`, and working loopback TCP bind and connect.
-The Linux operator account needs noninteractive
-`sudo` for bootstrap. On Linux, local test ports 8180, 8181, 9190, 18080,
-18443–18451, and 19999 must be free. On the physical Mac, assigned ports
-46370–46374 must be free. No disposable proxy or guest needs to be running.
-Consumer requests in the pilot use its owned fixture origin. Setup may
-download the pinned install dependencies. The lane preserves the configured
-parent proxy and certificate
-authority for other destinations.
-The installed CLI starts owned Coord in the disposable test instance.
-
-From the repository root on the selected host, run the command for its actual
-guest mechanism:
-
-```bash
-./tests/blackbox/run-p3.sh systrap
-```
-
-```bash
-./tests/blackbox/run-p3.sh vz
-```
-
-The wrapper installs frozen source R in an isolated `uv` tool directory. It
-starts a disposable native proxy, two real guests, and an owned HTTP origin.
-Guest calls use each guest's local proxy forwarder. The selection checks
-service approval and exact vault
-credential delivery, a stolen gateway token from the second guest, contract
-binding and one-use route approval, test-context and own trace/flow access,
-Coord history and attention resolution, collaboration approval and closure,
-and an authenticated operator event. The read-only inspector filters retained
-flows, reads a WebSocket transcript, and exports one selected raw request.
-The export can contain the disposable gateway token. Keep the printed
-observations directory private.
-
-Expect the `P3: six installed guest journeys and operator effects verified`
-line and a `P3 result: exit 0` line. In the printed observations directory,
-inspect `systrap-p3.json` or `vz-p3.json` for `status: passed`,
-`cleanup: stopped`, and the named origin, peer, backing-service, event, and
-inspector effects. The wrapper stops both guests, the proxy, and the owned fixture
-processes. If cleanup fails, run the exact three cleanup commands printed by
-the wrapper and verify the guest PID files, native proxy receipt, agent
-sockets, and Coord NATS PID file are gone. The disposable directory remains
-available for diagnosis. A passed wrapper is a host observation; independent
-review decides P3 acceptance.
-
-The Bristol physical Mac account permits loopback TCP only on 46370–46375.
-The wrapper checks an assigned port before installation. A passing bind check
-does not establish that the installed VZ pilot can run or that P3 is accepted.
-
-### Finite installed P4/P6 lifecycle pilot for issue #637
-
-Run `run-p4.sh` on an operator-owned disposable Ubuntu systrap host or a
-physical Apple Silicon Mac with Virtualization.framework. Use a clean
-checkout that contains frozen revision
-`2faba3306de7c099e2913e0eebc8907ff3eba148`. The host needs `uv`,
-`git`, Python 3, the `run-lane.sh` bootstrap prerequisites, and loopback TCP
-bind and connect. The Linux operator account needs noninteractive `sudo` for
-bootstrap. On Linux, local test ports 8180, 8181, 9190, 18080, 18443–18452,
-and 19999 must be free. On the physical Mac, assigned ports 46370–46375
-must be free. The disposable proxy and guests must be stopped before
-the command. Setup may download pinned install dependencies. The lane keeps
-the configured parent proxy and certificate authority for nonfixture traffic.
-The wrapper gives the installed CLI's owned Coord service a disposable data
-directory and checks its cleanup.
-
-From the repository root on the selected host, run the command for its guest
-mechanism:
-
-```bash
-./tests/blackbox/run-p4.sh systrap
-```
-
-```bash
-./tests/blackbox/run-p4.sh vz
-```
-
-The wrapper installs frozen source R in an isolated `uv` tool directory. It
-starts a disposable native proxy and real guests. It also starts a separate
-installed native proxy and guest in an owner instance. The selection adds, uses,
-and removes a second agent listener while the first stays usable. An operator
-policy change denies new requests while an admitted SSE response finishes;
-restoring that policy permits new requests. The guest exercises the valid
-private CA, wrong host, untrusted, future, and expired leaf fixtures. The
-invalid cases must produce no application request at the owned origin. An
-exact `self-signed.test:443` passthrough change exposes the origin leaf, keeps
-an established TLS session usable after removal, and returns new sessions to
-inspected TLS. After a same-state restart, the second stop runs with an
-active HTTP response, SSE response, WebSocket, and CONNECT tunnel. The guest
-checks the completed responses and tunnel closure; host logs check the owned
-response and WebSocket close events. The pilot completes three start/stop
-cycles, checks the stopped proxy and guest after each cycle, and checks fresh
-allowed and denied traffic after each restart. The separate owner instance
-serves allowed and denied controls throughout those cycles and stops afterward.
-
-Expect `P4/P6: installed guest configuration, TLS, drain and three-cycle recovery verified` and
-`P4 result: exit 0`. Inspect `systrap-p4.json` or `vz-p4.json` in the printed
-observations directory. The report records the installed binary and host,
-guest bridges, fixture deliveries, reload effects, shutdown ownership, three
-start/stop cycles, and the separate owner's continuity. `status: passed` and
-`cleanup: stopped` mean the runner and cleanup completed; they do not mark P4
-or P6 accepted. The wrapper stops the disposable guests, both proxy instances,
-and owned fixture processes. If cleanup fails, inspect the printed disposable
-directory and use the printed cleanup commands for the affected instance. Check
-that guest PID files, native proxy receipts, Coord NATS PID files, and agent
-sockets are gone before reusing the host. The disposable directory remains
-available for diagnosis.
-
-The Bristol physical Mac account permits loopback TCP only on 46370–46375.
-The wrapper checks an assigned port before installation. A VZ execution and
-independent review remain necessary before claiming the macOS P4 result.
-
-### Post-deletion Linux installed pilot for issue #640 B2
-
-Run `run-b2-linux.sh` on an operator-owned disposable Ubuntu host with gVisor
-systrap. Use a clean checkout containing this harness and the reviewed B1
-commit `d680ef82e4cdd9f1b725a421bccf8496123fd55a`. Select one full,
-published commit SHA that contains B1's deletion. The host needs `uv`, `git`,
-Python 3, Cargo, noninteractive host `sudo` for guest bootstrap, the
-`run-lane.sh` bootstrap prerequisites, and working loopback TCP bind and
-connect. Ports 8180, 8181,
-9190, 18080, 18443–18452, and 19999 must be free. Allow disk space for one
-release Rust build and two isolated `uv` tool installs. The host's proxy and
-test guests do not need to be running: the script installs, starts, and stops
-its own disposable instances. It may download pinned dependencies. It keeps
-the configured parent proxy and certificate authority for other destinations.
-
-From the repository root on that host, replace `FULL_SHA` with the exact
-40-character PR head commit chosen for the installed candidate, then run:
-
-```bash
-./tests/blackbox/run-b2-linux.sh FULL_SHA
-```
-
-The script rejects a short SHA or a commit before B1 before installation. It
-builds one detached selected source checkout and runs the existing P3 and P4
-selections against the installed wheel and its packaged Rust executable. P3
-checks guest approval and retry, exact vaulted credential delivery, retained
-Agent API and coordination operations, an operator event, and read-only
-inspection and export. P4 checks guest allow/deny ingress and origin delivery,
-then restarts and stops the proxy and guests through its three-cycle lifecycle
-selection. Each selection uses a separate disposable instance.
-
-Expect a `B2 Linux pilot: P3 and P4 installed selections passed` line. The
-printed P3 and P4 observation directories contain `systrap-p3.json` and
-`systrap-p4.json`. Each report must name `FULL_SHA` as `source_revision`, show
-the same revision in `installed.build_identity.source_revision`, and end with
-`status: passed` and `cleanup: stopped`. Inspect the installed binary hash,
-authenticated running executable, CLI status, and CLI diagnostic identity in
-each report. P4 also records the three stopped proxy and guest cycles and the
-unaffected separate owner instance.
-
-Both wrappers stop their owned proxy, guests, fixture processes, sockets, and
-Coord service before reporting success. If cleanup fails, use the exact
-instance-scoped stop commands printed by the failing wrapper and verify that
-its guest PID files, native proxy receipt, agent sockets, and Coord PID file
-are gone. Keep the printed observation directories for review. The detached
-source checkout path is printed separately; after review, remove it with
-`git worktree remove PATH` from the harness checkout. A passing host report
-does not mark #640 B2 accepted.
-
-P3/P4 do not run P2's package fetch, repository clone, or SSH selection, P5's
-macOS presentation, or the complete B3 guest lane. They also do not collect
-the native test suite or check every CLI import without mitmproxy; those are
-separate B2/B3 checks. Reuse the accepted R component results where the
-R-to-selected-source change does not affect their assumptions.
-
-## Adding Tests
-
-When adding a new test, ask: *"What would a malicious agent try?"*
-
-- **Proxy tests** go in `host/` — if you need to verify what reached upstream
-  via the sinkhole, or test proxy policy decisions
-- **Isolation tests** go in `isolation/` — if you're testing what an agent
-  can or cannot do from inside the VM
-- Assert outcomes, not mechanisms — never reference pf, iptables, or feth
+Component fixtures run separate real native processes, UDS, origins, policy,
+audit and cleanup. They make no guest isolation claim. Put a native protocol/API
+contract there; retain installed/guest/approval compositions here. Add meaningful
+negative controls and exact origin observations, use the production API rather
+than reimplementing decisions, and declare Title/What/Why in blackbox pytest
+class/method docstrings. Update procedure docstrings for their real observations.
+Run `python3 tests/blackbox/gen_docs.py` after changing maintained selections.
+Update the existing [assurance map](../../docs/assurance-map.toml) for moved owners;
+do not create another coverage ledger or change a protected baseline to clear a badge.

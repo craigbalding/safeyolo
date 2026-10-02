@@ -26,8 +26,8 @@ The instance policy file is the source of truth for durable permissions.
   compiler, and platform-specific sandbox launchers.
 - `cli/src/safeyolo/templates/` contains initial policy, addon settings, and
   named lists consumed by native policy loading.
-- `tests/proxy_migration/` contains selected native contract tests and the
-  isolated historical Python comparator fixture.
+- `tests/proxy_contracts/` contains native process/protocol contracts.
+  Historical comparator executors remain only during #320 replacement review.
 - `tests/blackbox/` contains installed host and sandbox lane probes.
 - `docs/proxy-parity.md` records migration discrepancies and disposition.
 
@@ -193,8 +193,8 @@ api.set_mode("credential-guard", "warn")
 For host installation and retrying an individual bootstrap phase, use the
 [installation reference](../cli/README.md#installation).
 
-For historical Python comparison, use the pinned separate checkout and
-environment in the [migration contract](../tests/proxy_migration/CONTRACT.md).
+The [contract notes](../tests/proxy_contracts/CONTRACT.md) retain historical
+migration receipts. They do not prescribe a current comparator or PR gate.
 
 For native contract development, run these commands from the repository root
 on Linux or macOS with uv and Rust 1.94.0 selected. The tests
@@ -205,13 +205,14 @@ operator's configured instance or require mitmproxy:
 uv sync --frozen --group dev
 cargo build --locked --manifest-path proxy/Cargo.toml
 SAFEYOLO_RUST_PROXY="$PWD/proxy/target/debug/safeyolo-proxy" \
-  uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+  uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 ```
 
-The historical Python selection requires its own pinned checkout and locked
-environment. [The migration contract](../tests/proxy_migration/CONTRACT.md)
-gives that separate command. The focused pull-request workflow also separates
-native checks from explicitly selected historical oracle and comparison jobs.
+Select a relevant module for a normal change. The full native Linux/macOS
+family runs overnight, once per platform. Normal PRs use quick checks and add
+relevant platform tests for platform-specific changes; they do not require a
+full suite or a product installation. Installed guest compositions use the
+[blackbox runners](../tests/blackbox/README.md).
 
 ### Native proxy development
 
@@ -225,8 +226,7 @@ supplied JSON entries and the CLI's agent-map sockets. See
 
 `./install.sh` builds `proxy/target/release/safeyolo-proxy` with Cargo and
 installs a wheel containing that native executable. The installer does
-not impose the factory host's disk-space reserve. The wheel keeps the Python
-CLI; the historical comparator has its own locked environment.
+not impose the factory host's disk-space reserve. The wheel keeps the Python CLI.
 
 ### Cargo disk-space guard and target retirement
 
@@ -1112,18 +1112,24 @@ it does not replace independent acceptance of the behaviour being changed.
 
 ### Testing Requirements
 
-Before submitting a PR:
+Before a PR, run quick focused checks of the changed behavior, including useful
+negative controls. Add the relevant Linux/macOS checks for platform changes.
+Full-suite success, product installation and the hardware matrix are not routine
+PR gates. Complete retained Python/CLI and native process contracts run overnight
+across supported hosts; next-morning discovery is accepted. Installed systrap,
+actual KVM and physical Apple Silicon VZ observations retain the boundaries and
+current automation limits in the [blackbox guide](../tests/blackbox/README.md).
 
-```bash
-# Run addon tests
-pytest tests/ -v
+For a CLI change, select its affected test module, for example:
 
-# Run CLI tests
-uv run pytest cli/tests/ -v
-
-# Check syntax (what CI does)
-find cli/src -name "*.py" -exec uv run python -m py_compile {} \;
+```sh
+uv run --frozen pytest -q cli/tests/test_config.py
 ```
+
+For changed Rust code, use the focused Cargo test and Ubuntu Clippy check through
+`scripts/cargo_with_space.sh`; keep `CARGO_BUILD_JOBS=1` on the configured factory
+host. Broaden testing when an observed result warrants it, not to obtain a
+full-suite badge for each candidate.
 
 ### Pull Request Guidelines
 

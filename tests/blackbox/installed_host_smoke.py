@@ -1376,16 +1376,143 @@ def _smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     return report, 2
 
 
+def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    """Prove the installed host package, traffic effects and owned stop."""
+    config_dir = _config_dir(args.config_dir)
+    _require_disposable(config_dir)
+    if Path(args.rust_config).expanduser().resolve() != config_dir / "data/native.json":
+        raise SmokeError("native smoke must observe the current CLI-generated data/native.json")
+    cwd = Path(args.working_directory).expanduser().resolve()
+    candidate_path, cli = _installed_rust_binary(args.cli or "safeyolo")
+    supplied, candidate = _rust_identity(args.rust_bin or candidate_path)
+    if supplied.resolve() != candidate_path.resolve():
+        raise SmokeError("package smoke must use the native binary installed beside its CLI")
+    stamp = _read_json(Path(cli["package_location"]).parent / "_build_identity.json", "installed wheel identity")
+    if not args.install_commit or stamp.get("source_revision") != args.install_commit:
+        raise SmokeError("installed wheel source revision does not match --install-commit")
+    report = _base_report(cli, candidate, _substrate_identity(config_dir))
+    report["source_revision"] = args.install_commit
+    report["limitations"] = ["No guest was booted. Guest isolation and hardware virtualization remain unproved."]
+    report["instance"] = {"config_dir": str(config_dir), "mode": "smoke"}
+    env = os.environ.copy()
+    env.pop("SAFEYOLO_RUST_PROXY", None)
+    env.update(SAFEYOLO_CONFIG_DIR=str(config_dir), SAFEYOLO_LOGS_DIR=str(_smoke_logs_dir(config_dir)))
+    cli_path = cli["path"]
+    listeners = []
+    runtime = None
+    started = False
+    servers = []
+    threads = []
+    report["status"] = "infrastructure_failure"
+
+    class OriginHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib callback
+            self.server.requests.append(self.path)
+            payload = b"installed-origin-ok\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    try:
+        for _ in range(2):
+            origin = http.server.ThreadingHTTPServer((ROLLBACK_ORIGIN_HOST, 0), OriginHandler)
+            origin.requests = []
+            thread = threading.Thread(target=origin.serve_forever, daemon=True)
+            servers.append(origin)
+            threads.append(thread)
+            thread.start()
+        allowed, denied = servers
+        endpoints = [f"{ROLLBACK_ORIGIN_HOST}:{server.server_port}" for server in servers]
+        for action, endpoint in (("add", endpoints[0]), ("deny", endpoints[1])):
+            result = _run([cli_path, "policy", "host", action, endpoint], env=env, cwd=cwd)
+            if result.returncode:
+                raise SmokeError(f"installed policy host {action} failed (exit {result.returncode})")
+        started = True  # A failed start can still have spawned an owned process.
+        result = _run([cli_path, "start", "--wait"], env=env, cwd=cwd, timeout=45)
+        if result.returncode:
+            raise SmokeError(f"installed native start failed (exit {result.returncode})")
+        native_path = config_dir / "data/native.json"
+        native = _native_config(native_path, cwd)
+        runtime = _runtime_observation(config_dir, native, candidate_path,
+                                       config_path=native_path, working_directory=cwd,
+                                       require_running=True, require_authenticated_identity=True)
+        report["runtime"] = runtime
+        listeners = _agent_map(config_dir)
+        selected = next((row for row in listeners if row["agent_id"] == args.agent), None)
+        if selected is None:
+            raise SmokeError("package smoke agent has no registered installed UDS listener")
+        report["health"] = _probe_agent_health(selected, config_dir)
+        outcomes = []
+        for endpoint, expected in zip(endpoints, (200, 403), strict=True):
+            target = f"http://{endpoint}/installed-package"
+            status = _proxy_status(selected["path"], target)
+            if status != expected:
+                raise AssertionError(f"installed host origin returned HTTP {status}, expected {expected}")
+            outcomes.append(status)
+        if allowed.requests != ["/installed-package"] or denied.requests:
+            raise AssertionError("installed allow/deny response disagrees with owned origin delivery")
+        report["origin"] = {"allowed_status": outcomes[0], "allowed_deliveries": len(allowed.requests),
+                            "denied_status": outcomes[1], "denied_deliveries": len(denied.requests)}
+        report["status"] = "host_package_passed"
+    except AssertionError as exc:
+        report.update(status="assertion_failure", error=str(exc))
+    except (SmokeError, OSError) as exc:
+        report["error"] = str(exc)
+    finally:
+        cleanup_errors = []
+        if started:
+            if __package__:
+                from .installed_sections import owned_processes, surviving_processes
+            else:
+                from installed_sections import owned_processes, surviving_processes
+            try:
+                processes = owned_processes(config_dir)
+            except (OSError, ValueError, KeyError) as exc:
+                cleanup_errors.append(f"owned process inspection failed: {exc}")
+                processes = []
+            try:
+                result = _run([cli_path, "stop"], env=env, cwd=cwd, timeout=45)
+                if result.returncode:
+                    cleanup_errors.append(f"installed stop exited {result.returncode}")
+            except SmokeError as exc:
+                cleanup_errors.append(str(exc))
+            for name in ("proxy-rust.json", "proxy-readiness.json", "proxy.pid"):
+                if (config_dir / "data" / name).exists():
+                    cleanup_errors.append(f"installed stop left {name}")
+            cleanup_errors.extend(surviving_processes(processes))
+            for listener in listeners:
+                path = Path(listener["path"])
+                if path.exists() or _socket_accepting(path):
+                    cleanup_errors.append("installed agent UDS remains after stop")
+        for server, thread in zip(servers, threads, strict=True):
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            if thread.is_alive():
+                cleanup_errors.append("owned origin did not stop")
+        report["cleanup"] = {"status": "stopped" if not cleanup_errors else "failed", "errors": cleanup_errors}
+        if cleanup_errors:
+            report["status"] = "cleanup_failure"
+    return report, {"host_package_passed": 0, "assertion_failure": 1}.get(report["status"], 2)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the selected discovery or disposable lifecycle smoke."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("discover", "attached", "smoke"), default="discover")
     parser.add_argument("--cli", help="installed safeyolo executable (defaults to SAFEYOLO_CLI/PATH)")
     parser.add_argument("--rust-bin", help="supplied safeyolo-proxy executable")
-    parser.add_argument("--rust-config", required=True, help="native proxy JSON selected by proxy.rust_config")
+    parser.add_argument("--rust-config", required=True,
+                        help="native JSON; smoke verifies the CLI-generated data/native.json")
     parser.add_argument("--config-dir", help="SafeYolo config directory (required and disposable for --mode smoke)")
     parser.add_argument("--working-directory", default=os.getcwd(), help="working directory used for relative native paths")
     parser.add_argument("--agent", help="agent name for the UDS health probe")
+    parser.add_argument("--install-commit", help="exact source revision stamped in the installed wheel")
     parser.add_argument(
         "--rollback-python",
         action="store_true",
@@ -1395,7 +1522,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.mode == "smoke":
-            report, code = _smoke(args)
+            report, code = _smoke(args) if args.rollback_python else _native_smoke(args)
         else:
             report, code = _discover(args, require_running=args.mode == "attached")
     except SmokeError as exc:

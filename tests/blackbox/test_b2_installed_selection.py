@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.blackbox.kvm_p1_ingress import installed_identity
+from tests.blackbox.installed_ingress import installed_identity
 
 ROOT = Path(__file__).resolve().parents[2]
 FROZEN_R = "2faba3306de7c099e2913e0eebc8907ff3eba148"
@@ -106,5 +106,5 @@ def test_install_commit_option_needs_an_installed_pilot(tmp_path):
         check=False,
     )
     assert result.returncode == 2
-    assert "requires a P2, P3, or P4 installed selection" in result.stderr
+    assert "requires an installed ingress, workloads, access, or lifecycle selection" in result.stderr
     assert not (tmp_path / "test-instance").exists()

@@ -161,6 +161,72 @@ fn assert_load_preserves_file(path: &Path) {
 }
 
 #[test]
+fn existing_rsa_ca_formats_survive_native_import_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    for arguments in [
+        vec![
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=Native import fixture",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout",
+            "key.pem",
+            "-out",
+            "certificate.pem",
+        ],
+        vec!["rsa", "-in", "key.pem", "-traditional", "-out", "pkcs1.key"],
+        vec![
+            "pkcs8",
+            "-topk8",
+            "-nocrypt",
+            "-in",
+            "key.pem",
+            "-out",
+            "pkcs8.key",
+        ],
+    ] {
+        let result = Command::new("openssl")
+            .args(arguments)
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    let certificate = std::fs::read(directory.path().join("certificate.pem")).unwrap();
+    for (key_file, label) in [
+        ("pkcs1.key", "RSA PRIVATE KEY"),
+        ("pkcs8.key", "PRIVATE KEY"),
+    ] {
+        let prefix = format!("-----BEGIN {label}-----");
+        let mut combined = std::fs::read(directory.path().join(key_file)).unwrap();
+        assert!(combined.starts_with(prefix.as_bytes()));
+        combined.extend_from_slice(&certificate);
+        let path = directory.path().join(format!("{key_file}.pem"));
+        std::fs::write(&path, combined).unwrap();
+        assert_load_preserves_file(&path);
+    }
+    let absent = directory.path().join("missing-ca.pem");
+    assert!(CertificateAuthority::load(&absent).is_err());
+    assert!(
+        !absent.exists(),
+        "native import must not generate a replacement CA"
+    );
+}
+
+#[test]
 #[ignore = "historical mitmproxy CA oracle; set SAFEYOLO_POLICY_PYTHON to the baseline Python environment"]
 fn existing_mitmproxy_rsa_ca_survives_import_restart_and_old_proxy_reload() {
     use std::process::Command;

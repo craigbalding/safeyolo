@@ -1,0 +1,1277 @@
+"""Capture independently replayable HTTP contracts and a focused workload.
+
+The comparator preserves ports, decisions, delivered bytes and failure statuses.
+Generated identifiers are checked for uniqueness/attribution by the scenarios;
+they are not compared as literals across independently started processes.
+Capture output is schema-versioned evidence, not an automatic performance claim:
+the selected process, configuration and external resource observations must be
+reviewed together with the raw origin/control results.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures
+import contextlib
+import hashlib
+import http.client
+import json
+import os
+import platform
+import socket
+import statistics
+import subprocess
+import sys
+import threading
+import time
+from datetime import UTC, datetime
+from importlib.metadata import version
+from pathlib import Path
+
+from tests.proxy_contracts.harness import REPO, connection, launch_proxy, read_events, request
+from tests.proxy_contracts.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
+
+
+def memory_kib(pid):
+    """Linux process measurements; unavailable platforms remain unmeasured."""
+    path = Path(f"/proc/{pid}/status")
+    if not path.exists():
+        return None
+    values = {}
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in {"VmRSS", "VmHWM"}:
+            values[key] = int(value.strip().split()[0])
+    return values
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_identity(path):
+    """Return the selected source checkout identity without changing it."""
+    source = Path(path).resolve()
+    try:
+        commit = subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True, stderr=subprocess.STDOUT
+        ).strip()
+        dirty = bool(subprocess.check_output(
+            ["git", "-C", str(source), "status", "--porcelain"], text=True, stderr=subprocess.STDOUT
+        ).strip())
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError(f"selected source is not a Git checkout: {source}") from error
+    return {"path": str(source), "commit": commit, "dirty": dirty}
+
+
+def _command_version(command):
+    try:
+        return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _proc_cmdline(pid):
+    path = Path(f"/proc/{pid}/cmdline")
+    if not path.exists():
+        return None
+    return [part.decode(errors="replace") for part in path.read_bytes().split(b"\0") if part]
+
+
+def process_resources(pid):
+    """Read external process observations; never use proxy-reported counters."""
+    status_path = Path(f"/proc/{pid}/status")
+    if not status_path.exists():
+        return {"pid": pid, "available": False}
+    values = {}
+    for line in status_path.read_text().splitlines():
+        key, _, value = line.partition(":")
+        if key in {"VmRSS", "VmHWM", "VmSize", "Threads"}:
+            values[key] = int(value.strip().split()[0])
+    fd_path = Path(f"/proc/{pid}/fd")
+    try:
+        fds = len(list(fd_path.iterdir()))
+    except OSError:
+        fds = None
+    return {
+        "pid": pid,
+        "available": True,
+        "rss_kib": values.get("VmRSS"),
+        "high_water_rss_kib": values.get("VmHWM"),
+        "virtual_memory_kib": values.get("VmSize"),
+        "threads": values.get("Threads"),
+        "open_fds": fds,
+    }
+
+
+def runtime_resources(proxy):
+    processes = {"proxy": process_resources(proxy.process.pid)}
+    if proxy.policy_process:
+        processes["temporary_policy_adapter"] = process_resources(proxy.policy_process.pid)
+    return {
+        "sampled_at_utc": datetime.now(UTC).isoformat(),
+        "sampled_at_monotonic": time.monotonic(),
+        "processes": processes,
+        "observation": "external /proc RSS, high-water RSS, thread and FD counts",
+    }
+
+
+def proxy_identity(proxy):
+    """Capture exact child/config identities while the selected process lives."""
+    config_path = proxy.event_log.parent / "proxy.json"
+    config_bytes = config_path.read_bytes()
+    binary_path = Path(f"/proc/{proxy.process.pid}/exe")
+    identity = {
+        "pid": proxy.process.pid,
+        "argv": _proc_cmdline(proxy.process.pid),
+        "config": {"path": str(config_path), "sha256": hashlib.sha256(config_bytes).hexdigest()},
+        "config_payload": json.loads(config_bytes),
+    }
+    policy_path = Path(identity["config_payload"]["policy_file"])
+    if policy_path.exists():
+        identity["policy"] = {"path": str(policy_path), "sha256": _sha256(policy_path)}
+    if binary_path.exists():
+        resolved = binary_path.resolve()
+        identity["executable"] = {
+            "path": str(resolved),
+            "sha256": _sha256(resolved),
+            "size_bytes": resolved.stat().st_size,
+        }
+    provenance = config_path.parent / "native-policy-provenance.json"
+    if provenance.exists():
+        identity["native_policy_provenance"] = {
+            "path": str(provenance), "sha256": _sha256(provenance),
+            "payload": json.loads(provenance.read_text()),
+        }
+    return identity
+
+
+@contextlib.contextmanager
+def selected_process_environment(args):
+    """Bind each capture to an explicit implementation and policy path."""
+    names = (
+        "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PYTHON_EXECUTABLE",
+        "SAFEYOLO_RUST_PROXY",
+    )
+    previous = {name: os.environ.get(name) for name in names}
+    source = Path(args.python_source).expanduser().resolve()
+    binary = Path(args.rust_binary).expanduser().resolve() if args.rust_binary else None
+    if args.backend == "python":
+        os.environ["SAFEYOLO_PYTHON_SOURCE"] = str(source)
+        # Preserve a virtualenv launcher path. Resolving its symlink can select
+        # the system interpreter and silently drop the locked dependencies.
+        os.environ["SAFEYOLO_PYTHON_EXECUTABLE"] = str(Path(args.python_executable).expanduser())
+        os.environ.pop("SAFEYOLO_RUST_PROXY", None)
+    else:
+        if binary is None or not binary.is_file():
+            raise ValueError("--rust-binary must identify an existing native proxy executable")
+        os.environ["SAFEYOLO_RUST_PROXY"] = str(binary)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def runtime_memory(proxy):
+    processes = {"proxy": memory_kib(proxy.process.pid)}
+    if proxy.policy_process:
+        processes["temporary_policy_adapter"] = memory_kib(proxy.policy_process.pid)
+    measured = [value for value in processes.values() if value is not None]
+    return {"processes_kib": processes,
+            "sum_rss_kib": sum(value.get("VmRSS", 0) for value in measured) if measured else None,
+            "scope": "sum of process RSS double-counts shared pages; includes temporary policy adapter when present"}
+
+
+def short_connections(backend, directory, count):
+    """Sequential HTTP requests, a fresh agent and upstream socket each time."""
+    with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
+        url = f"http://127.0.0.1:{origin.server_address[1]}/latency"
+        samples = []
+        ready_memory = runtime_memory(proxy)
+        resource_samples = [runtime_resources(proxy)]
+        started = time.perf_counter()
+        sample_every = max(1, count // 4)
+        for index in range(count):
+            before = time.perf_counter()
+            status, _, body = request(proxy.paths["alice"], url)
+            assert status == 200 and body == b"hello"
+            samples.append((time.perf_counter() - before) * 1000)
+            if (index + 1) % sample_every == 0:
+                resource_samples.append(runtime_resources(proxy))
+        elapsed = time.perf_counter() - started
+        final_memory = runtime_memory(proxy)
+        assert origin.accepts == count
+        ordered = sorted(samples)
+        return {"workload": "sequential_short_http_connections", "requests": count,
+                "elapsed_seconds": elapsed, "requests_per_second": count / elapsed,
+                "latency_median_ms": statistics.median(samples),
+                "latency_p95_ms": ordered[max(0, int(count * .95) - 1)],
+                "runtime_memory_ready": ready_memory,
+                "runtime_memory_after": final_memory,
+                "resource_samples": resource_samples,
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "expected_requests": count,
+                },
+                "proxy_identity": proxy_identity(proxy)}
+
+
+def short_https_connections(backend, directory, count):
+    """Run fresh HTTP/1.1 requests through the existing CONNECT/TLS fixture."""
+    from safeyolo.rust_proxy import _ensure_signing_ca
+    from tests.proxy_contracts.test_http2_contract import (
+        origin_certificate,
+        tls_tunnel,
+    )
+    from tests.proxy_contracts.test_http2_contract import (
+        origin_server as tls_origin_server,
+    )
+
+    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_signing_ca(directory / "ca")
+    origin_pem, origin_ca = origin_certificate(directory)
+    with tls_origin_server(origin_pem, protocols=("http/1.1",)) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        tls=True,
+        upstream_ca=origin_ca,
+        native_policy=backend == "rust",
+    ) as proxy:
+        client_ca = directory / "ca/mitmproxy-ca-cert.pem"
+
+        def https_request(path):
+            stream = tls_tunnel(proxy.paths["alice"], origin.authority, client_ca, offers=("http/1.1",))
+            try:
+                stream.sendall(
+                    f"GET {path} HTTP/1.1\r\nHost: {origin.authority}\r\nConnection: close\r\n\r\n".encode()
+                )
+                response = http.client.HTTPResponse(stream)
+                response.begin()
+                status = response.status
+                headers = dict(response.getheaders())
+                body = response.read()
+                response.close()
+                return status, headers, body
+            finally:
+                stream.close()
+
+        samples = []
+        resource_samples = [runtime_resources(proxy)]
+        started = time.perf_counter()
+        sample_every = max(1, count // 4)
+        for index in range(count):
+            before = time.perf_counter()
+            status, _, body = https_request("/latency")
+            elapsed_ms = (time.perf_counter() - before) * 1000
+            assert status == 200 and body == b"hello"
+            samples.append(elapsed_ms)
+            if (index + 1) % sample_every == 0:
+                resource_samples.append(runtime_resources(proxy))
+        measured_elapsed = time.perf_counter() - started
+        control_started = time.perf_counter()
+        control_status, control_headers, control_body = https_request("/control")
+        control = {
+            "status": control_status,
+            "elapsed_seconds": time.perf_counter() - control_started,
+            "body_bytes": len(control_body),
+            "body_sha256": hashlib.sha256(control_body).hexdigest(),
+            "content_type": control_headers.get("Content-Type"),
+        }
+        resource_samples.append(runtime_resources(proxy))
+        assert control_status == 200 and control_body == b"hello"
+        ordered = sorted(samples)
+        expected_total = count + 1
+        event_deadline = time.monotonic() + 2
+        request_events = []
+        all_request_events = []
+        while time.monotonic() < event_deadline:
+            all_request_events = [event for event in read_events(proxy.event_log)
+                                  if event.get("event") == "proxy.request"]
+            # Native Rust records the CONNECT decision and the subsequent
+            # decrypted application request as separate proxy.request events;
+            # Python's mitmproxy comparator records only the application hook.
+            request_events = [event for event in all_request_events
+                              if event.get("coverage") != "native_network_guard_only"]
+            if len(request_events) >= expected_total:
+                break
+            time.sleep(0.01)
+        assert len(origin.requests) == expected_total
+        assert len(request_events) == expected_total
+        return {
+            "workload": "sequential_short_https_connections",
+            "requests": count,
+            "completed": count,
+            "failed_or_incomplete": 0,
+            "elapsed_seconds": measured_elapsed,
+            "requests_per_second": count / measured_elapsed,
+            "latency_median_ms": statistics.median(samples),
+            "latency_p95_ms": ordered[max(0, int(count * 0.95) - 1)],
+            "latency_max_ms": max(samples),
+            "latency_samples_ms": samples,
+            "request_counts": {
+                "measured": {"expected": count, "completed": count, "failed_or_incomplete": 0},
+                "control": {"expected": 1, "completed": 1, "failed_or_incomplete": 0},
+                "total": {
+                    "expected": expected_total,
+                    "origin_requests": len(origin.requests),
+                    "proxy_request_events": len(request_events),
+                    "proxy_events_total": len(all_request_events),
+                    "connect_events": len(all_request_events) - len(request_events),
+                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                },
+            },
+            "resource_samples": resource_samples,
+            "origin_observation": {
+                "requests": list(origin.requests),
+                "expected_requests": expected_total,
+            },
+            "control_observation": control,
+            "proxy_observation": {
+                "request_events": len(request_events),
+                "proxy_events_total": len(all_request_events),
+                "connect_events": len(all_request_events) - len(request_events),
+                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+            },
+            "proxy_identity": proxy_identity(proxy),
+            "limitation": "sequential fresh HTTP/1.1-over-TLS requests and one control request; no concurrent or long-duration claim",
+        }
+
+
+def concurrent_short_admin_workload(
+    backend, directory, count, concurrency=8, batches=3, *, warmup=0, quiet_seconds=0.0
+):
+    """Run repeated fresh HTTP connections while an authenticated admin request runs.
+
+    Each batch uses the existing UDS/origin fixture and starts ``concurrency``
+    workers together. A small delay in the owned origin keeps the batch active
+    long enough for the admin operation to be observed concurrently; it adds no
+    product timeout or admission policy. ``/proc`` samples are taken before,
+    during and after every batch so RSS/high-water/VM/thread/FD observations
+    remain separate from the proxy's own counters.
+    """
+    if count < 1 or concurrency < 1 or batches < 1 or warmup < 0 or quiet_seconds < 0:
+        raise ValueError("count, concurrency and batches must be positive; warmup and quiet_seconds nonnegative")
+    token = "concurrent-admin-fixture-token"
+    token_file = directory / "operator-token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n")
+    token_file.chmod(0o600)
+    # The delay is confined to this owned origin and prevents a fast machine
+    # from completing all workers before the independent admin request starts.
+    with origin_server(response_delay=0.01) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        native_policy=backend == "rust",
+        admin_port=0,
+        admin_api_token_file=token_file,
+    ) as proxy:
+        target = f"http://127.0.0.1:{origin.server_address[1]}/latency"
+        active_workers = min(concurrency, count)
+        all_latencies = []
+        batches_result = []
+        started = time.perf_counter()
+
+        warmup_outcomes = []
+        for index in range(warmup):
+            began = time.perf_counter()
+            try:
+                status, _, body = request(proxy.paths["alice"], target)
+                outcome = {
+                    "index": index,
+                    "status": status,
+                    "body_bytes": len(body),
+                    "latency_ms": (time.perf_counter() - began) * 1000,
+                }
+                if status != 200 or body != b"hello":
+                    outcome["error"] = f"unexpected warm-up response: status={status}, body_bytes={len(body)}"
+                warmup_outcomes.append(outcome)
+            except Exception as error:  # retain a concrete warm-up failure
+                warmup_outcomes.append({
+                    "index": index,
+                    "error": f"{type(error).__name__}: {error}",
+                    "latency_ms": (time.perf_counter() - began) * 1000,
+                })
+        warmup_failures = [outcome for outcome in warmup_outcomes if "error" in outcome]
+        warmup_completed = [outcome for outcome in warmup_outcomes if "error" not in outcome]
+        assert not warmup_failures, warmup_failures
+        warmup_latencies = [outcome["latency_ms"] for outcome in warmup_outcomes]
+        warmup_request_events = len([
+            event for event in read_events(proxy.event_log)
+            if event.get("event") == "proxy.request"
+        ])
+        warmup_origin_accepts = origin.accepts
+        quiet_before = runtime_resources(proxy)
+        quiet_started = time.perf_counter()
+        time.sleep(quiet_seconds)
+        quiet_after = runtime_resources(proxy)
+        quiet_elapsed = time.perf_counter() - quiet_started
+        quiet_request_events = len([
+            event for event in read_events(proxy.event_log)
+            if event.get("event") == "proxy.request"
+        ])
+        quiet_origin_connections_after = origin.accepts
+        quiet_proxy_request_events_after = quiet_request_events
+        assert quiet_origin_connections_after == warmup_origin_accepts
+        assert quiet_proxy_request_events_after == warmup_request_events
+        measured_started = time.perf_counter()
+
+        def admin_request(headers=None):
+            marker = json.loads(proxy.readiness_file.read_text())
+            admin = http.client.HTTPConnection("127.0.0.1", marker["admin_port"], timeout=5)
+            began = time.perf_counter()
+            try:
+                admin.request("GET", "/stats", headers=headers or {})
+                response = admin.getresponse()
+                body = response.read()
+                return {
+                    "status": response.status,
+                    "elapsed_seconds": time.perf_counter() - began,
+                    "body_bytes": len(body),
+                    "body_sha256": hashlib.sha256(body).hexdigest(),
+                }
+            finally:
+                admin.close()
+
+        for batch_index in range(batches):
+            before = runtime_resources(proxy)
+            barrier = threading.Barrier(active_workers + 1)
+            condition = threading.Condition()
+            inflight = 0
+
+            def send(index):
+                nonlocal inflight
+                # The first queued wave synchronizes with the coordinator. The
+                # remaining queued tasks must proceed after that release and
+                # must not wait on a second barrier cycle.
+                if index < active_workers:
+                    barrier.wait()
+                with condition:
+                    inflight += 1
+                    condition.notify_all()
+                began = time.perf_counter()
+                try:
+                    status, _, body = request(proxy.paths["alice"], target)
+                    return {
+                        "index": index,
+                        "status": status,
+                        "body_bytes": len(body),
+                        "body_sha256": hashlib.sha256(body).hexdigest(),
+                        "latency_ms": (time.perf_counter() - began) * 1000,
+                    }
+                except Exception as error:  # retain failed/incomplete work in evidence
+                    return {"index": index, "error": f"{type(error).__name__}: {error}"}
+                finally:
+                    with condition:
+                        inflight -= 1
+                        condition.notify_all()
+
+            batch_started = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=active_workers) as workers:
+                futures = [workers.submit(send, index) for index in range(count)]
+                barrier.wait()
+                with condition:
+                    deadline = time.monotonic() + 5
+                    while inflight < active_workers and time.monotonic() < deadline:
+                        condition.wait(timeout=0.05)
+                    assert inflight >= active_workers, "concurrent batch did not become active"
+                admin_started_while_batch_active = inflight > 0
+                unauthenticated = admin_request()
+                authenticated = admin_request({"Authorization": f"Bearer {token}"})
+                admin_completed_while_batch_active = inflight > 0
+                assert unauthenticated["status"] == 401
+                assert authenticated["status"] == 200 and authenticated["body_bytes"] > 0
+                assert admin_completed_while_batch_active
+                resource_samples = [runtime_resources(proxy)]
+                sampled_at = time.monotonic()
+                while not all(future.done() for future in futures):
+                    if time.monotonic() - sampled_at >= 0.02:
+                        resource_samples.append(runtime_resources(proxy))
+                        sampled_at = time.monotonic()
+                    time.sleep(0.005)
+                outcomes = [future.result() for future in futures]
+            resource_samples.append(runtime_resources(proxy))
+            completed = [outcome for outcome in outcomes if "error" not in outcome]
+            failures = [outcome for outcome in outcomes if "error" in outcome]
+            latencies = [outcome["latency_ms"] for outcome in completed]
+            all_latencies.extend(latencies)
+            assert not failures, failures
+            assert len(completed) == count
+            assert all(outcome["status"] == 200 and outcome["body_bytes"] == 5 for outcome in completed)
+            batch_elapsed = time.perf_counter() - batch_started
+            batches_result.append({
+                "batch": batch_index + 1,
+                "requests": count,
+                "completed": len(completed),
+                "failed_or_incomplete": len(failures),
+                "elapsed_seconds": batch_elapsed,
+                "requests_per_second": count / batch_elapsed,
+                "latency_median_ms": statistics.median(latencies),
+                "latency_p95_ms": sorted(latencies)[max(0, int(len(latencies) * 0.95) - 1)],
+                "latency_max_ms": max(latencies),
+                "admin": {
+                    "unauthenticated_status": unauthenticated["status"],
+                    "authenticated_status": authenticated["status"],
+                    "authenticated_elapsed_seconds": authenticated["elapsed_seconds"],
+                    "authenticated_body_bytes": authenticated["body_bytes"],
+                    "authenticated_body_sha256": authenticated["body_sha256"],
+                    "started_while_batch_active": admin_started_while_batch_active,
+                    "completed_while_batch_active": admin_completed_while_batch_active,
+                },
+                "runtime_resources": {
+                    "before_batch": before,
+                    "during_batch": resource_samples[:-1],
+                    "after_batch": resource_samples[-1],
+                },
+            })
+
+        measured_elapsed = time.perf_counter() - measured_started
+        elapsed = time.perf_counter() - started
+        measured_requests = count * batches
+        expected_requests = warmup + measured_requests
+        assert origin.accepts == expected_requests
+        assert len(origin.requests) == expected_requests
+        request_events = [event for event in read_events(proxy.event_log)
+                          if event.get("event") == "proxy.request"]
+        assert len(request_events) == expected_requests
+        return {
+            "workload": "repeated_concurrent_short_http_admin",
+            "requests_per_batch": count,
+            "batches": batches,
+            "concurrency": active_workers,
+            "requests": measured_requests,
+            "completed": len(all_latencies),
+            "failed_or_incomplete": 0,
+            "elapsed_seconds": elapsed,
+            "requests_per_second": measured_requests / measured_elapsed,
+            "measured_elapsed_seconds": measured_elapsed,
+            "latency_median_ms": statistics.median(all_latencies),
+            "latency_p95_ms": sorted(all_latencies)[max(0, int(len(all_latencies) * 0.95) - 1)],
+            "latency_max_ms": max(all_latencies),
+            "warmup": {
+                "requests": warmup,
+                "completed": len(warmup_completed),
+                "failed_or_incomplete": len(warmup_failures),
+                "latency_samples_ms": warmup_latencies,
+                "origin_connections": warmup_origin_accepts,
+                "proxy_request_events": warmup_request_events,
+            },
+            "quiet": {
+                "requested_seconds": quiet_seconds,
+                "elapsed_seconds": quiet_elapsed,
+                "origin_connections_before": warmup_origin_accepts,
+                "origin_connections_after": quiet_origin_connections_after,
+                "proxy_request_events_before": warmup_request_events,
+                "proxy_request_events_after": quiet_proxy_request_events_after,
+                "runtime_resources_before": quiet_before,
+                "runtime_resources_after": quiet_after,
+            },
+            "request_counts": {
+                "warmup": {
+                    "expected": warmup,
+                    "completed": len(warmup_completed),
+                    "failed_or_incomplete": len(warmup_failures),
+                },
+                "measured": {
+                    "expected": measured_requests,
+                    "completed": len(all_latencies),
+                    "failed_or_incomplete": 0,
+                },
+                "total": {
+                    "expected": expected_requests,
+                    "origin_connections": origin.accepts,
+                    "proxy_request_events": len(request_events),
+                    "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+                },
+            },
+            "batches_result": batches_result,
+            "origin_observation": {
+                "accepted_connections": origin.accepts,
+                "requests": list(origin.requests),
+                "expected_requests": expected_requests,
+            },
+            "proxy_observation": {
+                "request_events": len(request_events),
+                "error_responses": sum(int(event.get("status", 200)) >= 400 for event in request_events),
+            },
+            "proxy_identity": proxy_identity(proxy),
+            "limitation": (
+                f"{batches} measured short-connection batches after {warmup} warm-up requests "
+                f"and a {quiet_seconds:.3f}s quiet interval on Linux; no long-duration, "
+                "WS/WSS, CONNECT/SSH, production-chain or platform claim"
+            ),
+        }
+
+
+def stream_workload(backend, directory, seconds=2.0):
+    """Observe early SSE delivery and process memory throughout a paced stream."""
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(backend, directory, POLICY) as proxy:
+        client = connection(proxy.paths["alice"])
+        try:
+            started = time.perf_counter()
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream")
+            response = client.getresponse()
+            assert response.status == 200
+            first = response.read(16384)
+            first_seconds = time.perf_counter() - started
+            early = not origin.stream_finished.is_set()
+            samples = [{"elapsed_seconds": first_seconds, **runtime_memory(proxy)}]
+            resource_samples = [runtime_resources(proxy)]
+            total = len(first)
+            sampled_at = time.monotonic()
+            while chunk := response.read(16384):
+                total += len(chunk)
+                if time.monotonic() - sampled_at >= 1:
+                    samples.append({"elapsed_seconds": time.perf_counter() - started, **runtime_memory(proxy)})
+                    resource_samples.append(runtime_resources(proxy))
+                    sampled_at = time.monotonic()
+            elapsed = time.perf_counter() - started
+            assert total == origin.stream_chunks * 16384
+            assert early, "SSE was buffered until origin completion"
+            return {"workload": "paced_sse", "bytes": total, "elapsed_seconds": elapsed,
+                    "first_chunk_seconds": first_seconds, "first_chunk_before_completion": early,
+                    "bytes_per_second": total / elapsed, "runtime_memory_samples": samples,
+                    "resource_samples": resource_samples,
+                    "runtime_memory_after": runtime_memory(proxy),
+                    "requested_stream_seconds": seconds,
+                    "origin_observation": {
+                        "accepted_connections": origin.accepts,
+                        "requests": list(origin.requests),
+                        "stream_finished_when_first_chunk_arrived": not early,
+                        "stream_finished_after_read": origin.stream_finished.is_set(),
+                    },
+                    "proxy_identity": proxy_identity(proxy),
+                    "limitation": "one paced stream; no concurrent load, content inspection, or slow-reader proof"}
+        finally:
+            client.close()
+
+
+def streamed_control_workload(backend, directory, seconds=2.0):
+    """Hold one streamed response while an independent request completes."""
+    first_event = b"data: first-event\n\n"
+    data_event = b"data: " + b"x" * (16384 - 8) + b"\n\n"
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend, directory, POLICY, native_policy=backend == "rust"
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        response = None
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-control")
+            response = client.getresponse()
+            assert response.status == 200
+            first = response.read(len(first_event))
+            first_received_at = time.monotonic()
+            first_seconds = time.perf_counter() - started
+            assert first == first_event
+            assert origin.stream_initial_sent.is_set()
+            assert origin.stream_first_flush_at <= first_received_at
+            assert not origin.stream_finished.is_set()
+            assert not origin.stream_release.is_set()
+
+            control_started = time.perf_counter()
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_seconds = time.perf_counter() - control_started
+            assert status == 200 and body == b"hello"
+            assert control_seconds < 5  # The local client has a five-second socket timeout.
+            control_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
+
+            release_at = time.monotonic()
+            origin.stream_release.set()
+            received = bytearray(first)
+            while chunk := response.read(16384):
+                received.extend(chunk)
+            elapsed = time.perf_counter() - started
+            assert origin.stream_finished.wait(timeout=5)
+            assert bytes(received) == first_event + data_event * max(0, origin.stream_chunks - 1)
+            assert origin.stream_first_flush_at <= first_received_at < release_at
+            assert control_completed_at < release_at <= origin.stream_release_seen_at
+            assert origin.stream_release_seen_at <= origin.stream_finished_at
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream-control"},
+                {"method": "GET", "target": "/control"},
+            ]
+            assert origin.accepts == 2
+            return {
+                "workload": "streamed_control",
+                "bytes": len(received),
+                "body_sha256": hashlib.sha256(received).hexdigest(),
+                "elapsed_seconds": elapsed,
+                "first_event_seconds": first_seconds,
+                "first_event_before_release": first_received_at < release_at,
+                "control_elapsed_seconds": control_seconds,
+                "control_completed_before_stream_release": control_completed_at < release_at,
+                "stream_released_after_control": origin.stream_release.is_set(),
+                "runtime_memory_after": runtime_memory(proxy),
+                "resource_samples": [runtime_resources(proxy)],
+                "requested_stream_seconds": seconds,
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "first_flush_at": origin.stream_first_flush_at,
+                    "first_received_at": first_received_at,
+                    "control_completed_at": control_completed_at,
+                    "released_at": release_at,
+                    "release_seen_at": origin.stream_release_seen_at,
+                    "finished_at": origin.stream_finished_at,
+                    "stream_finished_after_read": origin.stream_finished.is_set(),
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one held stream and one independent allowed request; no slow consumer or admin API operation",
+            }
+        finally:
+            origin.stream_release.set()
+            if response is not None:
+                response.close()
+            client.close()
+
+
+def streamed_slow_admin_workload(backend, directory, seconds=2.0):
+    """Hold final SSE completion while a stalled reader, control, and /stats overlap."""
+    first_event = b"data: first-event\n\n"
+    last_event = b"data: last-event\n\n"
+    data_event = b"data: " + b"x" * (16384 - 8) + b"\n\n"
+    control_deadline = 5.0  # The local clients use five-second socket timeouts.
+    token = "stream-slow-admin-fixture-token"
+    token_file = directory / "operator-token"
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(token + "\n")
+    token_file.chmod(0o600)
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend,
+        directory,
+        POLICY,
+        native_policy=backend == "rust",
+        admin_port=0,
+        admin_api_token_file=token_file,
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        # A small receive buffer makes the deliberate read pause meaningful
+        # even when the proxy and origin can write ahead.
+        client.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+        response = None
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-slow")
+            response = client.getresponse()
+            assert response.status == 200
+            first = response.read(len(first_event))
+            first_received_at = time.monotonic()
+            first_seconds = time.perf_counter() - started
+            assert first == first_event
+            assert origin.stream_initial_sent.is_set()
+            assert origin.stream_first_flush_at <= first_received_at
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
+
+            # The origin offers further bytes while this reader makes no body
+            # reads. Its final event still waits for the out-of-band release.
+            assert origin.stream_data_sent.wait(timeout=control_deadline)
+            pause_seconds = max(0.25, seconds / 4)
+            time.sleep(pause_seconds)
+            bytes_before_controls = origin.stream_bytes_sent
+            assert bytes_before_controls > 0
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
+            held_resources = runtime_resources(proxy)
+
+            control_started = time.perf_counter()
+            status, _, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_elapsed = time.perf_counter() - control_started
+            assert status == 200 and body == b"hello"
+            assert control_elapsed < control_deadline
+            control_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
+
+            marker = json.loads(proxy.readiness_file.read_text())
+            admin_port = marker["admin_port"]
+            admin_started = time.perf_counter()
+            admin = http.client.HTTPConnection("127.0.0.1", admin_port, timeout=5)
+            try:
+                admin.request("GET", "/stats", headers={"Authorization": f"Bearer {token}"})
+                admin_response = admin.getresponse()
+                admin_body = admin_response.read()
+                admin_status = admin_response.status
+                admin_headers = dict(admin_response.getheaders())
+            finally:
+                admin.close()
+            admin_elapsed = time.perf_counter() - admin_started
+            assert admin_status == 200 and admin_body
+            assert admin_elapsed < control_deadline
+            admin_completed_at = time.monotonic()
+            assert not origin.stream_release.is_set()
+            assert not origin.stream_finished.is_set()
+            during_resources = runtime_resources(proxy)
+
+            release_at = time.monotonic()
+            origin.stream_release.set()
+            received = bytearray(first)
+            paced_chunks = 0
+            while chunk := response.read(16384):
+                received.extend(chunk)
+                paced_chunks += 1
+                time.sleep(0.02)
+            elapsed = time.perf_counter() - started
+            assert origin.stream_finished.wait(timeout=control_deadline)
+            assert bytes(received) == first_event + data_event * origin.stream_chunks + last_event
+            assert origin.stream_first_flush_at <= first_received_at < release_at
+            assert control_completed_at < release_at and admin_completed_at < release_at
+            assert release_at <= origin.stream_release_seen_at <= origin.stream_finished_at
+            request_events = [event for event in read_events(proxy.event_log)
+                              if event.get("event") == "proxy.request"]
+            error_events = [event for event in request_events if int(event.get("status", 200)) >= 400]
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream-slow"},
+                {"method": "GET", "target": "/control"},
+            ]
+            assert origin.accepts == 2
+            return {
+                "workload": "streamed_slow_consumer_admin",
+                "bytes": len(received),
+                "body_sha256": hashlib.sha256(received).hexdigest(),
+                "elapsed_seconds": elapsed,
+                "first_event_seconds": first_seconds,
+                "first_event_before_release": first_received_at < release_at,
+                "slow_consumer_pause_seconds": pause_seconds,
+                "origin_bytes_sent_before_controls": bytes_before_controls,
+                "paced_chunks_after_pause": paced_chunks,
+                "control_elapsed_seconds": control_elapsed,
+                "control_completed_before_release": control_completed_at < release_at,
+                "request_counts": {
+                    "origin_requests": len(origin.requests),
+                    "origin_error_responses": 0,
+                    "proxy_request_events": len(request_events),
+                    "proxy_error_responses": len(error_events),
+                    "allowed_control_requests": 1,
+                    "authenticated_admin_operations": 1,
+                    "authenticated_admin_errors": 0,
+                },
+                "admin": {
+                    "method": "GET",
+                    "path": "/stats",
+                    "authenticated": True,
+                    "status": admin_status,
+                    "elapsed_seconds": admin_elapsed,
+                    "body_bytes": len(admin_body),
+                    "body_sha256": hashlib.sha256(admin_body).hexdigest(),
+                    "content_type": admin_headers.get("Content-Type"),
+                    "completed_before_release": admin_completed_at < release_at,
+                },
+                "runtime_resources": {
+                    "before_controls": held_resources,
+                    "after_controls": during_resources,
+                    "after_drain": runtime_resources(proxy),
+                },
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "first_flush_at": origin.stream_first_flush_at,
+                    "first_received_at": first_received_at,
+                    "control_completed_at": control_completed_at,
+                    "admin_completed_at": admin_completed_at,
+                    "released_at": release_at,
+                    "release_seen_at": origin.stream_release_seen_at,
+                    "finished_at": origin.stream_finished_at,
+                    "stream_bytes_sent_before_controls": bytes_before_controls,
+                    "stream_finished_after_read": origin.stream_finished.is_set(),
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one finite stalled reader and one control/admin pair; no sustained backpressure or growth claim",
+            }
+        finally:
+            origin.stream_release.set()
+            if response is not None:
+                response.close()
+            client.close()
+
+
+def cancelled_sse_workload(backend, directory, seconds=4.0):
+    """Cancel a held SSE response and verify independent work still completes.
+
+    The origin flushes one event and then waits for the test to release it.  The
+    client closes its response and downstream socket before release; the origin
+    observes that close while held. After an unrelated request succeeds, the
+    origin is released and must observe cancellation before producing the
+    complete paced body. Resource samples come from ``/proc`` and the origin,
+    not proxy counters.
+    """
+    first_event = b"data: first-event\n\n"
+    with origin_server(stream_seconds=seconds) as origin, launch_proxy(
+        backend, directory, POLICY, native_policy=backend == "rust"
+    ) as proxy:
+        client = connection(proxy.paths["alice"])
+        response = None
+        started = time.perf_counter()
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/stream-cancel")
+            response = client.getresponse()
+            assert response.status == 200
+            received = response.read(len(first_event))
+            assert received == first_event
+            assert origin.stream_initial_sent.is_set()
+            assert not origin.stream_release.is_set()
+            first_before_release = not origin.stream_release.is_set()
+            before_close = runtime_resources(proxy)
+
+            # HTTPConnection may detach a close-delimited HTTPResponse. Close
+            # both owners, and observe origin EOF before releasing the stream.
+            response.close()
+            client.close()
+            downstream_closed_before_release = origin.stream_peer_closed.wait(timeout=2)
+            assert downstream_closed_before_release, "held SSE origin did not see client close"
+            close_elapsed = time.perf_counter() - started
+            after_close = runtime_resources(proxy)
+            status, control_headers, body = request(
+                proxy.paths["alice"], f"http://127.0.0.1:{origin.server_address[1]}/control"
+            )
+            control_elapsed = time.perf_counter() - started - close_elapsed
+            assert status == 200 and body == b"hello"
+            control_request_id = {name.lower(): value for name, value in control_headers.items()}[
+                "x-safeyolo-request-id"
+            ]
+            assert not origin.stream_release.is_set()
+            during_control = runtime_resources(proxy)
+
+            origin.stream_release.set()
+            cancellation_observed = origin.stream_cancelled.wait(timeout=5)
+            finished_observed = origin.stream_finished.wait(timeout=5)
+            after_cancel = runtime_resources(proxy)
+            assert proxy.process.poll() is None
+            event_deadline = time.monotonic() + 5
+            request_events = []
+            while time.monotonic() < event_deadline:
+                request_events = [event for event in read_events(proxy.event_log)
+                                  if event.get("event") == "proxy.request"]
+                if len(request_events) >= (2 if backend == "rust" else 1):
+                    break
+                time.sleep(0.02)
+            assert origin.requests == [
+                {"method": "GET", "target": "/stream-cancel"},
+                {"method": "GET", "target": "/control"},
+            ]
+            return {
+                "workload": "cancelled_sse_with_independent_request",
+                "requested_stream_seconds": seconds,
+                "first_event_bytes": len(received),
+                "first_event_before_release": first_before_release,
+                "downstream_closed_before_release": downstream_closed_before_release,
+                "control_status": status,
+                "control_request_id": control_request_id,
+                "control_completed_while_stream_held": True,
+                "control_elapsed_seconds": control_elapsed,
+                "cancellation_elapsed_seconds": time.perf_counter() - started,
+                "request_events_observed_before_shutdown": len(request_events),
+                "origin_observation": {
+                    "accepted_connections": origin.accepts,
+                    "requests": list(origin.requests),
+                    "write_error": origin.stream_write_error,
+                    "stream_cancelled": cancellation_observed,
+                    "stream_bytes_sent_after_release": origin.stream_bytes_sent,
+                    "stream_chunks_available": origin.stream_chunks,
+                    "stream_finished_after_cancel": finished_observed,
+                },
+                "runtime_resources": {
+                    "before_close": before_close,
+                    "after_close": after_close,
+                    "during_control": during_control,
+                    "after_cancel": after_cancel,
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "one held SSE cancellation and one independent request; no repeated-batch leak threshold",
+            }
+        finally:
+            origin.stream_release.set()
+            if response is not None:
+                response.close()
+            client.close()
+
+
+def websocket_workload(backend, directory, count, seconds=0.0, interval=0.0):
+    """Round-trip complete small WS messages over one connection."""
+    with origin_server() as origin, launch_proxy(backend, directory, POLICY) as proxy:
+        client = connection(proxy.paths["alice"])
+        try:
+            client.request("GET", f"http://127.0.0.1:{origin.server_address[1]}/ws", headers={
+                "Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13",
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            })
+            response = client.getresponse()
+            assert response.status == 101
+            started = time.perf_counter()
+            samples = [{"elapsed_seconds": 0, **runtime_memory(proxy)}]
+            resource_samples = [runtime_resources(proxy)]
+            sampled_at = time.monotonic()
+            sent = 0
+            while sent < count or time.perf_counter() - started < seconds:
+                client.sock.sendall(b"\x81\x85\x00\x00\x00\x00hello")
+                assert response.fp.read(7) == b"\x81\x05hello"
+                sent += 1
+                if time.monotonic() - sampled_at >= 1:
+                    samples.append({"elapsed_seconds": time.perf_counter() - started, **runtime_memory(proxy)})
+                    resource_samples.append(runtime_resources(proxy))
+                    sampled_at = time.monotonic()
+                if interval:
+                    time.sleep(interval)
+            elapsed = time.perf_counter() - started
+            origin_frames = list(origin.websocket_frames)
+            assert len(origin_frames) == sent, (len(origin_frames), sent)
+            return {"workload": "small_websocket_echo", "messages": sent, "payload_bytes": sent * 5,
+                    "elapsed_seconds": elapsed, "messages_per_second": sent / elapsed,
+                    "requested_session_seconds": seconds, "message_interval_seconds": interval,
+                    "runtime_memory_samples": samples,
+                    "resource_samples": resource_samples,
+                    "runtime_memory_after": runtime_memory(proxy),
+                    "origin_observation": {
+                        "accepted_connections": origin.accepts,
+                        "requests": list(origin.requests),
+                        "messages_observed_by_origin": len(origin_frames),
+                        "received_frames": origin_frames,
+                    },
+                    "proxy_identity": proxy_identity(proxy),
+                    "limitation": "five-byte messages only; no compression/fragmentation/inspection workload"}
+        finally:
+            client.close()
+
+
+def local_api_workload(backend, directory, count):
+    """Observe unavailable-handler responsiveness; this is not the normal API."""
+    with launch_proxy(backend, directory, POLICY) as proxy:
+        started = time.perf_counter()
+        statuses = []
+        for _ in range(count):
+            status, _, _ = request(proxy.paths["alice"], "http://_safeyolo.proxy.internal/health")
+            statuses.append(status)
+            assert status == 503
+        elapsed = time.perf_counter() - started
+        assert proxy.events("proxy.egress") == []
+        return {"workload": "local_api_unavailable_handler", "requests": count,
+                "elapsed_seconds": elapsed, "requests_per_second": count / elapsed,
+                "runtime_memory_after": runtime_memory(proxy),
+                "resource_samples": [runtime_resources(proxy)],
+                "control_observation": {
+                    "response_statuses": statuses,
+                    "proxy_alive_after_workload": proxy.process.poll() is None,
+                    "reserved_route_egress_events": proxy.events("proxy.egress"),
+                },
+                "proxy_identity": proxy_identity(proxy),
+                "limitation": "normal authenticated API and approval creation/consumption are not measured"}
+
+
+def candidate_identity(args):
+    source = Path(args.python_source).expanduser().resolve()
+    identity = {
+        "backend": args.backend,
+        "source_checkout": _git_identity(REPO),
+        "python_source_checkout": _git_identity(source),
+        "python_executable": {
+            "path": str(Path(args.python_executable).expanduser()),
+            "resolved_path": str(Path(args.python_executable).expanduser().resolve()),
+            "version": _command_version([
+                str(Path(args.python_executable).expanduser()), "-c", "import sys; print(sys.version)"
+            ]),
+        },
+        "runner_python_version": sys.version,
+        "platform": {"system": platform.platform(), "machine": platform.machine()},
+        "selection": {
+            "rust_native_policy_required": args.backend == "rust",
+            "rust_build_profile": args.rust_build_profile if args.backend == "rust" else None,
+        },
+    }
+    if args.backend == "rust":
+        identity["rust_toolchain"] = {
+            "rustc_version": _command_version(["rustc", "-Vv"]),
+            "cargo_version": _command_version(["cargo", "-V"]),
+        }
+    python_executable = Path(args.python_executable).expanduser()
+    identity["python_executable"]["sha256"] = _sha256(python_executable)
+    identity["python_executable"]["size_bytes"] = python_executable.stat().st_size
+    # A Python capture may inherit a stale SAFEYOLO_RUST_PROXY value. It is
+    # irrelevant to that process and must not be hashed after the workload.
+    executable = Path(args.rust_binary).expanduser().resolve() if args.backend == "rust" and args.rust_binary else None
+    if executable is not None:
+        identity["rust_executable"] = {
+            "path": str(executable),
+            "sha256": _sha256(executable),
+            "size_bytes": executable.stat().st_size,
+            "release_profile_declared": args.rust_build_profile == "release",
+        }
+    return identity
+
+
+def capture(args):
+    previous = json.loads(args.fixture_from.read_text()) if args.fixture_from else None
+    args.evidence.mkdir(parents=True, exist_ok=True)
+    results = {}
+    with selected_process_environment(args):
+        for name, parent in (("http_direct", False), ("http_parent", True)):
+            port = previous["contracts"][name]["fixture_origin_port"] if previous else 0
+            results[name] = network_scenario(args.backend, args.evidence / name, parent=parent, origin_port=port)
+        results["local_containment"] = reserved_scenario(args.backend, args.evidence / "local")
+        selected = args.workload or (["short", "sse", "websocket", "local-api"] if args.extended_workloads else ["short"])
+        workloads = []
+        for workload in selected:
+            if workload == "short":
+                workloads.append(short_connections(args.backend, args.evidence / "workload", args.requests))
+            elif workload == "short-https":
+                workloads.append(short_https_connections(args.backend, args.evidence / "https-workload", args.requests))
+            elif workload == "sse":
+                workloads.append(stream_workload(args.backend, args.evidence / "stream-workload", args.stream_seconds))
+            elif workload == "stream-control":
+                workloads.append(streamed_control_workload(args.backend, args.evidence / "stream-control-workload",
+                                                            args.stream_seconds))
+            elif workload == "stream-slow-admin":
+                workloads.append(streamed_slow_admin_workload(
+                    args.backend, args.evidence / "stream-slow-admin-workload", args.stream_seconds
+                ))
+            elif workload == "concurrent-admin":
+                workloads.append(concurrent_short_admin_workload(
+                    args.backend,
+                    args.evidence / "concurrent-admin-workload",
+                    args.requests,
+                    args.concurrency,
+                    args.resource_batches,
+                ))
+            elif workload == "concurrent-admin-quiet":
+                workloads.append(concurrent_short_admin_workload(
+                    args.backend,
+                    args.evidence / "concurrent-admin-quiet-workload",
+                    args.requests,
+                    args.concurrency,
+                    args.resource_batches,
+                    warmup=args.warmup_requests,
+                    quiet_seconds=args.quiet_seconds,
+                ))
+            elif workload == "sse-cancel":
+                workloads.append(cancelled_sse_workload(
+                    args.backend, args.evidence / "sse-cancel-workload", args.stream_seconds
+                ))
+            elif workload == "websocket":
+                workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
+                                                    args.websocket_seconds, args.websocket_interval))
+            else:
+                workloads.append(local_api_workload(args.backend, args.evidence / "api-workload", args.requests))
+    result = {
+        "schema": 2, "backend": args.backend, "captured_at": datetime.now(UTC).isoformat(),
+        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
+        "platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
+        "tools": {package: version(package) for package in ("pytest", "httpx")},
+        "command": sys.argv, "candidate": candidate_identity(args),
+        "contracts": results, "workloads": workloads,
+        "tolerances": {
+            "origin_request_counts": {"allowed_difference": 0, "basis": "controlled origin observer"},
+            "delivered_body_bytes": {"allowed_difference": 0, "basis": "workload assertions"},
+            "resource_growth": {"allowed_difference": None,
+                                 "basis": "report RSS/high-water/FD samples first; no release threshold is invented"},
+        },
+        "raw_results": {
+            "output": str(args.output),
+            "evidence_directory": str(args.evidence),
+            "event_logs": "one events.jsonl per fixture directory",
+        },
+        "prior_evidence": {
+            "websocket_incomplete_cancellation": {
+                "integrated_test_commit": "48761dbc",
+                "owner_candidate_commit": "afa279b1",
+                "scope": "four sequential incomplete-fragment cancellations for WS and WSS; zero retained anonymous spools and zero origin frames",
+                "not_established": [
+                    "RSS or allocator retention",
+                    "concurrent, compressed or completed-message workloads",
+                    "large-pattern scanner memory",
+                ],
+            },
+        },
+        "scope": "focused real UDS/network-policy chain; full production chain not launched",
+        "unmeasured": ["bounded memory during long-duration streams", "WebSocket inspection workload",
+                       "concurrent approval/API responsiveness", "supported macOS host ingress"],
+        "evidence_gaps": ["proxy.request is a fixture observation in Python; complete audit/trace parity is not claimed",
+                          "Rust temporary PDP adapter does not reproduce approval audit/store side effects"],
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps({"output": str(args.output), "contracts": list(results), "workloads": result["workloads"]}))
+
+
+def compare(args):
+    old, new = (json.loads(path.read_text()) for path in (args.baseline, args.candidate))
+    names = args.scenario or list(old["contracts"])
+    differences = {name: {"baseline": old["contracts"].get(name), "candidate": new["contracts"].get(name)}
+                   for name in names if old["contracts"].get(name) != new["contracts"].get(name)}
+    print(json.dumps({"compared": names, "equal": not differences, "differences": differences}, indent=2))
+    return int(bool(differences))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("capture")
+    run.add_argument("--backend", choices=("python", "rust"), required=True)
+    run.add_argument("--python-source", type=Path, default=REPO,
+                     help="explicit Python source checkout (recorded in candidate identity)")
+    run.add_argument("--python-executable", type=Path, default=Path(sys.executable),
+                     help="explicit Python interpreter used to launch the Python proxy")
+    run.add_argument("--rust-binary", type=Path, default=os.environ.get("SAFEYOLO_RUST_PROXY"),
+                     help="explicit native proxy executable; required for Rust captures")
+    run.add_argument("--rust-build-profile", choices=("release", "debug", "unspecified"), default="unspecified",
+                     help="declared Cargo profile for the selected native executable")
+    run.add_argument("--output", type=Path, required=True)
+    run.add_argument("--evidence", type=Path, required=True)
+    run.add_argument("--fixture-from", type=Path)
+    run.add_argument("--requests", type=int, default=100)
+    run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
+    run.add_argument("--workload", action="append",
+                     choices=("short", "short-https", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "concurrent-admin-quiet", "sse-cancel", "websocket", "local-api"),
+                     help="Select individual workloads; overrides --extended-workloads")
+    run.add_argument("--stream-seconds", type=float, default=2.0)
+    run.add_argument("--websocket-seconds", type=float, default=0.0)
+    run.add_argument("--websocket-interval", type=float, default=0.0)
+    run.add_argument("--concurrency", type=int, default=8,
+                     help="Worker count for the concurrent-admin workload")
+    run.add_argument("--resource-batches", type=int, default=3,
+                     help="Repeated batches for the concurrent-admin workload")
+    run.add_argument("--warmup-requests", type=int, default=4,
+                     help="Warm-up requests for the concurrent-admin-quiet workload")
+    run.add_argument("--quiet-seconds", type=float, default=0.25,
+                     help="Quiet interval before measured batches for the concurrent-admin-quiet workload")
+    diff = commands.add_parser("compare")
+    diff.add_argument("baseline", type=Path)
+    diff.add_argument("candidate", type=Path)
+    diff.add_argument("--scenario", action="append", choices=("http_direct", "http_parent", "local_containment"))
+    args = parser.parse_args()
+    if args.command == "compare":
+        return compare(args)
+    if args.requests < 1:
+        parser.error("--requests must be positive")
+    if args.backend == "rust" and args.rust_binary is None:
+        parser.error("Rust capture requires --rust-binary or SAFEYOLO_RUST_PROXY")
+    if not args.python_executable.is_file():
+        parser.error(f"--python-executable is not a file: {args.python_executable}")
+    if not args.python_source.is_dir():
+        parser.error(f"--python-source is not a directory: {args.python_source}")
+    if (args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0
+            or args.concurrency < 1 or args.resource_batches < 1
+            or args.warmup_requests < 0 or args.quiet_seconds < 0):
+        parser.error("stream duration must be positive; WebSocket values nonnegative; concurrency/batches positive; warmup/quiet nonnegative")
+    capture(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -59,6 +59,7 @@ export SAFEYOLO_SUBNET_BASE=75
 # Logs + flow store scoped to the test instance so blackbox runs
 # don't pollute production logs/flows.sqlite3.
 export SAFEYOLO_LOGS_DIR="${SAFEYOLO_CONFIG_DIR}/logs"
+export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
 # Generated public certificates and private keys also belong to the test
 # instance. Keeping both outside the checkout and the source instance makes
 # --force regeneration harmless to production state and the worktree.
@@ -80,7 +81,7 @@ RUN_ISOLATION=true
 VERBOSE=""
 AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
 EXPECTED_PLATFORM=""
-PROXY_IMPL="python"
+PROXY_IMPL="rust"
 PROXY_IMPL_SELECTED=false
 PYTHON_SOURCE=""
 RUST_BIN=""
@@ -153,19 +154,19 @@ while [[ $# -gt 0 ]]; do
             RUST_BIN="$2"
             shift 2
             ;;
-        --kvm-p1)
+        --ingress|--kvm-p1)
             KVM_P1=true
             shift
             ;;
-        --p2)
+        --workloads|--p2)
             P2=true
             shift
             ;;
-        --p3)
+        --access|--p3)
             P3=true
             shift
             ;;
-        --p4)
+        --lifecycle|--p4)
             P4=true
             shift
             ;;
@@ -177,7 +178,7 @@ while [[ $# -gt 0 ]]; do
             INSTALL_COMMIT="$2"
             shift 2
             ;;
-        --p3-config-only)
+        --access-config-only|--p3-config-only)
             P3=true
             P3_CONFIG_ONLY=true
             shift
@@ -195,8 +196,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -n "$INSTALL_COMMIT" ] && [ "$P2" != true ] && [ "$P3" != true ] && [ "$P4" != true ]; then
-    echo "ERROR: --install-commit requires a P2, P3, or P4 installed selection" >&2
+if [ -n "$INSTALL_COMMIT" ] && [ "$KVM_P1" != true ] && [ "$P2" != true ] && [ "$P3" != true ] && [ "$P4" != true ]; then
+    echo "ERROR: --install-commit requires an installed ingress, workloads, access, or lifecycle selection" >&2
     exit 2
 fi
 INSTALL_COMMIT_ARGS=()
@@ -281,8 +282,7 @@ done
 # The focused migration harness owns explicit proxy-only backend runs. It
 # launches a new process for each fixture. A VM lane below instead uses one
 # installed CLI process for both host and guest tests.
-if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
-   { [ "$PROXY_IMPL_SELECTED" = true ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; }; then
+if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ]; then
     if ! command -v pytest &>/dev/null; then
         echo "ERROR: pytest is required for selected proxy backend tests" >&2
         exit 2
@@ -345,7 +345,7 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ] && \
         set +e
         pytest "${PYTEST_ARGS[@]}" \
             --junitxml="$junit" \
-            "$REPO_ROOT/tests/proxy_migration" --proxy-backend "$backend"
+            "$REPO_ROOT/tests/proxy_contracts" --proxy-backend "$backend"
         backend_result=$?
         set -e
         case "$backend_result" in
@@ -380,6 +380,7 @@ if [ "$PROXY_IMPL" = "both" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; 
 fi
 
 export SAFEYOLO_BLACKBOX_PROXY_BACKEND="$PROXY_IMPL"
+export SAFEYOLO_BLACKBOX_PLATFORM="$EXPECTED_PLATFORM"
 INSTALLED_CLI=""
 INSTALLED_RUST_BIN=""
 if [ "$PROXY_IMPL" = "rust" ] && [ "$P3_CONFIG_ONLY" = false ]; then
@@ -441,6 +442,15 @@ if [ ! -f "$SAFEYOLO_CONFIG_DIR/config.yaml" ]; then
     echo "Initializing test instance at $SAFEYOLO_CONFIG_DIR..."
     safeyolo init --no-interactive
     echo ""
+fi
+
+if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
+    python3 - "$SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR" "$SAFEYOLO_CONFIG_DIR" <<'PY'
+import sys
+from pathlib import Path
+from installed_sections import copy_prepared_nats
+copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
+PY
 fi
 
 if [ "$KVM_P1" = true ] || [ "$P2" = true ]; then
@@ -724,19 +734,31 @@ stop_owned_pid_file() {
 }
 
 cleanup() {
+    local section_exit=$? cleanup_failed=false
+    trap - EXIT
+    set +e
     # Stop processes only — leave state (logs, flows.sqlite3, agent_map,
     # config) intact for post-mortem analysis of failures.
     echo ""
     echo "=== Cleanup ==="
+    local owned_snapshot
+    owned_snapshot="$(python3 - "$SCRIPT_DIR" "$SAFEYOLO_CONFIG_DIR" <<'PY_SNAPSHOT'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from installed_sections import owned_processes
+print(json.dumps(owned_processes(Path(sys.argv[2]))))
+PY_SNAPSHOT
+)" || cleanup_failed=true
 
     if [ "$STARTED_VM" = true ]; then
         echo "Stopping $AGENT_NAME..."
-        safeyolo agent stop "$AGENT_NAME" 2>/dev/null || true
+        safeyolo agent stop "$AGENT_NAME" || cleanup_failed=true
     fi
 
     if [ "$STARTED_PROXY" = true ]; then
         echo "Stopping test proxy..."
-        safeyolo stop 2>/dev/null || true
+        safeyolo stop || cleanup_failed=true
     fi
 
     if [ -n "$PARENT_PID" ] && [ "$STARTED_PARENT" = true ]; then
@@ -761,10 +783,38 @@ cleanup() {
     fi
 
     if [ "$PROXY_IMPL" = "rust" ]; then
-        python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR"
+        python3 "$SCRIPT_DIR/harness/native_parent_config.py" restore "$SAFEYOLO_CONFIG_DIR" || cleanup_failed=true
     fi
 
+    # The trap waits for its child fixtures above. Product stop is best-effort
+    # for Coord, so independently require its owned lifetime files to disappear.
+    for marker in "$SAFEYOLO_CONFIG_DIR"/agents/*/container.pid \
+                  "$SAFEYOLO_CONFIG_DIR"/agents/*/vm.pid \
+                  "$SAFEYOLO_CONFIG_DIR"/data/proxy-rust.json \
+                  "$SAFEYOLO_CONFIG_DIR"/data/proxy-readiness.json \
+                  "$SAFEYOLO_CONFIG_DIR"/data/proxy.pid \
+                  "$SAFEYOLO_CONFIG_DIR"/data/sockets/*/proxy.sock \
+                  "$SAFEYOLO_COORD_DATA_DIR"/nats/nats.pid.json; do
+        if [ -e "$marker" ]; then
+            echo "ERROR: owned cleanup left $marker" >&2
+            cleanup_failed=true
+        fi
+    done
+    python3 - "$SCRIPT_DIR" "$owned_snapshot" <<'PY_SURVIVORS' || cleanup_failed=true
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from installed_sections import surviving_processes
+failures = surviving_processes(json.loads(sys.argv[2]))
+for error in failures:
+    print(error, file=sys.stderr)
+raise SystemExit(bool(failures))
+PY_SURVIVORS
+    if [ "$cleanup_failed" = true ]; then
+        echo "ERROR: owned cleanup failed; another section must not start" >&2
+        exit 2
+    fi
     echo "Cleanup complete"
+    exit "$section_exit"
 }
 trap cleanup EXIT
 
@@ -1038,36 +1088,37 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
 fi
 
 if [ "$KVM_P1" = true ]; then
-    python3 "$SCRIPT_DIR/kvm_p1_ingress.py" \
+    python3 "$SCRIPT_DIR/installed_ingress.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/kvm-p1.json"
+        --output "$ARTIFACTS_DIR/installed-ingress.json" \
+        "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 if [ "$P2" = true ]; then
-    timeout --signal=TERM --kill-after=10s 6m python3 "$SCRIPT_DIR/p2_installed_linux.py" \
+    timeout --signal=TERM --kill-after=10s 6m python3 "$SCRIPT_DIR/installed_workloads.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/linux-$EXPECTED_PLATFORM-p2.json" \
+        --output "$ARTIFACTS_DIR/installed-workloads.json" \
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 if [ "$P3" = true ]; then
-    python3 "$SCRIPT_DIR/p3_installed.py" \
+    python3 "$SCRIPT_DIR/installed_access.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p3.json" \
+        --output "$ARTIFACTS_DIR/installed-access.json" \
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi
 if [ "$P4" = true ]; then
-    python3 "$SCRIPT_DIR/p4_installed.py" \
+    python3 "$SCRIPT_DIR/installed_lifecycle.py" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --agent "$AGENT_NAME" \
         --platform "$EXPECTED_PLATFORM" \
         --runtime "$ARTIFACTS_DIR/installed-rust-runtime.json" \
-        --output "$ARTIFACTS_DIR/$EXPECTED_PLATFORM-p4.json" \
+        --output "$ARTIFACTS_DIR/installed-lifecycle.json" \
         "${INSTALL_COMMIT_ARGS[@]+"${INSTALL_COMMIT_ARGS[@]}"}"
     exit $?
 fi

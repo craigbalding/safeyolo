@@ -27,7 +27,7 @@ START_MARKER = "<!-- blackbox-cadence-contract:start -->"
 END_MARKER = "<!-- blackbox-cadence-contract:end -->"
 RUN_LANE_RE = re.compile(
     r"(?:^|\s)(?:\./)?tests/blackbox/"
-    r"(?:run-lane|run-p2-linux|run-p3|run-p4)\.sh\s+"
+    r"(?:run-installed|run-lane|run-p2-linux|run-p3|run-p4)\.sh\s+"
     r"(?P<lane>systrap|kvm|vz)(?:\s|$)",
 )
 

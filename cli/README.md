@@ -209,9 +209,9 @@ for the experiment workflow.
 #### Start options
 
 Normal startup uses the Rust proxy and its generated instance configuration.
-The old Python backend and source/test start flags are unavailable. Historical
-comparisons run from a pinned prior checkout with their own environment; see
-[the migration contract](../tests/proxy_migration/CONTRACT.md).
+The old Python backend and source/test start flags are unavailable. The
+[contract notes](../tests/proxy_contracts/CONTRACT.md) retain historical migration
+receipts; they do not prescribe a production comparator or routine PR gate.
 
 ```bash
 safeyolo start

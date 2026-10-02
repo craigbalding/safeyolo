@@ -185,7 +185,7 @@ must_contain = "{seconds} seconds"
 
 [[assertion]]
 name = "proxy-migration-dns-fixture-port"
-source = "tests/proxy_migration/dns_server.py"
+source = "tests/proxy_contracts/dns_server.py"
 pattern = 'listen-on port (?P<port>\d+) \{\{ 127\.0\.0\.1; \}\}'
 docs = ["docs/proxy-parity.md"]
 must_contain = "port {port}"

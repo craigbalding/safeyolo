@@ -28,9 +28,9 @@ from p2_fixture import P2Fixture  # noqa: E402
 from server import SinkholeHandler, SSLSafeThreadingHTTPServer, clear_requests, get_requests  # noqa: E402
 from sinkhole_parent import Parent  # noqa: E402
 
-from tests.blackbox import p2_installed_linux  # noqa: E402
-from tests.blackbox.isolation import p2_guest_traffic as guest  # noqa: E402
-from tests.blackbox.p2_installed_linux import owned_ssh, prepare_package, prepare_repository  # noqa: E402
+from tests.blackbox import installed_workloads  # noqa: E402
+from tests.blackbox.installed_workloads import owned_ssh, prepare_package, prepare_repository  # noqa: E402
+from tests.blackbox.isolation import installed_workloads as guest  # noqa: E402
 
 
 @pytest.fixture
@@ -199,7 +199,7 @@ def test_disposable_ssh_command_uses_the_selected_connect_peer(tmp_path):
             thread.start()
             try:
                 bridge = shlex.join([
-                    sys.executable, "-m", "tests.proxy_migration.ssh_bridge",
+                    sys.executable, "-m", "tests.proxy_contracts.ssh_bridge",
                     str(parent.server_address[1]), f"{guest.HOST}:22", "--tcp-proxy",
                 ])
                 ssh_args = [
@@ -240,7 +240,7 @@ def test_ssh_start_failure_removes_disposable_private_keys(tmp_path, monkeypatch
     fake.write_text("#!/bin/sh\nexit 1\n")
     fake.chmod(0o755)
     original_which = shutil.which
-    monkeypatch.setattr(p2_installed_linux.shutil, "which",
+    monkeypatch.setattr(installed_workloads.shutil, "which",
                         lambda name: str(fake) if name == "sshd" else original_which(name))
     with pytest.raises(AssertionError):
         with owned_ssh(tmp_path, tmp_path / "config", "bbtest", marker):

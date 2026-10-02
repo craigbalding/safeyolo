@@ -91,6 +91,8 @@ def prepare(config_dir: Path) -> None:
     allowed = tomlkit.inline_table()
     allowed["egress"] = "allow"
     hosts["failing.test"] = allowed
+    # Ordinary owned traffic for both live guests, independent of service approval.
+    hosts["api.github.com"] = allowed
     denied = tomlkit.inline_table()
     denied["egress"] = "deny"
     hosts["evil.com"] = denied

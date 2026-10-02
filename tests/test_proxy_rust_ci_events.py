@@ -1,4 +1,4 @@
-"""Keep the Rust proxy's focused and final GitHub Actions events distinct."""
+"""Keep quick PR checks distinct from overnight supported-platform contracts."""
 
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ def test_relevant_pr_updates_and_explicit_integration_checkpoints_trigger_the_wo
     workflow = rust_workflow()
     # PyYAML's YAML 1.1 loader parses the Actions key `on` as boolean True.
     events = workflow[True]
-    assert set(events) == {"pull_request", "push"}
+    assert set(events) == {"pull_request", "push", "schedule", "workflow_dispatch"}
     assert set(events["pull_request"]["types"]) == {
         "opened",
         "reopened",
         "synchronize",
         "ready_for_review",
     }
-    assert set(events["push"]["branches"]) == {"master", "main", "ci/proxy-rust-620"}
+    assert set(events["push"]["branches"]) == {"master", "main"}
     assert "paths" not in events["push"]
     paths = events["pull_request"]["paths"]
     for path in (
@@ -57,14 +57,13 @@ def test_ready_transition_does_not_cancel_the_same_head_focused_run() -> None:
 def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     job = rust_workflow()["jobs"]["focused-pr"]
     assert " ".join(job["if"].split()) == (
-        "github.event_name == 'pull_request' && "
-        "github.base_ref != 'master' && github.base_ref != 'main' && "
-        "github.event.action != 'ready_for_review'"
+        "github.event_name == 'push' || "
+        "(github.event_name == 'pull_request' && github.event.action != 'ready_for_review')"
     )
     assert job["runs-on"] == "ubuntu-latest"
     assert job["env"]["CARGO_BUILD_JOBS"] == "1"
     checkout = job["steps"][0]
-    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha || github.sha }}"
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step["name"]: step for step in job["steps"] if "name" in step}
     assert "socat" in steps["Install preview test system dependency"]["run"]
@@ -73,6 +72,9 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "Test desktop presentation and preview"
     )
     native = steps["Test focused native boundaries"]
+    assert native["if"] == "steps.changes.outputs.rust == 'true'"
+    assert steps["Check Rust formatting and lint"]["if"] == native["if"]
+    assert steps["Install the pinned Rust toolchain"]["if"] == native["if"]
     assert "--ignored" not in native["run"]
     runs = "\n".join(step.get("run", "") for step in job["steps"])
     for required in (
@@ -85,7 +87,7 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "cli/tests/test_desktop_presenter.py",
         "cli/tests/test_agent_preview.py",
         "tests/test_blackbox_harness.py",
-        "tests/proxy_migration/test_readiness.py",
+        "tests/proxy_contracts/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",
         "cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
     ):
@@ -94,18 +96,15 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
     # The concurrent resource observation remains in the final full suite;
     # it does not turn each intermediate PR's focused check into a load probe.
     assert "repeated_service_oauth_activity_runs_concurrently" not in runs
-    full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["http-slice"]["steps"])
+    full_runs = "\n".join(step.get("run", "") for step in rust_workflow()["jobs"]["contracts"]["steps"])
     assert "cargo_with_space.sh test --locked" in full_runs
-    assert not any("tests/proxy_migration --proxy-backend rust" in step.get("run", "") for step in job["steps"])
+    assert not any("tests/proxy_contracts --proxy-backend rust" in step.get("run", "") for step in job["steps"])
 
 
-def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() -> None:
-    job = rust_workflow()["jobs"]["http-slice"]
+def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
+    job = rust_workflow()["jobs"]["contracts"]
     assert " ".join(job["if"].split()) == (
-        "github.event_name == 'push' || "
-        "(github.event_name == 'pull_request' && "
-        "(github.base_ref == 'master' || github.base_ref == 'main') && "
-        "github.event.pull_request.draft == false)"
+        "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
     )
     assert job["strategy"]["matrix"]["os"] == ["ubuntu-latest", "macos-latest"]
     checkout = job["steps"][0]
@@ -122,20 +121,20 @@ def test_full_matrix_requires_checkpoint_or_default_branch_push_at_exact_head() 
     assert peer["if"] == "matrix.os == 'macos-latest'"
     assert "ifconfig lo0 alias 127.0.0.2" in peer["run"]
     assert job["steps"].index(peer) < job["steps"].index(
-        steps["Run shared HTTP contracts against native Rust"]
+        steps["Run native proxy component contracts"]
     )
     short_tmp = "${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}"
-    assert steps["Run shared HTTP contracts against native Rust"]["env"][
+    assert steps["Run native proxy component contracts"]["env"][
         "PYTEST_ADDOPTS"
     ] == short_tmp
     assert (
         "--proxy-backend rust"
-        in steps["Run shared HTTP contracts against native Rust"]["run"]
+        in steps["Run native proxy component contracts"]["run"]
     )
 
 
 def test_full_matrix_uses_only_the_native_proxy() -> None:
-    steps = rust_workflow()["jobs"]["http-slice"]["steps"]
+    steps = rust_workflow()["jobs"]["contracts"]["steps"]
     named = {step.get("name"): step for step in steps}
     assert named["Install uv"]["with"]["version"] == "0.12.8"
     installation = named["Install the native CLI test environment"]["run"]
@@ -149,3 +148,32 @@ def test_full_matrix_uses_only_the_native_proxy() -> None:
     assert "-- --ignored" not in rendered
     assert "git fetch --no-tags --depth=1 origin" not in rendered
     assert "SAFEYOLO_PYTHON_SOURCE" not in rendered
+
+
+def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix():
+    jobs = rust_workflow()["jobs"]
+    job = jobs["macos-pr"]
+    assert job["needs"] == "focused-pr"
+    assert job["if"] == "needs.focused-pr.outputs.macos == 'true'"
+    assert job["runs-on"] == "macos-latest"
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "test_vm_control.py" in runs
+    assert "test_vm_identity.py" in runs
+    assert "test_vm_diagnostics.py" in runs
+    assert "--test native_runtime_dependency" in runs
+    assert "tests/proxy_contracts --proxy-backend rust" not in runs
+    assert "install.sh" not in runs and "bootstrap" not in runs
+
+
+def test_general_python_workflow_uses_quick_pr_and_full_overnight_selections():
+    workflow = yaml.safe_load(WORKFLOW.with_name("ci.yml").read_text())
+    for job_name, quick_name, all_name, matrix_key in (
+        ("test-addons", "Quick runner and workflow checks", "All retained Python tests overnight", "python-version"),
+        ("test-cli", "Quick CLI checks", "All retained CLI tests overnight", "os"),
+    ):
+        job = workflow["jobs"][job_name]
+        steps = {step.get("name"): step for step in job["steps"]}
+        assert steps[all_name]["if"] == "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        assert steps[quick_name]["if"] == "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
+        assert "schedule" in job["strategy"]["matrix"][matrix_key]
+        assert "install.sh" not in steps[quick_name]["run"]
