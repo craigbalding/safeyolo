@@ -2,8 +2,9 @@
 #
 # Run SafeYolo blackbox tests (split execution model)
 #
-# Host-side pytest: proxy functional tests (credential guard, network guard)
-# VM-side pytest:   isolation tests (including intended guest-root capability)
+# Host-side pytest: native ingress, process security and installed agent identity
+# Guest-side pytest: isolation tests (including intended guest-root capability)
+# --proxy selects the native process contracts in tests/proxy_contracts.
 #
 # Runs as an ISOLATED INSTANCE alongside production SafeYolo:
 #   - Separate config dir (~/.safeyolo-test)
@@ -14,7 +15,7 @@
 #
 # Usage:
 #   ./run-tests.sh              # Run all tests
-#   ./run-tests.sh --proxy      # Proxy functional tests only
+#   ./run-tests.sh --proxy      # Native proxy process contracts only
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
 #   ./run-tests.sh --proxy --proxy-impl rust

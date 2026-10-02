@@ -117,7 +117,7 @@ authority = "The host CLI creates and mounts the per-agent UDS path. The Rust li
 checks = "A conflicting identity is rejected by reconciliation, network guard and credential guard. The proxy does not use SO_PEERCRED; socket provisioning is the ingress boundary."
 effects = "UDS accept, attributed request routing and per-agent evidence ownership."
 failure = "Missing or conflicting identity is rejected locally; readiness is withheld on invalid startup configuration."
-tests = ["proxy/tests/transport.rs", "tests/proxy_contracts/test_agent_api_test_context.py", "cli/tests/test_rust_proxy.py", "tests/blackbox/installed_ingress.py", "tests/blackbox/installed_lifecycle.py"]
+tests = ["proxy/tests/transport.rs", "tests/proxy_contracts/test_agent_api_test_context.py", "tests/proxy_contracts/test_http_contract.py", "cli/tests/test_rust_proxy.py", "tests/blackbox/installed_ingress.py", "tests/blackbox/installed_lifecycle.py"]
 symbols = [
   "cli/src/safeyolo/sockets.py::directory_for",
   "cli/src/safeyolo/rust_proxy.py::_agent_listeners",
@@ -134,7 +134,7 @@ authority = "The compiled native policy_file and operator mode snapshot decide o
 checks = "Destination authority and admin/reserved host checks precede the PDP. Agent-specific rules, rate budgets, explicit bypasses and warn modes are evaluated before egress."
 effects = "Allow, deny or approval response; rate charge; DNS and outbound socket only after applicable admission."
 failure = "Malformed authority, identity conflict, policy load failure and denied requests do not open an origin socket. Configured warning/disabled modes are explicit exceptions."
-tests = ["proxy/tests/network_guard.rs", "proxy/tests/policy.rs", "tests/proxy_contracts/test_native_network_policy.py"]
+tests = ["proxy/tests/network_guard.rs", "proxy/tests/policy.rs", "tests/proxy_contracts/test_native_network_policy.py", "tests/proxy_contracts/test_http_contract.py"]
 symbols = [
   "proxy/src/policy.rs::evaluate",
   "proxy/src/config.rs::validate",
@@ -213,7 +213,7 @@ authority = "Operator token controls Admin routes. Agent token plus trusted list
 checks = "Admin binds 127.0.0.1 and compares bearer bytes in constant time. Agent API remains local for the reserved host; direct flow reads enforce evidence owner."
 effects = "Policy and mode mutation, audit JSONL, SQLite flow storage, authorized raw body reads, terminal export and event stream."
 failure = "Failed authentication and cross-owner flow access return local errors. Raw flow evidence can contain credentials; it is intentionally distinct from routine redacted audit events."
-tests = ["proxy/tests/operator_controls.rs", "proxy/tests/agent_api_flows.rs", "proxy/tests/flow_store_details.rs", "tests/blackbox/installed_access.py", "tests/blackbox/isolation/installed_access.py", "tests/blackbox/installed_state_transition.py"]
+tests = ["proxy/tests/operator_controls.rs", "proxy/tests/agent_api_flows.rs", "proxy/tests/flow_store_details.rs", "tests/proxy_contracts/test_http_contract.py", "tests/blackbox/installed_access.py", "tests/blackbox/isolation/installed_access.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/admin_api.rs::authenticate",
   "proxy/src/admin_api.rs::respond_with_context",
@@ -251,7 +251,7 @@ authority = "Destination and policy admission in forward/open_egress_for_flow co
 checks = "Reserved/admin targets and resolved addresses are filtered before direct dial. Inner HTTP and CONNECT require separate admission. Provider delivery also requires gateway selection as mapped in provider_services. Response inspection precedes applicable downstream delivery."
 effects = "DNS lookup, direct or parent TCP connection, authorized provider stream, TLS, HTTP/WebSocket send, tunnel relay and response streaming."
 failure = "No direct fallback from a failed parent or provider stream; opaque tunnels and passthrough have explicit inspection limits but retain network admission."
-tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_contracts/test_tunnel_contract.py", "tests/blackbox/installed_workloads.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
+tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_contracts/test_tunnel_contract.py", "tests/proxy_contracts/test_request_headers.py", "tests/blackbox/installed_workloads.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/http.rs::forward",
   "proxy/src/http.rs::open_outbound",
