@@ -136,7 +136,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
     policy = directory / f"policy.{policy_format}"
     policy.write_text(policy_text)
     # Darwin's default temp root leaves too little sun_path for reloaded listeners.
-    socket_root = "/tmp" if sys.platform == "darwin" else None
+    socket_root = os.environ.get("SAFEYOLO_TEST_SOCKET_DIR") or ("/tmp" if sys.platform == "darwin" else None)
     with tempfile.TemporaryDirectory(prefix="sy-contract-", dir=socket_root) as sockets, ExitStack() as stack:
         if agent_map is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")

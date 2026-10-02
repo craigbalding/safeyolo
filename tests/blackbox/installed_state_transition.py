@@ -583,6 +583,9 @@ def update(doc):
     doc['addons']['circuit_breaker']['timeout_seconds']=120
     doc['addons']['circuit_breaker']['use_exponential_backoff']=False
     doc['addons']['circuit_breaker']['jitter_factor']=0
+    if sys.argv[3] == '127.0.0.1':
+        # Track the selected owned origin; production excludes localhost by default.
+        doc['addons']['circuit_breaker']['excluded_domains']=['localhost','_safeyolo.probe.internal']
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
 """, str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host)

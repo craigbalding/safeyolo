@@ -247,8 +247,15 @@ accepts `--http-port`. The three packaged HTTPS nodes use
 `--origin-host`, `--http-port`, `--https-port`, `--oauth-port` and `--admin-port`.
 Its selected HTTP/TLS host is also used in request authorities, the certificate
 SAN, catalog, scoped grants, task policy and circuit checks. These are test
-bindings; the default ports remain ephemeral. Each procedure keeps its own
+bindings; the default ports remain ephemeral. Selecting `127.0.0.1` also makes
+that owned origin count in the disposable circuit policy, where it would
+otherwise be excluded by the production default. Each procedure keeps its own
 state and verifies owned cleanup before another procedure runs.
+
+`SAFEYOLO_TEST_SOCKET_DIR` selects an existing short, writable directory for
+native contract sockets when the default temporary directory is unavailable.
+The harness creates a private temporary directory there and removes it after
+each case.
 
 `installed_host_smoke.py --mode discover` identifies prerequisites;
 `--mode attached` authenticates an already running installed proxy without
