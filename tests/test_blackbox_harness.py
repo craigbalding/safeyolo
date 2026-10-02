@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -986,6 +987,75 @@ def test_installed_sections_attribute_preparation_failure_without_starting_secti
     assert report["preparation"]["exit"] == 9
     assert report["sections"] == []
     assert not (directory / "isolation").exists()
+
+
+@pytest.mark.parametrize("failure,expected,results", [
+    ({}, 0, ["passed", "passed"]),
+    ({"FAIL_SECTION": "1"}, 1, ["assertion_failure", "passed"]),
+    ({"FAIL_SECTION": "2"}, 2, ["preparation_failure", "passed"]),
+    ({"FAIL_PREPARATION": "1"}, 2, []),
+    ({"FAIL_CLEANUP": "1"}, 2, ["cleanup_failure"]),
+])
+def test_installed_sections_start_and_clean_up_without_an_installed_python_package(
+    tmp_path, installed_section_commands, failure, expected, results
+):
+    """A clean-shell parent must inspect cleanup and save each section result."""
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py"):
+        shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
+    package = repository / "cli/src/safeyolo"
+    package.mkdir(parents=True)
+    for name in ("__init__.py", "runtime_identity.py"):
+        shutil.copy2(ROOT / "cli/src/safeyolo" / name, package / name)
+    for command in (
+        ["git", "init", "--quiet"],
+        ["git", "add", "."],
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+         "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "-m", "clean host fixture"],
+    ):
+        subprocess.run(command, cwd=repository, check=True, capture_output=True)
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    clean_env = tmp_path / "clean-python"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(clean_env)], check=True)
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}
+           and not key.startswith("FAIL_")}
+    home = tmp_path / "bare-home"
+    home.mkdir()
+    env.update(PATH=f"{clean_env / 'bin'}:/usr/bin:/bin", HOME=str(home),
+               PYTHONNOUSERSITE="1", **failure)
+    # This interpreter has neither the checkout package nor development
+    # dependencies. A later preparation child cannot add imports to its parent.
+    subprocess.run([str(clean_env / "bin/python3"), "-c",
+                    "import importlib.util; assert importlib.util.find_spec('safeyolo') is None"],
+                   cwd=repository, env=env, check=True)
+    assert not (repository / ".venv").exists()
+    artifacts = tmp_path / "literal artifacts $(unused) ; [space]"
+    result = subprocess.run(
+        [str(scripts / "run-installed.sh"), "systrap", "--section", "isolation",
+         "--section", "access", "--install-checkout", str(repository),
+         "--install-commit", revision, "--artifacts", str(artifacts)],
+        cwd=repository, env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["source_revision"] == revision
+    assert report["preparation"]["exit"] == (9 if "FAIL_PREPARATION" in failure else 0)
+    assert [row["result"] for row in report["sections"]] == results
+    for row in report["sections"]:
+        root = Path(row["config_dir"])
+        if row["result"] == "cleanup_failure":
+            assert row["cleanup"] == "failed" and row["cleanup_failures"]
+            assert (root / "data/proxy-rust.json").exists()
+            assert not (root.parent / "access").exists()
+        else:
+            assert row["cleanup"] == "stopped" and row["cleanup_failures"] == []
+            assert not (root / "data/proxy-rust.json").exists()
+            assert not (root / "agents/bbtest/container.pid").exists()
+        if row["section"] == "access":
+            selected = json.loads((root / "selection.json").read_text())
+            assert selected[-2:] == ["--install-commit", revision]
 
 
 def test_installed_source_rejects_ambiguous_commit_before_preparation(tmp_path):

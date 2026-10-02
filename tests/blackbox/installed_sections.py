@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
@@ -245,4 +246,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # This bootstrap starts before run-lane.sh creates the test environment.
+    # Reuse the checkout's stdlib process-identity helper in this parent only;
+    # installed CLI subprocesses retain their isolated package imports.
+    sys.path.insert(0, str(REPOSITORY / "cli/src"))
     raise SystemExit(main())
