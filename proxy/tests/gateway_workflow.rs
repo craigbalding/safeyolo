@@ -582,10 +582,28 @@ async fn send_agent_with_scheme_and_headers(
     headers: &str,
     read_timeout: Duration,
 ) -> Vec<u8> {
-    let request = format!(
-        "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
-    );
+    let request = agent_request_with_scheme_and_headers(port, token, host, scheme, headers);
     raw_http_with_read_timeout(socket, request.as_bytes(), read_timeout).await
+}
+
+fn agent_request_with_scheme_and_headers(
+    port: u16,
+    token: &str,
+    host: &str,
+    scheme: &str,
+    headers: &str,
+) -> String {
+    format!(
+        "GET {scheme}://{host}:{port}/v1/value?sig=%252F HTTP/1.1\r\nHost: {host}:{port}\r\nAuthorization: Bearer {token}\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+}
+
+// A held provider response is bounded by the fixture's readiness/control
+// stages and by its response deadline after release, rather than raw_http's
+// deadline starting before the fixture intentionally holds the provider.
+async fn send_held_agent(socket: &Path, port: u16, token: &str, host: &str) -> Vec<u8> {
+    let request = agent_request_with_scheme_and_headers(port, token, host, "http", "");
+    raw_http_without_timeout(socket, request.as_bytes()).await
 }
 
 async fn agent_flow_read(socket: &Path, path: &str) -> (u16, Value) {
@@ -825,7 +843,7 @@ async fn run_live_refresh_response_case(
         let request = tokio::spawn({
             let socket = socket.clone();
             let gateway_token = gateway_token.clone();
-            async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+            async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
         });
         tokio::time::timeout(Duration::from_secs(3), token_ready.notified())
             .await
@@ -1208,18 +1226,7 @@ async fn run_live_superseded_case(mutation: LiveVaultMutation, response_timeout:
         .to_owned();
     let request = tokio::spawn({
         let socket = socket.clone();
-        async move {
-            send_agent_with_scheme_and_headers(
-                &socket,
-                origin_port,
-                &gateway_token,
-                "127.0.0.1",
-                "http",
-                "",
-                response_timeout,
-            )
-            .await
-        }
+        async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
     tokio::time::timeout(response_timeout, token_ready.notified())
         .await
@@ -1415,7 +1422,7 @@ async fn run_live_cancellation_case(shutdown: bool) {
     let leader = tokio::spawn({
         let socket = socket.clone();
         let gateway_token = gateway_token.clone();
-        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+        async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
     tokio::time::timeout(Duration::from_secs(3), token_ready.notified())
         .await
@@ -1434,7 +1441,7 @@ async fn run_live_cancellation_case(shutdown: bool) {
         let follower = tokio::spawn({
             let socket = socket.clone();
             let gateway_token = gateway_token.clone();
-            async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+            async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
         });
         tokio::time::timeout(
             Duration::from_secs(3),
@@ -2818,6 +2825,8 @@ token = "other-secret"
 /// intentionally delayed so the second request must join the first flight.
 async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     token_wait: Duration,
+    hold_before_reload: Duration,
+    release_provider: bool,
 ) {
     let activity_id = ACTIVITY_EVIDENCE_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let root = tempfile::tempdir().unwrap();
@@ -2998,10 +3007,10 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     oauth.expires_at = Some("2020-01-01T00:00:00+00:00".into());
     vault.store(oauth).unwrap();
 
-    let first = tokio::spawn({
+    let mut first = tokio::spawn({
         let socket = socket.clone();
         let gateway_token = gateway_token.clone();
-        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+        async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
     if tokio::time::timeout(token_wait, token_ready.notified())
         .await
@@ -3053,9 +3062,15 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
     assert!(!body(&admin_response).is_empty());
     assert_eq!(token_seen.lock().unwrap().len(), 1);
 
+    tokio::time::sleep(hold_before_reload).await;
+
     let (reload_done, reload_result) = oneshot::channel::<Result<(), String>>();
     reload_tx.send(reload_done).unwrap();
-    reload_result.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(3), reload_result)
+        .await
+        .expect("reload did not finish while OAuth refresh was held")
+        .unwrap()
+        .unwrap();
     let reloaded_view = wait_for_alice(&socket).await;
     let reloaded_token = reloaded_view["authorized"]["simple"]["token"]
         .as_str()
@@ -3063,25 +3078,50 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
         .to_owned();
     assert_ne!(reloaded_token, gateway_token);
     let gateway_token = reloaded_token;
-    let second = tokio::spawn({
+    let mut second = tokio::spawn({
         let socket = socket.clone();
         let gateway_token = gateway_token.clone();
-        async move { send_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
+        async move { send_held_agent(&socket, origin_port, &gateway_token, "127.0.0.1").await }
     });
     let follower_observed = tokio::time::timeout(
         Duration::from_secs(3),
         wait_for_gateway_outcome(&root_path.join("events.jsonl"), "refresh_follower"),
     )
     .await;
-    token_release.notify_one();
-    let (first, second) = tokio::join!(first, second);
-    let first = first.unwrap();
-    let second = second.unwrap();
+    assert!(
+        !first.is_finished(),
+        "leader finished before provider release"
+    );
+    assert!(
+        !second.is_finished(),
+        "follower finished before provider release"
+    );
+    assert_eq!(origin_seen.lock().unwrap().len(), 1);
+    assert_eq!(token_seen.lock().unwrap().len(), 1);
+    if release_provider {
+        token_release.notify_one();
+    }
     assert!(
         follower_observed.is_ok(),
         "follower did not join shared flight; events: {}",
         std::fs::read_to_string(root_path.join("events.jsonl")).unwrap_or_default()
     );
+    let responses = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(&mut first, &mut second)
+    })
+    .await;
+    if responses.is_err() {
+        first.abort();
+        second.abort();
+        let _ = stop_tx.send(());
+        watcher.await.unwrap();
+        origin_task.abort();
+        token_task.abort();
+        panic!("held OAuth requests exceeded the response deadline");
+    }
+    let (first, second) = responses.unwrap();
+    let first = first.unwrap();
+    let second = second.unwrap();
     status(&first, "200");
     status(&second, "200");
     assert_eq!(body(&first), b"ok");
@@ -3204,8 +3244,54 @@ async fn run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
 
 #[tokio::test]
 async fn oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token() {
-    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(Duration::from_secs(2))
-        .await;
+    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
+        Duration::from_secs(2),
+        Duration::ZERO,
+        true,
+    )
+    .await;
+}
+
+/// Keep the provider held longer than the ordinary client read deadline. The
+/// same native controls, reload, follower and origin assertions must still run.
+#[tokio::test]
+async fn oauth_refresh_client_deadline_starts_after_provider_release() {
+    run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
+        Duration::from_secs(2),
+        Duration::from_millis(3200),
+        true,
+    )
+    .await;
+}
+
+/// Withhold the real provider response after observing the native follower.
+/// The fixture must report its three-second response deadline, rather than
+/// hang or accept the provider's later production transport timeout.
+#[tokio::test]
+async fn oauth_refresh_stalled_provider_fails_within_response_deadline() {
+    let started = Instant::now();
+    let fixture = tokio::spawn(
+        run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
+            Duration::from_secs(2),
+            Duration::ZERO,
+            false,
+        ),
+    );
+    let error = tokio::time::timeout(Duration::from_secs(15), fixture)
+        .await
+        .expect("stalled refresh fixture hung")
+        .expect_err("stalled refresh unexpectedly succeeded");
+    let panic = error.into_panic();
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("fixture panic did not contain a message");
+    assert_eq!(
+        message,
+        "held OAuth requests exceeded the response deadline"
+    );
+    println!("stalled refresh detected within {:?}", started.elapsed());
 }
 
 /// Repeat the complete service/approval/OAuth activity fixture concurrently.
@@ -3219,6 +3305,8 @@ async fn repeated_service_oauth_activity_runs_concurrently() {
             tokio::spawn(
                 run_oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token(
                     Duration::from_secs(10),
+                    Duration::ZERO,
+                    true,
                 ),
             )
         })
