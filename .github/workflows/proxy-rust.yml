@@ -76,14 +76,23 @@ jobs:
             BASE=HEAD~1
           fi
           git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
-          if rg -q '^proxy/' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^proxy/' "$RUNNER_TEMP/changed-paths"; then
             echo 'rust=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
           fi
-          if rg -q '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|desktop|preview|platform/(darwin|__init__))|cli/tests/test_darwin_platform)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|desktop|preview|platform/(darwin|__init__))|cli/tests/test_darwin_platform)' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
           fi
-          if rg -q '^(proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|platform/(linux|__init__))|cli/tests/test_linux_platform)' "$RUNNER_TEMP/changed-paths"; then
+          if grep -Eq '^(proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|platform/(linux|__init__))|cli/tests/test_linux_platform)' "$RUNNER_TEMP/changed-paths"; then
             echo 'linux=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
           fi
 
       - name: Install the pinned Rust toolchain

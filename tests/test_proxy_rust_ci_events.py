@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -168,13 +169,15 @@ def test_platform_changes_add_relevant_macos_checks_without_full_contract_matrix
     assert "install.sh" not in runs and "bootstrap" not in runs
 
 
-@pytest.mark.parametrize("path,expected", [
-    ("cli/src/safeyolo/platform/linux.py", {"linux": "true"}),
-    ("cli/src/safeyolo/platform/darwin.py", {"macos": "true"}),
-    ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}),
-    ("docs/DEVELOPERS.md", {}),
-])
-def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected):
+@pytest.mark.parametrize("path,expected,matcher", [
+    ("cli/src/safeyolo/platform/linux.py", {"linux": "true"}, "available"),
+    ("cli/src/safeyolo/platform/darwin.py", {"macos": "true"}, "available"),
+    ("proxy/src/host_platform.rs", {"rust": "true", "linux": "true", "macos": "true"}, "available"),
+    ("docs/DEVELOPERS.md", {}, "available"),
+    ("proxy/src/host_platform.rs", {}, "missing"),
+    ("proxy/src/host_platform.rs", {}, "failing"),
+], ids=["linux-only", "mac-only", "shared-native", "docs-only", "missing-grep", "failing-grep"])
+def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, expected, matcher):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
 
@@ -191,10 +194,30 @@ def test_pr_change_selection_runs_the_matching_platform_checks(tmp_path, path, e
     git("-c", "user.name=Runner test", "-c", "user.email=runner@example.invalid",
         "commit", "-qm", "change")
     output = tmp_path / "outputs"
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name in ("bash", "git", "grep"):
+        executable = shutil.which(name)
+        assert executable is not None, f"required hosted-runner command is unavailable: {name}"
+        (commands / name).symlink_to(executable)
+    assert shutil.which("rg", path=str(commands)) is None
+    if matcher != "available":
+        (commands / "grep").unlink()
+        if matcher == "failing":
+            (commands / "grep").write_text("#!/bin/sh\nexit 2\n")
+            (commands / "grep").chmod(0o755)
     step = next(step for step in rust_workflow()["jobs"]["focused-pr"]["steps"]
                 if step.get("id") == "changes")
-    subprocess.run(["bash", "-eu", "-c", step["run"]], cwd=tmp_path, check=True,
-                   env=dict(os.environ, BASE=base, RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output)))
+    result = subprocess.run([str(commands / "bash"), "-euo", "pipefail", "-c", step["run"]],
+                            cwd=tmp_path, capture_output=True, text=True, check=False,
+                            env=dict(os.environ, PATH=str(commands), BASE=base,
+                                     RUNNER_TEMP=str(tmp_path), GITHUB_OUTPUT=str(output)))
+    if matcher == "available":
+        assert result.returncode == 0, result.stderr
+        assert not result.stderr
+    else:
+        assert result.returncode == 2
+        assert "changed-path matcher failed" in result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text().splitlines()) if output.exists() else {}
     assert actual == expected
 
