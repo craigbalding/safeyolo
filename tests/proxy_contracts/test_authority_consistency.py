@@ -11,6 +11,7 @@ import socket
 import socketserver
 import ssl
 import threading
+import traceback
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
@@ -175,6 +176,7 @@ class Parent(socketserver.ThreadingTCPServer):
         self.http = {ALLOWED: allowed_http, FORBIDDEN: forbidden_http}
         self.tls = {ALLOWED: allowed_tls, FORBIDDEN: forbidden_tls}
         self.connect_override = None
+        self.test_stage = "unspecified"
         self.accepts = 0
         self.requests = []
         self.errors = []
@@ -190,6 +192,8 @@ class Parent(socketserver.ThreadingTCPServer):
 
 class ParentRequest(socketserver.BaseRequestHandler):
     def handle(self):
+        stage = "reading request"
+        test_stage = self.server.test_stage
         try:
             self.request.settimeout(5)
             request = _read_request(self.request)
@@ -197,6 +201,7 @@ class ParentRequest(socketserver.BaseRequestHandler):
             head, body = request
             method, target, _ = head.split(b"\r\n", 1)[0].split(b" ", 2)
             if method == b"CONNECT":
+                stage = "opening CONNECT upstream"
                 host, port = target.decode("ascii").rsplit(":", 1)
                 assert port == "443"
                 origin = self.server.connect_override or self.server.tls[host.lower()]
@@ -206,9 +211,12 @@ class ParentRequest(socketserver.BaseRequestHandler):
                                                  "head": head, "route": route})
                 with socket.create_connection(origin.server_address, timeout=5) as upstream:
                     upstream.settimeout(5)
+                    stage = "sending CONNECT response"
                     self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                    stage = "established CONNECT"
                     self._relay(upstream)
             else:
+                stage = "forwarding HTTP"
                 host = urlsplit("http://" + _host(head)).hostname.lower()
                 origin = self.server.http[host]
                 parsed = urlsplit(target.decode("ascii"))
@@ -224,18 +232,33 @@ class ParentRequest(socketserver.BaseRequestHandler):
                     while chunk := upstream.recv(65536):
                         self.request.sendall(chunk)
         except Exception as error:
+            error.add_note(f"parent fixture stage={stage}; test stage={test_stage}")
             self.server.errors.append(error)
 
     def _relay(self, upstream):
         peers = (self.request, upstream)
-        while True:
-            ready, _, _ = select.select(peers, [], [], 5)
-            assert ready, "CONNECT relay stalled"
-            for source in ready:
-                data = source.recv(65536)
-                if not data:
-                    return
-                (upstream if source is self.request else self.request).sendall(data)
+        try:
+            while True:
+                direction, operation = "both", "select"
+                ready, _, _ = select.select(peers, [], [], 5)
+                assert ready, "CONNECT relay stalled"
+                for source in ready:
+                    direction = "client->upstream" if source is self.request else "upstream->client"
+                    operation = "recv"
+                    try:
+                        data = source.recv(65536)
+                    except ConnectionResetError:
+                        if source is self.request:
+                            # An abortive client close ends an established tunnel.
+                            return
+                        raise
+                    if not data:
+                        return
+                    operation = "send"
+                    (upstream if source is self.request else self.request).sendall(data)
+        except Exception as error:
+            error.add_note(f"CONNECT relay direction={direction}; operation={operation}")
+            raise
 
 
 @contextmanager
@@ -249,7 +272,8 @@ def _server(server):
         server.server_close()
         thread.join(timeout=5)
         assert not thread.is_alive()
-        assert server.errors == [], server.errors
+        assert server.errors == [], "".join(
+            "".join(traceback.format_exception(error)) for error in server.errors)
 
 
 def _certificate(directory, host, *, filename=None, not_before=None, not_after=None):
@@ -547,11 +571,13 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             allowed_authority = f"{ALLOWED}:443".encode()
             forbidden_authority = f"{FORBIDDEN}:443".encode()
 
+            parent.test_stage = "denied CONNECT authority"
             denied, no_stream = _connect(path, forbidden_authority, FORBIDDEN, ca,
                                          outer_host=allowed_authority)
             assert denied == 403 and no_stream is None
             assert parent.accepts == allowed.accepts == forbidden.accepts == 0
 
+            parent.test_stage = "allowed CONNECT and inner authority"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
             assert status == 200
             with stream:
@@ -568,6 +594,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             assert allowed.sni[-1] == ALLOWED
             assert forbidden.requests == []
 
+            parent.test_stage = "case-insensitive inner authority"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
             assert status == 200
             with stream:
@@ -586,6 +613,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
 
             # A different client SNI cannot replace the admitted CONNECT name
             # for origin TLS verification or create a forbidden-origin route.
+            parent.test_stage = "conflicting client SNI"
             before_allowed = len(allowed.requests)
             try:
                 status, stream = _connect(path, allowed_authority, FORBIDDEN, ca,
@@ -612,6 +640,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             else:
                 assert len(allowed.requests) == before_allowed
 
+            parent.test_stage = "conflicting HTTP/1.1 inner authority"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
             assert status == 200
             before_h1 = len(allowed.requests)
@@ -629,6 +658,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
 
             # A request head with an announced streaming body must receive a
             # local response before the client uploads that body.
+            parent.test_stage = "streaming body with conflicting inner authority"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
             assert status == 200
             before_stream = len(allowed.requests)
@@ -643,6 +673,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             assert len(allowed.requests) == before_stream
             assert forbidden.accepts == 0
 
+            parent.test_stage = "conflicting HTTP/2 inner authority"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca, offers=("h2",))
             assert status == 200
             with stream:
@@ -655,6 +686,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
             assert forbidden.requests == []
             assert result["headers"][":status"] == "400", result
 
+            parent.test_stage = "conflicting HTTP/2 Host"
             status, stream = _connect(path, allowed_authority, ALLOWED, ca, offers=("h2",))
             assert status == 200
             with stream:
@@ -672,6 +704,7 @@ def test_connect_inner_authority_sni_and_verification_stay_scoped(proxy_backend,
 
             # The parent deliberately sends this CONNECT to a wrong-name TLS
             # endpoint. The permitted policy name must still be the verifier.
+            parent.test_stage = "trusted wrong-name origin certificate"
             before = len(forbidden.requests)
             parent.connect_override = forbidden
             status, stream = _connect(path, allowed_authority, ALLOWED, ca)
