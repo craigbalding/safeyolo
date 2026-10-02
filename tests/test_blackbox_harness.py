@@ -1104,18 +1104,19 @@ def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_
     assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]
 
 
-@pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2"])
-def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_path, host):
+@pytest.mark.parametrize("host,bind_host", [("127.0.0.1", "127.0.0.1"), ("127.0.0.2", "127.0.0.2"),
+                                          ("127.0.0.2", "127.0.0.1")])
+def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_path, host, bind_host):
     with socket.socket() as reserve:
-        reserve.bind((host, 0))
+        reserve.bind((bind_host, 0))
         port = reserve.getsockname()[1]
-    origin, root_cert = continuity.https_origin(tmp_path, host, port)
-    assert origin.server_address == (host, port)
+    origin, root_cert = continuity.https_origin(tmp_path, host, port, bind_host)
+    assert origin.server_address == (bind_host, port)
     thread = threading.Thread(target=origin.serve_forever)
     thread.start()
     context = ssl.create_default_context(cafile=root_cert)
     try:
-        with socket.create_connection((host, port), timeout=3) as raw:
+        with socket.create_connection((bind_host, port), timeout=3) as raw:
             with context.wrap_socket(raw, server_hostname=host) as secured:
                 connection = http.client.HTTPConnection(host, port, timeout=3)
                 connection.sock = secured
@@ -1126,7 +1127,7 @@ def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_pa
                 finally:
                     connection.close()
         wrong_host = "127.0.0.2" if host == "127.0.0.1" else "127.0.0.1"
-        with socket.create_connection((host, port), timeout=3) as raw:
+        with socket.create_connection((bind_host, port), timeout=3) as raw:
             with pytest.raises(ssl.SSLCertVerificationError):
                 context.wrap_socket(raw, server_hostname=wrong_host)
         assert [row["path"] for row in origin.seen] == ["/selected-host"]
@@ -1135,3 +1136,40 @@ def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_pa
         origin.server_close()
         thread.join(timeout=3)
         assert not thread.is_alive()
+
+
+def test_continuity_owned_parent_routes_only_its_tls_origin(tmp_path):
+    tls_origin, root_cert = continuity.https_origin(tmp_path, "127.0.0.2", bind_host="127.0.0.1")
+    origin = continuity.Origin(("127.0.0.1", 0))
+    origin.tls_target = ("127.0.0.2", tls_origin.server_port)
+    origin.tls_address = tls_origin.server_address
+    threads = [threading.Thread(target=server.serve_forever) for server in (origin, tls_origin)]
+    for thread in threads:
+        thread.start()
+    try:
+        connection = http.client.HTTPSConnection(*origin.server_address, timeout=3,
+                                                context=ssl.create_default_context(cafile=root_cert))
+        connection.set_tunnel(*origin.tls_target)
+        try:
+            connection.request("GET", "/selected-tunnel")
+            response = connection.getresponse()
+            assert response.status == 200 and response.read() == continuity.BODY
+        finally:
+            connection.close()
+        invalid = http.client.HTTPConnection(*origin.server_address, timeout=3)
+        try:
+            invalid.request("CONNECT", f"127.0.0.2:{tls_origin.server_port+1}")
+            response = invalid.getresponse()
+            assert response.status == 400
+            response.read()
+        finally:
+            invalid.close()
+        assert not origin.seen
+        assert [row["path"] for row in tls_origin.seen] == ["/selected-tunnel"]
+    finally:
+        for server in (origin, tls_origin):
+            server.shutdown()
+            server.server_close()
+        for thread in threads:
+            thread.join(timeout=3)
+            assert not thread.is_alive()

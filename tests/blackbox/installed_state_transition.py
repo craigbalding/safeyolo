@@ -40,6 +40,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 if __package__:
+    from .harness.sinkhole_parent import Request as ParentRequest
     from .installed_host_smoke import (
         SmokeError,
         _native_config,
@@ -49,6 +50,7 @@ if __package__:
     )
     from .installed_sections import copy_prepared_nats, owned_processes, surviving_processes
 else:
+    from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
         SmokeError,
         _native_config,
@@ -115,6 +117,8 @@ class Origin(http.server.ThreadingHTTPServer):
         self.seen: list[dict] = []
         self.next_status = 200
         self.oauth_generation = 1
+        self.tls_target = None
+        self.tls_address = None
 
 
 class OriginHandler(http.server.BaseHTTPRequestHandler):
@@ -129,11 +133,22 @@ class OriginHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.respond()
 
+    # Reuse the owned parent tunnel for a fixture authority bound elsewhere.
+    do_CONNECT = ParentRequest.do_CONNECT
+
+    def _peer(self, host, port, *, tls_origin):
+        if not tls_origin or (host, port) != self.server.tls_target:
+            raise ValueError("CONNECT target is outside the owned TLS fixture")
+        return socket.create_connection(self.server.tls_address, timeout=5), False
+
     def respond(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        target = urlsplit(self.path)
+        path = ((target.path or "/") + (f"?{target.query}" if target.query else "")
+                if target.scheme else self.path)
         self.server.seen.append({
             "method": self.command,
-            "path": self.path,
+            "path": path,
             "body": body,
             "authorization": self.headers.get("Authorization", ""),
         })
@@ -340,7 +355,8 @@ def native_flow(root: Path, listener: Path, token: str, flow_id: int, tag: str) 
     return flow
 
 
-def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0) -> tuple[Origin, Path]:
+def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0,
+                 bind_host: str | None = None) -> tuple[Origin, Path]:
     root_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     root_name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "r638-owned-root")])
     now = datetime.now(UTC)
@@ -380,7 +396,7 @@ def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0) -> tuple[Or
     key_path.write_bytes(leaf_key.private_bytes(serialization.Encoding.PEM,
         serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()))
     key_path.chmod(0o600)
-    server = Origin((host, port))
+    server = Origin((bind_host or host, port))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(leaf_path), str(key_path))
     server.socket = context.wrap_socket(server.socket, server_side=True)
@@ -423,12 +439,14 @@ def main() -> None:
     parser.add_argument("--config-dir", type=Path, help="New isolated directory for the native procedure")
     parser.add_argument("--output", type=Path, help="Bounded native result report")
     parser.add_argument("--prepared-config", type=Path, help="Prepared product's verified NATS executable")
-    parser.add_argument("--origin-host", default="127.0.0.2", help="HTTP/TLS fixture bind address and policy host")
+    parser.add_argument("--origin-host", default="127.0.0.2", help="HTTP/TLS fixture authority and policy host")
+    parser.add_argument("--origin-bind", help="Fixture bind address; uses the owned HTTP parent when different from --origin-host")
     parser.add_argument("--http-port", type=int, default=0, help="HTTP fixture port (default: ephemeral)")
     parser.add_argument("--https-port", type=int, default=0, help="TLS fixture port (default: ephemeral)")
     parser.add_argument("--oauth-port", type=int, default=0, help="OAuth fixture port (default: ephemeral)")
     parser.add_argument("--admin-port", type=int, default=0, help="Installed admin listener port (default: ephemeral)")
     args = parser.parse_args()
+    origin_bind = args.origin_bind or args.origin_host
     task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
                                     "effect": "deny", "condition": {"agent": "alice"}}]}
     package_id = installed_identity(args.cli, args.rust_revision)
@@ -444,9 +462,14 @@ def main() -> None:
     stages: list[dict] = []
     active: Path | None = None
     nats_started = False
-    origin = Origin((args.origin_host, args.http_port))
+    origin = Origin((origin_bind, args.http_port))
     oauth = Origin(("127.0.0.1", args.oauth_port), oauth=True)
-    tls_origin, tls_cert_path = https_origin(root, args.origin_host, args.https_port)
+    tls_origin, tls_cert_path = https_origin(root, args.origin_host, args.https_port, origin_bind)
+    parent = ""
+    if origin_bind != args.origin_host:
+        origin.tls_target = (args.origin_host, tls_origin.server_port)
+        origin.tls_address = tls_origin.server_address
+        parent = f"http://{origin_bind}:{origin.server_port}"
     threads = [threading.Thread(target=server.serve_forever, daemon=True)
                for server in (origin, oauth, tls_origin)]
     for thread in threads:
@@ -459,7 +482,7 @@ def main() -> None:
                                 "admin_port": args.admin_port,
                                 "web_port": 0,
                                 "upstream_ca_cert": str(tls_cert_path)})
-        config["proxy"]["upstream_proxy"] = ""
+        config["proxy"]["upstream_proxy"] = parent
         config["proxy"].pop("backend", None)
         (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         (root / "data/agent_map.json").write_text(json.dumps({
@@ -583,9 +606,6 @@ def update(doc):
     doc['addons']['circuit_breaker']['timeout_seconds']=120
     doc['addons']['circuit_breaker']['use_exponential_backoff']=False
     doc['addons']['circuit_breaker']['jitter_factor']=0
-    if sys.argv[3] == '127.0.0.1':
-        # Track the selected owned origin; production excludes localhost by default.
-        doc['addons']['circuit_breaker']['excluded_domains']=['localhost','_safeyolo.probe.internal']
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
 """, str(root / "policy.toml"), str(tls_origin.server_port), args.origin_host)
@@ -1247,7 +1267,7 @@ print(json.dumps({'nats':'stopped'}))
     report = {
         "result": "installed_native_continuity_passed", "source_revision": args.rust_revision,
         "fixture_bindings": {"http": list(origin.server_address), "https": list(tls_origin.server_address),
-                             "oauth": list(oauth.server_address)},
+                             "oauth": list(oauth.server_address), "authority": args.origin_host, "parent": parent},
         "state": str(root), "runtimes": stages, "agents_started": 0,
         "flow": {"id": flow_id, "request_body_bytes": len(b"owned-r638-request-needle"),
                  "response_body_bytes": len(BODY), "audit_correlated": True,

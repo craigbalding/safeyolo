@@ -244,12 +244,15 @@ procedure above, with fresh config/data/cert/log/origin state.
 If a prepared-package witness requires fixed ports, `installed_host_smoke.py`
 accepts `--http-port`. The three packaged HTTPS nodes use
 `SAFEYOLO_TEST_HTTPS_PORT` for their TLS origin. The continuity procedure accepts
-`--origin-host`, `--http-port`, `--https-port`, `--oauth-port` and `--admin-port`.
+`--origin-host`, `--origin-bind`, `--http-port`, `--https-port`, `--oauth-port` and
+`--admin-port`.
 Its selected HTTP/TLS host is also used in request authorities, the certificate
 SAN, catalog, scoped grants, task policy and circuit checks. These are test
-bindings; the default ports remain ephemeral. Selecting `127.0.0.1` also makes
-that owned origin count in the disposable circuit policy, where it would
-otherwise be excluded by the production default. Each procedure keeps its own
+bindings; the default ports remain ephemeral. If `--origin-bind` differs from
+the authority, the HTTP fixture also acts as its owned parent and tunnels only
+the selected TLS origin. This lets the authority remain `127.0.0.2`, which
+counts in the circuit probe, while the listeners bind to `127.0.0.1`.
+Each procedure keeps its own
 state and verifies owned cleanup before another procedure runs.
 
 `SAFEYOLO_TEST_SOCKET_DIR` selects an existing short, writable directory for
