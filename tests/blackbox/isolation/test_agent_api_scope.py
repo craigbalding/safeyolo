@@ -268,106 +268,23 @@ class TestAgentAPIMutationSurface:
 
 
 class TestAgentAPICrossAgentIsolation:
-    """Agent API returns only the calling agent's data.
+    """Gateway service discovery responds for the authenticated caller.
 
-    Why: Multiple agents share the same proxy and flow store. If the
-    API returns flows belonging to other agents, one agent can read
-    another's request bodies (credentials, PII, contents). The scope
-    is enforced by resolving the caller's source IP through
-    service_discovery; this tests the end-to-end isolation, not the
-    mechanism.
+    Why: An agent needs to discover available services before using
+    the gateway. This smoke check verifies the discovery response.
+    The installed access scenario exercises authorization with a
+    live peer.
     """
-
-    def test_flow_search_scoped_to_calling_agent(self):
-        """Flow search returns only flows from the caller's subnet.
-
-        What: Emit a tagged probe through the proxy, then query
-        /api/flows/search. For each returned flow, assert the
-        client address is in this agent's subnet (not another
-        agent's).
-        Why: A cross-agent leak here is a full information
-        disclosure — one agent reads another's request contents,
-        including credentials and response bodies.
-        """
-        import json
-        token = _agent_token()
-
-        # Generate a flow from this agent — the proxy will log it.
-        # Include X-SafeYolo-Test-Context so the test_context addon tags the
-        # flow and the flow recorder captures it. This also exercises
-        # the test_context control itself (it's a security control
-        # used during pentesting to link traffic to test activities).
-        proxy = os.environ.get("HTTP_PROXY", "")
-        if not proxy:
-            pytest.skip("HTTP_PROXY not set")
-        marker = "bbtest-scope-probe"
-        subprocess.run(
-            ["curl", "-s", "--proxy", proxy, "-o", "/dev/null",
-             "-H", "X-SafeYolo-Test-Context: run=security-audit;agent=bbtest",
-             f"http://httpbin.org/get?marker={marker}"],
-            capture_output=True, timeout=10,
-        )
-
-        # Brief pause for the flow recorder to commit to SQLite.
-        import time
-        time.sleep(1)
-
-        # Now search flows and inspect results.
-        status, body = _curl_agent_api(
-            "/api/flows/search?host=httpbin.org&limit=50",
-            token=token,
-        )
-        if status != 200:
-            pytest.skip(f"Flow search not available (status {status})")
-
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            pytest.fail(f"Flow search 200 but non-JSON (len={len(body)}): {body[:100]!r}")
-
-        flows = data.get("flows", [])
-        if not flows:
-            # Debug: query without host filter to see if any flows exist
-            status2, body2 = _curl_agent_api(
-                "/api/flows/search?limit=5",
-                token=token,
-            )
-            pytest.skip(
-                f"No flows for host=httpbin.org. "
-                f"Unfiltered search (status={status2}): {body2[:300]}"
-            )
-
-        # Check: every returned flow's client_address should be in OUR
-        # subnet, not another agent's. Our subnet's gateway is the
-        # HTTP_PROXY host IP.
-        from urllib.parse import urlparse
-        our_host = urlparse(proxy).hostname  # e.g. 192.168.75.1
-        our_prefix = ".".join(our_host.split(".")[:3])  # e.g. 192.168.75
-
-        foreign_flows = []
-        for f in flows:
-            addr = f.get("client_address", f.get("client_conn", {}).get("address", [""])[0])
-            if isinstance(addr, list):
-                addr = addr[0] if addr else ""
-            if addr and not addr.startswith(our_prefix):
-                foreign_flows.append({"id": f.get("id"), "client": addr,
-                                      "host": f.get("request", {}).get("host", "?")})
-
-        assert not foreign_flows, (
-            f"Flow search returned {len(foreign_flows)} flows from other agents "
-            f"(our subnet: {our_prefix}.x): {foreign_flows[:5]}. "
-            f"This is a cross-agent information disclosure vulnerability."
-        )
 
     def test_gateway_services_scoped(self):
         """GET /gateway/services responds without error as this agent.
 
         What: GET /gateway/services with the agent token; assert 200
         and the response body parses as JSON without an 'error' key.
-        Why: A smoke test for the scoping mechanism — the response
-        shape varies, so we verify the endpoint functions for the
-        calling agent. Cross-agent leakage in the detailed contents
-        is covered by test_flow_search_scoped_to_calling_agent.
+        Why: The calling agent needs a usable discovery endpoint.
+        This assertion checks response shape. The installed access
+        scenario owns populated flow search/detail and the live-peer
+        gateway journey.
         """
         import json
         token = _agent_token()
@@ -378,8 +295,4 @@ class TestAgentAPICrossAgentIsolation:
             data = json.loads(body)
         except json.JSONDecodeError:
             pytest.fail(f"/gateway/services 200 but non-JSON (len={len(body)}): {body[:100]!r}")
-        # The response should be for THIS agent only. Structural
-        # check — we don't know other agents' names, but the endpoint
-        # must WORK for the calling agent (no error). Cross-agent
-        # scoping is asserted in test_flow_search_scoped_to_calling_agent.
         assert "error" not in data, f"Unexpected error: {data}"

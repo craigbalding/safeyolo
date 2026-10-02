@@ -4,7 +4,7 @@ Generated from native pytest selections and installed procedures in `tests/black
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**85 distinct pytest methods across 24 threat categories.**
+**84 distinct pytest methods across 24 threat categories.**
 
 This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and key isolation. Key tests therefore run under both identities. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
 
@@ -295,30 +295,20 @@ exhaust operator attention.
 indicate method-router confusion — another mutation surface
 silently opened.
 
-#### TestAgentAPICrossAgentIsolation — Agent API returns only the calling agent's data.
+#### TestAgentAPICrossAgentIsolation — Gateway service discovery responds for the authenticated caller.
 
-**Threat:** Multiple agents share the same proxy and flow store. If the
-API returns flows belonging to other agents, one agent can read
-another's request bodies (credentials, PII, contents). The scope
-is enforced by resolving the caller's source IP through
-service_discovery; this tests the end-to-end isolation, not the
-mechanism.
+**Threat:** An agent needs to discover available services before using
+the gateway. This smoke check verifies the discovery response.
+The installed access scenario exercises authorization with a
+live peer.
 
-- **`test_flow_search_scoped_to_calling_agent`** — Flow search returns only flows from the caller's subnet.
-  - *Probe:* Emit a tagged probe through the proxy, then query
-/api/flows/search. For each returned flow, assert the
-client address is in this agent's subnet (not another
-agent's).
-  - *Consequence if unasserted:* A cross-agent leak here is a full information
-disclosure — one agent reads another's request contents,
-including credentials and response bodies.
 - **`test_gateway_services_scoped`** — GET /gateway/services responds without error as this agent.
   - *Probe:* GET /gateway/services with the agent token; assert 200
 and the response body parses as JSON without an 'error' key.
-  - *Consequence if unasserted:* A smoke test for the scoping mechanism — the response
-shape varies, so we verify the endpoint functions for the
-calling agent. Cross-agent leakage in the detailed contents
-is covered by test_flow_search_scoped_to_calling_agent.
+  - *Consequence if unasserted:* The calling agent needs a usable discovery endpoint.
+This assertion checks response shape. The installed access
+scenario owns populated flow search/detail and the live-peer
+gateway journey.
 
 ### `tests/blackbox/isolation/test_key_isolation.py`
 
