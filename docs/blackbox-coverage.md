@@ -32,14 +32,13 @@ filter/transcript/export. These observations stay in one installed composition.
 
 Check installed native state through restart, replacement and recovery.
 
-Use --native with the current installed CLI and its exact --install-commit.
+Use the current installed CLI and its exact --install-commit.
 No agent is booted: this is installed host composition, not guest isolation.
 Each return process must read durable state, reset process-local task policy,
 and enforce revocations before deliberately restoring access.
 
-The historical cross-backend path remains temporarily for #320's independent
-replacement check. It requires independently installed old/current wheels and
-SAFEYOLO_PDP_DIR from the pinned old source. It is not the nightly selection.
+The procedure uses four native process lifetimes. Historical cross-backend
+receipts remain recorded in the issue; they are not a current execution mode.
 
 ### `tests/blackbox/installed_ingress.py`
 
@@ -77,7 +76,7 @@ disposable key, SSH server and guest writable state.
 
 The package also selects `tests/proxy_contracts/test_https_contract.py::test_https_origin_verification` against its packaged executable.
 
-The complete native process/protocol family is separately maintained in `tests/proxy_contracts/`, run once per supported host platform overnight. installed_state_transition.py --native checks installed durable state through process replacement on Linux and the hosted Mac. Its historical cross-backend path remains during independent replacement review. Runner selection describes intended execution, not a passing receipt.
+The complete native process/protocol family is separately maintained in `tests/proxy_contracts/`, run once per supported host platform overnight. installed_state_transition.py checks installed durable state through four native process lifetimes on Linux and the hosted Mac. Historical cross-backend receipts remain in the accepted issues. Runner selection describes intended execution, not a passing receipt.
 
 ## Installed native ingress
 

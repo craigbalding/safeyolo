@@ -16,7 +16,6 @@ from tests.proxy_contracts.harness import (
     child_process,
     connection,
     launch_proxy,
-    python_proxy_environment,
     request,
     wait_ready,
 )
@@ -131,16 +130,13 @@ def test_early_sse_disconnect_exits_and_restarts(proxy_backend, tmp_path):
 
         restart_dir = directory / "restart"
         restart_dir.mkdir()
-        environment = (
-            python_proxy_environment(python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE"))
-            if proxy_backend == "python" else os.environ.copy()
-        )
+        environment = os.environ.copy()
         environment["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         with child_process(proxy.process.args, restart_dir, environment) as process:
             wait_ready(
                 process, [proxy.readiness_file, *proxy.paths.values()],
                 restart_dir / "process.log", readiness_file=proxy.readiness_file,
-                expected_backend="python" if proxy_backend == "python" else "rust-m2",
+                expected_backend="rust-m2",
             )
             restarted = RunningProxy(proxy.paths, proxy.event_log, process, proxy.readiness_file)
             assert process.pid != first_pid

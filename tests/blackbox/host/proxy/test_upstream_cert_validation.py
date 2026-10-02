@@ -1,4 +1,9 @@
-"""Host-side upstream TLS certificate validation tests.
+"""Retained host TLS duplicates pending installed guest replacement review.
+
+The native HTTPS contracts now own the independently verified four-deep RSA,
+name-constrained, extra-intermediate and AIA-only chain observations. These
+remaining valid, expired, wrong-SAN and self-signed examples stay until their
+installed guest-default-trust replacements are independently observed.
 
 Exercises SafeYolo's `_merge_system_cas_into_certifi` + mitmproxy's
 upstream TLS chain builder against a range of non-trivial cert chain
@@ -114,119 +119,10 @@ class TestEccCrossSignedChain:
         )
 
 
-class TestRsaDeepChain:
-    """Upstream validation of a 4-deep RSA chain (leaf -> intA -> intB -> root).
-
-    Why: Many real-world CDN chains (Amazon CloudFront, Microsoft,
-    some Akamai deployments) are 4-deep. Chain builder regressions
-    around depth limits, path-length constraints, or intermediate
-    caching surface here without needing public internet access.
-    """
-
-    def test_four_deep_chain_validates(
-        self, proxy_client, sinkhole, clear_sinkhole, wait_for_services,
-    ):
-        """GET https://rsa-deep-chain.test/ through the proxy returns 200.
-
-        What: Route through SafeYolo's mitmproxy to the sinkhole's
-        port-18445 HTTPS endpoint. The sinkhole presents the chain
-        [RSA leaf, RSA intermediate A (pathlen:0), RSA intermediate B
-        (pathlen:1)]. mitmproxy walks leaf -> A -> B -> ca.crt and
-        accepts.
-        Why: A green 200 confirms the chain builder handles 4-deep
-        chains with path-length-constrained intermediates. A red means
-        either the depth is being truncated, or the pathlen constraint
-        is being misinterpreted -- both would break real CDN upstreams.
-        """
-        response = proxy_client.get(
-            "https://rsa-deep-chain.test/",
-            follow_redirects=False,
-        )
-        assert response.status_code == 200, (
-            f"Expected 200, got {response.status_code}. mitmproxy failed "
-            f"4-deep chain validation -- check logs for depth / pathlen errors."
-        )
-        requests = sinkhole.get_requests(host="rsa-deep-chain.test")
-        assert len(requests) >= 1, (
-            "Sinkhole saw no request for rsa-deep-chain.test."
-        )
 
 
-class TestNameConstrainedIntermediate:
-    """Upstream validation of a leaf under a name-constrained intermediate.
-
-    Why: X.509 nameConstraints (RFC 5280 s4.2.1.10) is implemented
-    inconsistently across TLS stacks -- OpenSSL, Python ssl, and
-    mitmproxy have each had bugs at various versions. An intermediate
-    that permits DNS:nc-constrained.test must still validate a leaf
-    whose SAN is within that subtree.
-    """
-
-    def test_leaf_in_permitted_subtree_validates(
-        self, proxy_client, sinkhole, clear_sinkhole, wait_for_services,
-    ):
-        """GET https://nc-constrained.test/ through the proxy returns 200.
-
-        What: Route through SafeYolo's mitmproxy to the sinkhole's
-        port-18446 HTTPS endpoint. The intermediate has critical
-        nameConstraints permitting DNS:nc-constrained.test and
-        IP:127.0.0.1. The leaf's SAN matches both constraints.
-        Why: A green 200 confirms mitmproxy honours nameConstraints
-        correctly when the leaf is within the permitted subtree. A red
-        502 likely means the validator is rejecting leaves under
-        name-constrained intermediates outright (a known bug class in
-        some TLS stacks).
-        """
-        response = proxy_client.get(
-            "https://nc-constrained.test/",
-            follow_redirects=False,
-        )
-        assert response.status_code == 200, (
-            f"Expected 200, got {response.status_code}. mitmproxy rejected "
-            f"a leaf within the permitted subtree of its name-constrained "
-            f"intermediate -- nameConstraints handling regression."
-        )
-        requests = sinkhole.get_requests(host="nc-constrained.test")
-        assert len(requests) >= 1
 
 
-class TestExtraIntermediatesIgnored:
-    """Upstream validation when server presents extra, unrelated intermediates.
-
-    Why: Real-world servers sometimes include extras in the chain due
-    to SSLCertificateChainFile misconfiguration or bundle generation
-    errors. An over-strict validator that refuses any chain containing
-    certs outside the verification path would break these upstreams.
-    mitmproxy should find the correct path and silently ignore the rest.
-    """
-
-    def test_junk_certs_in_chain_dont_break_verify(
-        self, proxy_client, sinkhole, clear_sinkhole, wait_for_services,
-    ):
-        """GET https://extra-intermediates.test/ through the proxy returns 200.
-
-        What: Route through SafeYolo's mitmproxy to the sinkhole's
-        port-18447 HTTPS endpoint. The sinkhole presents the chain
-        [leaf, real intermediate, junk CA A, junk CA B]. Only
-        `leaf -> real intermediate -> ca.crt` is on the verification
-        path; the two junk CAs are unrelated self-signed certs.
-        Why: A green 200 confirms the chain builder picks the right
-        path and ignores extras. A red means either the builder got
-        confused by the junk, or it rejected the whole chain for
-        containing unrelated certs -- either would break real upstreams
-        that ship mis-bundled intermediates.
-        """
-        response = proxy_client.get(
-            "https://extra-intermediates.test/",
-            follow_redirects=False,
-        )
-        assert response.status_code == 200, (
-            f"Expected 200, got {response.status_code}. mitmproxy failed "
-            f"verification despite a valid path existing in the chain -- "
-            f"chain builder regression on extras."
-        )
-        requests = sinkhole.get_requests(host="extra-intermediates.test")
-        assert len(requests) >= 1
 
 
 class TestExpiredLeafRejected:
@@ -320,44 +216,5 @@ class TestSelfSignedLeafRejected:
             proxy_client,
             "https://self-signed.test/",
             "self-signed.test",
-            sinkhole,
-        )
-
-
-class TestAiaOnlyRejected:
-    """Must-fail: upstream MUST reject a chain that presents only the leaf.
-
-    Why: When the server omits intermediates, the verifier has no path
-    to a trusted root unless it chases the AIA caIssuers URL. Python
-    ssl / OpenSSL default to NOT chasing AIA -- servers are expected
-    to ship the full chain. mitmproxy inherits that. If it ever flips
-    to AIA-chasing (custom verify callback, new OpenSSL flag), an
-    attacker who controls the AIA URL or can MITM the HTTP fetch
-    could inject arbitrary intermediates -- a silent widening of the
-    trust surface. This test documents current "fails deterministically"
-    behavior; a 200 here means chain-building policy changed and the
-    assertion needs an explicit update.
-    """
-
-    def test_missing_intermediate_causes_failure(
-        self, proxy_client, sinkhole, clear_sinkhole, wait_for_services,
-    ):
-        """GET https://aia-only.test/ through the proxy returns 502 (or errors).
-
-        What: Route through SafeYolo's mitmproxy to the sinkhole's
-        port-18451 HTTPS endpoint, which presents ONLY the leaf --
-        the intermediate is deliberately absent from the chain PEM.
-        The leaf's AIA caIssuers extension points at a local URL
-        that a future AIA-chaser could hit, but today nothing fetches
-        it; chain-building halts at the missing issuer.
-        Why: Any response other than an upstream-verify failure means
-        mitmproxy started AIA-chasing without an explicit policy
-        decision -- a silent, auditable change to what SafeYolo
-        accepts as a valid upstream chain.
-        """
-        _assert_upstream_rejected(
-            proxy_client,
-            "https://aia-only.test/",
-            "aia-only.test",
             sinkhole,
         )

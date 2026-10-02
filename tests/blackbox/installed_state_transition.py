@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Check installed native state through restart, replacement and recovery.
 
-Use --native with the current installed CLI and its exact --install-commit.
+Use the current installed CLI and its exact --install-commit.
 No agent is booted: this is installed host composition, not guest isolation.
 Each return process must read durable state, reset process-local task policy,
 and enforce revocations before deliberately restoring access.
 
-The historical cross-backend path remains temporarily for #320's independent
-replacement check. It requires independently installed old/current wheels and
-SAFEYOLO_PDP_DIR from the pinned old source. It is not the nightly selection.
+The procedure uses four native process lifetimes. Historical cross-backend
+receipts remain recorded in the issue; they are not a current execution mode.
 """
 
 from __future__ import annotations
@@ -58,7 +57,6 @@ else:
     )
     from installed_sections import copy_prepared_nats, owned_processes, surviving_processes
 
-OLD_REVISION = "7e934a5470f1aa9b74052fea08c6bae9b5f32e8a"
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
 TASK_ID = "r638-process-local"
@@ -217,12 +215,6 @@ def installed_identity(cli: Path, revision: str) -> dict:
     result = json.loads(run([str(python), "-I", "-c", code], os.environ.copy()))
     check("site-packages" in result["package"], "CLI is not an installed wheel")
     check(result["identity"]["source_revision"] == revision, "wheel revision mismatch")
-    if revision == OLD_REVISION:
-        check(result["version"] == "0.1.0", "old package version mismatch")
-        check(result["python_version"] == "3.12.14", "old Python version mismatch")
-        check(run([str(python), "-I", "-c",
-                   "import importlib.metadata as m; print(m.version('mitmproxy'))"],
-                  os.environ.copy()).strip() == "12.2.3", "old mitmproxy version mismatch")
     return {"interpreter": str(python), "package": result["package"],
             "version": result["version"], "python_version": result["python_version"],
             "source_revision": revision}
@@ -242,52 +234,37 @@ def env_for(root: Path) -> dict:
     return env
 
 
-def unused_port() -> int:
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
 def socket_for(root: Path, agent: str) -> Path:
     ip = "10.4.0.2" if agent == "alice" else "10.4.0.3"
     return root / "data" / "sockets" / f"{ip}_{agent}" / "proxy.sock"
 
 
-def start(cli: Path, root: Path, env: dict, backend: str, rust_revision: str) -> dict:
+def start(cli: Path, root: Path, env: dict, revision: str) -> dict:
     config = yaml.safe_load((root / "config.yaml").read_text())
     check("backend" not in config["proxy"], "package selection used proxy.backend")
-    revision = OLD_REVISION if backend == "python" else rust_revision
     package = installed_identity(cli, revision)
     run([str(cli), "start", "--wait"], env, timeout=45)
     path = socket_for(root, "alice")
-    check(path.is_socket(), f"{backend} did not publish Alice's listener")
+    check(path.is_socket(), "native proxy did not publish Alice's listener")
     token = (root / "data" / "agent_token").read_text().strip()
     status, health = json_request(path, "GET", "/health", token)
-    check(status == 200 and isinstance(health, dict), f"{backend} health failed")
-    pid = int((root / "data" / "proxy.pid").read_text().strip()) if backend == "python" else \
-        json.loads((root / "data" / "proxy-rust.json").read_text())["pid"]
-    if backend == "rust":
-        expected = Path(package["package"]) / "bin" / "safeyolo-proxy"
-        native_path = root / "data/native.json"
-        runtime = _runtime_observation(
-            root, _native_config(native_path, Path.cwd()), expected,
-            config_path=native_path, working_directory=Path.cwd(),
-            require_running=True, require_authenticated_identity=True,
-        )
-        executable = runtime["actual_executable"]
-        command = str(expected)
-    else:
-        executable = os.readlink(f"/proc/{pid}/exe")
-        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-        check(package["interpreter"] in command and "safeyolo.traffic_master" in command,
-              "old Python process did not use selected wheel interpreter")
-    identity = {"backend": backend, "pid": pid, "executable": executable,
+    check(status == 200 and isinstance(health, dict), "native proxy health failed")
+    pid = json.loads((root / "data" / "proxy-rust.json").read_text())["pid"]
+    expected = Path(package["package"]) / "bin" / "safeyolo-proxy"
+    native_path = root / "data/native.json"
+    runtime = _runtime_observation(
+        root, _native_config(native_path, Path.cwd()), expected,
+        config_path=native_path, working_directory=Path.cwd(),
+        require_running=True, require_authenticated_identity=True,
+    )
+    executable = runtime["actual_executable"]
+    command = str(expected)
+    identity = {"backend": "rust", "pid": pid, "executable": executable,
                 "command": command[:220], "health_status": status,
                 "cli": str(cli), "package": package}
-    if backend == "rust":
-        identity["runtime"] = runtime
-        identity["binary_sha256"] = sha(Path(executable))
-        identity["binary_version"] = run([executable, "--version"], env).strip()
+    identity["runtime"] = runtime
+    identity["binary_sha256"] = sha(Path(executable))
+    identity["binary_version"] = run([executable, "--version"], env).strip()
     return identity
 
 
@@ -309,11 +286,8 @@ def stop(cli: Path, root: Path, env: dict) -> None:
         raise AssertionError(f"{agent}'s listener remained accepting after stop")
 
 
-def admin(root: Path, method: str, target: str, payload: dict | None = None,
-          *, backend: str = "rust"):
-    port = (yaml.safe_load((root / "config.yaml").read_text())["proxy"]["admin_port"]
-            if backend == "python" else
-            json.loads((root / "data" / "proxy-readiness.json").read_text())["admin_port"])
+def admin(root: Path, method: str, target: str, payload: dict | None = None):
+    port = json.loads((root / "data" / "proxy-readiness.json").read_text())["admin_port"]
     token = (root / "data" / "admin_token").read_text().strip()
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     body = json.dumps(payload).encode() if payload is not None else None
@@ -335,8 +309,8 @@ def installed_python(cli: Path, env: dict, code: str, *args: str):
     return json.loads(result) if result.strip() else None
 
 
-def ensure_nats(old_cli: Path, env: dict) -> dict:
-    return installed_python(old_cli, env, """
+def ensure_nats(cli: Path, env: dict) -> dict:
+    return installed_python(cli, env, """
 import json
 from safeyolo.coord import nats_runtime
 pid=nats_runtime.start_server(ready_timeout=8.0)
@@ -440,417 +414,18 @@ def trusted_tls_request(socket_path: Path, origin_port: int, root: Path) -> dict
                     "peer_certificate_sha256": hashlib.sha256(peer).hexdigest()}
 
 
-def post_deletion_transition(args, old_id: dict, rust_id: dict, pdp_dir: Path) -> None:
-    """Exercise the installed package return without repeating the #638 inventory."""
-    root = Path(tempfile.mkdtemp(prefix="r640-package-return-", dir=args.state_parent))
-    env = env_for(root)
-    old_env = dict(env, SAFEYOLO_PDP_DIR=str(pdp_dir.resolve()))
-    active: Path | None = None
-    nats_started = False
-    stages: list[dict] = []
-    origin = Origin(("127.0.0.2", 0))
-    oauth = Origin(("127.0.0.1", 0), oauth=True)
-    tls_origin, tls_cert_path = https_origin(root)
-    servers = (origin, oauth, tls_origin)
-    for server in servers:
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
-        run([str(args.old_cli), "init", "--no-interactive"], old_env)
-        (root / ".safeyolo-platform-smoke").touch()
-        config_path = root / "config.yaml"
-        config = yaml.safe_load(config_path.read_text())
-        config["proxy"].update({"port": unused_port(), "admin_port": unused_port(),
-                                "web_port": unused_port(),
-                                "rust_config": str(root / "data/native.json"),
-                                "upstream_ca_cert": str(tls_cert_path)})
-        config["proxy"].pop("backend", None)
-        config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-        (root / "data/agent_map.json").write_text(json.dumps({
-            "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
-        installed_python(args.old_cli, old_env, """
-import json
-from safeyolo.agents_store import save_agent
-save_agent('alice',{'agent_id':'ag-r640-alice'})
-save_agent('bob',{'agent_id':'ag-r640-bob'})
-print(json.dumps({'agents':'registered'}))
-""")
-        service_dir = root / "services"
-        service_dir.mkdir(exist_ok=True)
-        (service_dir / "contract.yaml").write_text("""schema_version: 1
-name: contract
-default_host: 127.0.0.2
-auth:
-  type: bearer
-  header: Authorization
-  scheme: Bearer
-  allow_http: true
-  refresh_on_401: true
-risky_routes:
-  - path: /v1/write
-    methods: [POST]
-    tactics: [exfiltration]
-capabilities:
-  writer:
-    routes:
-      - methods: [POST]
-        path: /v1/write
-    contract:
-      template: contract.write.v1
-      bindings:
-        project:
-          source: operator
-          type: enum
-          options: [alpha]
-        ticket:
-          source: operator
-          type: string
-      operations:
-        - name: write
-          request:
-            method: POST
-            path: /v1/write
-            query:
-              allow:
-                ticket:
-                  equals_var: ticket
-            body:
-              allow:
-                project:
-                  equals_var: project
-      enforcement:
-        request_shape: enforced
-        transport_hygiene: enforced
-        state_capture: declared
-        state_enforcement: declared
-""")
-        installed_python(args.old_cli, old_env, """
-import json,sys,tomlkit
-from pathlib import Path
-from safeyolo.policy.toml_roundtrip import locked_policy_mutate
-def update(doc):
-    host=tomlkit.inline_table(); host['service']='contract'
-    doc['hosts']['127.0.0.2']=host
-    doc['agents']=tomlkit.table()
-    for name in ('alice','bob'):
-        doc['agents'][name]=tomlkit.table()
-        doc['agents'][name]['agent_id']='ag-r640-'+name
-    doc['agents']['alice']['hosts']=tomlkit.table()
-    tls=tomlkit.inline_table(); tls['egress']='allow'; tls['rate']=600
-    doc['agents']['alice']['hosts']['127.0.0.2:'+sys.argv[2]]=tls
-    doc['addons']=tomlkit.table()
-    doc['addons']['credential_guard']=tomlkit.table()
-    doc['addons']['credential_guard']['enabled']=True
-    doc['addons']['credential_guard']['detection_level']='none'
-    doc['addons']['credential_guard']['settings']=tomlkit.table()
-    doc['addons']['credential_guard']['settings']['use_default_credential_rules']=False
-    doc['addons']['credential_guard']['settings']['entropy']=tomlkit.table()
-    doc['addons']['credential_guard']['settings']['entropy']['min_length']=1000
-locked_policy_mutate(Path(sys.argv[1]),update)
-print(json.dumps({'policy':'created'}))
-""", str(root / "policy.toml"), str(tls_origin.server_port))
-        run([str(args.old_cli), "policy", "egress", "set", "deny"], old_env)
-        installed_python(args.old_cli, old_env, """
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault,VaultCredential
-p=Path(sys.argv[1]); v=Vault(p/'vault.yaml.enc'); v.unlock(sys.argv[2])
-v.store(VaultCredential('contract-secret','oauth2','synthetic-r638-expired',
-    refresh_token='synthetic-r638-refresh-v0',token_url=sys.argv[3],
-    client_id='r640',client_secret='synthetic-client',expires_at='2020-01-01T00:00:00+00:00'))
-(p/'vault.key').write_text(sys.argv[2]); (p/'vault.key').chmod(0o600)
-print(json.dumps({'names':v.list_names()}))
-""", str(root / "data"), PASS,
-                   f"http://127.0.0.1:{oauth.server_port}/oauth/token")
-        print(json.dumps({"state": str(root), "old": old_id, "rust": rust_id}), flush=True)
-        active = args.old_cli
-        stages.append(start(active, root, old_env, "python", args.rust_revision))
-        alice, bob = socket_for(root, "alice"), socket_for(root, "bob")
-        agent_token = (root / "data/agent_token").read_text().strip()
-        ca, hmac = root / "certs/mitmproxy-ca.pem", root / "data/hmac_secret"
-        ca_snapshot = ca_files(root)
-        hmac_hash = sha(hmac)
-        old_vault_hash = sha(root / "data/vault.yaml.enc")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
-            private_file(path)
-        old_tls = trusted_tls_request(alice, tls_origin.server_port, root)
-        initial_denied, _ = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/before")
-        check(initial_denied in (403, 428) and not origin.seen,
-              f"old package did not enforce initial denial: {initial_denied}")
-        stop(active, root, old_env)
-        active = None
-        nats_identity = ensure_nats(args.old_cli, old_env)
-        nats_started = True
-
-        active = args.rust_cli
-        stages.append(start(active, root, env, "rust", args.rust_revision))
-        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
-              "post-deletion Rust changed old CA/HMAC state")
-        rust_tls = trusted_tls_request(alice, tls_origin.server_port, root)
-        approval_status, _ = admin(root, "POST", "/admin/policy/host/allow",
-                                   {"host": "127.0.0.2", "port": origin.server_port,
-                                    "agent": "alice", "rate": 600})
-        check(approval_status == 200, "post-deletion Rust could not write scoped approval")
-        def allowed():
-            status, body = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/allow")
-            return (status, body) if status == 200 else None
-        allowed_status, allowed_body = eventually(allowed, "Rust approval did not take effect")
-        check(allowed_body == BODY, "Rust approval changed origin body")
-        before = len(origin.seen)
-        rust_denied, _ = request(bob, "GET", f"http://127.0.0.2:{origin.server_port}/deny")
-        check(rust_denied in (403, 428) and len(origin.seen) == before,
-              "Rust scoped approval leaked to Bob")
-        status, _ = admin(root, "POST", "/admin/agents/alice/services",
-                          {"service": "contract", "capability": "writer",
-                           "credential": "contract-secret"})
-        check(status == 200, "Rust service authorization failed")
-        def gateway_token():
-            status, catalog = json_request(alice, "GET", "/gateway/services", agent_token)
-            return catalog.get("authorized", {}).get("contract", {}).get("token") if status == 200 else None
-        before = len(origin.seen)
-        status, _ = request(
-            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
-            token=eventually(gateway_token, "Rust service token did not become active"),
-            body=b'{"project":"alpha"}')
-        check(status in (403, 428) and len(origin.seen) == before,
-              "Rust risky route crossed without a binding and grant")
-        status, binding = admin(root, "POST", "/admin/gateway/contract-binding", {
-            "agent": "alice", "service": "contract", "capability": "writer",
-            "template": "contract.write.v1", "bindings": {"project": "alpha", "ticket": "T-1"},
-            "grantable_operations": ["write"]})
-        check(status == 200 and binding.get("binding_id"), "Rust binding write failed")
-        status, grant = admin(root, "POST", "/admin/gateway/grant", {
-            "agent": "alice", "service": "contract", "method": "POST",
-            "path": "/v1/write", "lifetime": "remembered"})
-        check(status == 200 and grant.get("grant_id"), "Rust grant write failed")
-        def granted():
-            token = gateway_token()
-            if token is None:
-                return None
-            status, body = request(alice, "POST",
-                                   f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
-                                   token=token, body=b'{"project":"alpha"}')
-            return (status, body) if status == 200 else None
-        rust_granted, body = eventually(granted, "Rust service/grant did not reach origin")
-        check(body == BODY and origin.seen[-1]["authorization"] ==
-              "Bearer synthetic-r638-access-v1", "Rust did not use old vault credential")
-        native_vault_hash = sha(root / "data/vault.yaml.enc")
-        check(native_vault_hash != old_vault_hash,
-              "Rust did not durably refresh the old vault credential")
-        installed_python(args.old_cli, old_env, """
-import json,sys,tomlkit
-from pathlib import Path
-from safeyolo.policy.toml_roundtrip import locked_policy_mutate
-def add(doc):
-    context=tomlkit.table()
-    context['target_hosts']=['127.0.0.2']
-    context['inject_declared']=True
-    doc['addons']['test_context']=context
-locked_policy_mutate(Path(sys.argv[1]),add)
-print(json.dumps({'test_context':'enabled_for_task_check'}))
-""", str(root / "policy.toml"))
-        task_policy_hash = sha(root / "policy.toml")
-        def context_active():
-            status, _ = request(
-                alice, "GET", f"http://127.0.0.2:{origin.server_port}/context-ready")
-            return status == 428
-        eventually(context_active, "Rust did not publish the task test context")
-        status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                   {"policy": TASK_POLICY})
-        check(status == 200 and registered.get("permission_count") == 1,
-              "Rust task registration failed")
-        status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
-        check(status == 200 and activated.get("permission_count") == 1,
-              "Rust task activation failed")
-        before = len(origin.seen)
-        def task_denied():
-            status, _ = request(
-                alice, "GET", f"http://127.0.0.2:{origin.server_port}/task",
-                headers={"X-SafeYolo-Test-Context":
-                         "run=owned;agent=alice;test=R638"})
-            return status if status == 403 else None
-        native_task_denied = eventually(task_denied, "Rust task overlay did not deny")
-        check(native_task_denied == 403 and len(origin.seen) == before,
-              "Rust task overlay did not deny before origin contact")
-        check(sha(root / "policy.toml") == task_policy_hash,
-              "Rust task registration changed durable policy")
-        installed_python(args.old_cli, old_env, """
-import json,sys
-from pathlib import Path
-from safeyolo.policy.toml_roundtrip import locked_policy_mutate
-def remove(doc): del doc['addons']['test_context']
-locked_policy_mutate(Path(sys.argv[1]),remove)
-print(json.dumps({'test_context':'removed_after_task_check'}))
-""", str(root / "policy.toml"))
-        policy_hash = sha(root / "policy.toml")
-        stop(active, root, env)
-        active = None
-
-        active = args.old_cli
-        stages.append(start(active, root, old_env, "python", args.rust_revision))
-        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
-              "old package changed CA/HMAC on rollback")
-        rollback_tls = trusted_tls_request(alice, tls_origin.server_port, root)
-        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}", backend="python")
-        check(task_status == 404, "old process inherited Rust task registration")
-        old_allowed, old_body = request(alice, "GET", f"http://127.0.0.2:{origin.server_port}/old")
-        check(old_allowed == 200 and old_body == BODY,
-              "old package did not use Rust scoped approval")
-        before = len(origin.seen)
-        old_denied, _ = request(bob, "GET", f"http://127.0.0.2:{origin.server_port}/old-deny")
-        check(old_denied in (403, 428) and len(origin.seen) == before,
-              "old package allowed Bob through Alice's approval")
-        status, old_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
-        check(status == 200 and old_catalog.get("authorized", {}).get("contract"),
-              "old package did not read Rust service authorization")
-        old_grant_status, old_grant_body = request(
-            alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
-            token=old_catalog["authorized"]["contract"]["token"],
-            body=b'{"project":"alpha"}')
-        check(old_grant_status == 200 and old_grant_body == BODY and
-              origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
-              "old package did not use Rust grant and vault credential")
-        installed_python(args.old_cli, old_env, """
-import json,sys
-from pathlib import Path
-from safeyolo.mitm_addons.service_gateway import ServiceGateway
-gateway=ServiceGateway(); gateway._get_policy_path=lambda:Path(sys.argv[1])
-gateway._load_grants_from_policy(); gateway._load_contract_bindings_from_policy()
-assert gateway._check_grant('alice','contract','POST','/v1/write').grant_id==sys.argv[2]
-assert gateway.get_contract_binding('alice','contract','writer').binding_id==sys.argv[3]
-print(json.dumps({'old_grant_and_binding_read':True}))
-""", str(root / "policy.toml"), grant["grant_id"], binding["binding_id"])
-        check(sha(root / "data/vault.yaml.enc") == native_vault_hash,
-              "old package changed the native-refreshed vault")
-        status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                   {"policy": TASK_POLICY}, backend="python")
-        check(status == 200 and registered.get("permission_count") == 1,
-              "old task registration failed")
-        status, saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
-                                   backend="python")
-        check(status == 200 and saved_task.get("policy") == TASK_POLICY,
-              "old process did not retain its task registration")
-        check(sha(root / "policy.toml") == policy_hash,
-              "old task registration changed durable policy")
-        stop(active, root, old_env)
-        active = None
-
-        active = args.rust_cli
-        stages.append(start(active, root, env, "rust", args.rust_revision))
-        check(stages[-1]["pid"] != stages[1]["pid"], "Rust return reused prior process")
-        check(ca_files(root) == ca_snapshot and sha(hmac) == hmac_hash,
-              "return Rust changed CA/HMAC identity")
-        returned_tls = trusted_tls_request(alice, tls_origin.server_port, root)
-        returned_task_get, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
-        check(returned_task_get == 404, "fresh Rust inherited prior task registration")
-        returned_task_activate, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
-        check(returned_task_activate == 404, "fresh Rust activated a prior task")
-        return_allowed, return_body = request(
-            alice, "GET", f"http://127.0.0.2:{origin.server_port}/returned")
-        check(return_allowed == 200 and return_body == BODY,
-              "return Rust did not use retained scoped approval")
-        before = len(origin.seen)
-        return_denied, _ = request(
-            bob, "GET", f"http://127.0.0.2:{origin.server_port}/returned-deny")
-        check(return_denied in (403, 428) and len(origin.seen) == before,
-              "return Rust allowed Bob through Alice's approval")
-        return_granted, return_grant_body = eventually(
-            granted, "return Rust did not use retained service/grant")
-        check(return_grant_body == BODY and origin.seen[-1]["authorization"] ==
-              "Bearer synthetic-r638-access-v1", "return Rust lost vault credential")
-        check(sha(root / "data/vault.yaml.enc") == native_vault_hash,
-              "return Rust changed the retained credential")
-        check(sha(root / "policy.toml") == policy_hash,
-              "package rollback changed durable policy")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
-            private_file(path)
-        stop(active, root, env)
-        active = None
-        installed_python(args.old_cli, old_env, """
-import json
-from safeyolo.coord import nats_runtime
-nats_runtime.stop_server()
-print(json.dumps({'nats':'stopped'}))
-""")
-        nats_started = False
-        eventually(lambda: not _process_running(nats_identity["pid"]),
-                   "transition left its NATS server running")
-        run(["tmux", "-S", str(root / "data/traffic-tmux.sock"), "kill-server"], env)
-        eventually(lambda: all(not _process_running(stage["pid"]) for stage in stages),
-                   "transition left an old or new proxy process running")
-        print(json.dumps({"result": "linux_post_deletion_package_return_passed",
-                          "state": str(root), "stages": stages,
-                          "statuses": {"initial_denied": initial_denied,
-                                       "rust_allowed": allowed_status, "rust_denied": rust_denied,
-                                       "old_allowed": old_allowed, "old_denied": old_denied,
-                                       "return_allowed": return_allowed,
-                                       "return_denied": return_denied,
-                                       "grants": [rust_granted, old_grant_status, return_granted],
-                                       "task_active": native_task_denied,
-                                       "task_reset": [returned_task_get, returned_task_activate]},
-                          "ca_hmac_unchanged": True,
-                          "trusted_tls_statuses": [old_tls["status"], rust_tls["status"],
-                                                   rollback_tls["status"], returned_tls["status"]],
-                          "durable_policy_service_grant": "used across all package switches",
-                          "task_policy": "registrations reset on process replacement",
-                          "processes_stopped": True, "agents_started": 0}), flush=True)
-    finally:
-        if active is not None:
-            try:
-                stop(active, root, old_env if active == args.old_cli else env)
-            except Exception as exc:
-                print(f"cleanup failed: {type(exc).__name__}: {exc}", flush=True)
-        if nats_started:
-            try:
-                installed_python(args.old_cli, old_env, """
-import json
-from safeyolo.coord import nats_runtime
-nats_runtime.stop_server()
-print(json.dumps({'nats':'stopped'}))
-""")
-            except Exception as exc:
-                print(f"NATS cleanup failed: {type(exc).__name__}: {exc}", flush=True)
-        for server in servers:
-            server.shutdown()
-            server.server_close()
-        # A failed start may not have created the private tmux server.
-        subprocess.run(["tmux", "-S", str(root / "data/traffic-tmux.sock"), "kill-server"],
-                       capture_output=True, check=False)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--native", action="store_true", help="Current installed native replacement/recovery")
-    parser.add_argument("--old-cli", type=Path, help="Historical cross-backend fixture only")
-    parser.add_argument("--cli", "--rust-cli", dest="rust_cli", required=True, type=Path)
+    parser.add_argument("--native", action="store_true", help="Compatibility option; all runs use the native proxy")
+    parser.add_argument("--cli", "--rust-cli", dest="cli", required=True, type=Path)
     parser.add_argument("--install-commit", "--rust-revision", dest="rust_revision", required=True)
     parser.add_argument("--state-parent", required=True, type=Path)
     parser.add_argument("--config-dir", type=Path, help="New isolated directory for the native procedure")
     parser.add_argument("--output", type=Path, help="Bounded native result report")
     parser.add_argument("--prepared-config", type=Path, help="Prepared product's verified NATS executable")
-    parser.add_argument("--post-deletion", action="store_true",
-                        help="Run the focused package return without the full #638 inventory")
     args = parser.parse_args()
-    rust_id = installed_identity(args.rust_cli, args.rust_revision)
-    if args.native:
-        if args.old_cli or args.post_deletion:
-            parser.error("--native cannot select historical cross-backend fixtures")
-        args.old_cli = args.rust_cli
-        old_id = rust_id
-        pdp_dir = None
-    else:
-        if args.old_cli is None or args.config_dir is not None or args.output is not None:
-            parser.error("historical execution requires --old-cli; native result options require --native")
-        old_id = installed_identity(args.old_cli, OLD_REVISION)
-        pdp_dir = Path(os.environ.get("SAFEYOLO_PDP_DIR", ""))
-        check(pdp_dir.is_dir() and (pdp_dir / "__init__.py").is_file(),
-              "SAFEYOLO_PDP_DIR must name the selected old source's pdp directory")
-        source_revision = run(["git", "-C", str(pdp_dir.parent), "rev-parse", "HEAD"],
-                              os.environ.copy()).strip()
-        check(source_revision == OLD_REVISION, "old pdp source revision mismatch")
+    package_id = installed_identity(args.cli, args.rust_revision)
     args.state_parent.mkdir(parents=True, exist_ok=True)
-    if args.post_deletion:
-        post_deletion_transition(args, old_id, rust_id, pdp_dir)
-        return
     if args.config_dir is not None:
         root = args.config_dir.resolve()
         root.mkdir(parents=True, exist_ok=False)
@@ -859,8 +434,6 @@ def main() -> None:
     env = env_for(root)
     if args.prepared_config is not None:
         copy_prepared_nats(args.prepared_config, root)
-    old_env = env if args.native else dict(env, SAFEYOLO_PDP_DIR=str(pdp_dir.resolve()))
-    prior_backend = "rust" if args.native else "python"
     stages: list[dict] = []
     active: Path | None = None
     nats_started = False
@@ -872,30 +445,27 @@ def main() -> None:
     for thread in threads:
         thread.start()
     try:
-        run([str(args.old_cli), "init", "--no-interactive"], old_env)
+        run([str(args.cli), "init", "--no-interactive"], env)
         (root / ".safeyolo-platform-smoke").touch()
         config = yaml.safe_load((root / "config.yaml").read_text())
-        config["proxy"].update({"port": 0 if args.native else unused_port(),
-                                "admin_port": 0 if args.native else unused_port(),
-                                "web_port": 0 if args.native else unused_port(),
+        config["proxy"].update({"port": 0,
+                                "admin_port": 0,
+                                "web_port": 0,
                                 "upstream_ca_cert": str(tls_cert_path)})
-        if args.native:
-            config["proxy"]["upstream_proxy"] = ""
-        else:
-            config["proxy"]["rust_config"] = str(root / "data/native.json")
+        config["proxy"]["upstream_proxy"] = ""
         config["proxy"].pop("backend", None)
         (root / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
         (root / "data/agent_map.json").write_text(json.dumps({
             "alice": {"ip": "10.4.0.2"}, "bob": {"ip": "10.4.0.3"}}))
-        installed_python(args.old_cli, old_env, """
+        installed_python(args.cli, env, """
 import json,sys
 from safeyolo.agents_store import save_agent
 save_agent('alice',{'agent_id':'ag-r638-alice','folder':sys.argv[1]})
 save_agent('bob',{'agent_id':'ag-r638-bob','folder':sys.argv[1]})
 print(json.dumps({'agents':'registered'}))
 """, str(root))
-        # The old writer creates the canonical encrypted file and its key.
-        installed_python(args.old_cli, old_env, """
+        # The installed CLI creates the canonical encrypted file and its key.
+        installed_python(args.cli, env, """
 import json,sys
 from pathlib import Path
 from safeyolo.core.vault import Vault,VaultCredential
@@ -972,7 +542,7 @@ capabilities:
       - methods: [GET]
         path: /v1/catalog
 """)
-        installed_python(args.old_cli, old_env, """
+        installed_python(args.cli, env, """
 import json,sys,tomlkit
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
@@ -1009,9 +579,9 @@ def update(doc):
 locked_policy_mutate(Path(sys.argv[1]),update)
 print(json.dumps({'policy':'created'}))
 """, str(root / "policy.toml"), str(tls_origin.server_port))
-        run([str(args.old_cli), "policy", "egress", "set", "deny"], old_env)
+        run([str(args.cli), "policy", "egress", "set", "deny"], env)
         check(tomllib.loads((root / "policy.toml").read_text())["hosts"]["*"]["egress"] == "deny",
-              "old policy writer did not set wildcard egress deny")
+              "installed policy writer did not set wildcard egress deny")
         provider_dir = root / "coord-providers"
         provider_dir.mkdir()
         provider_snapshot = provider_dir / "fixture.json"
@@ -1021,12 +591,12 @@ print(json.dumps({'policy':'created'}))
             "observed_at": observed_at, "valid_until": observed_at + 300_000,
         }]}))
         provider_hash = sha(provider_snapshot)
-        print(json.dumps({"state": str(root), "old": old_id, "rust": rust_id}), flush=True)
-        active = args.old_cli
-        stages.append(start(active, root, old_env, prior_backend, args.rust_revision))
+        print(json.dumps({"state": str(root), "installed_package": package_id}), flush=True)
+        active = args.cli
+        stages.append(start(active, root, env, args.rust_revision))
         agent_token = (root / "data/agent_token").read_text().strip()
         alice = socket_for(root, "alice")
-        old_coord = installed_python(args.old_cli, old_env, """
+        initial_coord = installed_python(args.cli, env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -1052,35 +622,35 @@ print(json.dumps(asyncio.run(exercise())))
                                               {"participants": ["bob"], "topic": "r638",
                                                "reason": "installed transition"})
         check(plumb_status == 202 and pending.get("request_id"),
-              f"old Python plumb pending writer failed: {plumb_status} {pending}")
+              f"initial native process plumb pending writer failed: {plumb_status} {pending}")
         plumb_request_id = pending["request_id"]
         status, denied = request(alice, "GET",
                                  f"http://127.0.0.2:{origin.server_port}/initial")
         check(status in (403, 428, 429) and not origin.seen,
-              f"Python baseline did not deny unapproved origin: {status}")
+              f"initial native process did not deny unapproved origin: {status}")
         ca = root / "certs/mitmproxy-ca.pem"
         hmac = root / "data/hmac_secret"
-        check(ca.is_file() and hmac.is_file(), "old Python did not create CA/HMAC state")
+        check(ca.is_file() and hmac.is_file(), "initial native process did not create CA/HMAC state")
         ca_snapshot = ca_files(root)
-        check(len(ca_snapshot) >= (2 if args.native else 4), "installed launcher did not create CA and key files")
+        check(len(ca_snapshot) >= 2, "installed launcher did not create CA and key files")
         for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
             private_file(path)
-        old_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        initial_tls = trusted_tls_request(alice, tls_origin.server_port, root)
         initial_state = {"ca_sha256": sha(ca), "hmac_sha256": sha(hmac),
                          "hmac_fingerprint": key_fingerprint(hmac),
                          "vault_sha256": sha(root / "data/vault.yaml.enc"),
                          "policy_sha256": sha(root / "policy.toml")}
-        stop(active, root, old_env)
+        stop(active, root, env)
         active = None
         print(json.dumps({"old_initial": stages[-1], "state": initial_state,
-                          "denied_status": status, "coord": old_coord,
-                          "plumb_request_id": plumb_request_id, "trusted_tls": old_tls}),
+                          "denied_status": status, "coord": initial_coord,
+                          "plumb_request_id": plumb_request_id, "trusted_tls": initial_tls}),
               flush=True)
-        nats_identity = ensure_nats(args.old_cli, old_env)
+        nats_identity = ensure_nats(args.cli, env)
         nats_started = True
         print(json.dumps({"nats": nats_identity}), flush=True)
-        active = args.rust_cli
-        stages.append(start(active, root, env, "rust", args.rust_revision))
+        active = args.cli
+        stages.append(start(active, root, env, args.rust_revision))
         native = json.loads((root / "data/native.json").read_text())
         check(Path(native["circuit_state_file"]) == root / "data/circuit_breaker_state.json",
               "Rust generated a different circuit path")
@@ -1099,11 +669,11 @@ print(json.dumps(asyncio.run(exercise())))
             bob, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
         check(coord_status == 200 and any(m.get("body") == "python-created-r638"
                                           for m in coord_page.get("messages", [])),
-              f"native Coord did not read old retained message: {coord_status} {coord_page}")
+              f"native Coord did not read initial retained message: {coord_status} {coord_page}")
         attention_status, attention_page = json_request(
             bob, "GET", "/api/coord/attention/wait?since=0&limit=5&timeout=0.1", agent_token)
         check(attention_status == 200 and attention_page.get("edges"),
-              f"native Coord did not read old attention: {attention_status} {attention_page}")
+              f"native Coord did not read initial attention: {attention_status} {attention_page}")
         state_status, native_room_state = json_request(
             bob, "GET", "/api/coord/rooms/r638-rollback/state", agent_token)
         lease = native_room_state.get("resource_leases", [{}])[0] if state_status == 200 else {}
@@ -1121,7 +691,7 @@ print(json.dumps(asyncio.run(exercise())))
         pending_status, pending_native = admin(root, "GET", "/admin/plumb/pending")
         check(pending_status == 200 and any(p.get("request_id") == plumb_request_id
                                             for p in pending_native.get("pending", [])),
-              "native plumb did not read old pending request")
+              "native plumb did not read initial pending request")
         approved_status, plumb_approved = admin(
             root, "POST", "/admin/plumb/approve",
             {"request_id": plumb_request_id, "ttl_seconds": 180})
@@ -1149,7 +719,7 @@ print(json.dumps(asyncio.run(exercise())))
         status, denied = request(alice, "GET",
                                  f"http://127.0.0.2:{origin.server_port}/initial-rust")
         check(status in (403, 428) and not origin.seen,
-              f"Rust did not keep Python baseline denial: {status}")
+              f"Rust did not keep initial denial: {status}")
         status, approved = admin(root, "POST", "/admin/policy/host/allow",
                                  {"host": "127.0.0.2", "port": origin.server_port,
                                   "agent": "alice", "rate": 600})
@@ -1212,7 +782,7 @@ print(json.dumps(asyncio.run(exercise())))
               "native task clear did not restore scoped host approval")
         check(sha(root / "policy.toml") == policy_before_task,
               "native task registration, activation, or clear changed durable policy")
-        installed_python(args.old_cli, old_env, """
+        installed_python(args.cli, env, """
 import json,sys
 from pathlib import Path
 from safeyolo.policy.toml_roundtrip import locked_policy_mutate
@@ -1298,7 +868,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         with sqlite3.connect(flow_db) as connection:
             row = connection.execute("SELECT id, request_id FROM flows WHERE path='/flow' AND agent_id='alice' "
                                      "AND status_code=200 ORDER BY id DESC LIMIT 1").fetchone()
-        check(row is not None, "native did not retain the exact flow in old SQLite path")
+        check(row is not None, "native did not retain the exact flow in installed SQLite path")
         flow_id, flow_request_id = row
         status, recorded_flow = json_request(alice, "GET", f"/api/flows/{flow_id}", agent_token)
         check(status == 200 and recorded_flow is not None, "native flow consumer failed")
@@ -1339,82 +909,75 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         stop(active, root, env)
         check((root / "data/circuit_breaker_state.json").is_file(),
               "native open circuit was not persisted on close")
-        active = args.old_cli
-        stages.append(start(active, root, old_env, prior_backend, args.rust_revision))
+        active = args.cli
+        stages.append(start(active, root, env, args.rust_revision))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "Python rollback changed CA/HMAC identity")
         private_file(root / "data/vault.yaml.enc")
         private_file(hmac)
-        old_circuit_status, old_circuit = json_request(alice, "GET", "/circuits", agent_token)
-        check(old_circuit_status == 200 and
-              old_circuit.get("domains", {}).get("127.0.0.2", {}).get("state") == "open",
-              f"old Python did not load native open circuit: {old_circuit_status} {old_circuit}")
+        replacement_circuit_status, replacement_circuit = json_request(alice, "GET", "/circuits", agent_token)
+        check(replacement_circuit_status == 200 and
+              replacement_circuit.get("domains", {}).get("127.0.0.2", {}).get("state") == "open",
+              f"replacement native process did not load native open circuit: {replacement_circuit_status} {replacement_circuit}")
         before = len(origin.seen)
-        old_blocked_status, _ = request(
+        replacement_blocked_status, _ = request(
             alice, "GET", f"http://127.0.0.2:{origin.server_port}/old-circuit-blocked")
-        check(old_blocked_status == 503 and len(origin.seen) == before,
-              "old Python open circuit reached origin")
+        check(replacement_blocked_status == 503 and len(origin.seen) == before,
+              "replacement native process open circuit reached origin")
         reset_status, reset = admin(root, "POST", "/admin/circuit-breaker/reset",
-                                    {"host": "127.0.0.2"}, backend=prior_backend)
-        check(reset_status == 200, f"old Python circuit reset failed: {reset_status} {reset}")
-        old_recovered_status, old_recovered = request(
+                                    {"host": "127.0.0.2"})
+        check(reset_status == 200, f"replacement native process circuit reset failed: {reset_status} {reset}")
+        replacement_recovered_status, old_recovered = request(
             alice, "GET", f"http://127.0.0.2:{origin.server_port}/old-after-reset")
-        check(old_recovered_status == 200 and old_recovered == BODY,
-              "old Python circuit reset did not restore origin use")
-        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
-                               backend=prior_backend)
-        check(task_status == 404, "old Python inherited the native task registration")
+        check(replacement_recovered_status == 200 and old_recovered == BODY,
+              "replacement native process circuit reset did not restore origin use")
+        task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 404, "replacement native process inherited the native task registration")
         old_task_status, old_task_body = request(alice, "GET", task_target)
         check(old_task_status == 200 and old_task_body == BODY,
-              "old Python inherited the native active task overlay")
+              "replacement native process inherited the native active task overlay")
         replacement_initial_task_status = old_task_status
         policy_before_old_task = sha(root / "policy.toml")
         task_status, old_registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                            {"policy": TASK_POLICY}, backend=prior_backend)
+                                            {"policy": TASK_POLICY})
         check(task_status == 200 and old_registered.get("permission_count") == 1,
-              f"old Python task registration failed: {task_status} {old_registered}")
-        task_status, old_saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}",
-                                            backend=prior_backend)
+              f"replacement native process task registration failed: {task_status} {old_registered}")
+        task_status, old_saved_task = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
         check(task_status == 200 and old_saved_task.get("policy") == TASK_POLICY,
-              "old Python did not retain its own task registration")
-        task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate",
-                               backend=prior_backend)
-        check(task_status == (200 if args.native else 404),
+              "replacement native process did not retain its own task registration")
+        task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(task_status == 200,
               "replacement task activation returned an unexpected result")
         before = len(origin.seen)
         old_task_status, old_task_body = request(alice, "GET", task_target)
-        if args.native:
-            check(old_task_status == 403 and len(origin.seen) == before,
-                  "replacement active task did not deny before origin delivery")
-            task_status, cleared = admin(root, "DELETE", f"/admin/policy/task/{TASK_ID}")
-            check(task_status == 200 and cleared.get("status") == "cleared",
-                  "replacement task clear failed")
-            restored_status, restored_body = request(alice, "GET", task_target)
-            check(restored_status == 200 and restored_body == BODY,
-                  "replacement task clear did not restore scoped host approval")
-        else:
-            check(old_task_status == 200 and old_task_body == BODY,
-                  "old Python registration changed a request without task context")
+        check(old_task_status == 403 and len(origin.seen) == before,
+              "replacement active task did not deny before origin delivery")
+        task_status, cleared = admin(root, "DELETE", f"/admin/policy/task/{TASK_ID}")
+        check(task_status == 200 and cleared.get("status") == "cleared",
+              "replacement task clear failed")
+        restored_status, restored_body = request(alice, "GET", task_target)
+        check(restored_status == 200 and restored_body == BODY,
+              "replacement task clear did not restore scoped host approval")
         check(sha(root / "policy.toml") == policy_before_old_task,
-              "old Python task registration changed durable policy")
-        rollback_tls = trusted_tls_request(alice, tls_origin.server_port, root)
-        old_catalog_status, old_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
-        check(old_catalog_status == 200 and old_catalog.get("authorized", {}).get("contract"),
-              f"old Python did not read native service authorization: {old_catalog_status}")
+              "replacement native process task registration changed durable policy")
+        replacement_tls = trusted_tls_request(alice, tls_origin.server_port, root)
+        replacement_catalog_status, replacement_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
+        check(replacement_catalog_status == 200 and replacement_catalog.get("authorized", {}).get("contract"),
+              f"replacement native process did not read native service authorization: {replacement_catalog_status}")
         check(any(item.get("name") == "gmail" and
                   item.get("description") == "r638 disposable user override"
-                  for item in old_catalog["available"]),
-              "old Python did not read user catalog override")
-        old_gateway_token = old_catalog["authorized"]["contract"]["token"]
-        old_gateway_status, old_gateway_bytes = request(
+                  for item in replacement_catalog["available"]),
+              "replacement native process did not read user catalog override")
+        old_gateway_token = replacement_catalog["authorized"]["contract"]["token"]
+        replacement_gateway_status, old_gateway_bytes = request(
             alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
             token=old_gateway_token, body=b'{"project":"alpha"}')
-        check(old_gateway_status == 200 and old_gateway_bytes == BODY,
-              f"old Python did not use native grant/binding: {old_gateway_status}")
+        check(replacement_gateway_status == 200 and old_gateway_bytes == BODY,
+              f"replacement native process did not use native grant/binding: {replacement_gateway_status}")
         check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v1",
-              "old Python did not inject native-refreshed vault credential")
-        old_coord_read = installed_python(args.old_cli, old_env, """
+              "replacement native process did not inject native-refreshed vault credential")
+        replacement_coord_read = installed_python(args.cli, env, """
 import asyncio,json
 from safeyolo.coord import api
 api.bootstrap()
@@ -1432,22 +995,21 @@ async def exercise():
             'provider_owned_lease':state['resource_leases'][0]['state']}
 print(json.dumps(asyncio.run(exercise())))
 """)
-        plumb_old_status, plumb_old = json_request(
+        replacement_plumb_status, replacement_plumb = json_request(
             bob, "GET", f"/plumb/conversations/{conversation_id}/messages", agent_token)
-        check(plumb_old_status == 200 and any(
-            m.get("body") == "native-written-plumb" for m in plumb_old.get("messages", [])),
-            f"old Python did not read native plumb message: {plumb_old_status} {plumb_old}")
+        check(replacement_plumb_status == 200 and any(
+            m.get("body") == "native-written-plumb" for m in replacement_plumb.get("messages", [])),
+            f"replacement native process did not read native plumb message: {replacement_plumb_status} {replacement_plumb}")
         plumb_reply_status, plumb_reply = json_request(
             bob, "POST", f"/plumb/conversations/{conversation_id}/messages", agent_token,
             {"body": "python-rollback-plumb"})
         check(plumb_reply_status == 200 and plumb_reply.get("id"),
-              f"old Python plumb write failed: {plumb_reply_status} {plumb_reply}")
-        if args.native:
-            native_flow(root, alice, agent_token, flow_id, "native")
-            status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
-                                     {"tag": "replacement", "value": "rollback"})
-            check(status == 200, "replacement could not write its durable flow tag")
-            old_read = installed_python(args.rust_cli, env, """
+              f"replacement native process plumb write failed: {plumb_reply_status} {plumb_reply}")
+        native_flow(root, alice, agent_token, flow_id, "native")
+        status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
+                                 {"tag": "replacement", "value": "rollback"})
+        check(status == 200, "replacement could not write its durable flow tag")
+        replacement_read = installed_python(args.cli, env, """
 import json,sys
 from pathlib import Path
 from safeyolo.core.vault import Vault
@@ -1474,97 +1036,47 @@ locked_policy_mutate(policy,revoke,save_if_unchanged=False)
 alice=load_agents(load_roundtrip(policy))['alice']
 assert not alice.get('services') and not alice.get('grants') and not alice.get('contract_bindings')
 print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
-              'native_binding_read':True,'service_revoked':True}))
+          'native_binding_read':True,'service_revoked':True}))
 """, str(root), binding_id, grant_id)
-        else:
-            old_read = installed_python(args.old_cli, old_env, """
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault
-from safeyolo.storage.flow_store import FlowStore
-from safeyolo.core.audit_stream import AuditLineParser
-from safeyolo.mitm_addons.service_gateway import ServiceGateway
-from safeyolo.policy.toml_roundtrip import load_agents,load_roundtrip,locked_policy_mutate,upsert_agent
-root=Path(sys.argv[1]); flow_id=int(sys.argv[2]); binding_id=sys.argv[3]; grant_id=sys.argv[4]
-store=FlowStore(str(root/'logs/flows.sqlite3')); store.init_db()
-flow=store.get_flow(flow_id)
-assert flow['agent_id']=='alice' and flow['status_code']==200
-assert store.get_request_body(flow_id)['body']==b'owned-r638-request-needle'
-assert store.get_response_body(flow_id)['body']==b'owned-r638-response-needle\\n'
-assert any(t['tag']=='native' and t['value']=='owned' for t in store.get_flow_tags(flow_id))
-store.tag_flow(flow_id,'python','rollback'); store.close()
-events=[e for line in (root/'logs/safeyolo.jsonl').read_text().splitlines()
-        if (e:=AuditLineParser().parse(line))]
-assert any(e['event']=='traffic.response' and e.get('agent')=='alice'
-           and e.get('request_id')==flow['request_id'] for e in events)
-vault=Vault(root/'data/vault.yaml.enc'); vault.unlock((root/'data/vault.key').read_text())
-cred=vault.get('contract-secret'); assert cred and cred.value=='synthetic-r638-access-v1'
-cred.expires_at='2020-01-01T00:00:00+00:00'; vault.store(cred)
-assert vault.refresh_oauth2('contract-secret')
-assert vault.get('contract-secret').value=='synthetic-r638-access-v2'
-policy=root/'policy.toml'; gateway=ServiceGateway(); gateway._get_policy_path=lambda:policy
-gateway._load_grants_from_policy(); gateway._load_contract_bindings_from_policy()
-assert gateway._check_grant('alice','contract','POST','/v1/write').grant_id==grant_id
-assert gateway.get_contract_binding('alice','contract','writer').binding_id==binding_id
-assert gateway.revoke_grant(grant_id) and gateway.revoke_contract_binding(binding_id)
-def remove_service(doc):
-    alice=load_agents(doc)['alice']; assert alice['services']['contract']['capability']=='writer'
-    del alice['services']['contract']; alice.pop('services',None)
-    upsert_agent(doc,'alice',alice)
-locked_policy_mutate(policy,remove_service,save_if_unchanged=False)
-alice=load_agents(load_roundtrip(policy))['alice']
-assert not alice.get('services') and not alice.get('grants') and not alice.get('contract_bindings')
-print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
-    'flow_request_bytes':len(b'owned-r638-request-needle'),
-    'flow_response_bytes':len(b'owned-r638-response-needle\\n'),
-    'audit_events':len(events),'native_tag_read':True,'python_tag_written':True,
-    'native_grant_read':True,'native_binding_read':True,'service_revoked':True,
-    'vault_refreshed':True}))
-    """, str(root), str(flow_id), binding_id, grant_id)
-        check(len(oauth.seen) == 2, "old Python OAuth writer did not call provider")
+        check(len(oauth.seen) == 2, "replacement native process OAuth writer did not call provider")
         check(sha(root / "data/vault.yaml.enc") != native_vault_hash,
-              "old Python OAuth did not durably update native vault")
+              "replacement native process OAuth did not durably update native vault")
         private_file(root / "data/vault.yaml.enc")
         check(sha(provider_snapshot) == provider_hash,
-              "Python rollback changed the provider-owned snapshot")
+              "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
-        run([str(args.old_cli), "policy", "host", "remove", "127.0.0.2",
+        run([str(args.cli), "policy", "host", "remove", "127.0.0.2",
              "--port", str(origin.server_port), "--agent", "alice"], env)
         host_policy = tomllib.loads((root / "policy.toml").read_text())
         check(f"127.0.0.2:{origin.server_port}" not in host_policy["agents"]["alice"].get("hosts", {}),
-              "old Python writer did not revoke scoped host approval")
-        print(json.dumps({"python_rollback": stages[-1], "gateway_status": old_gateway_status,
+              "replacement native process writer did not revoke scoped host approval")
+        print(json.dumps({"native_replacement": stages[-1], "gateway_status": replacement_gateway_status,
                           "task_reset_status": replacement_initial_task_status,
-                          "task_registered_without_activation": not args.native,
                           "gateway_response": summary_value(old_gateway_bytes),
-                          "old_consumer": old_read, "oauth_provider_calls": len(oauth.seen),
-                          "coord": old_coord_read, "plumb_read_count": len(plumb_old["messages"]),
+                          "replacement_consumer": replacement_read, "oauth_provider_calls": len(oauth.seen),
+                          "coord": replacement_coord_read, "plumb_read_count": len(replacement_plumb["messages"]),
                           "plumb_reply_id": plumb_reply["id"],
-                          "circuit_reset_status": old_recovered_status,
+                          "circuit_reset_status": replacement_recovered_status,
                           "host_approval_revoked": True}),
               flush=True)
-        if args.native:
-            # Leave an active task in the replaced process. Its earlier
-            # deny/clear controls establish the effect; the fresh process must
-            # discard this registration and activation.
-            policy_before_return_task = sha(root / "policy.toml")
-            task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
-                                            {"policy": TASK_POLICY})
-            check(task_status == 200 and registered.get("permission_count") == 1,
-                  "replacement could not register the task before its final stop")
-            task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
-            check(task_status == 200 and activated.get("permission_count") == 1,
-                  "replacement could not activate the task before its final stop")
-            check(sha(root / "policy.toml") == policy_before_return_task,
-                  "replacement task activation changed durable policy")
-        stop(active, root, old_env)
+        policy_before_return_task = sha(root / "policy.toml")
+        task_status, registered = admin(root, "PUT", f"/admin/policy/task/{TASK_ID}",
+                                        {"policy": TASK_POLICY})
+        check(task_status == 200 and registered.get("permission_count") == 1,
+              "replacement could not register the task before its final stop")
+        task_status, activated = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
+        check(task_status == 200 and activated.get("permission_count") == 1,
+              "replacement could not activate the task before its final stop")
+        check(sha(root / "policy.toml") == policy_before_return_task,
+              "replacement task activation changed durable policy")
+        stop(active, root, env)
         active = None
-        ensure_nats(args.old_cli, old_env)
-        active = args.rust_cli
-        stages.append(start(active, root, env, "rust", args.rust_revision))
+        ensure_nats(args.cli, env)
+        active = args.cli
+        stages.append(start(active, root, env, args.rust_revision))
         check(stages[-1]["pid"] != stages[1]["pid"], "return reused the first Rust process")
         task_status, _ = admin(root, "GET", f"/admin/policy/task/{TASK_ID}")
-        check(task_status == 404, "fresh Rust inherited the old process task registration")
+        check(task_status == 404, "fresh Rust inherited the prior process task registration")
         task_status, _ = admin(root, "POST", f"/admin/policy/task/{TASK_ID}/activate")
         check(task_status == 404, "fresh Rust activated a task from a prior process")
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
@@ -1580,10 +1092,10 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         host_revoked_status, _ = request(
             alice, "GET", f"http://127.0.0.2:{origin.server_port}/after-host-revocation")
         check(host_revoked_status in (403, 428) and len(origin.seen) == before,
-              "return Rust resurrected Python-revoked scoped host approval")
+              "return Rust resurrected replacement-revoked scoped host approval")
         status, returned_catalog = json_request(alice, "GET", "/gateway/services", agent_token)
         check(status == 200 and not returned_catalog.get("authorized", {}).get("contract"),
-              "return Rust resurrected Python-revoked service authorization")
+              "return Rust resurrected replacement-revoked service authorization")
         check(any(item.get("name") == "gmail" and
                   item.get("description") != "r638 disposable user override"
                   for item in returned_catalog["available"]),
@@ -1593,13 +1105,12 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
             alice, "POST", f"http://127.0.0.2:{origin.server_port}/v1/write?ticket=T-1",
             token=gateway_token, body=b'{"project":"alpha"}')
         check(revoked_status in (403, 428) and len(origin.seen) == before,
-              "return Rust crossed Python-revoked grant/binding")
+              "return Rust crossed replacement-revoked grant/binding")
         status, returned_flow = json_request(alice, "GET", f"/api/flows/{flow_id}", agent_token)
-        check(status == 200 and any(t.get("tag") == ("replacement" if args.native else "python") and t.get("value") == "rollback"
+        check(status == 200 and any(t.get("tag") == "replacement" and t.get("value") == "rollback"
                                     for t in returned_flow.get("tags", [])),
               f"return Rust did not read replacement flow tag: {status} {returned_flow}")
-        if args.native:
-            native_flow(root, alice, agent_token, flow_id, "replacement")
+        native_flow(root, alice, agent_token, flow_id, "replacement")
         status, returned_coord = json_request(
             alice, "GET", "/api/coord/rooms/r638-rollback/messages?since=0&limit=5", agent_token)
         check(status == 200 and [m.get("body") for m in returned_coord.get("messages", [])] == [
@@ -1625,7 +1136,7 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
                                   f"http://127.0.0.2:{origin.server_port}/after-circuit-reset")
             return (value, body) if value == 200 else None
         return_circuit_status, return_circuit_body = eventually(
-            returned_circuit_request, "return Rust did not use Python reset circuit")
+            returned_circuit_request, "return Rust did not use replacement reset circuit")
         check(return_circuit_body == BODY, "return Rust changed recovered response body")
         return_task_status, return_task_body = request(alice, "GET", task_target)
         check(return_task_status == 200 and return_task_body == BODY,
@@ -1656,7 +1167,7 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         final_status, final_bytes = eventually(
             returned_granted_request, "return Rust did not activate deliberate regrant")
         check(final_bytes == BODY and origin.seen[-1]["authorization"] ==
-              "Bearer synthetic-r638-access-v2", "return Rust did not use Python-refreshed vault")
+              "Bearer synthetic-r638-access-v2", "return Rust did not use refreshed vault")
         check(len(oauth.seen) == 2, "return Rust unexpectedly refreshed unexpired OAuth token")
         close_status, _ = admin(root, "POST", "/admin/plumb/close",
                                 {"conversation_id": conversation_id})
@@ -1667,7 +1178,7 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
         print(json.dumps({"rust_return": stages[-1], "revoked_status": revoked_status,
                           "host_revoked_status": host_revoked_status,
                           "regranted_status": final_status, "response": summary_value(final_bytes),
-                          "python_flow_tag_read": True, "coord_messages": len(returned_coord["messages"]),
+                          "replacement_flow_tag_read": True, "coord_messages": len(returned_coord["messages"]),
                           "plumb_messages": len(returned_plumb["messages"]),
                           "plumb_closed_status": closed_status,
                           "circuit_reset_status": return_circuit_status,
@@ -1675,37 +1186,31 @@ print(json.dumps({'flow_id':flow_id,'flow_agent':flow['agent_id'],
                           "oauth_provider_calls": len(oauth.seen),
                           "ca_hmac_unchanged": True,
                           "provider_owned_lease": lease["state"],
-                          "trusted_tls_statuses": [old_tls["status"], native_tls["status"],
-                                                   rollback_tls["status"], returned_tls["status"]]}),
+                          "trusted_tls_statuses": [initial_tls["status"], native_tls["status"],
+                                                   replacement_tls["status"], returned_tls["status"]]}),
               flush=True)
         stop(active, root, env)
         active = None
-        installed_python(args.old_cli, old_env, """
+        installed_python(args.cli, env, """
 import json
 from safeyolo.coord import nats_runtime
 nats_runtime.stop_server()
 print(json.dumps({'nats':'stopped'}))
 """)
         nats_started = False
-        if args.native:
-            check(len({stage["runtime"]["receipt"]["start_token"] for stage in stages}) == 4,
-                  "native replacement reused a prior process identity")
-        else:
-            print(json.dumps({"result": "linux_installed_transition_passed",
-                              "stages": [stage["backend"] for stage in stages],
-                              "state": str(root), "task_policy": "process-local reset observed",
-                              "macos": "blocked by #637 host prerequisite"}), flush=True)
+        check(len({stage["runtime"]["receipt"]["start_token"] for stage in stages}) == 4,
+              "native replacement reused a prior process identity")
     finally:
         cleanup_errors = []
         if active is not None:
             try:
-                stop(active, root, old_env if active == args.old_cli else env)
+                stop(active, root, env)
             except Exception as exc:
                 print(f"cleanup failed: {type(exc).__name__}: {exc}", flush=True)
                 cleanup_errors.append(str(exc))
         if nats_started:
             try:
-                installed_python(args.old_cli, old_env, """
+                installed_python(args.cli, env, """
 import json
 from safeyolo.coord import nats_runtime
 nats_runtime.stop_server()
@@ -1720,43 +1225,40 @@ print(json.dumps({'nats':'stopped'}))
             thread.join(timeout=5)
             if thread.is_alive():
                 cleanup_errors.append("owned origin is still live")
-        if args.native:
-            # Marker removal cannot substitute for observing a process exit.
-            for stage in stages:
-                if (_pid_alive(stage["pid"]) and _process_start_token(stage["pid"]) ==
-                        stage["runtime"]["receipt"]["start_token"]):
-                    cleanup_errors.append(f"owned native process {stage['pid']} is still live")
-            if any((root / "data" / marker).exists() for marker in (
-                    "proxy-rust.json", "proxy-readiness.json", "coord/nats/nats.pid.json")):
-                cleanup_errors.append("owned runtime marker remains")
-            if cleanup_errors:
-                raise PreparationError("owned cleanup failed: " + "; ".join(cleanup_errors))
-    if args.native:
-        report = {
-            "result": "installed_native_continuity_passed", "source_revision": args.rust_revision,
-            "state": str(root), "runtimes": stages, "agents_started": 0,
-            "flow": {"id": flow_id, "request_body_bytes": len(b"owned-r638-request-needle"),
-                     "response_body_bytes": len(BODY), "audit_correlated": True,
-                     "replacement_tag_read": True},
-            "circuit": {"replacement_blocked_status": old_blocked_status,
-                        "reset_status": old_recovered_status, "fresh_return_status": return_circuit_status},
-            "revocation": {"host_status": host_revoked_status, "service_status": revoked_status,
-                           "regranted_status": final_status, "catalog_override_removed": True},
-            "coord": {"messages": len(returned_coord["messages"]),
-                      "retained_attention_edges": old_coord_read["attention_edges"],
-                      "provider_owned_lease": lease["state"], "provider_snapshot_unchanged": True},
-            "plumb": {"pending_retained": True, "messages": len(returned_plumb["messages"]),
-                      "closed_status": closed_status},
-            "task_policy": "process-local registration and activation reset",
-            "oauth": {"provider_calls": len(oauth.seen), "stored_credential_reused": True},
-            "tls_statuses": [old_tls["status"], native_tls["status"], rollback_tls["status"], returned_tls["status"]],
-            "private_file_mode": "0600", "ca_hmac_unchanged": True, "cleanup": "stopped",
-            "limitations": ["Host composition only; no guest or hardware isolation observed."],
-        }
-        if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(json.dumps(report, indent=2) + "\n")
-        print(json.dumps(report), flush=True)
+        for stage in stages:
+            if (_pid_alive(stage["pid"]) and _process_start_token(stage["pid"]) ==
+                    stage["runtime"]["receipt"]["start_token"]):
+                cleanup_errors.append(f"owned native process {stage['pid']} is still live")
+        if any((root / "data" / marker).exists() for marker in (
+                "proxy-rust.json", "proxy-readiness.json", "coord/nats/nats.pid.json")):
+            cleanup_errors.append("owned runtime marker remains")
+        if cleanup_errors:
+            raise PreparationError("owned cleanup failed: " + "; ".join(cleanup_errors))
+    report = {
+        "result": "installed_native_continuity_passed", "source_revision": args.rust_revision,
+        "state": str(root), "runtimes": stages, "agents_started": 0,
+        "flow": {"id": flow_id, "request_body_bytes": len(b"owned-r638-request-needle"),
+                 "response_body_bytes": len(BODY), "audit_correlated": True,
+                 "replacement_tag_read": True},
+        "circuit": {"replacement_blocked_status": replacement_blocked_status,
+                    "reset_status": replacement_recovered_status, "fresh_return_status": return_circuit_status},
+        "revocation": {"host_status": host_revoked_status, "service_status": revoked_status,
+                       "regranted_status": final_status, "catalog_override_removed": True},
+        "coord": {"messages": len(returned_coord["messages"]),
+                  "retained_attention_edges": replacement_coord_read["attention_edges"],
+                  "provider_owned_lease": lease["state"], "provider_snapshot_unchanged": True},
+        "plumb": {"pending_retained": True, "messages": len(returned_plumb["messages"]),
+                  "closed_status": closed_status},
+        "task_policy": "process-local registration and activation reset",
+        "oauth": {"provider_calls": len(oauth.seen), "stored_credential_reused": True},
+        "tls_statuses": [initial_tls["status"], native_tls["status"], replacement_tls["status"], returned_tls["status"]],
+        "private_file_mode": "0600", "ca_hmac_unchanged": True, "cleanup": "stopped",
+        "limitations": ["Host composition only; no guest or hardware isolation observed."],
+    }
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report), flush=True)
 
 
 if __name__ == "__main__":

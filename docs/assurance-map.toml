@@ -155,7 +155,7 @@ authority = "The host CLI selects the existing mitmproxy CA file. The admitted C
 checks = "CA import checks certificate authority status, signing use and key match. Leaf issuance checks the destination and CA validity, bounds leaf validity, and rejects a different client SNI."
 effects = "Read existing CA material, sign a destination leaf, construct a rustls server configuration and accept an intercepted TLS connection."
 failure = "Missing or invalid CA fails startup. Invalid destination, expired CA or mismatched SNI fails the intercepted connection without creating a replacement root."
-tests = ["proxy/tests/tls.rs", "proxy/tests/transport.rs", "cli/tests/test_rust_proxy.py", "tests/proxy_contracts/test_https_contract.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
+tests = ["proxy/tests/tls.rs", "proxy/tests/transport.rs", "cli/tests/test_rust_proxy.py", "tests/proxy_contracts/test_https_contract.py", "tests/proxy_contracts/test_https_trust_continuity.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "cli/src/safeyolo/rust_proxy.py::_default_native_config",
   "proxy/src/lib.rs::Runtime::load",
@@ -173,7 +173,7 @@ authority = "Gateway token binding and route/contract/risk checks select a servi
 checks = "The guard fingerprints detected incoming credentials. An authenticated service replaces one authorized header and checks the outbound header again. A service without auth still needs gateway selection and does not read the vault. OAuth refresh uses its stored endpoint and a separate guarded outbound path."
 effects = "Vault file reads/writes for authenticated services, authorized header injection, OAuth refresh POST and admitted request delivery."
 failure = "Missing required binding, denied risk grant or failed injection stops delivery. An unavailable vault stops authenticated delivery. Routine audit uses fingerprints; stored raw HTTP flow bodies and headers remain operator-accessible evidence."
-tests = ["proxy/tests/credential_guard.rs", "proxy/tests/gateway_workflow.rs", "tests/proxy_contracts/test_gateway_scope.py", "tests/blackbox/installed_access.py", "tests/blackbox/installed_state_transition.py"]
+tests = ["proxy/tests/credential_guard.rs", "proxy/tests/gateway_workflow.rs", "tests/proxy_contracts/test_gateway_scope.py", "tests/proxy_contracts/test_guard_approval_audit.py", "tests/blackbox/installed_access.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/credentials.rs::unlock",
   "proxy/src/credentials.rs::expose_secret",

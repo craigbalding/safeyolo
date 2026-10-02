@@ -1,4 +1,4 @@
-"""Process launch seam shared by old and Rust proxy contract scenarios."""
+"""Launch the native proxy with private state for each contract scenario."""
 
 from __future__ import annotations
 
@@ -20,29 +20,6 @@ REPO = Path(__file__).resolve().parents[2]
 
 class ReadinessError(AssertionError):
     """A selected proxy could not establish its owned startup contract."""
-
-
-def python_proxy_command():
-    """Launch the reviewed suite fixture by its file path.
-
-    The source checkout selected for the product packages belongs on
-    ``PYTHONPATH``.  The migration fixture itself belongs to this test suite,
-    so invoking it as a module would let a selected source checkout shadow it.
-    """
-    return [sys.executable, str(REPO / "tests/proxy_contracts/old_proxy.py")]
-
-
-def python_proxy_environment(*, python_source=None):
-    """Build the import path for a selected Python product checkout."""
-    if python_source is None:
-        raise ValueError("Select a pinned SAFEYOLO_PYTHON_SOURCE for the historical comparator")
-    source_root = Path(python_source).expanduser().resolve()
-    return {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(
-            [str(source_root / "cli/src"), str(REPO), str(source_root)]
-        ),
-    }
 
 
 def read_events(path):
@@ -143,14 +120,16 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
                  network_guard_enabled=None, network_guard_block=None, network_guard_homoglyph=None,
                  agent_api=False, agent_api_token=b"fixture-agent-api-token-one", policy_format="toml",
                  admin_port=None, admin_api_token_file=None,
-                 circuit_breaker_enabled=None, circuit_state_file=None, python_executable=None,
+                 circuit_breaker_enabled=None, circuit_state_file=None,
                  agent_map=None, stream_large_bodies=None, credential_head_decision=False,
                  flow_store_enabled=False, via_token=None,
                  test_context_block=None,
                  gateway_services_dir=None, gateway_builtin_services_dir=None,
-                 agents=("alice", "bob"), services_dir=None, python_config_dir=None,
-                 connect_trace_path=None, python_fixture=None):
-    """Start one explicitly selected implementation in isolated fixture state."""
+                 agents=("alice", "bob"), services_dir=None,
+                 connect_trace_path=None):
+    """Start one native process in isolated fixture state."""
+    if backend != "rust":
+        raise ValueError(f"Unknown proxy backend: {backend}")
     if policy_format not in {"toml", "yaml", "json"}:
         raise ValueError(f"Unknown fixture policy format: {policy_format}")
     directory.mkdir(parents=True, exist_ok=True)
@@ -158,7 +137,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
     policy.write_text(policy_text)
     # Darwin's default temp root leaves too little sun_path for reloaded listeners.
     socket_root = "/tmp" if sys.platform == "darwin" else None
-    with tempfile.TemporaryDirectory(prefix="sy-migration-", dir=socket_root) as sockets, ExitStack() as stack:
+    with tempfile.TemporaryDirectory(prefix="sy-contract-", dir=socket_root) as sockets, ExitStack() as stack:
         if agent_map is None:
             paths = {name: str(Path(sockets) / f"10.0.0.{index}_{name}" / "proxy.sock")
                      for index, name in enumerate(agents, 2)}
@@ -220,16 +199,10 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
         if circuit_breaker_enabled is not None or circuit_state_file is not None:
             config["circuit_breaker_enabled"] = True if circuit_breaker_enabled is None else circuit_breaker_enabled
             config["circuit_state_file"] = str(directory / "circuit-state.json") if circuit_state_file is None else str(circuit_state_file)
-        # An explicit source checkout is part of backend identity.  Keep the
-        # test modules from this checkout on the inherited path while making
-        # the launched Python proxy import the caller-selected package.
-        python_source = os.environ.get("SAFEYOLO_PYTHON_SOURCE")
-        env = python_proxy_environment(python_source=python_source) if backend == "python" else os.environ.copy()
+        env = os.environ.copy()
         env["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
-        if python_config_dir is not None:
-            env["SAFEYOLO_CONFIG_DIR"] = str(python_config_dir)
         if agent_api:
-            api_data = directory / ("data" if backend == "python" and credential_head_decision else "api-data")
+            api_data = directory / "api-data"
             api_data.mkdir(exist_ok=True)
             if agent_api_token is not None:
                 token_file = api_data / "agent_token"
@@ -243,44 +216,22 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             config["parent_proxy"] = parent_proxy
         else:
             env.pop("SAFEYOLO_UPSTREAM_PROXY", None)
-        if backend == "python":
-            config.update(policy_file=str(policy), ca_directory=str(directory / "ca"))
-            if audit_passthrough:
-                config["fixture_audit_passthrough"] = True
-            config.update(ignore_hosts=list(ignore_hosts), connection_strategy="eager" if eager_connect else "lazy")
-            if stream_large_bodies is not None:
-                config["stream_large_bodies"] = stream_large_bodies
-            if credential_head_decision:
-                config["fixture_credential_head_decision"] = True
-                env["SAFEYOLO_DATA_DIR"] = config["data_dir"]
-            config["fixture_agent_api"] = agent_api
-            if gateway_services_dir is not None:
-                config["fixture_gateway"] = True
-            selected_python = python_executable or os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
-            fixture = Path(python_fixture) if python_fixture else REPO / "tests/proxy_contracts/old_proxy.py"
-            if not fixture.is_file():
-                raise FileNotFoundError(f"Selected Python proxy fixture is missing: {fixture}")
-            command = [str(selected_python or sys.executable), str(fixture)]
-        elif backend == "rust":
-            config["ignore_hosts"] = list(ignore_hosts)
-            config["agent_api_enabled"] = agent_api
-            # Every current Rust fixture uses the native policy file.
-            config["policy_file"] = str(policy)
-            (directory / "native-policy-provenance.json").write_text(
-                json.dumps({
-                    "backend": "rust", "policy_mode": "native",
-                    "policy_file": str(policy), "temporary_policy_socket": None,
-                    "temporary_policy_adapter": False,
-                }, indent=2) + "\n"
-            )
-            if tls:
-                config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
-            binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
-            if not binary.is_file():
-                raise FileNotFoundError(f"Build the Rust proxy or set SAFEYOLO_RUST_PROXY: {binary}")
-            command = [str(binary)]
-        else:
-            raise ValueError(f"Unknown proxy backend: {backend}")
+        config["ignore_hosts"] = list(ignore_hosts)
+        config["agent_api_enabled"] = agent_api
+        config["policy_file"] = str(policy)
+        (directory / "native-policy-provenance.json").write_text(
+            json.dumps({
+                "backend": "rust", "policy_mode": "native",
+                "policy_file": str(policy), "temporary_policy_socket": None,
+                "temporary_policy_adapter": False,
+            }, indent=2) + "\n"
+        )
+        if tls:
+            config["tls_ca_file"] = str(directory / "ca/mitmproxy-ca.pem")
+        binary = Path(os.environ.get("SAFEYOLO_RUST_PROXY", str(REPO / "proxy/target/debug/safeyolo-proxy")))
+        if not binary.is_file():
+            raise FileNotFoundError(f"Build the Rust proxy or set SAFEYOLO_RUST_PROXY: {binary}")
+        command = [str(binary)]
         config_path = directory / "proxy.json"
         config_path.write_text(json.dumps(config))
         if connect_trace_path is not None:
@@ -300,7 +251,7 @@ def launch_proxy(backend, directory, policy_text, *, parent_proxy=None, tls=Fals
             [readiness, *map(Path, paths.values())],
             directory / "process.log",
             readiness_file=readiness,
-            expected_backend="python" if backend == "python" else "rust-m2",
+            expected_backend="rust-m2",
         )
         yield RunningProxy(paths, Path(config["event_log"]), process, readiness)
 

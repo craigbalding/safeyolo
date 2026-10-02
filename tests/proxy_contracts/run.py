@@ -1,35 +1,24 @@
-"""Capture independently replayable HTTP contracts and a focused workload.
+"""Native workload and process observations used by the HTTP contract tests.
 
-The comparator preserves ports, decisions, delivered bytes and failure statuses.
-Generated identifiers are checked for uniqueness/attribution by the scenarios;
-they are not compared as literals across independently started processes.
-Capture output is schema-versioned evidence, not an automatic performance claim:
-the selected process, configuration and external resource observations must be
-reviewed together with the raw origin/control results.
+These helpers observe owned origins, wire bytes and external process counters.
+They do not compare a retired backend or impose a performance threshold.
 """
 
 from __future__ import annotations
 
-import argparse
 import concurrent.futures
-import contextlib
 import hashlib
 import http.client
 import json
-import os
-import platform
 import socket
 import statistics
-import subprocess
-import sys
 import threading
 import time
 from datetime import UTC, datetime
-from importlib.metadata import version
 from pathlib import Path
 
-from tests.proxy_contracts.harness import REPO, connection, launch_proxy, read_events, request
-from tests.proxy_contracts.scenarios import POLICY, network_scenario, origin_server, reserved_scenario
+from tests.proxy_contracts.harness import connection, launch_proxy, read_events, request
+from tests.proxy_contracts.scenarios import POLICY, origin_server
 
 
 def memory_kib(pid):
@@ -51,28 +40,6 @@ def _sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _git_identity(path):
-    """Return the selected source checkout identity without changing it."""
-    source = Path(path).resolve()
-    try:
-        commit = subprocess.check_output(
-            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True, stderr=subprocess.STDOUT
-        ).strip()
-        dirty = bool(subprocess.check_output(
-            ["git", "-C", str(source), "status", "--porcelain"], text=True, stderr=subprocess.STDOUT
-        ).strip())
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise ValueError(f"selected source is not a Git checkout: {source}") from error
-    return {"path": str(source), "commit": commit, "dirty": dirty}
-
-
-def _command_version(command):
-    try:
-        return subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
 
 
 def _proc_cmdline(pid):
@@ -110,8 +77,6 @@ def process_resources(pid):
 
 def runtime_resources(proxy):
     processes = {"proxy": process_resources(proxy.process.pid)}
-    if proxy.policy_process:
-        processes["temporary_policy_adapter"] = process_resources(proxy.policy_process.pid)
     return {
         "sampled_at_utc": datetime.now(UTC).isoformat(),
         "sampled_at_monotonic": time.monotonic(),
@@ -148,36 +113,6 @@ def proxy_identity(proxy):
             "payload": json.loads(provenance.read_text()),
         }
     return identity
-
-
-@contextlib.contextmanager
-def selected_process_environment(args):
-    """Bind each capture to an explicit implementation and policy path."""
-    names = (
-        "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PYTHON_EXECUTABLE",
-        "SAFEYOLO_RUST_PROXY",
-    )
-    previous = {name: os.environ.get(name) for name in names}
-    source = Path(args.python_source).expanduser().resolve()
-    binary = Path(args.rust_binary).expanduser().resolve() if args.rust_binary else None
-    if args.backend == "python":
-        os.environ["SAFEYOLO_PYTHON_SOURCE"] = str(source)
-        # Preserve a virtualenv launcher path. Resolving its symlink can select
-        # the system interpreter and silently drop the locked dependencies.
-        os.environ["SAFEYOLO_PYTHON_EXECUTABLE"] = str(Path(args.python_executable).expanduser())
-        os.environ.pop("SAFEYOLO_RUST_PROXY", None)
-    else:
-        if binary is None or not binary.is_file():
-            raise ValueError("--rust-binary must identify an existing native proxy executable")
-        os.environ["SAFEYOLO_RUST_PROXY"] = str(binary)
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 def runtime_memory(proxy):
@@ -297,9 +232,8 @@ def short_https_connections(backend, directory, count):
         while time.monotonic() < event_deadline:
             all_request_events = [event for event in read_events(proxy.event_log)
                                   if event.get("event") == "proxy.request"]
-            # Native Rust records the CONNECT decision and the subsequent
-            # decrypted application request as separate proxy.request events;
-            # Python's mitmproxy comparator records only the application hook.
+            # Native records CONNECT admission and the decrypted application
+            # request separately. Count the application requests at the origin.
             request_events = [event for event in all_request_events
                               if event.get("coverage") != "native_network_guard_only"]
             if len(request_events) >= expected_total:
@@ -1072,206 +1006,3 @@ def local_api_workload(backend, directory, count):
                 },
                 "proxy_identity": proxy_identity(proxy),
                 "limitation": "normal authenticated API and approval creation/consumption are not measured"}
-
-
-def candidate_identity(args):
-    source = Path(args.python_source).expanduser().resolve()
-    identity = {
-        "backend": args.backend,
-        "source_checkout": _git_identity(REPO),
-        "python_source_checkout": _git_identity(source),
-        "python_executable": {
-            "path": str(Path(args.python_executable).expanduser()),
-            "resolved_path": str(Path(args.python_executable).expanduser().resolve()),
-            "version": _command_version([
-                str(Path(args.python_executable).expanduser()), "-c", "import sys; print(sys.version)"
-            ]),
-        },
-        "runner_python_version": sys.version,
-        "platform": {"system": platform.platform(), "machine": platform.machine()},
-        "selection": {
-            "rust_native_policy_required": args.backend == "rust",
-            "rust_build_profile": args.rust_build_profile if args.backend == "rust" else None,
-        },
-    }
-    if args.backend == "rust":
-        identity["rust_toolchain"] = {
-            "rustc_version": _command_version(["rustc", "-Vv"]),
-            "cargo_version": _command_version(["cargo", "-V"]),
-        }
-    python_executable = Path(args.python_executable).expanduser()
-    identity["python_executable"]["sha256"] = _sha256(python_executable)
-    identity["python_executable"]["size_bytes"] = python_executable.stat().st_size
-    # A Python capture may inherit a stale SAFEYOLO_RUST_PROXY value. It is
-    # irrelevant to that process and must not be hashed after the workload.
-    executable = Path(args.rust_binary).expanduser().resolve() if args.backend == "rust" and args.rust_binary else None
-    if executable is not None:
-        identity["rust_executable"] = {
-            "path": str(executable),
-            "sha256": _sha256(executable),
-            "size_bytes": executable.stat().st_size,
-            "release_profile_declared": args.rust_build_profile == "release",
-        }
-    return identity
-
-
-def capture(args):
-    previous = json.loads(args.fixture_from.read_text()) if args.fixture_from else None
-    args.evidence.mkdir(parents=True, exist_ok=True)
-    results = {}
-    with selected_process_environment(args):
-        for name, parent in (("http_direct", False), ("http_parent", True)):
-            port = previous["contracts"][name]["fixture_origin_port"] if previous else 0
-            results[name] = network_scenario(args.backend, args.evidence / name, parent=parent, origin_port=port)
-        results["local_containment"] = reserved_scenario(args.backend, args.evidence / "local")
-        selected = args.workload or (["short", "sse", "websocket", "local-api"] if args.extended_workloads else ["short"])
-        workloads = []
-        for workload in selected:
-            if workload == "short":
-                workloads.append(short_connections(args.backend, args.evidence / "workload", args.requests))
-            elif workload == "short-https":
-                workloads.append(short_https_connections(args.backend, args.evidence / "https-workload", args.requests))
-            elif workload == "sse":
-                workloads.append(stream_workload(args.backend, args.evidence / "stream-workload", args.stream_seconds))
-            elif workload == "stream-control":
-                workloads.append(streamed_control_workload(args.backend, args.evidence / "stream-control-workload",
-                                                            args.stream_seconds))
-            elif workload == "stream-slow-admin":
-                workloads.append(streamed_slow_admin_workload(
-                    args.backend, args.evidence / "stream-slow-admin-workload", args.stream_seconds
-                ))
-            elif workload == "concurrent-admin":
-                workloads.append(concurrent_short_admin_workload(
-                    args.backend,
-                    args.evidence / "concurrent-admin-workload",
-                    args.requests,
-                    args.concurrency,
-                    args.resource_batches,
-                ))
-            elif workload == "concurrent-admin-quiet":
-                workloads.append(concurrent_short_admin_workload(
-                    args.backend,
-                    args.evidence / "concurrent-admin-quiet-workload",
-                    args.requests,
-                    args.concurrency,
-                    args.resource_batches,
-                    warmup=args.warmup_requests,
-                    quiet_seconds=args.quiet_seconds,
-                ))
-            elif workload == "sse-cancel":
-                workloads.append(cancelled_sse_workload(
-                    args.backend, args.evidence / "sse-cancel-workload", args.stream_seconds
-                ))
-            elif workload == "websocket":
-                workloads.append(websocket_workload(args.backend, args.evidence / "ws-workload", args.requests,
-                                                    args.websocket_seconds, args.websocket_interval))
-            else:
-                workloads.append(local_api_workload(args.backend, args.evidence / "api-workload", args.requests))
-    result = {
-        "schema": 2, "backend": args.backend, "captured_at": datetime.now(UTC).isoformat(),
-        "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
-        "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=REPO, text=True)),
-        "platform": platform.platform(), "machine": platform.machine(), "python": sys.version,
-        "tools": {package: version(package) for package in ("pytest", "httpx")},
-        "command": sys.argv, "candidate": candidate_identity(args),
-        "contracts": results, "workloads": workloads,
-        "tolerances": {
-            "origin_request_counts": {"allowed_difference": 0, "basis": "controlled origin observer"},
-            "delivered_body_bytes": {"allowed_difference": 0, "basis": "workload assertions"},
-            "resource_growth": {"allowed_difference": None,
-                                 "basis": "report RSS/high-water/FD samples first; no release threshold is invented"},
-        },
-        "raw_results": {
-            "output": str(args.output),
-            "evidence_directory": str(args.evidence),
-            "event_logs": "one events.jsonl per fixture directory",
-        },
-        "prior_evidence": {
-            "websocket_incomplete_cancellation": {
-                "integrated_test_commit": "48761dbc",
-                "owner_candidate_commit": "afa279b1",
-                "scope": "four sequential incomplete-fragment cancellations for WS and WSS; zero retained anonymous spools and zero origin frames",
-                "not_established": [
-                    "RSS or allocator retention",
-                    "concurrent, compressed or completed-message workloads",
-                    "large-pattern scanner memory",
-                ],
-            },
-        },
-        "scope": "focused real UDS/network-policy chain; full production chain not launched",
-        "unmeasured": ["bounded memory during long-duration streams", "WebSocket inspection workload",
-                       "concurrent approval/API responsiveness", "supported macOS host ingress"],
-        "evidence_gaps": ["proxy.request is a fixture observation in Python; complete audit/trace parity is not claimed",
-                          "Rust temporary PDP adapter does not reproduce approval audit/store side effects"],
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
-    print(json.dumps({"output": str(args.output), "contracts": list(results), "workloads": result["workloads"]}))
-
-
-def compare(args):
-    old, new = (json.loads(path.read_text()) for path in (args.baseline, args.candidate))
-    names = args.scenario or list(old["contracts"])
-    differences = {name: {"baseline": old["contracts"].get(name), "candidate": new["contracts"].get(name)}
-                   for name in names if old["contracts"].get(name) != new["contracts"].get(name)}
-    print(json.dumps({"compared": names, "equal": not differences, "differences": differences}, indent=2))
-    return int(bool(differences))
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    run = commands.add_parser("capture")
-    run.add_argument("--backend", choices=("python", "rust"), required=True)
-    run.add_argument("--python-source", type=Path, default=REPO,
-                     help="explicit Python source checkout (recorded in candidate identity)")
-    run.add_argument("--python-executable", type=Path, default=Path(sys.executable),
-                     help="explicit Python interpreter used to launch the Python proxy")
-    run.add_argument("--rust-binary", type=Path, default=os.environ.get("SAFEYOLO_RUST_PROXY"),
-                     help="explicit native proxy executable; required for Rust captures")
-    run.add_argument("--rust-build-profile", choices=("release", "debug", "unspecified"), default="unspecified",
-                     help="declared Cargo profile for the selected native executable")
-    run.add_argument("--output", type=Path, required=True)
-    run.add_argument("--evidence", type=Path, required=True)
-    run.add_argument("--fixture-from", type=Path)
-    run.add_argument("--requests", type=int, default=100)
-    run.add_argument("--extended-workloads", action="store_true", help="Run SSE, WS, and unavailable local API workloads")
-    run.add_argument("--workload", action="append",
-                     choices=("short", "short-https", "sse", "stream-control", "stream-slow-admin", "concurrent-admin", "concurrent-admin-quiet", "sse-cancel", "websocket", "local-api"),
-                     help="Select individual workloads; overrides --extended-workloads")
-    run.add_argument("--stream-seconds", type=float, default=2.0)
-    run.add_argument("--websocket-seconds", type=float, default=0.0)
-    run.add_argument("--websocket-interval", type=float, default=0.0)
-    run.add_argument("--concurrency", type=int, default=8,
-                     help="Worker count for the concurrent-admin workload")
-    run.add_argument("--resource-batches", type=int, default=3,
-                     help="Repeated batches for the concurrent-admin workload")
-    run.add_argument("--warmup-requests", type=int, default=4,
-                     help="Warm-up requests for the concurrent-admin-quiet workload")
-    run.add_argument("--quiet-seconds", type=float, default=0.25,
-                     help="Quiet interval before measured batches for the concurrent-admin-quiet workload")
-    diff = commands.add_parser("compare")
-    diff.add_argument("baseline", type=Path)
-    diff.add_argument("candidate", type=Path)
-    diff.add_argument("--scenario", action="append", choices=("http_direct", "http_parent", "local_containment"))
-    args = parser.parse_args()
-    if args.command == "compare":
-        return compare(args)
-    if args.requests < 1:
-        parser.error("--requests must be positive")
-    if args.backend == "rust" and args.rust_binary is None:
-        parser.error("Rust capture requires --rust-binary or SAFEYOLO_RUST_PROXY")
-    if not args.python_executable.is_file():
-        parser.error(f"--python-executable is not a file: {args.python_executable}")
-    if not args.python_source.is_dir():
-        parser.error(f"--python-source is not a directory: {args.python_source}")
-    if (args.stream_seconds <= 0 or args.websocket_seconds < 0 or args.websocket_interval < 0
-            or args.concurrency < 1 or args.resource_batches < 1
-            or args.warmup_requests < 0 or args.quiet_seconds < 0):
-        parser.error("stream duration must be positive; WebSocket values nonnegative; concurrency/batches positive; warmup/quiet nonnegative")
-    capture(args)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

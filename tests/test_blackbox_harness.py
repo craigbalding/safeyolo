@@ -22,9 +22,16 @@ from tests.blackbox import installed_state_transition as continuity
 from tests.blackbox.harness.vz_fixture import P2Fixture, Parent, VZRequest
 from tests.blackbox.installed_ingress import installed_identity
 from tests.blackbox.isolation import installed_access as guest
-from tests.blackbox.proxy_backend import SelectionError, identity, validate_python_source
-from tests.proxy_contracts import harness as migration_harness
-from tests.proxy_contracts.harness import REPO, python_proxy_command, python_proxy_environment
+from tests.blackbox.proxy_backend import SelectionError, identity
+from tests.proxy_contracts import harness as proxy_harness
+
+
+@pytest.fixture
+def native_binary(tmp_path):
+    binary = tmp_path / "safeyolo-proxy"
+    binary.write_text("#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 (fixture)\\n'\n")
+    binary.chmod(0o755)
+    return binary
 
 
 def test_harness_assigns_distinct_proxy_admin_and_web_ports():
@@ -84,7 +91,10 @@ def test_linux_p2_rejects_a_different_lane_before_setup(tmp_path, options):
         capture_output=True, text=True, check=False,
     )
     assert result.returncode == 2
-    assert "--p2 requires --expect-platform kvm|systrap --proxy-impl rust" in result.stderr
+    if "python" in options:
+        assert "unsupported proxy implementation" in result.stderr
+    else:
+        assert "--p2 requires --expect-platform kvm|systrap --proxy-impl rust" in result.stderr
     assert not config_dir.exists()
 
 
@@ -339,42 +349,6 @@ def test_runner_vm_forwarding_preserves_arguments_without_shell_execution(tmp_pa
     assert not sentinel.exists()
 
 
-def test_python_proxy_cross_checkout_keeps_suite_fixture_and_selected_packages(tmp_path):
-    """A source checkout cannot shadow the suite fixture launched by the harness."""
-    selected = tmp_path / "selected-checkout"
-    safeyolo = selected / "cli" / "src" / "safeyolo"
-    pdp = selected / "pdp"
-    selected_old_proxy = selected / "tests" / "proxy_contracts"
-    safeyolo.mkdir(parents=True)
-    pdp.mkdir(parents=True)
-    selected_old_proxy.mkdir(parents=True)
-    (safeyolo / "__init__.py").write_text("ORIGIN = 'selected-safeyolo'\n")
-    (pdp / "__init__.py").write_text("ORIGIN = 'selected-pdp'\n")
-    (selected_old_proxy / "__init__.py").write_text("")
-    (selected_old_proxy / "old_proxy.py").write_text("ORIGIN = 'selected-old-proxy'\n")
-
-    env = python_proxy_environment(python_source=selected)
-    probe = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import json, safeyolo, pdp; print(json.dumps({'safeyolo': safeyolo.__file__, 'pdp': pdp.__file__}))",
-        ],
-        env=env,
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    origins = json.loads(probe.stdout)
-    assert str(selected / "cli" / "src") in origins["safeyolo"]
-    assert str(selected / "pdp") in origins["pdp"]
-
-    command = python_proxy_command()
-    assert Path(command[1]).resolve() == REPO / "tests" / "proxy_contracts" / "old_proxy.py"
-    assert Path(command[1]).resolve() != selected_old_proxy / "old_proxy.py"
-
-
 def test_kvm_lane_prepares_operator_access_before_product_bootstrap():
     lane = (Path(__file__).parent / "blackbox" / "run-lane.sh").read_text()
 
@@ -388,22 +362,6 @@ def test_kvm_lane_prepares_operator_access_before_product_bootstrap():
     # The harness supplies only its operator prerequisite. Product setup owns
     # the separate persistent uid 100000 ACL and udev rule.
     assert 'setfacl -m "u:100000:rw"' not in lane
-
-
-def test_backend_selector_requires_a_real_python_checkout(tmp_path):
-    """A selected Python source must contain the package that will be loaded."""
-    with_source = tmp_path / "source"
-    package = with_source / "cli" / "src" / "safeyolo"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
-    assert validate_python_source(with_source) == with_source.resolve()
-
-    try:
-        validate_python_source(tmp_path / "missing")
-    except SelectionError as exc:
-        assert "Python source" in str(exc)
-    else:
-        raise AssertionError("missing source was accepted")
 
 
 def test_backend_selector_records_actual_rust_binary_identity(tmp_path):
@@ -431,29 +389,30 @@ def test_backend_selector_records_actual_rust_binary_identity(tmp_path):
         raise AssertionError("an unrelated executable was accepted as Rust")
 
 
-def test_backend_selector_reports_unknown_interpreter_for_pytest_wrapper(tmp_path, monkeypatch):
+def test_backend_selector_reports_unknown_interpreter_for_pytest_wrapper(tmp_path, monkeypatch, native_binary):
     """A shell wrapper must not be reported as a Python interpreter."""
     launcher = tmp_path / "pytest"
     launcher.write_text('#!/bin/sh\nexec python3 -m pytest "$@"\n')
     launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
 
-    python = identity("python", test_suite_root=Path(__file__).parents[1])["python"]
+    python = identity("rust", rust_bin=native_binary, test_suite_root=Path(__file__).parents[1])["python"]
     assert python["pytest_launcher"] == str(launcher)
     assert python["interpreter"] is None
     assert python["interpreter_version"] is None
 
     launcher.write_text(f"#!{sys.executable}\n")
-    python = identity("python", test_suite_root=Path(__file__).parents[1])["python"]
+    python = identity("rust", rust_bin=native_binary, test_suite_root=Path(__file__).parents[1])["python"]
     assert Path(python["interpreter"]).resolve() == Path(sys.executable).resolve()
     assert python["interpreter_version"] == sys.version
 
 
-def test_selected_runner_rejects_bad_selector_and_missing_binary(tmp_path):
+@pytest.mark.parametrize("selector", ["wasm", "python", "both"])
+def test_selected_runner_rejects_bad_selector_and_missing_binary(tmp_path, selector):
     """Invalid selections fail before setup can touch a live instance."""
     runner = Path(__file__).parent / "blackbox" / "run-tests.sh"
     invalid = subprocess.run(
-        [str(runner), "--proxy", "--proxy-impl", "wasm"],
+        [str(runner), "--proxy", "--proxy-impl", selector],
         text=True,
         capture_output=True,
         check=False,
@@ -510,283 +469,30 @@ def test_selected_runner_rejects_wrong_rust_executable_before_pytest(tmp_path):
     assert evidence["status"] == "infrastructure_failure"
 
 
-def test_both_backend_runner_continues_after_readiness_failure(tmp_path):
-    """A failed first readiness report cannot suppress the second backend."""
-    binary = tmp_path / "safeyolo-proxy"
-    binary.write_text(
-        "#!/bin/sh\n[ \"$1\" = --version ] && printf 'safeyolo-proxy fixture\\n'\n"
-    )
-    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "pytest-args"
-    fake_pytest = tmp_path / "pytest"
-    fake_pytest.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$@\" >> \"$BLACKBOX_ARGS_LOG\"\n"
-        "junit=''\n"
-        "for arg in \"$@\"; do case \"$arg\" in --junitxml=*) junit=\"${arg#*=}\";; esac; done\n"
-        "case \" $* \" in\n"
-        "  *'--proxy-backend python'*) printf '%s\\n' '<testsuite><testcase><failure>ReadinessError: stale listener</failure></testcase></testsuite>' > \"$junit\"; exit 1;;\n"
-        "  *'--proxy-backend rust'*) printf '%s\\n' '<testsuite></testsuite>' > \"$junit\"; exit 0;;\n"
-        "esac\n"
-        "exit 3\n"
-    )
-    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    artifacts = tmp_path / "artifacts"
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "BLACKBOX_ARGS_LOG": str(log),
-        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
-    }
-
-    result = subprocess.run(
-        [
-            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
-            "--proxy",
-            "--proxy-impl",
-            "both",
-            "--rust-bin",
-            str(binary),
-            "--",
-            "tests/proxy_contracts/test_readiness.py",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    forwarded = log.read_text().splitlines()
-    assert forwarded.count("--proxy-backend") == 2
-    assert forwarded.count("python") == 1
-    assert forwarded.count("rust") == 1
-    assert (artifacts / "proxy-python-junit.xml").is_file()
-    assert (artifacts / "proxy-rust-junit.xml").is_file()
-    assert json.loads((artifacts / "proxy-python-runtime.json").read_text())["backend"] == "python"
-    assert json.loads((artifacts / "proxy-rust-runtime.json").read_text())["backend"] == "rust"
-
-
-def test_both_backend_runner_forwards_args_and_runs_second_after_failure(tmp_path):
-    """Both mode keeps the second independent run after a first failure."""
-    source = tmp_path / "python-source"
-    package = source / "cli" / "src" / "safeyolo"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
-    binary = tmp_path / "safeyolo-proxy"
-    binary.write_text(
-        "#!/bin/sh\n[ \"$1\" = --version ] && printf 'safeyolo-proxy fixture\\n'\n"
-    )
-    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "pytest-args"
-    source_log = tmp_path / "pytest-sources"
-    fake_pytest = tmp_path / "pytest"
-    fake_pytest.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$@\" >> \"$BLACKBOX_ARGS_LOG\"\n"
-        "printf '%s\\n' \"${SAFEYOLO_PYTHON_SOURCE-unset}\" >> \"$BLACKBOX_SOURCE_LOG\"\n"
-        "for arg in \"$@\"; do\n"
-        "  [ \"$arg\" = rust ] && exit 0\n"
-        "done\n"
-        "exit 1\n"
-    )
-    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "BLACKBOX_ARGS_LOG": str(log),
-        "BLACKBOX_SOURCE_LOG": str(source_log),
-    }
-
-    result = subprocess.run(
-        [
-            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
-            "--proxy",
-            "--proxy-impl",
-            "both",
-            "--python-source",
-            str(source),
-            "--rust-bin",
-            str(binary),
-            "--",
-            "--sentinel",
-            "value with spaces",
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    forwarded = log.read_text().splitlines()
-    assert forwarded.count("--sentinel") == 2
-    assert forwarded.count("value with spaces") == 2
-    assert forwarded.count("--proxy-backend") == 2
-    assert forwarded.count("rust") >= 1
-    assert source_log.read_text().splitlines() == [str(source.resolve())] * 2
-    assert "Selected proxy backend: rust" in result.stdout
-
-
-def test_both_backend_runner_records_missing_rust_after_python_and_continues(tmp_path):
-    """Each backend is selected at its own run boundary."""
-    log = tmp_path / "pytest-args"
-    fake_pytest = tmp_path / "pytest"
-    fake_pytest.write_text(
-        "#!/bin/sh\n"
-        "printf '%s\\n' \"$@\" >> \"$BLACKBOX_ARGS_LOG\"\n"
-        "exit 0\n"
-    )
-    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    artifacts = tmp_path / "artifacts"
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "BLACKBOX_ARGS_LOG": str(log),
-        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
-    }
-
-    result = subprocess.run(
-        [
-            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
-            "--proxy",
-            "--proxy-impl",
-            "both",
-            "--rust-bin",
-            str(tmp_path / "missing-rust"),
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    forwarded = log.read_text().splitlines()
-    assert forwarded.count("--proxy-backend") == 1
-    assert forwarded.count("python") == 1
-    assert "rust" not in forwarded
-    assert "Infrastructure failure selecting proxy backend 'rust'; continuing" in result.stderr
-    python_evidence = json.loads((artifacts / "proxy-python-runtime.json").read_text())
-    assert python_evidence["backend"] == "python"
-    assert python_evidence.get("status") != "infrastructure_failure"
-    rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
-    assert rust_evidence["backend"] == "rust"
-    assert rust_evidence["status"] == "infrastructure_failure"
-
-
-def test_both_backend_runner_records_bad_python_source_and_runs_rust(tmp_path):
-    """A Python selection failure must not suppress or mislabel the Rust run."""
-    bad_source = tmp_path / "bad-python-source"
-    bad_source.mkdir()
-    binary = tmp_path / "safeyolo-proxy"
-    binary.write_text("#!/bin/sh\n[ \"$1\" = --version ] && printf 'safeyolo-proxy fixture\\n'\n")
-    binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-    log = tmp_path / "pytest-args"
-    source_log = tmp_path / "pytest-python-source"
-    fake_pytest = tmp_path / "pytest"
-    fake_pytest.write_text(
-        "#!/bin/sh\n"
-        'printf \'%s\\n\' "$@" >> "$BLACKBOX_ARGS_LOG"\n'
-        'printf \'%s\\n\' "${SAFEYOLO_PYTHON_SOURCE-unset}" > "$BLACKBOX_SOURCE_LOG"\n'
-        "exit 0\n"
-    )
-    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    artifacts = tmp_path / "artifacts"
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "BLACKBOX_ARGS_LOG": str(log),
-        "BLACKBOX_SOURCE_LOG": str(source_log),
-        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
-    }
-
-    result = subprocess.run(
-        [
-            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
-            "--proxy",
-            "--proxy-impl",
-            "both",
-            "--python-source",
-            str(bad_source),
-            "--rust-bin",
-            str(binary),
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    forwarded = log.read_text().splitlines()
-    assert forwarded.count("--proxy-backend") == 1
-    assert forwarded.count("rust") == 1
-    assert "python" not in forwarded
-    assert source_log.read_text().strip() == "unset"
-    python_evidence = json.loads((artifacts / "proxy-python-runtime.json").read_text())
-    assert python_evidence["backend"] == "python"
-    assert python_evidence["status"] == "infrastructure_failure"
-    assert "Python source must contain cli/src/safeyolo" in python_evidence["error"]
-    rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
-    assert rust_evidence["backend"] == "rust"
-    assert rust_evidence.get("status") != "infrastructure_failure"
-    assert rust_evidence["executable"] == str(binary.resolve())
-    assert "python_source" not in rust_evidence
-    direct_rust = identity("rust", python_source=bad_source, rust_bin=binary)
-    assert direct_rust["executable"] == str(binary.resolve())
-
-
-def test_both_backend_runner_infrastructure_dominates_earlier_test_failure(tmp_path):
-    """A later selection failure cannot be hidden by an earlier pytest 1."""
-    fake_pytest = tmp_path / "pytest"
-    fake_pytest.write_text("#!/bin/sh\nexit 1\n")
-    fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    artifacts = tmp_path / "artifacts"
-    env = {
-        **os.environ,
-        "PATH": f"{tmp_path}:{os.environ['PATH']}",
-        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(artifacts),
-    }
-
-    result = subprocess.run(
-        [
-            str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
-            "--proxy",
-            "--proxy-impl",
-            "both",
-            "--rust-bin",
-            str(tmp_path / "missing-rust"),
-        ],
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 2
-    rust_evidence = json.loads((artifacts / "proxy-rust-runtime.json").read_text())
-    assert rust_evidence["status"] == "infrastructure_failure"
-
-
 @pytest.mark.parametrize(
     "pytest_exit,expected",
     [(1, 1), (2, 2), (3, 2), (4, 2), (5, 2)],
     ids=["test-failure", "interrupted", "internal", "usage", "no-collection"],
 )
-def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, expected):
+def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, expected, native_binary):
     """Only pytest's ordinary test-failure code remains a test failure."""
     fake_pytest = tmp_path / "pytest"
     fake_pytest.write_text(f"#!/bin/sh\nexit {pytest_exit}\n")
     fake_pytest.chmod(fake_pytest.stat().st_mode | stat.S_IXUSR)
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(tmp_path / "artifacts"),
+    }
 
     result = subprocess.run(
         [
             str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
             "--proxy",
             "--proxy-impl",
-            "python",
+            "rust",
+            "--rust-bin",
+            str(native_binary),
         ],
         env=env,
         text=True,
@@ -797,7 +503,7 @@ def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, exp
     assert result.returncode == expected
 
 
-def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path):
+def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path, native_binary):
     """A legacy pytest plugin's code-1 readiness report is still infrastructure."""
     fake_pytest = tmp_path / "pytest"
     fake_pytest.write_text(
@@ -821,7 +527,9 @@ def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path
             str(Path(__file__).parent / "blackbox" / "run-tests.sh"),
             "--proxy",
             "--proxy-impl",
-            "python",
+            "rust",
+            "--rust-bin",
+            str(native_binary),
         ],
         env=env,
         text=True,
@@ -848,10 +556,10 @@ def test_selected_rust_runner_requires_native_policy_provenance(tmp_path, monkey
         assert command[0] == str(binary)
         yield object()
 
-    monkeypatch.setattr(migration_harness, "child_process", fake_child_process)
-    monkeypatch.setattr(migration_harness, "wait_ready", lambda *args, **kwargs: None)
+    monkeypatch.setattr(proxy_harness, "child_process", fake_child_process)
+    monkeypatch.setattr(proxy_harness, "wait_ready", lambda *args, **kwargs: None)
     directory = tmp_path / "fixture"
-    with migration_harness.launch_proxy(
+    with proxy_harness.launch_proxy(
         "rust", directory, '[hosts]\n"*" = { egress = "deny" }\n',
         native_policy=native_policy,
     ):

@@ -19,7 +19,6 @@ from tests.proxy_contracts.harness import (
     child_process,
     connection,
     launch_proxy,
-    python_proxy_environment,
     request,
     wait_ready,
 )
@@ -305,7 +304,7 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
             assert samples[-1]["open_fds"] <= samples[0]["open_fds"] + 2, samples
             # Allocators retain arenas and the protocol stacks keep bounded caches.
             # Compare quiet batches rather than requiring a return to cold RSS.
-            rss_allowance_kib = 16 * 1024 if proxy_backend == "python" else 8 * 1024
+            rss_allowance_kib = 8 * 1024
             assert max(sample["rss_kib"] for sample in samples[1:]) <= (
                 samples[0]["rss_kib"] + rss_allowance_kib
             ), samples
@@ -331,10 +330,7 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
 
         restart_directory = directory / "restart"
         restart_directory.mkdir()
-        environment = (
-            python_proxy_environment(python_source=os.environ.get("SAFEYOLO_PYTHON_SOURCE"))
-            if proxy_backend == "python" else os.environ.copy()
-        )
+        environment = os.environ.copy()
         environment["SAFEYOLO_LOG_PATH"] = str(directory / "audit.jsonl")
         with child_process(command, restart_directory, environment) as restarted_process:
             wait_ready(
@@ -342,7 +338,7 @@ def test_mixed_cancellation_batches_drain_and_restart_same_listener(proxy_backen
                 [proxy.readiness_file, *proxy.paths.values()],
                 restart_directory / "process.log",
                 readiness_file=proxy.readiness_file,
-                expected_backend="python" if proxy_backend == "python" else "rust-m2",
+                expected_backend="rust-m2",
             )
             restarted = RunningProxy(
                 proxy.paths, proxy.event_log, restarted_process, proxy.readiness_file

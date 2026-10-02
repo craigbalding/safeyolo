@@ -195,7 +195,7 @@ process, policy and controls throughout. Stop verifies readiness, lifetime
 receipt, process start identity, UDS and guest cleanup. The VZ guest verifies
 its actual vsock forwarder instead of requiring a Linux socket mount.
 
-**Continuity** selects `installed_state_transition.py --native` in its own
+**Continuity** selects `installed_state_transition.py` in its own
 host instance without booting guests. Four identified native processes write,
 replace, revoke and deliberately recover access. Return processes must retain
 SQLite ownership, exact bodies, tags and correlated audit; enforce an open
@@ -206,8 +206,11 @@ process must report unknown lease state without inventing held ownership.
 It retains approved Plumb messages before close returns 403. The same sequence
 checks stored OAuth refresh/use, trusted upstream TLS, stable CA/HMAC identity,
 0600 private state and process-local task reset. Each process, listener, NATS
-server and owned origin must stop. The historical cross-backend path remains
-executable until Lens independently verifies this native replacement.
+server and owned origin must stop. The historical cross-backend executor was
+retired after [Lens verified the native Linux replacement](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
+Current macOS package and guest replacements still need their own observations
+before matching duplicate pruning. Accepted historical migration receipts remain
+in their original issues; they are not recurring execution requirements.
 
 ## Short installed host-package witness
 

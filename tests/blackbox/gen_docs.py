@@ -187,9 +187,9 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     out.append(
         "The complete native process/protocol family is separately maintained in "
         "`tests/proxy_contracts/`, run once per supported host platform overnight. "
-        "installed_state_transition.py --native checks installed durable state "
-        "through process replacement on Linux and the hosted Mac. Its historical "
-        "cross-backend path remains during independent replacement review. "
+        "installed_state_transition.py checks installed durable state "
+        "through four native process lifetimes on Linux and the hosted Mac. "
+        "Historical cross-backend receipts remain in the accepted issues. "
         "Runner selection describes intended execution, not a passing receipt."
     )
     out.append("")

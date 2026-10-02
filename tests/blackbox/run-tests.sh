@@ -17,7 +17,7 @@
 #   ./run-tests.sh --proxy      # Proxy functional tests only
 #   ./run-tests.sh --isolation  # VM isolation tests only
 #   ./run-tests.sh --expect-platform systrap|kvm|vz
-#   ./run-tests.sh --proxy --proxy-impl python|rust|both
+#   ./run-tests.sh --proxy --proxy-impl rust
 #   ./run-tests.sh --expect-platform systrap|kvm|vz --proxy-impl rust
 #   ./run-tests.sh --expect-platform kvm --proxy-impl rust --kvm-p1
 #   ./run-tests.sh --expect-platform kvm|systrap --proxy-impl rust --p2
@@ -25,7 +25,6 @@
 #   ./run-tests.sh --expect-platform systrap|vz --proxy-impl rust --p4
 #   ./run-tests.sh --expect-platform systrap --proxy-impl rust --p3-config-only
 #   ./run-tests.sh --proxy --proxy-impl rust --rust-bin PATH
-#   ./run-tests.sh --proxy --proxy-impl python --python-source PATH
 #   ./run-tests.sh --proxy -- --collect-only
 #   ./run-tests.sh --verbose    # Verbose pytest output
 #
@@ -82,8 +81,6 @@ VERBOSE=""
 AGENT_NAME="${SAFEYOLO_TEST_AGENT:-bbtest}"
 EXPECTED_PLATFORM=""
 PROXY_IMPL="rust"
-PROXY_IMPL_SELECTED=false
-PYTHON_SOURCE=""
 RUST_BIN=""
 KVM_P1=false
 P2=false
@@ -124,26 +121,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --proxy-impl)
             if [ "$#" -lt 2 ]; then
-                echo "ERROR: --proxy-impl requires python, rust, or both" >&2
+                echo "ERROR: --proxy-impl requires rust" >&2
                 exit 2
             fi
             PROXY_IMPL="$2"
             case "$PROXY_IMPL" in
-                python|rust|both) ;;
+                rust) ;;
                 *)
                     echo "ERROR: unsupported proxy implementation '$PROXY_IMPL'" >&2
                     exit 2
                     ;;
             esac
-            PROXY_IMPL_SELECTED=true
-            shift 2
-            ;;
-        --python-source)
-            if [ "$#" -lt 2 ]; then
-                echo "ERROR: --python-source requires a checkout path" >&2
-                exit 2
-            fi
-            PYTHON_SOURCE="$2"
             shift 2
             ;;
         --rust-bin)
@@ -190,7 +178,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--proxy-impl python|rust|both] [--expect-platform PLATFORM] [--verbose] [-- PYTEST_ARGS...]"
+            echo "Usage: ./run-tests.sh [--proxy|--isolation] [--proxy-impl rust] [--expect-platform PLATFORM] [--verbose] [-- PYTEST_ARGS...]"
             exit 2
             ;;
     esac
@@ -261,9 +249,6 @@ export SAFEYOLO_SINKHOLE_HTTPS_PORT="$SINKHOLE_HTTPS_PORT"
 
 # Command-line paths are interpreted relative to the caller's directory even
 # though the legacy runner changes into tests/blackbox for its setup.
-if [ -n "$PYTHON_SOURCE" ] && [[ "$PYTHON_SOURCE" != /* ]] && [[ "$PYTHON_SOURCE" != "~/"* ]]; then
-    PYTHON_SOURCE="$CALLER_DIR/$PYTHON_SOURCE"
-fi
 if [ -n "$RUST_BIN" ] && [[ "$RUST_BIN" != /* ]] && [[ "$RUST_BIN" != "~/"* ]]; then
     RUST_BIN="$CALLER_DIR/$RUST_BIN"
 fi
@@ -279,30 +264,19 @@ for forwarded_arg in "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}"; do
     PYTEST_FORWARD_SHELL+=" $quoted_arg"
 done
 
-# The focused migration harness owns explicit proxy-only backend runs. It
+# The focused native contract harness owns explicit proxy-only runs. It
 # launches a new process for each fixture. A VM lane below instead uses one
 # installed CLI process for both host and guest tests.
 if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ]; then
     if ! command -v pytest &>/dev/null; then
-        echo "ERROR: pytest is required for selected proxy backend tests" >&2
+        echo "ERROR: pytest is required for native proxy contract tests" >&2
         exit 2
     fi
     ARTIFACTS_DIR="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts}"
     mkdir -p "$ARTIFACTS_DIR"
-    SELECTED_BACKENDS=()
-    case "$PROXY_IMPL" in
-        python|rust) SELECTED_BACKENDS=("$PROXY_IMPL") ;;
-        both) SELECTED_BACKENDS=(python rust) ;;
-    esac
     if [ -n "$EXPECTED_PLATFORM" ]; then
         echo "ERROR: --expect-platform cannot be combined with the proxy-only backend selector" >&2
         exit 2
-    fi
-    if [ -n "$PYTHON_SOURCE" ]; then
-        PYTHON_SOURCE_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$PYTHON_SOURCE")"
-        export SAFEYOLO_PYTHON_SOURCE="$PYTHON_SOURCE_REAL"
-    else
-        unset SAFEYOLO_PYTHON_SOURCE || true
     fi
     if [ -n "$RUST_BIN" ]; then
         RUST_BIN_REAL="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().resolve())' "$RUST_BIN")"
@@ -315,67 +289,40 @@ if [ "$RUN_PROXY" = true ] && [ "$RUN_ISOLATION" = false ]; then
     if [ "${#PYTEST_FORWARD_ARGS[@]}" -gt 0 ]; then
         PYTEST_ARGS+=("${PYTEST_FORWARD_ARGS[@]}")
     fi
-    test_failure=false
-    infrastructure_failure=false
-    for backend in "${SELECTED_BACKENDS[@]}"; do
-        evidence="$ARTIFACTS_DIR/proxy-${backend}-runtime.json"
-        junit="$ARTIFACTS_DIR/proxy-${backend}-junit.xml"
-        selector_args=(--test-suite-root "$REPO_ROOT")
-        if [ "$backend" = "python" ] && [ -n "$PYTHON_SOURCE" ]; then
-            selector_args+=(--python-source "$PYTHON_SOURCE")
-        fi
-        if [ "$backend" = "rust" ] && [ -n "$RUST_BIN" ]; then
-            selector_args+=(--rust-bin "$RUST_BIN")
-        fi
-        echo "=== Selected proxy backend: $backend ==="
-        echo "  Runtime evidence: $ARTIFACTS_DIR/proxy-${backend}-runtime.json"
-        # Validate immediately before this backend's independent process run.
-        # A missing second backend must leave the first run's evidence intact
-        # and must not prevent the remaining selected backends from running.
-        if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend "$backend" \
-            "${selector_args[@]}" --output "$evidence"; then
-            if [ "$backend" = "python" ]; then
-                # A rejected comparator cannot affect the independent Rust run.
-                unset SAFEYOLO_PYTHON_SOURCE || true
-            fi
-            echo "Infrastructure failure selecting proxy backend '$backend'; continuing" >&2
-            infrastructure_failure=true
-            continue
-        fi
-        set +e
-        pytest "${PYTEST_ARGS[@]}" \
-            --junitxml="$junit" \
-            "$REPO_ROOT/tests/proxy_contracts" --proxy-backend "$backend"
-        backend_result=$?
-        set -e
-        case "$backend_result" in
-            0) ;;
-            1)
-                # The migration conftest promotes ReadinessError to pytest
-                # code 2.  Keep this JUnit check as a guard for older/custom
-                # pytest plugins that leave a readiness failure as code 1.
-                if [ -s "$junit" ] && grep -Eq 'ReadinessError|Readiness timed out' "$junit"; then
-                    infrastructure_failure=true
-                else
-                    test_failure=true
-                fi
-                ;;
-            2|3|4|5|*)
-                infrastructure_failure=true
-                ;;
-        esac
-    done
-    if [ "$infrastructure_failure" = true ]; then
+    evidence="$ARTIFACTS_DIR/proxy-rust-runtime.json"
+    junit="$ARTIFACTS_DIR/proxy-rust-junit.xml"
+    selector_args=(--test-suite-root "$REPO_ROOT")
+    if [ -n "$RUST_BIN" ]; then
+        selector_args+=(--rust-bin "$RUST_BIN")
+    fi
+    echo "=== Native proxy contracts ==="
+    echo "  Runtime evidence: $evidence"
+    if ! python3 "$SCRIPT_DIR/proxy_backend.py" --backend rust \
+        "${selector_args[@]}" --output "$evidence"; then
+        echo "Infrastructure failure selecting the native proxy" >&2
         exit 2
     fi
-    if [ "$test_failure" = true ]; then
-        exit 1
-    fi
-    exit 0
+    set +e
+    pytest "${PYTEST_ARGS[@]}" --junitxml="$junit" \
+        "$REPO_ROOT/tests/proxy_contracts" --proxy-backend rust
+    backend_result=$?
+    set -e
+    case "$backend_result" in
+        0) exit 0 ;;
+        1)
+            # Promote readiness failures even when a custom pytest plugin
+            # leaves them as ordinary assertion exit 1.
+            if [ -s "$junit" ] && grep -Eq 'ReadinessError|Readiness timed out' "$junit"; then
+                exit 2
+            fi
+            exit 1
+            ;;
+        *) exit 2 ;;
+    esac
 fi
 
-if [ "$PROXY_IMPL" = "both" ] || [ -n "$PYTHON_SOURCE" ] || [ -n "$RUST_BIN" ]; then
-    echo "ERROR: VM lanes select one installed backend; source and binary overrides require --proxy" >&2
+if [ -n "$RUST_BIN" ]; then
+    echo "ERROR: binary overrides require --proxy; guest lanes use the installed native proxy" >&2
     exit 2
 fi
 
@@ -935,7 +882,7 @@ else
     printf '%s\n%s\n' "$SINKHOLE_PID" "$SINKHOLE_START_ID" > "$SINKHOLE_PID_FILE"
 fi
 
-# The native proxy has no mitmproxy sinkhole addon. Give the installed process
+# Give the installed native process
 # an owned HTTP parent for synthetic hosts, while chaining all other requests
 # through the instance's previous parent when one was configured.
 if [ "$PROXY_IMPL" = "rust" ]; then
@@ -985,38 +932,25 @@ if [ "$PROXY_IMPL" = "rust" ]; then
 fi
 
 # Proxy (test instance on separate ports)
-ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
-if [ "$PROXY_IMPL" = "python" ] && \
-   curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
-    echo "Test proxy already running"
-else
-    echo "Starting installed $PROXY_IMPL test proxy (admin port $TEST_ADMIN_PORT)..."
-    STARTED_PROXY=true
-    if [ "$PROXY_IMPL" = "rust" ]; then
-        if ! safeyolo start --no-wait; then
-            echo "ERROR: selected test proxy failed to start" >&2
-            exit 2
-        fi
-    else
-        if ! safeyolo start --test --no-wait; then
-            echo "ERROR: selected test proxy failed to start" >&2
-            exit 2
-        fi
-    fi
-
-    for i in $(seq 1 30); do
-        ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
-        if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
-            break
-        fi
-        sleep 1
-    done
-    if ! curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
-        echo "ERROR: selected test proxy did not become healthy" >&2
-        exit 2
-    fi
-    echo "  Test proxy ready"
+echo "Starting installed native test proxy (admin port $TEST_ADMIN_PORT)..."
+STARTED_PROXY=true
+if ! safeyolo start --no-wait; then
+    echo "ERROR: selected test proxy failed to start" >&2
+    exit 2
 fi
+
+for i in $(seq 1 30); do
+    ADMIN_TOKEN=$(cat "$SAFEYOLO_CONFIG_DIR/data/admin_token" 2>/dev/null || echo "")
+    if curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+if ! curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://127.0.0.1:${TEST_ADMIN_PORT}/health" >/dev/null 2>&1; then
+    echo "ERROR: selected test proxy did not become healthy" >&2
+    exit 2
+fi
+echo "  Test proxy ready"
 
 # VM (only needed for isolation tests)
 if [ "$RUN_ISOLATION" = true ]; then
@@ -1148,21 +1082,11 @@ ROOT_ISOLATION_RESULT=0
 FIREWALL_RESULT=0
 
 if [ "$RUN_PROXY" = true ]; then
-    if [ "$PROXY_IMPL" = "rust" ]; then
-        echo "=== Installed Native Host Ingress Check ==="
-    else
-        echo "=== Proxy Functional Tests (host-side) ==="
-    fi
+    echo "=== Installed Native Host Ingress Check ==="
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    # Keep the retained Python host suite and installed native host checks
-    # tied to their selected runtime. Each directory runs in full.
-    if [ "$PROXY_IMPL" = "rust" ]; then
-        pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
-    else
-        pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 proxy/
-    fi
+    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
@@ -1229,11 +1153,7 @@ fi
 
 echo "=== Test Summary ==="
 if [ "$RUN_PROXY" = true ]; then
-    if [ "$PROXY_IMPL" = "rust" ]; then
-        PROXY_LABEL="Native host check"
-    else
-        PROXY_LABEL="Proxy tests"
-    fi
+    PROXY_LABEL="Native host check"
     if [ "$PROXY_RESULT" = "0" ]; then
         echo "$PROXY_LABEL: PASSED"
     else

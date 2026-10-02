@@ -1,15 +1,33 @@
 # State compatibility and rollback inventory
 
-This existing inventory names the state families consumed by the proxy
-migration, their historical Python and native writers and readers, on-disk
-formats, and executable controls. The table preserves the original proof
-obligations and component observations. Use the accepted dispositions in
-[#638](https://github.com/craigbalding/safeyolo/issues/638) for their actual
-scope. The post-deletion package-return gate is separate under
-[#640 B4](https://github.com/craigbalding/safeyolo/issues/640); a component
-row alone does not prove that installed return.
+The current installed native continuity procedure is
+[`installed_state_transition.py`](../tests/blackbox/installed_state_transition.py).
+It checks four authenticated native process lifetimes through restart,
+replacement, revocation and deliberate recovery. It retains flow bodies/tags/audit,
+circuit reset and non-resurrection, catalogue/grants, Coord attention and external
+lease ownership, Plumb retention/closure, OAuth refresh/use, process-local task
+reset, trusted TLS, private file modes and owned cleanup. This is installed host
+composition; it does not establish guest or hardware isolation.
 
-## Comparator identity
+The independent Linux replacement receipt is
+[the #320 replacement disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5951336164).
+The macOS installed replacement remains unproved. The maintained runner selects
+continuity on Linux and hosted macOS, but selection is not a passing observation.
+The native CA import fixture in `proxy/tests/tls.rs` accepts both supported RSA
+PEM key encodings, preserves the supplied bytes on reload and rejects a missing
+root without creating a replacement. Current circuit reload/restart controls
+remain in `tests/proxy_contracts/test_circuit_reload.py`.
+
+The remaining inventory records the completed #638/#640 migration. Its source
+writers, comparator prerequisites, transition instructions and open-gap notes
+refer to their historical revisions. #620 and #640 are closed and integrated;
+their issue acceptance comments preserve the exact scope and limitations.
+[The audited Stage A source](https://github.com/craigbalding/safeyolo/tree/e91f69ef85df55341db530bab421f67c4afb83f5)
+retains the retired CA/circuit cross-backend executors and installed procedure.
+Ordinary explicit package rollback remains documented in the CLI guide.
+A component row alone does not prove an installed package return.
+
+## Historical comparator identity
 
 The selected prior comparator is the Python proxy from repository commit
 `7e934a5470f1aa9b74052fea08c6bae9b5f32e8a` (2026-09-16), the baseline named by
@@ -28,7 +46,7 @@ reports its package and process identities, durable-state checks, scopes,
 relationships, and effective decisions. It excludes passphrases, bearer values,
 private keys, and raw credential material from ordinary output.
 
-## Writer and reader matrix
+## Historical writer and reader matrix
 
 | State family and lifetime | Source writer → reader | Native writer → reader | Format and security invariants | Existing controls and owner dependency |
 | --- | --- | --- | --- | --- |
@@ -45,7 +63,7 @@ private keys, and raw credential material from ordinary output.
 | Coordination/collaboration state (external service boundary) | `cli/src/safeyolo/coord/{store,nats_client,api}.py` writes room membership, messages, attention, declarations, and resource advertisements to NATS/SQLite. `core/plumb_service.py` owns collaboration SQLite. A provider writes its own optional public lease snapshot outside the proxy. | `proxy/src/agent_api/coord.rs` reads retained advertisements and reads/writes declarations, messages, and attention through NATS/SQLite, without a replacement store. Native room state reports an advertised provider lease as `unknown`; it neither owns nor persists the provider's live lease. | Preserve trusted sender/room/attention ownership and ambiguity/error outcomes. Provider observations and active waits are not proxy-persisted state. The provider snapshot remains under its owner across a proxy switch. | `cli/tests/test_coord*`, `tests/test_plumb*`, issues #628/#629, `proxy/tests/coord_state_cross_version.rs`, and the installed transition below. |
 | Readiness, runtime identity, listener registry and task registry (ephemeral) | Source startup/lifecycle writes readiness/PID markers and keeps listener/task state in process memory; restart intentionally creates a new process state. | `proxy/src/lib.rs` and `runtime.rs` own readiness/listeners and the process-local task registry; native admin/API writers do not persist these records. | Verify cleanup, identity attribution and restart reset. Do not treat an in-memory snapshot as durable rollback evidence. | `tests/proxy_contracts/test_readiness.py`, `test_operator_task_api.py`, `test_agent_api_status.py`; #637 owns installed lifecycle and #627 owns retained operator controls. |
 
-## Installed Linux transition and package return
+## Historical installed Linux transition and package return
 
 The complete #638 W6 inventory was first exercised before deletion, when the
 installed R candidate could select both backends. The current package rejects

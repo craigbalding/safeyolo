@@ -1,10 +1,8 @@
 """Upstream TLS trust and interception CA continuity through real proxies."""
 
 import http.client
-import os
 import socket
 import ssl
-import subprocess
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -23,15 +21,10 @@ from tests.proxy_contracts.test_authority_consistency import (
     Origin,
     Parent,
     _connect,
-    _peers,
     _server,
 )
 
 AUTHORITY = f"{ALLOWED}:443".encode()
-CA_FILES = (
-    "mitmproxy-ca.pem", "mitmproxy-ca-cert.pem", "mitmproxy-ca-cert.cer",
-    "mitmproxy-ca.p12", "mitmproxy-ca-cert.p12", "mitmproxy-dhparam.pem",
-)
 CA_KEY_USAGE = x509.KeyUsage(
     digital_signature=True, content_commitment=False, key_encipherment=False,
     data_encipherment=False, key_agreement=False, key_cert_sign=True,
@@ -236,44 +229,3 @@ def test_upstream_tls_uses_logical_name_sni_and_additional_ca(proxy_backend, tmp
         with pytest.raises(ssl.SSLCertVerificationError):
             _direct_get(allowed, "127.0.0.1", ssl.create_default_context(cafile=trust),
                         b"/physical-address-rejected-control")
-
-
-def _ca_files(directory):
-    return {name: (directory / name).read_bytes() for name in CA_FILES}
-
-
-def test_python_ca_is_reused_by_rust_after_restart(proxy_backend, tmp_path):
-    """A Python-generated CA remains the client trust anchor across Rust starts."""
-    if proxy_backend == "python":
-        pytest.skip("The cross-backend transition runs in the Rust leg")
-    comparator = os.environ.get("SAFEYOLO_PYTHON_EXECUTABLE")
-    if not comparator:
-        pytest.skip("The pinned Python comparator is required for this transition")
-    directory = tmp_path / "ca-transition"
-    with _peers(directory / "peers") as (parent, peers, trust):
-        _, _, allowed, _ = peers
-        proxy_dir = directory / "proxy"
-        ca_dir = proxy_dir / "ca"
-        ca_dir.mkdir(parents=True)
-        subprocess.run(
-            [comparator, "-c", "from mitmproxy.certs import CertStore; from pathlib import Path; import sys; "
-             "CertStore.from_store(Path(sys.argv[1]), 'mitmproxy', 2048)", str(ca_dir)],
-            check=True, timeout=30,
-        )
-        original = _ca_files(ca_dir)
-        key = serialization.load_pem_private_key(original["mitmproxy-ca.pem"], password=None)
-        certificate = x509.load_pem_x509_certificate(original["mitmproxy-ca-cert.pem"])
-        assert isinstance(key, rsa.RSAPrivateKey)
-        assert key.public_key().public_numbers() == certificate.public_key().public_numbers()
-        client_ca = ca_dir / "mitmproxy-ca-cert.pem"
-        parent_url = f"http://127.0.0.1:{parent.server_address[1]}"
-        for backend, path in (("python", b"/python-original"),
-                              ("rust", b"/rust-import"),
-                              ("rust", b"/rust-restart")):
-            with launch_proxy(backend, proxy_dir, POLICY, native_policy=True,
-                              tls=True, upstream_ca=trust, parent_proxy=parent_url) as proxy:
-                _proxied_get(proxy, parent, allowed, client_ca, path, 200)
-                if path == b"/rust-import":
-                    with pytest.raises(ssl.SSLCertVerificationError):
-                        _connect(proxy.paths["alice"], AUTHORITY, ALLOWED, trust)
-            assert _ca_files(ca_dir) == original, f"{backend} replaced Python CA material"
