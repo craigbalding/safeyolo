@@ -87,7 +87,7 @@ UID 0 inside the sandbox. Linux maps it to subordinate host UID 100000; VZ
 contains it inside the microVM. Tests positively observe root and a local
 package transaction, then probe host configuration/key/device, filesystem and
 egress boundaries under that identity. A UID transition alone is not an escape.
-The root pass repeats key isolation so ordinary-user permissions cannot hide
+The root pass repeats private-key scans so ordinary-user permissions cannot hide
 fixture private material. Approved operator mounts remain outside any claim
 that arbitrary writable workspace data is harmless.
 

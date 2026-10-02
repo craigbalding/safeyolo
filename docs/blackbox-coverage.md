@@ -4,9 +4,9 @@ Generated from native pytest selections and installed procedures in `tests/black
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**84 distinct pytest methods across 24 threat categories.**
+**82 distinct pytest methods across 23 threat categories.**
 
-This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and key isolation. Key tests therefore run under both identities. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
+This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and private-key isolation. Private-key scans run under both identities; public-cert checks run as the ordinary user. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
 
 ## Installed procedural selections
 
@@ -65,10 +65,12 @@ process, policy and controls survive those cycles. Observe owned stop/cleanup.
 Exercise installed Linux workloads through one systrap or KVM guest.
 
 Retain package fetch/hash/query/install/payload/purge, read-only Git clone and
-exact commit/marker, held SSE first-event/control/release ordering, WS/WSS echo
+exact commit/marker, held SSE first-event/control/release ordering, WSS echo
 and peer-close state, denied-upgrade canary with no origin delivery, and pinned
 SSH host-key/command through CONNECT. Each selected run owns its fixtures,
 disposable key, SSH server and guest writable state.
+Installed access owns the plain-WS exchange and inspector observations through
+the same guest handshake, payload and close helper.
 
 ### Installed host package
 
@@ -294,21 +296,6 @@ exhaust operator attention.
   - *Consequence if unasserted:* /policy is a read-only diagnostic endpoint. A 200 would
 indicate method-router confusion — another mutation surface
 silently opened.
-
-#### TestAgentAPICrossAgentIsolation — Gateway service discovery responds for the authenticated caller.
-
-**Threat:** An agent needs to discover available services before using
-the gateway. This smoke check verifies the discovery response.
-The installed access scenario exercises authorization with a
-live peer.
-
-- **`test_gateway_services_scoped`** — GET /gateway/services responds without error as this agent.
-  - *Probe:* GET /gateway/services with the agent token; assert 200
-and the response body parses as JSON without an 'error' key.
-  - *Consequence if unasserted:* The calling agent needs a usable discovery endpoint.
-This assertion checks response shape. The installed access
-scenario owns populated flow search/detail and the live-peer
-gateway journey.
 
 ### `tests/blackbox/isolation/test_key_isolation.py`
 
@@ -625,11 +612,6 @@ packages. On Linux that root is deliberately namespace-root,
 mapped to an unprivileged subordinate host uid. Kernel modules,
 host memory, and eBPF remain unavailable regardless of guest uid.
 
-- **`test_runs_as_nonroot`** — Agent process uid is not 0.
-  - *Probe:* os.getuid() != 0.
-  - *Consequence if unasserted:* Running as root in the sandbox elevates the impact of
-every subsequent bug. Even with namespaces, root-inside-a-
-container is one kernel vuln away from host root.
 - **`test_expected_uid`** — Agent process runs as uid 1000.
   - *Probe:* os.getuid() == 1000.
   - *Consequence if unasserted:* The attribution chain (service_discovery, bind-mount

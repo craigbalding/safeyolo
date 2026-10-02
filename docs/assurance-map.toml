@@ -251,7 +251,7 @@ authority = "Destination and policy admission in forward/open_egress_for_flow co
 checks = "Reserved/admin targets and resolved addresses are filtered before direct dial. Inner HTTP and CONNECT require separate admission. Provider delivery also requires gateway selection as mapped in provider_services. Response inspection precedes applicable downstream delivery."
 effects = "DNS lookup, direct or parent TCP connection, authorized provider stream, TLS, HTTP/WebSocket send, tunnel relay and response streaming."
 failure = "No direct fallback from a failed parent or provider stream; opaque tunnels and passthrough have explicit inspection limits but retain network admission."
-tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_contracts/test_tunnel_contract.py", "tests/proxy_contracts/test_request_headers.py", "tests/blackbox/installed_workloads.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
+tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_contracts/test_tunnel_contract.py", "tests/proxy_contracts/test_request_headers.py", "tests/blackbox/installed_workloads.py", "tests/blackbox/installed_access.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/http.rs::forward",
   "proxy/src/http.rs::open_outbound",

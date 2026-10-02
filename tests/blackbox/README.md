@@ -153,7 +153,9 @@ and the finite pruning scope are recorded in the
 
 The **isolation** section selects host `native/`, `security/`, `identity/` and
 `lifecycle/`, then ordinary guest `isolation/` excluding root containment, then
-guest-root containment and key isolation. Root is intentional for package
+guest-root containment and private-key isolation. The three public-cert checks
+run as the ordinary user; private-key scans run under both identities.
+Root is intentional for package
 management and repair: Linux guest UID 0 maps to subordinate host UID 100000;
 VZ root stays inside its microVM. Tests observe direct egress, a known-live host
 listener, protected host/config/key/device boundaries, real package/root
@@ -169,10 +171,12 @@ request with no origin delivery. Local management API boundaries remain checked.
 
 Linux **workloads** retains package fetch/hash/query/install/payload/purge,
 read-only Git clone/commit/marker, SSE first-event and held control/release
-ordering, WS/WSS echo and peer-close state, denied-upgrade canary without origin
+ordering, WSS echo and peer-close state, denied-upgrade canary without origin
 delivery, and SSH through CONNECT. SSH uses a disposable fixture key, pinned
 host key and restricted selected command; forwarding and fixture processes are
 owned and cleaned up. The key fixture never borrows an operator credential.
+Access owns the plain-WS exchange through the same guest handshake, payload and
+close helper, with matching origin and inspector observations.
 
 **Access** stays one composition with two live guests, an operator, native proxy,
 NATS and inspector. It checks service approval, contract binding and risky-route

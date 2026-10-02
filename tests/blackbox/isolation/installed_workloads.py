@@ -198,7 +198,7 @@ def ssh_command(marker: str, username: str, agent: str) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=("package-repo", "sse", "ws-ssh"), required=True)
+    parser.add_argument("--phase", choices=("package-repo", "sse", "wss-ssh"), required=True)
     parser.add_argument("--marker", required=True)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--package-sha")
@@ -218,7 +218,6 @@ def main() -> None:
     else:
         assert args.ssh_user
         result = {
-            "ws": websocket(args.marker, args.agent, tls=False),
             "wss": websocket(args.marker, args.agent, tls=True),
             "blocked_canary": denied_websocket(args.marker, args.agent),
             "ssh": ssh_command(args.marker, args.ssh_user, args.agent),

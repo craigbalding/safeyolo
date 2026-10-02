@@ -265,34 +265,3 @@ class TestAgentAPIMutationSurface:
         assert status == 405, (
             f"POST /policy returned {status}, expected 405"
         )
-
-
-class TestAgentAPICrossAgentIsolation:
-    """Gateway service discovery responds for the authenticated caller.
-
-    Why: An agent needs to discover available services before using
-    the gateway. This smoke check verifies the discovery response.
-    The installed access scenario exercises authorization with a
-    live peer.
-    """
-
-    def test_gateway_services_scoped(self):
-        """GET /gateway/services responds without error as this agent.
-
-        What: GET /gateway/services with the agent token; assert 200
-        and the response body parses as JSON without an 'error' key.
-        Why: The calling agent needs a usable discovery endpoint.
-        This assertion checks response shape. The installed access
-        scenario owns populated flow search/detail and the live-peer
-        gateway journey.
-        """
-        import json
-        token = _agent_token()
-        status, body = _curl_agent_api("/gateway/services", token=token)
-        if status != 200:
-            pytest.skip(f"/gateway/services returned {status}")
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            pytest.fail(f"/gateway/services 200 but non-JSON (len={len(body)}): {body[:100]!r}")
-        assert "error" not in data, f"Unexpected error: {data}"

@@ -149,7 +149,8 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     out.append(
         "This is a source inventory, not a passing execution receipt. The ordinary "
         "guest selection excludes root containment; the root selection runs root "
-        "containment and key isolation. Key tests therefore run under both identities. "
+        "containment and private-key isolation. Private-key scans run under both "
+        "identities; public-cert checks run as the ordinary user. "
         "Parameterization and platform/fixture skips affect executed nodes. "
         "The retired host/proxy selection is excluded."
     )

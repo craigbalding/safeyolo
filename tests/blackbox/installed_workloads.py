@@ -2,10 +2,12 @@
 """Exercise installed Linux workloads through one systrap or KVM guest.
 
 Retain package fetch/hash/query/install/payload/purge, read-only Git clone and
-exact commit/marker, held SSE first-event/control/release ordering, WS/WSS echo
+exact commit/marker, held SSE first-event/control/release ordering, WSS echo
 and peer-close state, denied-upgrade canary with no origin delivery, and pinned
 SSH host-key/command through CONNECT. Each selected run owns its fixtures,
 disposable key, SSH server and guest writable state.
+Installed access owns the plain-WS exchange and inspector observations through
+the same guest handshake, payload and close helper.
 """
 
 from __future__ import annotations
@@ -252,7 +254,7 @@ def check_origin(sinkhole: SinkholeClient, marker: str, package_sha: str, repo_c
         "repository fixture received a non-read request"
     )
     assert paths.count(f"/p2/sse/{marker}") == 1
-    assert paths.count(f"/p2/ws/{marker}") == 2
+    assert paths.count(f"/p2/ws/{marker}") == 1
     assert not any(request.path == f"/p2/ws/{marker}-blocked" for request in requests), (
         "blocked canary reached the owned origin"
     )
@@ -262,14 +264,14 @@ def check_origin(sinkhole: SinkholeClient, marker: str, package_sha: str, repo_c
     assert stream == {"first": f"data: first:{marker}\n\n", "last": f"data: last:{marker}\n\n"}
     assert websocket["blocked_canary"] == {"status": 403, "blocked_by": "network-guard"}
     states = control("GET", f"/p2/state/{marker}")["websockets"]
-    assert len(states) == 2 and {state["tls"] for state in states} == {False, True}, states
+    assert len(states) == 1 and states[0]["tls"] is True, states
     assert all(state["status"] == "complete" and state["client"] == f"client:{marker}"
                for state in states), states
-    assert websocket["ws"]["server"] == websocket["wss"]["server"] == f"server:{marker}"
+    assert websocket["wss"]["server"] == f"server:{marker}"
     assert websocket["ssh"] == {"server": f"ssh-server:{marker}", "pinned_host_key": True, "port": 22}
     return {"package_requests": 1, "repository_paths": sorted({path for path in paths
             if path.startswith("/p2/repo.git/")}), "sse_requests": 1,
-            "ws_wss_requests": 2, "blocked_canary_origin_deliveries": 0,
+            "wss_requests": 1, "blocked_canary_origin_deliveries": 0,
             "websocket_peers": states, "ssh_command_marker": marker}
 
 
@@ -322,7 +324,7 @@ def main() -> None:
                               "--package-sha", package_sha, "--repo-commit", repo_commit)
             assert guest["trace_agent"] == args.agent
             stream, stream_control = run_held_sse(identity["cli"]["path"], args.agent, marker)
-            websocket = run_guest(identity["cli"]["path"], args.agent, marker, "ws-ssh",
+            websocket = run_guest(identity["cli"]["path"], args.agent, marker, "wss-ssh",
                                   "--ssh-user", username)
             origin = check_origin(sinkhole, marker, package_sha, repo_commit, guest, stream,
                                   websocket, observed)
@@ -340,7 +342,7 @@ def main() -> None:
         report["frozen_revision"] = FROZEN_R
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(f"Linux {args.platform} P2: installed guest package, repository, early SSE, "
-          f"WS/WSS, deny and pinned SSH verified ({args.output})")
+          f"WSS, deny and pinned SSH verified ({args.output})")
 
 
 if __name__ == "__main__":

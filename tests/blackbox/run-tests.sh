@@ -1128,7 +1128,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" --root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py"
+        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
     set -e
     echo ""
