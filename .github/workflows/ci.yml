@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  schedule:
+    - cron: "7 3 * * *"
+  workflow_dispatch:
   push:
     branches: [master, main]
   pull_request:
@@ -17,14 +20,14 @@ permissions:
 
 jobs:
   test-addons:
-    name: Test Addons (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # PRs run only 3.12 for faster feedback; push to main runs full matrix.
-        # Rationale: most regressions caught by one version; full coverage on merge.
-        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.12", "3.13"]') }}
+        # Normal PRs and pushes use quick checks. Full retained tests run overnight.
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        python-version: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["3.12", "3.13"]') || fromJSON('["3.12"]') }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,14 +44,25 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
-      # The migration suite starts a native process and is owned by the
-      # Rust proxy workflow, which builds that executable at its selected head.
-      - name: Run Python tests
-        run: uv run pytest tests/ -v --tb=short --ignore=tests/blackbox/ --ignore=tests/proxy_migration/
+      - name: Quick runner and workflow checks
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: |
+          uv run --frozen pytest -q tests/test_blackbox_harness.py tests/test_blackbox_sinkhole.py \
+            tests/test_kvm_p1_route.py tests/test_p2_installed_fixture.py \
+            tests/test_installed_host_smoke.py tests/test_blackbox_cadence_contract.py \
+            tests/test_proxy_rust_ci_events.py tests/test_workflow_action_pins.py
+
+      - name: All retained Python tests overnight
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run --frozen pytest tests/ -v --tb=short --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
 
   test-cli:
-    name: Test CLI
-    runs-on: ubuntu-latest
+    name: Test CLI${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +83,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install CLI test system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libegl1 socat
@@ -77,22 +92,31 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Stage-0 two-revision coord upgrade acceptance
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           SAFEYOLO_RUN_TWO_REVISION_ACCEPTANCE: "1"
           SAFEYOLO_COORD_ACCEPTANCE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           SAFEYOLO_COORD_ACCEPTANCE_REPORT: ${{ runner.temp }}/stage0-acceptance.json
-        run: >-
-          uv run pytest cli/tests/test_coord_kernel_upgrade_acceptance.py
-          -v --tb=short
+        run: |
+          export SAFEYOLO_COORD_ACCEPTANCE_BASE_SHA="$(git rev-parse HEAD~1)"
+          uv run --frozen pytest cli/tests/test_coord_kernel_upgrade_acceptance.py -v --tb=short
 
       - name: Upload Stage-0 coord acceptance evidence
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: coord-stage0-acceptance
+          name: coord-stage0-acceptance-${{ matrix.os }}
           path: ${{ runner.temp }}/stage0-acceptance.json
 
-      - name: Run CLI tests
-        run: uv run pytest cli/tests/ -v --tb=short
+      - name: Quick CLI checks
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+        run: |
+          uv run --frozen pytest -q cli/tests/test_config.py cli/tests/test_api.py \
+            cli/tests/test_sockets.py cli/tests/test_rust_proxy.py cli/tests/test_policy_cli.py
+
+      - name: All retained CLI tests overnight
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: uv run --frozen pytest cli/tests/ -v --tb=short
 
   lint:
     name: Lint

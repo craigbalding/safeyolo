@@ -1,4 +1,4 @@
-"""Validate a selected black-box proxy backend and record its identity.
+"""Validate the native blackbox proxy and record its identity.
 
 The runner invokes this module before a selected process is started.  It is
 deliberately stdlib-only so a missing test environment cannot turn into a
@@ -31,17 +31,6 @@ def _path(value: str | os.PathLike[str], label: str) -> Path:
         raise SelectionError(f"{label} does not exist: {candidate}") from exc
     except OSError as exc:
         raise SelectionError(f"{label} cannot be inspected: {candidate}") from exc
-
-
-def validate_python_source(value: str | os.PathLike[str]) -> Path:
-    """Validate a Python checkout without importing its package."""
-    source = _path(value, "Python source")
-    package = source / "cli" / "src" / "safeyolo"
-    if not package.is_dir() or not (package / "__init__.py").is_file():
-        raise SelectionError(
-            f"Python source must contain cli/src/safeyolo: {source}"
-        )
-    return source
 
 
 def validate_rust_binary(value: str | os.PathLike[str]) -> tuple[Path, str]:
@@ -170,53 +159,40 @@ def _nearest_git_root(path: Path) -> Path | None:
 def identity(
     backend: str,
     *,
-    python_source: str | os.PathLike[str] | None = None,
     rust_bin: str | os.PathLike[str] | None = None,
     test_suite_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, object]:
-    """Validate and describe one selected backend without starting it."""
-    if backend not in {"python", "rust"}:
+    """Validate and describe the native process without starting it."""
+    if backend != "rust":
         raise SelectionError(f"unsupported proxy backend: {backend}")
-    source = (
-        validate_python_source(python_source)
-        if backend == "python" and python_source
-        else None
-    )
     suite = (
         _path(test_suite_root, "test suite")
         if test_suite_root
         else Path(__file__).resolve().parents[2]
     )
-    binary = version = None
-    binary_source = None
-    if backend == "rust":
-        selected = rust_bin or os.environ.get("SAFEYOLO_RUST_PROXY")
-        if not selected:
-            selected = suite / "proxy/target/debug/safeyolo-proxy"
-        binary, version = validate_rust_binary(selected)
-        binary_source = _nearest_git_root(binary.parent)
-    python_source_for_identity = source or suite
+    selected = rust_bin or os.environ.get("SAFEYOLO_RUST_PROXY")
+    if not selected:
+        selected = suite / "proxy/target/debug/safeyolo-proxy"
+    binary, version = validate_rust_binary(selected)
+    binary_source = _nearest_git_root(binary.parent)
     result: dict[str, object] = {
         "schema": 1,
         "backend": backend,
-        "policy_mode": "native" if backend == "rust" else "python_reference",
+        "policy_mode": "native",
         "platform": platform.platform(),
         "machine": platform.machine(),
-        "python": _python_identity(python_source_for_identity),
-        "source": _git_identity(binary_source or source or suite),
+        "python": _python_identity(suite),
+        "source": _git_identity(binary_source or suite),
         "test_suite": {
             "root": str(suite),
             **_git_identity(suite),
         },
     }
-    if source:
-        result["python_source"] = str(source)
-    if binary:
-        result["executable"] = str(binary)
-        result["executable_version"] = version
-        result["executable_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
-        if binary_source:
-            result["executable_source_root"] = str(binary_source)
+    result["executable"] = str(binary)
+    result["executable_version"] = version
+    result["executable_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
+    if binary_source:
+        result["executable_source_root"] = str(binary_source)
     return result
 
 
@@ -236,8 +212,7 @@ def _write_failure_evidence(output: Path, backend: str, error: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=("python", "rust"), required=True)
-    parser.add_argument("--python-source")
+    parser.add_argument("--backend", choices=("rust",), required=True)
     parser.add_argument("--rust-bin")
     parser.add_argument("--test-suite-root")
     parser.add_argument("--output", type=Path, required=True)
@@ -245,7 +220,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = identity(
             args.backend,
-            python_source=args.python_source,
             rust_bin=args.rust_bin,
             test_suite_root=args.test_suite_root,
         )

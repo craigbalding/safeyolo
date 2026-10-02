@@ -13,6 +13,7 @@ import sys
 import threading
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,9 +29,9 @@ from p2_fixture import P2Fixture  # noqa: E402
 from server import SinkholeHandler, SSLSafeThreadingHTTPServer, clear_requests, get_requests  # noqa: E402
 from sinkhole_parent import Parent  # noqa: E402
 
-from tests.blackbox import p2_installed_linux  # noqa: E402
-from tests.blackbox.isolation import p2_guest_traffic as guest  # noqa: E402
-from tests.blackbox.p2_installed_linux import owned_ssh, prepare_package, prepare_repository  # noqa: E402
+from tests.blackbox import installed_workloads  # noqa: E402
+from tests.blackbox.installed_workloads import owned_ssh, prepare_package, prepare_repository  # noqa: E402
+from tests.blackbox.isolation import installed_workloads as guest  # noqa: E402
 
 
 @pytest.fixture
@@ -187,6 +188,45 @@ def test_wss_reaches_the_owned_tls_peer_through_connect(tmp_path, monkeypatch):
         assert not origin_thread.is_alive()
 
 
+@pytest.mark.parametrize("corruption", [None, "plain-ws", "unfinished", "extra-delivery", "blocked-origin"])
+def test_workload_report_requires_one_completed_tls_exchange_and_no_denied_delivery(
+    tmp_path, monkeypatch, corruption,
+):
+    marker = "p2-" + uuid.uuid4().hex
+    paths = [f"/p2/package/{guest.PACKAGE}.deb", "/p2/repo.git/info/refs",
+             "/p2/repo.git/objects/fixture", f"/p2/sse/{marker}", f"/p2/ws/{marker}"]
+    states = [{"tls": True, "status": "complete", "client": f"client:{marker}"}]
+    if corruption == "plain-ws":
+        states[0]["tls"] = False
+    elif corruption == "unfinished":
+        states[0]["status"] = "open"
+    elif corruption == "extra-delivery":
+        paths.append(f"/p2/ws/{marker}")
+    elif corruption == "blocked-origin":
+        paths.append(f"/p2/ws/{marker}-blocked")
+    requests = [SimpleNamespace(host=guest.HOST, path=path, method="GET") for path in paths]
+    sinkhole = SimpleNamespace(get_requests=lambda: requests)
+    monkeypatch.setattr(installed_workloads, "control", lambda *_args: {"websockets": states})
+    observed = tmp_path / "ssh-observed"
+    observed.write_text(marker)
+    package = {"package_sha256": "fixture-sha", "repository_commit": "fixture-commit",
+               "trace_agent": "bbtest", "package_request_id": "req-fixture"}
+    stream = {"first": f"data: first:{marker}\n\n", "last": f"data: last:{marker}\n\n"}
+    websocket = {"wss": {"server": f"server:{marker}"},
+                 "blocked_canary": {"status": 403, "blocked_by": "network-guard"},
+                 "ssh": {"server": f"ssh-server:{marker}", "pinned_host_key": True, "port": 22}}
+    if corruption:
+        with pytest.raises(AssertionError):
+            installed_workloads.check_origin(sinkhole, marker, "fixture-sha", "fixture-commit",
+                                             package, stream, websocket, observed)
+    else:
+        report = installed_workloads.check_origin(sinkhole, marker, "fixture-sha", "fixture-commit",
+                                                  package, stream, websocket, observed)
+        assert report["wss_requests"] == 1
+        assert report["websocket_peers"] == states
+        assert report["blocked_canary_origin_deliveries"] == 0
+
+
 @pytest.mark.skipif(not (shutil.which("sshd") or Path("/usr/sbin/sshd").is_file()),
                     reason="owned SSH fixture requires openssh-server")
 def test_disposable_ssh_command_uses_the_selected_connect_peer(tmp_path):
@@ -199,7 +239,7 @@ def test_disposable_ssh_command_uses_the_selected_connect_peer(tmp_path):
             thread.start()
             try:
                 bridge = shlex.join([
-                    sys.executable, "-m", "tests.proxy_migration.ssh_bridge",
+                    sys.executable, "-m", "tests.proxy_contracts.ssh_bridge",
                     str(parent.server_address[1]), f"{guest.HOST}:22", "--tcp-proxy",
                 ])
                 ssh_args = [
@@ -240,7 +280,7 @@ def test_ssh_start_failure_removes_disposable_private_keys(tmp_path, monkeypatch
     fake.write_text("#!/bin/sh\nexit 1\n")
     fake.chmod(0o755)
     original_which = shutil.which
-    monkeypatch.setattr(p2_installed_linux.shutil, "which",
+    monkeypatch.setattr(installed_workloads.shutil, "which",
                         lambda name: str(fake) if name == "sshd" else original_which(name))
     with pytest.raises(AssertionError):
         with owned_ssh(tmp_path, tmp_path / "config", "bbtest", marker):

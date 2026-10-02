@@ -1,179 +1,119 @@
-# SafeYolo Security Testing Design
+# SafeYolo security testing design
 
-## Overview
+Installed blackbox tests exercise the installed native proxy, actual guest
+bridge, host/operator APIs, origins and lifecycle. Native process/protocol
+contracts live in `tests/proxy_contracts/` and own their processes, UDS,
+policy, audit and upstream fixtures. A component test proves its observed
+boundary; it cannot substitute for an installed guest/operator composition.
+Runner self-tests exercise selection, failure and cleanup controls separately.
 
-Security tests run against real infrastructure — real proxy, real
-sandbox, real Apple VZ microVM or rootless gVisor sandbox. No mocks, no
-shortcuts. Every test class has a structured docstring
-(Title + Why) and every test function states the probe and the
-consequence if the property didn't hold; `docs/blackbox-coverage.md`
-is generated from those docstrings.
+From a clean exact checkout on a disposable Linux host with uv, Cargo and the
+bootstrap prerequisites, run the actual software-isolation lane:
 
-Tests are split across two execution domains:
-
-- **Host pytest** (`tests/blackbox/host/`): Proxy functional tests and
-  agent-identity checks. Runs on the host where sinkhole, admin API,
-  and proxy are directly accessible.
-- **Sandbox pytest** (`tests/blackbox/isolation/`): Isolation tests. Runs
-  inside the sandbox (VZ microVM on macOS, gVisor on Linux) via
-  `safeyolo agent shell`, probing from the adversary's perspective. A second
-  pass uses `agent shell --root`: guest root is an intended package-management
-  feature, and the boundary must remain intact from that context.
-
-## Quick Start
-
-On a disposable supported host with `uv` and Rust 1.94.0, run the command for
-the host's actual isolation platform. The runner retains a Python default for
-historical comparison, so native release runs select Rust explicitly. See the
-[blackbox runner guide](../tests/blackbox/README.md#running-a-lane) for host
-prerequisites and installation effects.
-
-```bash
-cd /path/to/safeyolo
-
-# Prepare through install.sh + bootstrap and run a named native lane
-./tests/blackbox/run-lane.sh systrap --proxy-impl rust --verbose
-./tests/blackbox/run-lane.sh kvm --proxy-impl rust --verbose
-./tests/blackbox/run-lane.sh vz --proxy-impl rust --verbose
-
-# Native proxy-only installation smoke; no sandbox boot
-./tests/blackbox/run-lane.sh proxy --proxy-impl rust --verbose
-
-# Already-prepared native host
-./tests/blackbox/run-tests.sh --expect-platform kvm --proxy-impl rust --verbose
+```sh
+./tests/blackbox/run-installed.sh systrap
 ```
 
-## Execution lanes and cadence
+The [blackbox README](../tests/blackbox/README.md) supplies KVM, physical Apple
+Silicon VZ, host-only package and already-prepared commands; it also names
+host prerequisites, installation effects, reports, exit codes and cleanup.
+The [generated coverage inventory](blackbox-coverage.md) reads native pytest
+owners and actual procedural selections. It is a source inventory, not a
+passing receipt. The existing [assurance map](assurance-map.toml) connects
+security decisions to implementation symbols and their test owners.
+
+## Execution boundaries
+
+| Selection | Observation boundary |
+|---|---|
+| Native component contracts | Real native process, UDS, local API, protocol, policy/audit and owned upstream; no guest claim |
+| Short installed host package | Current wheel/launcher, exact authenticated native identity, allowed/denied HTTP origins, selected packaged HTTPS and owned stop; guest isolation unproved |
+| Installed isolation | Native host ingress/security/identity/lifecycle plus ordinary and guest-root probes in an actual systrap, KVM-backed gVisor or VZ guest |
+| Installed ingress | Actual KVM guest/forwarder and correlated allowed-origin/denied-no-origin/local API observations |
+| Installed workloads | Linux guest package, Git, SSE, WS/WSS and pinned SSH through CONNECT |
+| Installed access | Two live guests, operator approvals, service/contract/credential effects, populated owner-scoped flow access, NATS/Coord/attention, Plumb and inspector |
+| Installed lifecycle | Live listener/policy changes, all five guest-default-trust TLS cases, mixed drain, three subject cycles and a separate live owner |
+
+`run-installed.sh` prepares one compatible wheel/native executable, locked
+host test environment and kernel/rootfs/helper inputs. Each independent
+section borrows only those preparation outputs. Agents, configuration, data,
+logs, fixture certificates/keys, overlays, origins, captures, approvals, tokens
+and writable state stay separate. Access retains its two guests/operator/NATS
+composition; lifecycle retains its live owner. Preparation and assertion
+failures are attributed separately. Continuation requires successful owned
+cleanup; failed cleanup prevents the next section from starting.
+
+## Cadence and real platform evidence
+
+Normal PRs use quick checks, adding relevant platform tests for platform
+changes. Complete retained tests run overnight across supported platforms;
+next-morning discovery is accepted. Full-suite success is not a routine PR
+requirement. Full macOS native protocol contracts run once overnight. The
+separate installed Mac witness checks the package without repeating that matrix.
+
+The approved overnight scope includes all three isolation mechanisms. Current
+GitHub automation covers systrap and hosted component/package checks; hardware
+automation/publication remains [#889](https://github.com/craigbalding/safeyolo/issues/889).
 
 <!-- blackbox-cadence-contract:start -->
 | Lane | Execution host | Scheduled | Current cadence | Evidence |
-|------|----------------|-----------|-----------------|----------|
-| `systrap` | GitHub-hosted Ubuntu | yes | Nightly and trusted manual dispatch | Platform assertion and GitHub Actions artifact |
-| `kvm` | Fresh libvirt guest on the KVM VPS | no | Manual/on-demand for high-risk changes and releases | Harness/operator nested-KVM evidence; not continuously published on GitHub |
-| `vz` | Physical Apple Silicon Mac mini | no | Manual/on-demand for high-risk changes and releases | Harness/operator native macOS/VZ evidence; not continuously published on GitHub |
+|---|---|---|---|---|
+| `systrap` | GitHub-hosted Ubuntu | yes | Overnight and trusted manual dispatch | Exact installed/platform result and sanitized failure artifacts |
+| `kvm` | Fresh libvirt guest through the acceptance harness | no | Manual/on-demand until #889 automation | Exact candidate/binary, actual KVM result and owned cleanup |
+| `vz` | Physical Apple Silicon Mac | no | Manual/on-demand until #889 automation | Exact candidate/binary, actual VZ result and owned cleanup |
 <!-- blackbox-cadence-contract:end -->
 
-Blackbox is not a required per-PR check. The nightly GitHub workflow tests the
-latest default-branch commit with the full `systrap` lane, installed P2, P3,
-and P4 systrap journeys, and a native Rust proxy-only macOS job. Each job
-publishes a GitHub Actions artifact. KVM VPS and Mac mini runs use the same lane
-wrapper manually/on demand for high-risk changes and release acceptance. Those
-manual runs select an exact trusted ref and produce harness/operator evidence,
-not continuously public GitHub evidence.
+Hosted Mac package/proxy checks are not physical VZ evidence. Hosted nested-KVM
+availability is not an acceptance guarantee. Hardware observations require a
+fresh host, trusted trigger, public-PR isolation, resource/owner prechecks,
+exact commit/binary/platform, result, owned cleanup and sanitized publication.
+An occupied shared resource, stale ref or another owner's process is not a
+valid setup. Release acceptance retains exact-release-commit results for each
+actual mechanism. This restructuring neither supplies #889's automation nor
+reopens historical #640 acceptance.
 
-All three runtimes must pass against the release commit. That release gate is
-distinct from the current automation cadence; it does not imply that the KVM
-or VZ lanes run nightly.
+## Security observations
 
-GitHub macOS runs a proxy-only smoke and can compile the Swift helper, but it
-cannot supply VZ runtime evidence. GitHub-hosted nested KVM is not accepted as
-KVM evidence. These boundaries keep a green run from claiming an isolation
-mechanism it did not execute.
+Guest egress goes through its real localhost forwarder: mounted per-agent UDS
+for gVisor, vsock for VZ. The guest has no ordinary external network path. Tests
+observe direct attempts at network, known-live host listeners and protected
+management/control endpoints rather than attributing containment to a host
+firewall. The operator can inspect the owned origin/control API independently;
+the guest cannot acquire that operator authority by sending an HTTP header.
 
-## Architecture
+Guest root is intentional for package administration and repair. The default
+shell is UID 1000; guest sudo and operator-mediated `agent shell --root` reach
+UID 0 inside the sandbox. Linux maps it to subordinate host UID 100000; VZ
+contains it inside the microVM. Tests positively observe root and a local
+package transaction, then probe host configuration/key/device, filesystem and
+egress boundaries under that identity. A UID transition alone is not an escape.
+The root pass repeats private-key scans so ordinary-user permissions cannot hide
+fixture private material. Approved operator mounts remain outside any claim
+that arbitrary writable workspace data is harmless.
 
-```
-Host (pytest)                          Sandbox (pytest via agent shell)
-├── proxy_client → proxy:8080          ├── test_vm_isolation.py
-├── sinkhole.get_requests() → :19999   │   ├── proxy-only egress
-├── admin_client → :9090               │   └── default-user hardening
-└── no VM interaction needed           ├── test_root_containment.py (--root)
-                                       │   ├── UID 0 + local .deb install
-                                       │   └── host/network/share containment
-                                       └── test_key_isolation.py (user + root)
-                                           └── no private keys anywhere
-```
+Private fixture keys are generated in disposable config outside the mounted
+repository. Only public certificates and the guest trust fixture are exposed
+read-only. TLS checks use a dedicated owned CA and actual certificate validation,
+with default guest trust on installed paths. Wrong-SAN, self-signed, future and
+expired origins must receive no request and must not silently become passthrough;
+a scoped ignore-host case is a separate explicit observation. See the
+[certificate fixtures](../tests/blackbox/certs/README.md).
 
-The `run-lane.sh` wrapper performs the supported source install, uses
-`safeyolo bootstrap --check --json` as the source of truth for build packages,
-runs bootstrap, and declares the required platform. `run-tests.sh` then
-orchestrates:
-1. Generate test certs (keys stored outside repo tree)
-2. Start sinkhole (HTTP/HTTPS capture server)
-3. Start proxy in test mode (`safeyolo start --test`)
-4. Assert `doctor --json` reports the requested systrap, KVM, or VZ runtime
-5. Boot a BYOA sandbox with the repo as workspace
-6. Run host-side pytest (credential guard, network guard)
-7. Run sandbox-side pytest as the default agent user
-8. Open `safeyolo agent shell --root`, prove local package installation, and
-   rerun root-relevant containment and key-isolation probes
-9. Cleanup
+Origin capture is the delivery witness. It preserves lossless bytes, raw
+request targets/query spelling, ordered duplicate headers and body completion
+versus early close. Receiver readiness includes a directly observed positive
+probe, cleared before denied-no-origin checks. A connection alone is not a
+captured request. Process, guest, listener, NATS and fixture cleanup are owned;
+a local fixture stop cannot establish a physical Mac's ports are free.
 
-## Test Suites
-
-### Proxy Functional Tests (host-side)
-
-| File | Tests |
-|------|-------|
-| `test_credential_guard.py` | Credential routing to authorized hosts, exfiltration blocking, block response content |
-| `test_network_guard.py` | Domain access control, rate limiting, Proxy-Authorization stripping |
-
-**Verification method:** The sinkhole captures all upstream traffic. Tests query
-the sinkhole control API to verify what *actually reached* the upstream — not
-what the proxy said it blocked.
-
-### Sandbox Isolation Tests
-
-| File | Tests |
-|------|-------|
-| `test_vm_isolation.py` | Default-user network escape, privilege transition, kernel/device hardening, filesystem isolation |
-| `test_root_containment.py` | Guest UID 0, local package install/purge, root-context egress and host-boundary containment |
-| `test_key_isolation.py` | Public cert present and no private keys; also rerun as guest root so permissions cannot hide key material |
-
-**Verification method:** Direct probes from inside the VM. The default-user
-suite checks its restricted posture. The guest-root suite positively verifies
-UID 0 and a real local package transaction, then tests outcomes at the actual
-security boundary: no direct egress, host listener access, writable host share,
-host KVM device, or hidden private key material.
-
-## Key Design Decisions
-
-### Host tests verify the proxy, VM tests verify isolation
-
-The host has direct access to the sinkhole control API (port 19999) and admin
-API (port 9090). The VM's firewall correctly blocks both — that's a security
-property we test, not a problem to work around.
-
-### Private keys outside the repo
-
-Test cert private keys are stored in `~/.safeyolo/test-certs/`, not in the repo
-tree. The workspace is mounted into agent VMs via VirtioFS — keys in the repo
-would be accessible to agents. The `test_full_filesystem_scan_for_private_keys`
-test verifies this on every run.
-
-### Guest root is inside the boundary
-
-SafeYolo deliberately supports guest root for `apt` and repair. The default
-agent shell remains uid 1000, but `sudo` and the operator-mediated
-`agent shell --root` path reach uid 0. That is not host root:
-
-- gVisor maps sandbox uid 0 to an unprivileged subordinate host uid, verified
-  from the host-side live user-namespace map.
-- Apple VZ contains uid 0 inside the hardware microVM.
-
-Accordingly, acceptance tests root as a supported capability and then probes
-containment, rather than treating `setuid(0)` itself as an escape.
-
-### Ground truth TLS
-
-A dedicated test CA signs the sinkhole certificate. The proxy verifies it the
-same way it verifies production certs. No `ssl_insecure` flags. See
-[`certs/README.md`](../tests/blackbox/certs/README.md).
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `run-lane.sh` | Install/bootstrap/platform-aware acceptance entrypoint |
-| `assert-platform.py` | Refuse runtime fallback and normalize doctor evidence |
-| `run-tests.sh` | Cross-platform orchestrator (idempotent, reuses running services) |
-| `host/conftest.py` | Host-side fixtures (sinkhole, proxy, admin clients) |
-| `host/sinkhole_client.py` | Sinkhole control API client |
-| `host/proxy/test_credential_guard.py` | Credential routing/blocking tests |
-| `host/proxy/test_network_guard.py` | Access control, rate limiting tests |
-| `isolation/test_vm_isolation.py` | Default-user network, device, syscall, and filesystem hardening tests |
-| `isolation/test_root_containment.py` | Guest-root capability, package install, and containment tests |
-| `isolation/test_key_isolation.py` | Private key isolation tests |
-| `harness/sinkhole_router.py` | mitmproxy addon redirecting test traffic to sinkhole |
-| `sinkhole/server.py` | HTTP/HTTPS capture server |
-| `certs/generate-certs.sh` | Test CA and sinkhole cert generation |
+Current installed continuity owns flow/body/tag/audit, circuit,
+catalog/revocation/grant, Coord/attention/provider lease/Plumb, private file
+modes, OAuth stored use and task reset. The named installed sections retain
+their guest/operator boundaries. Completed comparator executors, migration
+wrappers and frozen defaults are retired after Lens's bounded replacement
+assessments, under the
+[approved finite disposition](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5942642868).
+The [state inventory](state-compatibility.md) preserves historical writers,
+receipts and explicit package recovery; it does not add recurring migration
+gates. Physical observations and their unexecuted assertions remain attributed
+in the [VZ replacement assessment](https://github.com/craigbalding/safeyolo/issues/320#issuecomment-5961923767).

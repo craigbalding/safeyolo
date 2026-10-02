@@ -1,0 +1,1088 @@
+"""HTTP/2 through trusted UDS and TLS, using an independent Python h2 peer."""
+
+import concurrent.futures
+import hashlib
+import http.client
+import ipaddress
+import json
+import socket
+import socketserver
+import ssl
+import threading
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from time import monotonic
+
+import h2.config
+import h2.connection
+import h2.errors
+import h2.events
+import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+
+from safeyolo.api import AdminAPI
+from safeyolo.rust_proxy import _ensure_signing_ca
+from tests.proxy_contracts.harness import launch_proxy, read_events
+from tests.proxy_contracts.run import proxy_identity, runtime_resources
+
+POLICY = '''budget = 12000
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "allow"
+condition = { agent = "alice" }
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "allow"
+condition = { agent = "bob", method = "CONNECT" }
+[[permissions]]
+action = "network:request"
+resource = "127.0.0.1/*"
+effect = "deny"
+condition = { agent = "bob" }
+'''
+
+CREDENTIAL_POLICY = POLICY + '''
+[[permissions]]
+action = "credential:use"
+resource = "127.0.0.1/*"
+effect = "deny"
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-[a-z]+"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+
+MIXED_STREAM_POLICY = POLICY + '''
+[[permissions]]
+action = "credential:use"
+resource = "*"
+effect = "prompt"
+[[credential_rules]]
+name = "synthetic"
+patterns = ["key-approve"]
+allowed_hosts = ["127.0.0.1"]
+header_names = ["authorization"]
+[addons.credential_guard]
+enabled = true
+[addons.credential_guard.settings]
+use_default_credential_rules = false
+'''
+
+
+def origin_certificate(directory):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.now(UTC)
+    certificate = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+                   .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                   .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=1))
+                   .add_extension(x509.SubjectAlternativeName([
+                       x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), False)
+                   .sign(key, hashes.SHA256()))
+    pem = directory / "origin.pem"
+    pem.touch(mode=0o600)
+    pem.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                     serialization.NoEncryption()) + certificate.public_bytes(serialization.Encoding.PEM))
+    public = directory / "origin-ca.pem"
+    public.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    return pem, public
+
+
+class Origin(socketserver.ThreadingTCPServer):
+    def __init__(self, pem, protocols):
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(pem)
+        self.context.set_alpn_protocols(protocols)
+        self.protocols = protocols
+        self.requests = []
+        self.negotiated_alpn = []
+        self.accepts = 0
+        self.lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), OriginHandler)
+
+    def get_request(self):
+        request = super().get_request()
+        with self.lock:
+            self.accepts += 1
+        return request
+
+    @property
+    def authority(self):
+        return f"127.0.0.1:{self.server_address[1]}"
+
+
+class OriginHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            with self.server.context.wrap_socket(self.request, server_side=True) as stream:
+                stream.settimeout(5)
+                negotiated = stream.selected_alpn_protocol()
+                with self.server.lock:
+                    self.server.negotiated_alpn.append(negotiated)
+                if negotiated == "h2":
+                    connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                        client_side=False, header_encoding="utf-8"))
+                    connection.initiate_connection()
+                    stream.sendall(connection.data_to_send())
+                    requests = {}
+                    while data := stream.recv(65536):
+                        for event in connection.receive_data(data):
+                            if isinstance(event, h2.events.RequestReceived):
+                                record = dict(event.headers)
+                                record["body"] = bytearray()
+                                requests[event.stream_id] = record
+                                with self.server.lock:
+                                    self.server.requests.append(record)
+                            elif isinstance(event, h2.events.StreamEnded):
+                                requests[event.stream_id]["ended"] = True
+                                path = requests[event.stream_id][":path"]
+                                body = path.encode() if path.startswith("/h2-mixed/") else b"hello"
+                                connection.send_headers(event.stream_id, [
+                                    (":status", "200"), ("content-length", str(len(body))),
+                                ])
+                                connection.send_data(event.stream_id, body, end_stream=True)
+                            elif isinstance(event, h2.events.DataReceived):
+                                with self.server.lock:
+                                    requests[event.stream_id]["body"].extend(event.data)
+                                connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                        if output := connection.data_to_send():
+                            stream.sendall(output)
+                elif "http/1.1" in self.server.protocols:
+                    head = b""
+                    while not head.endswith(b"\r\n\r\n"):
+                        byte = stream.recv(1)
+                        if not byte:
+                            return
+                        head += byte
+                    with self.server.lock:
+                        self.server.requests.append({"head": head.decode("latin1")})
+                    stream.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
+        except (ConnectionError, ssl.SSLError, TimeoutError):
+            # Closing the proxy owns cancellation of its origin TLS sockets.
+            # Assertions check application requests and exact response bodies.
+            return
+
+
+@contextmanager
+def origin_server(pem, protocols=("h2",)):
+    server = Origin(pem, list(protocols))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+class H2CancellationOrigin(socketserver.ThreadingTCPServer):
+    """A TLS HTTP/2 peer that holds one response until another is reset."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, pem):
+        self.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.context.load_cert_chain(pem)
+        self.context.set_alpn_protocols(["h2"])
+        self.requests = []
+        self.alpn = []
+        self.cancel_started = threading.Event()
+        self.reset_seen = threading.Event()
+        self.keep_completed = threading.Event()
+        self.handler_finished = threading.Event()
+        self.handler_errors = []
+        self.active_handlers = 0
+        self.cancel_reset_code = None
+        self.cancel_response_bytes = 0
+        self.keep_response_bytes = 0
+        self.next_connection_id = 0
+        self.lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), H2CancellationOriginHandler)
+
+    @property
+    def authority(self):
+        return f"127.0.0.1:{self.server_address[1]}"
+
+
+class H2CancellationOriginHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        server = self.server
+        with server.lock:
+            if server.active_handlers == 0:
+                server.handler_finished.clear()
+            server.active_handlers += 1
+            server.next_connection_id += 1
+            connection_id = server.next_connection_id
+        try:
+            with server.context.wrap_socket(self.request, server_side=True) as stream:
+                stream.settimeout(5)
+                with server.lock:
+                    server.alpn.append(stream.selected_alpn_protocol())
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=False, header_encoding="utf-8"))
+                connection.initiate_connection()
+                stream.sendall(connection.data_to_send())
+                keep_stream_id = None
+                while data := stream.recv(65536):
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.RequestReceived):
+                            headers = dict(event.headers)
+                            record = {
+                                "stream_id": event.stream_id,
+                                "connection_id": connection_id,
+                                ":method": headers.get(":method"),
+                                ":path": headers.get(":path"),
+                                "request_body_bytes": 0,
+                            }
+                            with server.lock:
+                                server.requests.append(record)
+                            if record[":path"] == "/h2-cancel":
+                                connection.send_headers(event.stream_id, [(":status", "200")])
+                                partial = b"cancel-partial"
+                                connection.send_data(event.stream_id, partial)
+                                with server.lock:
+                                    server.cancel_response_bytes += len(partial)
+                                server.cancel_started.set()
+                            elif record[":path"] == "/h2-keep":
+                                connection.send_headers(event.stream_id, [(":status", "200")])
+                                keep_stream_id = event.stream_id
+                        elif isinstance(event, h2.events.DataReceived):
+                            for record in server.requests:
+                                if (record["connection_id"] == connection_id
+                                        and record["stream_id"] == event.stream_id):
+                                    record["request_body_bytes"] += len(event.data)
+                                    break
+                            connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                        elif isinstance(event, h2.events.StreamReset):
+                            if any(record["connection_id"] == connection_id and record[":path"] == "/h2-cancel"
+                                   for record in server.requests):
+                                server.cancel_reset_code = int(event.error_code)
+                                server.reset_seen.set()
+                    if output := connection.data_to_send():
+                        stream.sendall(output)
+                    if keep_stream_id is not None:
+                        if not server.reset_seen.wait(timeout=5):
+                            raise TimeoutError("cancel stream reset was not observed")
+                        self._finish_keep(connection, keep_stream_id)
+                        # The client need not send another frame after its reset.
+                        stream.sendall(connection.data_to_send())
+                        keep_stream_id = None
+        except (ConnectionError, OSError, ssl.SSLError, TimeoutError) as error:
+            # A downstream reset and subsequent TLS close are expected. Preserve
+            # any unexpected error for the test to report after the handler exits.
+            if not server.reset_seen.is_set() and not isinstance(error, (ConnectionError, ssl.SSLError)):
+                with server.lock:
+                    server.handler_errors.append(repr(error))
+        except Exception as error:  # pragma: no cover - asserted through state
+            with server.lock:
+                server.handler_errors.append(repr(error))
+        finally:
+            with server.lock:
+                server.active_handlers -= 1
+                if server.active_handlers == 0:
+                    server.handler_finished.set()
+
+    def _finish_keep(self, connection, stream_id):
+        server = self.server
+        if server.keep_completed.is_set():
+            return
+        body = b"keep-complete"
+        connection.send_data(stream_id, body, end_stream=True)
+        with server.lock:
+            server.keep_response_bytes += len(body)
+        server.keep_completed.set()
+
+
+@contextmanager
+def h2_cancellation_origin(pem):
+    server = H2CancellationOrigin(pem)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+def tls_tunnel(path, authority, ca, offers=("h2", "http/1.1")):
+    raw = socket.socket(socket.AF_UNIX)
+    raw.settimeout(5)
+    try:
+        raw.connect(path)
+        raw.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
+        response = http.client.HTTPResponse(raw)
+        response.begin()
+        assert response.status == 200
+        response.close()
+        context = ssl.create_default_context(cafile=ca)
+        context.set_alpn_protocols(list(offers))
+        return context.wrap_socket(raw, server_hostname="127.0.0.1")
+    except BaseException:
+        raw.close()
+        raise
+
+
+def h2_requests(stream, requests, *, allow_rejection=False):
+    connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+        client_side=True, header_encoding="utf-8", validate_outbound_headers=False,
+        normalize_outbound_headers=False))
+    connection.initiate_connection()
+    pending = set()
+    results = {}
+    for index, headers in enumerate(requests):
+        identifier = index * 2 + 1
+        pending.add(identifier)
+        results[identifier] = {"headers": {}, "body": b""}
+        connection.send_headers(identifier, headers, end_stream=True)
+    stream.sendall(connection.data_to_send())
+    while pending:
+        data = stream.recv(65536)
+        if not data and allow_rejection:
+            for identifier in pending:
+                results[identifier]["closed"] = True
+            break
+        assert data, (pending, results)
+        for event in connection.receive_data(data):
+            if isinstance(event, h2.events.ResponseReceived):
+                results[event.stream_id]["headers"] = dict(event.headers)
+            elif isinstance(event, h2.events.DataReceived):
+                results[event.stream_id]["body"] += event.data
+                connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+            elif isinstance(event, h2.events.StreamEnded):
+                pending.remove(event.stream_id)
+            elif isinstance(event, h2.events.StreamReset):
+                assert allow_rejection, event
+                results[event.stream_id]["reset"] = int(event.error_code)
+                pending.discard(event.stream_id)
+            elif isinstance(event, h2.events.ConnectionTerminated):
+                assert allow_rejection, event
+                for identifier in pending:
+                    results[identifier]["goaway"] = int(event.error_code)
+                pending.clear()
+        if output := connection.data_to_send():
+            try:
+                stream.sendall(output)
+            except (BrokenPipeError, ConnectionResetError):
+                if not allow_rejection:
+                    raise
+                # A rejecting peer can close before our SETTINGS ACK; keep
+                # reading to record its GOAWAY or closed connection.
+    return list(results.values())
+
+
+@pytest.mark.parametrize("write_error", [BrokenPipeError, ConnectionResetError])
+def test_h2_requests_rejection_closes_before_settings_ack(write_error):
+    server = h2.connection.H2Connection(config=h2.config.H2Configuration(client_side=False))
+    server.initiate_connection()
+    settings = server.data_to_send()
+    server.close_connection(error_code=h2.errors.ErrorCodes.PROTOCOL_ERROR)
+    goaway = server.data_to_send()
+
+    class ClosedAckStream:
+        def __init__(self):
+            self.replies = iter((settings, goaway))
+            self.writes = []
+
+        def sendall(self, data):
+            self.writes.append(data)
+            if len(self.writes) == 2:
+                assert data == b"\x00\x00\x00\x04\x01\x00\x00\x00\x00"
+                raise write_error("peer closed after rejecting the request")
+
+        def recv(self, size):
+            return next(self.replies)
+
+    request_headers = [headers("127.0.0.1:443", "/forbidden")]
+    allowed = ClosedAckStream()
+    response = h2_requests(allowed, request_headers, allow_rejection=True)[0]
+    assert response["goaway"] == int(h2.errors.ErrorCodes.PROTOCOL_ERROR)
+    assert len(allowed.writes) == 2
+
+    strict = ClosedAckStream()
+    with pytest.raises(write_error):
+        h2_requests(strict, request_headers)
+    assert len(strict.writes) == 2
+
+
+def headers(authority, path, extra=()):
+    return [(":method", "GET"), (":scheme", "https"), (":authority", authority), (":path", path), *extra]
+
+
+def recv_upload_response(stream, origin, *, idle_seconds=5):
+    """Wait for proxy bytes while the owned origin continues receiving the upload."""
+    with origin.lock:
+        origin_bytes = len(origin.requests[0]["body"]) if origin.requests else 0
+    deadline = monotonic() + idle_seconds
+    previous_timeout = stream.gettimeout()
+    try:
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                pytest.fail("HTTP/2 upload made no origin or response progress")
+            stream.settimeout(min(1, remaining))
+            try:
+                return stream.recv(65536)
+            except TimeoutError:
+                with origin.lock:
+                    received_bytes = len(origin.requests[0]["body"]) if origin.requests else 0
+                if received_bytes > origin_bytes:
+                    origin_bytes = received_bytes
+                    deadline = monotonic() + idle_seconds
+    finally:
+        stream.settimeout(previous_timeout)
+
+
+def test_upload_response_wait_requires_origin_progress(monkeypatch):
+    """A long transfer may continue, but a silent transfer must expire."""
+    clock = [0]
+    monkeypatch.setattr("tests.proxy_contracts.test_http2_contract.monotonic", lambda: clock[0])
+
+    class ProgressOrigin:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.requests = [{"body": bytearray()}]
+
+    class TimedStream:
+        def __init__(self, origin, progressing):
+            self.origin = origin
+            self.progressing = progressing
+            self.timeout = 5
+            self.calls = 0
+
+        def gettimeout(self):
+            return self.timeout
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def recv(self, size):
+            clock[0] += self.timeout
+            self.calls += 1
+            if self.calls == 7:
+                return b"HTTP/2 response"
+            if self.progressing:
+                with self.origin.lock:
+                    self.origin.requests[0]["body"].extend(b"x")
+            raise TimeoutError
+
+    origin = ProgressOrigin()
+    progressing = TimedStream(origin, progressing=True)
+    assert recv_upload_response(progressing, origin) == b"HTTP/2 response"
+    assert progressing.gettimeout() == 5
+    clock[0] = 0
+    stalled = TimedStream(ProgressOrigin(), progressing=False)
+    with pytest.raises(pytest.fail.Exception, match="no origin or response progress"):
+        recv_upload_response(stalled, stalled.origin)
+    assert stalled.gettimeout() == 5
+
+
+def test_http2_upload_beyond_streaming_threshold_reaches_origin_complete(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    payload = bytes(range(256)) * 40960 + b"\xff"  # 10 MiB + 1 byte
+    with origin_server(pem) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+        native_policy=proxy_backend == "rust", stream_large_bodies="10m",
+    ) as proxy:
+        with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
+            connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                client_side=True, header_encoding="utf-8"))
+            connection.initiate_connection()
+            connection.send_headers(1, [
+                (":method", "POST"), (":scheme", "https"), (":authority", origin.authority),
+                (":path", "/upload?part=one&part=two%2Fthree"), ("content-type", "application/octet-stream"),
+            ])
+            offset = 0
+            status = None
+            response = bytearray()
+            ended = False
+            while not ended:
+                while offset < len(payload):
+                    count = min(connection.local_flow_control_window(1), connection.max_outbound_frame_size,
+                                len(payload) - offset)
+                    if not count:
+                        break
+                    connection.send_data(1, payload[offset:offset + count], end_stream=offset + count == len(payload))
+                    offset += count
+                stream.sendall(connection.data_to_send())
+                data = recv_upload_response(stream, origin)
+                assert data, "HTTP/2 upload ended before its response"
+                for event in connection.receive_data(data):
+                    if isinstance(event, h2.events.ResponseReceived):
+                        status = dict(event.headers)[":status"]
+                    elif isinstance(event, h2.events.DataReceived):
+                        response.extend(event.data)
+                        connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                    elif isinstance(event, h2.events.StreamEnded):
+                        ended = True
+                    elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                        pytest.fail(f"HTTP/2 upload failed: {event}")
+            assert offset == len(payload)
+            assert status == "200"
+            assert response == b"hello"
+        assert len(origin.requests) == 1
+        assert origin.requests[0]["body"] == payload
+        assert origin.requests[0]["ended"] is True
+        assert origin.requests[0][":path"] == "/upload?part=one&part=two%2Fthree"
+        (directory / "h2-upload-evidence.json").write_text(json.dumps({
+            "backend": proxy_backend,
+            "payload_bytes": len(payload),
+            "payload_sha256": hashlib.sha256(payload).hexdigest(),
+            "origin_bytes": len(origin.requests[0]["body"]),
+            "origin_sha256": hashlib.sha256(origin.requests[0]["body"]).hexdigest(),
+            "origin_end_stream": origin.requests[0]["ended"],
+            "response_status": status,
+            "response_body_sha256": hashlib.sha256(response).hexdigest(),
+            "proxy_identity": proxy_identity(proxy),
+        }, indent=2) + "\n")
+
+
+def test_http2_credential_headers_deny_held_body_and_keep_sibling(proxy_backend, tmp_path):
+    """A header denial completes before END_STREAM and leaves another stream usable."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    partial_body = b"held-open-body-prefix"
+    announced_body_bytes = 12 * 1024 * 1024
+    with origin_server(pem) as origin:
+        with launch_proxy(
+            proxy_backend, directory, CREDENTIAL_POLICY, tls=True, upstream_ca=public,
+            native_policy=proxy_backend == "rust", stream_large_bodies="10m",
+            credential_head_decision=proxy_backend == "python",
+        ) as proxy:
+            with tls_tunnel(
+                proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem",
+                offers=("h2",),
+            ) as stream:
+                assert stream.selected_alpn_protocol() == "h2"
+                accepts_before_denial = origin.accepts
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=True, header_encoding="utf-8"))
+                connection.initiate_connection()
+                connection.send_headers(1, [
+                    (":method", "POST"), (":scheme", "https"), (":authority", origin.authority),
+                    (":path", "/denied-upload"), ("authorization", "Bearer key-denied"),
+                    ("content-length", str(announced_body_bytes)),
+                ])
+                connection.send_data(1, partial_body)
+                stream.sendall(connection.data_to_send())
+
+                responses = {identifier: {"headers": {}, "body": bytearray(), "ended": False, "reset": None}
+                             for identifier in (1, 3)}
+
+                def receive_until_terminal(identifier):
+                    while not (responses[identifier]["ended"] or responses[identifier]["reset"] is not None):
+                        data = stream.recv(65536)
+                        assert data, f"HTTP/2 connection closed before stream {identifier} ended"
+                        for event in connection.receive_data(data):
+                            if isinstance(event, h2.events.ResponseReceived):
+                                responses[event.stream_id]["headers"] = dict(event.headers)
+                            elif isinstance(event, h2.events.DataReceived):
+                                responses[event.stream_id]["body"].extend(event.data)
+                                connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                            elif isinstance(event, h2.events.StreamEnded):
+                                responses[event.stream_id]["ended"] = True
+                            elif isinstance(event, h2.events.StreamReset) and event.stream_id == 1:
+                                responses[1]["reset"] = int(event.error_code)
+                            elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                                pytest.fail(f"HTTP/2 connection lost while stream {identifier} was live: {event}")
+                        if output := connection.data_to_send():
+                            stream.sendall(output)
+
+                receive_until_terminal(1)
+                denied = responses[1]
+                assert denied["headers"][":status"] == "403"
+                assert denied["headers"]["x-blocked-by"] == "credential-guard"
+                assert denied["ended"] or denied["reset"] == int(h2.errors.ErrorCodes.NO_ERROR)
+                assert b"key-denied" not in denied["body"]
+                accepts_after_denial = origin.accepts
+                assert accepts_after_denial == accepts_before_denial
+                assert origin.requests == []
+
+                connection.send_headers(3, headers(origin.authority, "/sibling"), end_stream=True)
+                stream.sendall(connection.data_to_send())
+                receive_until_terminal(3)
+                sibling = responses[3]
+                assert sibling["headers"][":status"] == "200"
+                assert sibling["body"] == b"hello"
+                assert sibling["ended"] is True
+                assert len(origin.requests) == 1
+                assert origin.requests[0][":path"] == "/sibling"
+                assert origin.requests[0]["body"] == b""
+                assert origin.requests[0]["ended"] is True
+                identity = proxy_identity(proxy)
+
+        request_ids = {identifier: responses[identifier]["headers"]["x-safeyolo-request-id"]
+                       for identifier in (1, 3)}
+        assert request_ids[1] != request_ids[3]
+        events = read_events(directory / "events.jsonl")
+        audit = read_events(directory / "audit.jsonl")
+        denied_requests = [row for row in events if row.get("event") == "proxy.request"
+                           and row.get("request_id") == request_ids[1]]
+        assert len(denied_requests) == 1
+        assert denied_requests[0]["status"] == 403
+        assert denied_requests[0]["decision"] == "deny"
+        assert not any(row.get("event") == "proxy.egress" and row.get("request_id") == request_ids[1]
+                       for row in events)
+        denied_guard = [row for row in events if row.get("event") == "proxy.credential_guard"
+                        and row.get("request_id") == request_ids[1]]
+        if proxy_backend == "rust":
+            assert len(denied_guard) == 1
+            assert denied_guard[0]["outcome"] == "blocked"
+        denied_audit = [row for row in audit if row.get("event") == "security.credential_guard"
+                        and row.get("request_id") == request_ids[1]]
+        assert len(denied_audit) == 1
+        assert denied_audit[0]["decision"] == "deny"
+        assert denied_audit[0]["agent"] == "alice"
+        sibling_requests = [row for row in events if row.get("event") == "proxy.request"
+                            and row.get("request_id") == request_ids[3]]
+        assert len(sibling_requests) == 1
+        assert sibling_requests[0]["status"] == 200
+        assert sibling_requests[0]["decision"] == "allow"
+        assert sibling_requests[0]["connection_id"] == denied_requests[0]["connection_id"]
+        (directory / "h2-held-body-evidence.json").write_text(json.dumps({
+            "backend": proxy_backend,
+            "client_alpn": "h2",
+            "held_body_bytes_sent_without_end_stream": len(partial_body),
+            "announced_body_bytes": announced_body_bytes,
+            "origin_accepts_before_denial": accepts_before_denial,
+            "origin_accepts_after_denial": accepts_after_denial,
+            "origin_http_requests_before_sibling": 0,
+            "denied": {"status": denied["headers"][":status"],
+                       "blocked_by": denied["headers"]["x-blocked-by"],
+                       "request_id": request_ids[1], "response_ended": denied["ended"],
+                       "reset_code": denied["reset"]},
+            "sibling": {"status": sibling["headers"][":status"],
+                        "body_sha256": hashlib.sha256(sibling["body"]).hexdigest(),
+                        "request_id": request_ids[3], "response_ended": sibling["ended"]},
+            "origin_requests": [{"path": row[":path"], "body_bytes": len(row["body"]),
+                                 "request_ended": row["ended"]} for row in origin.requests],
+            "proxy_events": [*denied_requests, *denied_guard, *sibling_requests],
+            "security_audit": denied_audit,
+            "proxy_identity": identity,
+        }, indent=2) + "\n")
+
+
+def test_concurrent_http2_streams_keep_agent_and_request_identity(proxy_backend, tmp_path):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with origin_server(pem) as origin, launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
+        def run(agent):
+            with tls_tunnel(proxy.paths[agent], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
+                assert stream.selected_alpn_protocol() == "h2"
+                return h2_requests(stream, [headers(origin.authority, f"/signed?part=one&part=two%2Fthree&n={index}", [
+                    ("x-safeyolo-agent", "bob" if agent == "alice" else "alice"),
+                    ("x-safeyolo-request-id", "req-" + "f" * 32),
+                ]) for index in range(12)])
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            alice, bob = list(pool.map(run, ["alice", "bob"]))
+        assert [row["headers"][":status"] for row in alice] == ["200"] * 12
+        assert [row["body"] for row in alice] == [b"hello"] * 12
+        assert [row["headers"][":status"] for row in bob] == ["403"] * 12
+        identifiers = {row["headers"]["x-safeyolo-request-id"] for row in alice + bob}
+        assert len(identifiers) == 24
+        assert "req-" + "f" * 32 not in identifiers
+        assert sorted(row[":path"] for row in origin.requests) == sorted(
+            f"/signed?part=one&part=two%2Fthree&n={index}" for index in range(12))
+        events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+        for agent, responses in [("alice", alice), ("bob", bob)]:
+            assert len({events[row["headers"]["x-safeyolo-request-id"]]["connection_id"] for row in responses}) == 1
+            for row in responses:
+                assert events[row["headers"]["x-safeyolo-request-id"]]["agent"] == agent
+
+
+def test_http2_mixed_stream_decisions_and_http1_control(proxy_backend, tmp_path):
+    """One H2 connection cannot lend its approval or credential to a sibling."""
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    token_file = directory / "operator-token"
+    token_file.write_text("h2-stream-approval-fixture\n")
+    with origin_server(pem, protocols=("h2", "http/1.1")) as origin:
+        with origin_server(pem, protocols=("http/1.1",)) as http1_origin:
+            with launch_proxy(
+                proxy_backend, directory, MIXED_STREAM_POLICY, tls=True, upstream_ca=public,
+                native_policy=proxy_backend == "rust",
+                credential_head_decision=proxy_backend == "python",
+                admin_port=0, admin_api_token_file=token_file,
+            ) as proxy:
+                barrier = threading.Barrier(2)
+
+                def send_streams(agent):
+                    with tls_tunnel(
+                        proxy.paths[agent], origin.authority,
+                        directory / "ca/mitmproxy-ca-cert.pem", offers=("h2",),
+                    ) as stream:
+                        negotiated = stream.selected_alpn_protocol()
+                        barrier.wait(timeout=5)
+                        if agent == "alice":
+                            requests = [
+                                headers(origin.authority, "/h2-mixed/one?part=1&part=2%2F3", [
+                                    ("x-safeyolo-agent", "bob"),
+                                    ("x-safeyolo-request-id", "req-" + "f" * 32),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/approval", [
+                                    ("authorization", "Bearer key-approve"),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/two"),
+                            ]
+                        else:
+                            requests = [
+                                headers(origin.authority, "/h2-mixed/bob-one", [
+                                    ("x-safeyolo-agent", "alice"),
+                                ]),
+                                headers(origin.authority, "/h2-mixed/bob-two"),
+                            ]
+                        return negotiated, h2_requests(stream, requests)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    alice_future = pool.submit(send_streams, "alice")
+                    bob_future = pool.submit(send_streams, "bob")
+                    alice_alpn, alice = alice_future.result(timeout=15)
+                    bob_alpn, bob = bob_future.result(timeout=15)
+
+                assert (alice_alpn, bob_alpn) == ("h2", "h2")
+                assert [row["headers"][":status"] for row in alice] == ["200", "428", "200"]
+                assert [row["headers"][":status"] for row in bob] == ["403", "403"]
+                assert alice[0]["body"] == b"/h2-mixed/one?part=1&part=2%2F3"
+                assert alice[2]["body"] == b"/h2-mixed/two"
+                assert alice[1]["headers"]["x-blocked-by"] == "credential-guard"
+                for denied in (alice[1], *bob):
+                    assert b"key-approve" not in denied["body"]
+                    assert alice[0]["body"] not in denied["body"]
+                    assert alice[2]["body"] not in denied["body"]
+
+                with origin.lock:
+                    origin_requests = list(origin.requests)
+                    origin_alpn = list(origin.negotiated_alpn)
+                assert origin_alpn and set(origin_alpn) == {"h2"}
+                assert len(origin_requests) == 2
+                assert {row[":path"] for row in origin_requests} == {
+                    "/h2-mixed/one?part=1&part=2%2F3", "/h2-mixed/two",
+                }
+                assert all("authorization" not in row and row["ended"] for row in origin_requests)
+
+                response_ids = [row["headers"]["x-safeyolo-request-id"] for row in alice + bob]
+                assert len(set(response_ids)) == 5
+                assert "req-" + "f" * 32 not in response_ids
+                events = {row["request_id"]: row for row in proxy.events("proxy.request")}
+                for agent, responses in (("alice", alice), ("bob", bob)):
+                    connection_ids = {events[row["headers"]["x-safeyolo-request-id"]]["connection_id"]
+                                      for row in responses}
+                    assert len(connection_ids) == 1
+                    for row in responses:
+                        event = events[row["headers"]["x-safeyolo-request-id"]]
+                        assert event["agent"] == agent
+                        assert event["status"] == int(row["headers"][":status"])
+
+                marker = json.loads(proxy.readiness_file.read_text())
+                api = AdminAPI(
+                    base_url=f"http://127.0.0.1:{marker['admin_port']}",
+                    token=token_file.read_text().strip(),
+                )
+                pending_approvals = api.pending_approvals()
+                pending = [row for row in pending_approvals if row.get("request_id") == response_ids[1]]
+                assert len(pending) == 1
+                assert pending[0]["event"] == "security.credential_guard"
+                assert pending[0]["agent"] == "alice"
+                assert {row.get("request_id") for row in pending_approvals}.isdisjoint(
+                    response_ids[:1] + response_ids[2:]
+                )
+                audit = read_events(directory / "audit.jsonl")
+                prompt_rows = [row for row in audit if row.get("event") == "security.credential_guard"
+                               and row.get("request_id") == response_ids[1]]
+                assert len(prompt_rows) == 1
+                assert prompt_rows[0]["decision"] == "require_approval"
+                assert b"key-approve" not in (directory / "audit.jsonl").read_bytes()
+
+                with tls_tunnel(
+                    proxy.paths["alice"], http1_origin.authority,
+                    directory / "ca/mitmproxy-ca-cert.pem", offers=("http/1.1",),
+                ) as stream:
+                    assert stream.selected_alpn_protocol() == "http/1.1"
+                    stream.sendall((
+                        f"GET /http1-control HTTP/1.1\r\nHost: {http1_origin.authority}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode())
+                    response = http.client.HTTPResponse(stream)
+                    response.begin()
+                    assert response.status == 200
+                    assert response.read() == b"hello"
+                    response.close()
+                assert http1_origin.negotiated_alpn
+                assert set(http1_origin.negotiated_alpn) == {"http/1.1"}
+                assert len(http1_origin.requests) == 1
+                assert "GET /http1-control HTTP/1.1" in http1_origin.requests[0]["head"]
+
+
+def test_h2_cancellation_origin_flushes_sibling_without_another_client_frame(tmp_path):
+    """The origin fixture must write its queued sibling body after the reset gate."""
+    pem, public = origin_certificate(tmp_path)
+    with h2_cancellation_origin(pem) as origin:
+        context = ssl.create_default_context(cafile=public)
+        context.set_alpn_protocols(["h2"])
+        with socket.create_connection(origin.server_address, timeout=5) as raw:
+            with context.wrap_socket(raw, server_hostname="127.0.0.1") as stream:
+                stream.settimeout(5)
+                connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                    client_side=True, header_encoding="utf-8"))
+                connection.initiate_connection()
+                connection.send_headers(1, headers(origin.authority, "/h2-keep"), end_stream=True)
+                stream.sendall(connection.data_to_send())
+
+                saw_headers = False
+                while not saw_headers:
+                    data = stream.recv(65536)
+                    assert data, "origin closed before sibling response headers"
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.ResponseReceived):
+                            assert event.stream_id == 1
+                            assert dict(event.headers)[":status"] == "200"
+                            saw_headers = True
+                # Trigger the reset gate without another write on this socket.
+                origin.reset_seen.set()
+                assert origin.keep_completed.wait(timeout=5)
+
+                body = bytearray()
+                ended = False
+                while not ended:
+                    data = stream.recv(65536)
+                    assert data, "origin closed before sibling response body"
+                    for event in connection.receive_data(data):
+                        if isinstance(event, h2.events.DataReceived):
+                            assert event.stream_id == 1
+                            body.extend(event.data)
+                        elif isinstance(event, h2.events.StreamEnded):
+                            assert event.stream_id == 1
+                            ended = True
+                assert body == b"keep-complete"
+
+
+def test_http2_cancelled_stream_does_not_cancel_independent_stream(proxy_backend, tmp_path, request):
+    """Reset one response after partial data while a sibling stream completes."""
+    if proxy_backend == "python":
+        # Keep the comparator's known cancellation gap visible; --runxfail
+        # must fail this test instead of hiding it behind an xfail.
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="Python comparator does not satisfy the H2 cancellation/reset witness",
+        ))
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with h2_cancellation_origin(pem) as origin, launch_proxy(
+        proxy_backend,
+        directory,
+        POLICY,
+        tls=True,
+        upstream_ca=public,
+        native_policy=proxy_backend == "rust",
+    ) as proxy:
+        with tls_tunnel(
+            proxy.paths["alice"],
+            origin.authority,
+            directory / "ca/mitmproxy-ca-cert.pem",
+            offers=("h2",),
+        ) as stream:
+            client_alpn = stream.selected_alpn_protocol()
+            assert client_alpn == "h2"
+            connection = h2.connection.H2Connection(config=h2.config.H2Configuration(
+                client_side=True, header_encoding="utf-8"))
+            connection.initiate_connection()
+            connection.send_headers(1, headers(origin.authority, "/h2-cancel"), end_stream=True)
+            connection.send_headers(3, headers(origin.authority, "/h2-keep"), end_stream=True)
+            stream.sendall(connection.data_to_send())
+            results = {
+                1: {"path": "/h2-cancel", "status": None, "body": bytearray(), "reset_sent": False},
+                3: {"path": "/h2-keep", "status": None, "body": bytearray(), "ended": False},
+            }
+            before_reset = runtime_resources(proxy)
+            while not results[3]["ended"]:
+                try:
+                    data = stream.recv(65536)
+                except TimeoutError:
+                    pytest.fail(
+                        "sibling stream timed out after cancellation: "
+                        f"reset_seen={origin.reset_seen.is_set()} "
+                        f"keep_completed={origin.keep_completed.is_set()} "
+                        f"origin_errors={origin.handler_errors!r}"
+                    )
+                assert data, results
+                for event in connection.receive_data(data):
+                    if isinstance(event, h2.events.ResponseReceived):
+                        results[event.stream_id]["status"] = dict(event.headers)[":status"]
+                    elif isinstance(event, h2.events.DataReceived):
+                        results[event.stream_id]["body"].extend(event.data)
+                        connection.acknowledge_received_data(event.flow_controlled_length, event.stream_id)
+                        if event.stream_id == 1 and not results[1]["reset_sent"]:
+                            assert bytes(event.data) == b"cancel-partial"
+                            connection.reset_stream(1, error_code=h2.errors.ErrorCodes.CANCEL)
+                            results[1]["reset_sent"] = True
+                    elif isinstance(event, h2.events.StreamEnded):
+                        assert event.stream_id == 3, event
+                        results[3]["ended"] = True
+                    elif isinstance(event, (h2.events.StreamReset, h2.events.ConnectionTerminated)):
+                        pytest.fail(
+                            f"unexpected H2 termination while sibling stream was live: {event}; "
+                            f"origin_requests={origin.requests!r} reset_seen={origin.reset_seen.is_set()} "
+                            f"keep_completed={origin.keep_completed.is_set()} origin_errors={origin.handler_errors!r}"
+                        )
+                if output := connection.data_to_send():
+                    stream.sendall(output)
+            after_reset = runtime_resources(proxy)
+            assert results[1]["status"] == "200"
+            assert bytes(results[1]["body"]) == b"cancel-partial"
+            assert results[1]["reset_sent"] is True
+            assert results[3]["status"] == "200"
+            assert bytes(results[3]["body"]) == b"keep-complete"
+        after_close = runtime_resources(proxy)
+        assert origin.reset_seen.wait(timeout=5)
+        assert origin.cancel_started.is_set()
+        assert origin.keep_completed.is_set()
+        assert origin.handler_finished.wait(timeout=5)
+        assert origin.active_handlers == 0, {
+            "active_handlers": origin.active_handlers,
+            "alpn": origin.alpn,
+            "requests": origin.requests,
+            "handler_errors": origin.handler_errors,
+        }
+        assert origin.handler_errors == [], origin.handler_errors
+        assert len(origin.alpn) == 2
+        assert set(origin.alpn) == {"h2"}
+        assert origin.cancel_reset_code == int(h2.errors.ErrorCodes.CANCEL)
+        assert origin.cancel_response_bytes == len(b"cancel-partial")
+        assert origin.keep_response_bytes == len(b"keep-complete")
+        assert len(origin.requests) == 2
+        assert {row[":path"] for row in origin.requests} == {"/h2-cancel", "/h2-keep"}
+        assert {row[":method"] for row in origin.requests} == {"GET"}
+        assert {row["request_body_bytes"] for row in origin.requests} == {0}
+        assert len({row["connection_id"] for row in origin.requests}) == 2
+        assert {row["stream_id"] for row in origin.requests} == {1}
+        events = [event for event in read_events(proxy.event_log) if event.get("event") == "proxy.request"]
+        assert len(events) == 3  # CONNECT plus the two independently proxied streams.
+        inner_events = [event for event in events
+                        if event.get("coverage") == "native_network_guard_circuits_and_test_context"]
+        assert len(inner_events) == 2
+        assert {int(event.get("status", 0)) for event in events} == {200}
+        evidence = {
+            "backend": proxy_backend,
+            "alpn": {"client_to_origin": client_alpn, "origin": origin.alpn},
+            "outcomes": {
+                "cancel": {
+                    "downstream_stream_id": 1,
+                    "status": results[1]["status"],
+                    "body_sha256": hashlib.sha256(results[1]["body"]).hexdigest(),
+                    "reset_code": int(h2.errors.ErrorCodes.CANCEL),
+                },
+                "keep": {
+                    "downstream_stream_id": 3,
+                    "status": results[3]["status"],
+                    "body_sha256": hashlib.sha256(results[3]["body"]).hexdigest(),
+                    "completed": results[3]["ended"],
+                },
+            },
+            "origin": {
+                "requests": origin.requests,
+                "cancel_reset_code": origin.cancel_reset_code,
+                "cancel_response_bytes": origin.cancel_response_bytes,
+                "keep_response_bytes": origin.keep_response_bytes,
+                "active_handlers_after_close": origin.active_handlers,
+            },
+            "proxy_events": events,
+            "runtime_resources": {
+                "before_reset": before_reset,
+                "after_reset": after_reset,
+                "after_close": after_close,
+            },
+            "proxy_identity": proxy_identity(proxy),
+        }
+        (directory / "h2-cancel-evidence.json").write_text(json.dumps(evidence, indent=2) + "\n")
+
+
+@pytest.mark.parametrize("protocols", [("h2",), ("http/1.1",)])
+@pytest.mark.parametrize("eager_connect", [False, True], ids=["lazy", "eager"])
+def test_https_protocol_negotiation_delivers_allowed_request(proxy_backend, tmp_path, protocols, eager_connect):
+    if proxy_backend == "rust" and eager_connect:
+        pytest.skip("connection_strategy is a Python-only fixture setting")
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with origin_server(pem, protocols) as origin, launch_proxy(
+        proxy_backend, directory, POLICY, tls=True, upstream_ca=public,
+        eager_connect=eager_connect,
+    ) as proxy:
+        with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
+            client_alpn = stream.selected_alpn_protocol()
+            expected_client = (
+                "http/1.1" if protocols == ("http/1.1",) and proxy_backend == "python" and eager_connect
+                else "h2"
+            )
+            assert client_alpn == expected_client
+            if client_alpn == "h2":
+                response = h2_requests(stream, [headers(origin.authority, "/hello")])[0]
+                assert response["headers"][":status"] == "200"
+                assert response["body"] == b"hello"
+            else:
+                stream.sendall(f"GET /hello HTTP/1.1\r\nHost: {origin.authority}\r\nConnection: close\r\n\r\n".encode())
+                response = http.client.HTTPResponse(stream)
+                response.begin()
+                assert response.status == 200
+                assert response.read() == b"hello"
+                response.close()
+        assert len(origin.requests) == 1
+        assert origin.negotiated_alpn
+        assert set(origin.negotiated_alpn) == set(protocols)
+
+
+@pytest.mark.parametrize("mutation", ["authority_host", "authority_port", "host_header", "duplicate_host"])
+def test_http2_inner_authorities_cannot_change_destination(proxy_backend, tmp_path, mutation):
+    directory = tmp_path / proxy_backend
+    directory.mkdir()
+    _ensure_signing_ca(directory / "ca")
+    pem, public = origin_certificate(directory)
+    with origin_server(pem) as origin, origin_server(pem) as other:
+        with launch_proxy(proxy_backend, directory, POLICY, tls=True, upstream_ca=public) as proxy:
+            authority = origin.authority
+            extra = []
+            if mutation == "authority_host":
+                authority = f"localhost:{origin.server_address[1]}"
+            elif mutation == "authority_port":
+                authority = other.authority
+            elif mutation == "host_header":
+                extra = [("host", "forbidden.invalid")]
+            else:
+                extra = [("host", authority), ("host", authority)]
+            with tls_tunnel(proxy.paths["alice"], origin.authority, directory / "ca/mitmproxy-ca-cert.pem") as stream:
+                response = h2_requests(stream, [headers(authority, "/forbidden", extra)], allow_rejection=True)[0]
+            # Python's HTTP/2 parser sends GOAWAY on a separate Host field
+            # disagreement; both backends reject changed :authority with 400.
+            if proxy_backend == "rust" or mutation.startswith("authority_"):
+                assert response["headers"][":status"] == "400", response
+            else:
+                assert response.get("goaway") == 1 or response.get("reset") == 1, response
+            assert origin.requests == []
+            assert other.requests == []

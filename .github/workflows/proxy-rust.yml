@@ -1,13 +1,16 @@
-name: Rust proxy migration
+name: Native proxy contracts
 
 on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "cli/src/safeyolo/rust_proxy.py"
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
-      - "tests/proxy_migration/**"
+      - "tests/proxy_contracts/**"
       - "tests/blackbox/proxy_backend.py"
       - "tests/blackbox/run-tests.sh"
       - "tests/test_blackbox_harness.py"
@@ -17,16 +20,20 @@ on:
       - "tests/blackbox/sinkhole/server.py"
       - "tests/test_blackbox_sinkhole.py"
       - "tests/test_workflow_action_pins.py"
-      - "tools/proxy_migration/**"
       - "cli/src/safeyolo/desktop_presenter*.py"
       - "cli/src/safeyolo/preview.py"
+      - "cli/src/safeyolo/vm*.py"
+      - "cli/src/safeyolo/platform/**"
+      - "cli/tests/test_linux_platform*.py"
+      - "cli/tests/test_darwin_platform.py"
+      - "cli/src/safeyolo/runtime_identity.py"
+      - "vm/**"
       - "cli/tests/test_agent_preview.py"
       - "cli/tests/test_desktop_presenter*.py"
       - ".github/workflows/proxy-rust.yml"
       - "scripts/cargo_with_space.sh"
   push:
-    # Relay advances this ref to an exact integrated commit for a full checkpoint.
-    branches: [master, main, ci/proxy-rust-620]
+    branches: [master, main]
 
 permissions:
   contents: read
@@ -38,29 +45,63 @@ concurrency:
 
 jobs:
   focused-pr:
-    name: Focused Rust proxy (Ubuntu)
+    name: Quick native checks (Ubuntu)
     if: >-
-      github.event_name == 'pull_request' &&
-      github.base_ref != 'master' && github.base_ref != 'main' &&
-      github.event.action != 'ready_for_review'
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.action != 'ready_for_review')
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: "1"
+    outputs:
+      macos: ${{ steps.changes.outputs.macos }}
+      linux: ${{ steps.changes.outputs.linux }}
+      rust: ${{ steps.changes.outputs.rust }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Verify the exact pull-request head
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test -n "$EXPECTED_HEAD" && test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
 
+      - name: Select relevant native and platform checks
+        id: changes
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE=HEAD~1
+          fi
+          git diff --name-only "$BASE" HEAD > "$RUNNER_TEMP/changed-paths"
+          if grep -Eq '^proxy/' "$RUNNER_TEMP/changed-paths"; then
+            echo 'rust=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
+          fi
+          if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|desktop|preview|platform/(darwin|__init__))|cli/tests/test_darwin_platform)' "$RUNNER_TEMP/changed-paths"; then
+            echo 'macos=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
+          fi
+          if grep -Eq '^(proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|platform/(linux|__init__))|cli/tests/test_linux_platform)' "$RUNNER_TEMP/changed-paths"; then
+            echo 'linux=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
+          fi
+
       - name: Install the pinned Rust toolchain
+        if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
         run: rustup show active-toolchain
 
       - name: Check Rust formatting and lint
+        if: steps.changes.outputs.rust == 'true'
         working-directory: proxy
         run: |
           ../scripts/cargo_with_space.sh fmt --all -- --check
@@ -88,7 +129,7 @@ jobs:
             cli/tests/test_rust_proxy.py \
             cli/tests/test_sockets.py \
             tests/test_blackbox_harness.py \
-            tests/proxy_migration/test_readiness.py \
+            tests/proxy_contracts/test_readiness.py \
             tests/test_proxy_rust_coord_fixture.py \
             tests/test_proxy_rust_ci_events.py \
             tests/test_proxy_cutover_deletion_map.py \
@@ -101,21 +142,27 @@ jobs:
             cli/tests/test_desktop_presenter.py \
             cli/tests/test_agent_preview.py
 
+      - name: Test changed Linux platform boundaries
+        if: steps.changes.outputs.linux == 'true'
+        run: |
+          uv run --frozen pytest -q cli/tests/test_linux_platform_selection.py \
+            cli/tests/test_linux_platform_oci.py
+
       - name: Test focused native boundaries
+        if: steps.changes.outputs.rust == 'true'
         timeout-minutes: 10
         working-directory: proxy
         run: |
           ../scripts/cargo_with_space.sh test --locked --test agent_api_audit
+          ../scripts/cargo_with_space.sh test --locked --test tls existing_rsa_ca_formats_survive_native_import_and_restart -- --exact
           ../scripts/cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact
 
-  http-slice:
-    name: HTTP migration (${{ matrix.os }})
-    # Run on default/checkpoint pushes and ready release PRs into master or main.
-    if: >-
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' &&
-       (github.base_ref == 'master' || github.base_ref == 'main') &&
-       github.event.pull_request.draft == false)
+  contracts:
+    name: Overnight native contracts (${{ matrix.os }})
+    env:
+      CARGO_BUILD_JOBS: "1"
+    # Full regression is overnight or a trusted explicit request.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -245,7 +292,36 @@ jobs:
           sudo -n /sbin/ifconfig lo0 alias 127.0.0.2
           /sbin/ifconfig lo0 | grep -F '127.0.0.2'
 
-      - name: Run shared HTTP contracts against native Rust
+      - name: Run native proxy component contracts
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
-        run: uv run --frozen pytest -q tests/proxy_migration --proxy-backend rust
+        run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
+
+  macos-pr:
+    name: Relevant macOS platform checks
+    needs: focused-pr
+    if: needs.focused-pr.outputs.macos == 'true'
+    runs-on: macos-latest
+    env:
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.8"
+          prune-cache: true
+      - name: Prepare platform test dependencies
+        run: uv sync --frozen --group dev --python 3.12
+      - name: Test current CLI platform boundaries
+        run: |
+          uv run --frozen pytest -q cli/tests/test_vm.py cli/tests/test_vm_control.py \
+            cli/tests/test_vm_identity.py cli/tests/test_vm_diagnostics.py \
+            cli/tests/test_darwin_platform.py cli/tests/test_agent_preview.py \
+            cli/tests/test_desktop_presenter.py
+      - name: Test changed native platform boundaries
+        if: needs.focused-pr.outputs.rust == 'true'
+        working-directory: proxy
+        run: ../scripts/cargo_with_space.sh test --locked --test native_runtime_dependency

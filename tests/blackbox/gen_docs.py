@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate docs/blackbox-coverage.md from test docstrings.
+"""Generate docs/blackbox-coverage.md from maintained runner selections.
 
-Walks tests/blackbox/ via AST, extracts each test class's Title+Why and
-each test function's Title+What+Why, and renders a grouped markdown doc.
+Extract pytest Title/What/Why and the selected installed procedure docstrings.
+Completed migration receipts are historical observations, not current native
+coverage. This inventory follows the maintained selectors and procedure owners.
 
 The goal is an operator-facing answer to "what does SafeYolo's blackbox
 suite actually verify?" — no drift, because the docstrings are the
@@ -19,13 +20,21 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+if __package__:
+    from .installed_sections import SECTIONS
+else:
+    from installed_sections import SECTIONS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BB_DIR = REPO_ROOT / "tests" / "blackbox"
 OUT_PATH = REPO_ROOT / "docs" / "blackbox-coverage.md"
 
 # Suites we walk and how to label them in the doc.
 SUITES = [
-    ("Host-side", BB_DIR / "host"),
+    ("Installed native ingress", BB_DIR / "host/native"),
+    ("Host process security", BB_DIR / "host/security"),
+    ("Installed agent identity", BB_DIR / "host/identity"),
+    ("Installed agent persistence and restart", BB_DIR / "host/lifecycle"),
     ("In-sandbox (isolation)", BB_DIR / "isolation"),
 ]
 
@@ -113,7 +122,7 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     out.append("# SafeYolo Blackbox Test Coverage")
     out.append("")
     out.append(
-        "Generated from test docstrings in `tests/blackbox/`. "
+        "Generated from native pytest selections and installed procedures in `tests/blackbox/`. "
         "Do not edit by hand — run `python3 tests/blackbox/gen_docs.py`."
     )
     out.append("")
@@ -124,7 +133,6 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
     )
     out.append("")
 
-    total_classes = sum(len(files) for _, files in suites for files in files)  # noqa: B035
     total_tests = sum(
         len(cls.funcs)
         for _, files in suites
@@ -136,7 +144,55 @@ def _render(suites: list[tuple[str, list[tuple[Path, list[TestClass]]]]]) -> str
         for _, files in suites
         for _, classes in files
     )
-    out.append(f"**{total_tests} tests across {total_classes} threat categories.**")
+    out.append(f"**{total_tests} distinct pytest methods across {total_classes} threat categories.**")
+    out.append("")
+    out.append(
+        "This is a source inventory, not a passing execution receipt. The ordinary "
+        "guest selection excludes root containment; the root selection runs root "
+        "containment and private-key isolation. Private-key scans run under both "
+        "identities; public-cert checks run as the ordinary user. "
+        "Parameterization and platform/fixture skips affect executed nodes. "
+        "The retired host/proxy selection is excluded."
+    )
+    out.append("")
+    out.append("## Installed procedural selections")
+    out.append("")
+    out.append("`run-installed.sh` prepares once and runs these independent sections:")
+    out.append("")
+    out.append("| Actual lane | Selected sections |")
+    out.append("|---|---|")
+    for lane, sections in SECTIONS.items():
+        out.append(f"| `{lane}` | {', '.join(sections)} |")
+    out.append("")
+    for section in sorted({s for sections in SECTIONS.values() for s in sections} - {"isolation"}):
+        path = BB_DIR / ("installed_state_transition.py" if section == "continuity" else f"installed_{section}.py")
+        doc = ast.get_docstring(ast.parse(path.read_text()))
+        assert doc, f"selected procedure lacks a description: {path}"
+        out.append(f"### `{path.relative_to(REPO_ROOT)}`")
+        out.append("")
+        out.append(doc)
+        out.append("")
+    out.append("### Installed host package")
+    out.append("")
+    out.append(
+        "`run-installed-package.sh` runs installed_host_smoke.py in smoke mode: "
+        "current installed launcher, exact wheel/native executable, authenticated "
+        "runtime identity, owned HTTP allow/deny authorities and verified stop. "
+        "It boots no guest and proves no guest isolation."
+    )
+    package_runner = (BB_DIR / "run-installed-package.sh").read_text()
+    for selected in re.findall(r"tests/(proxy_contracts/[^\s\"]+::\w+)", package_runner):
+        out.append("")
+        out.append(f"The package also selects `tests/{selected}` against its packaged executable.")
+    out.append("")
+    out.append(
+        "The complete native process/protocol family is separately maintained in "
+        "`tests/proxy_contracts/`, run once per supported host platform overnight. "
+        "installed_state_transition.py checks installed durable state "
+        "through four native process lifetimes on Linux and the hosted Mac. "
+        "Historical cross-backend receipts remain in the accepted issues. "
+        "Runner selection describes intended execution, not a passing receipt."
+    )
     out.append("")
 
     for suite_label, files in suites:

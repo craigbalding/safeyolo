@@ -117,7 +117,7 @@ authority = "The host CLI creates and mounts the per-agent UDS path. The Rust li
 checks = "A conflicting identity is rejected by reconciliation, network guard and credential guard. The proxy does not use SO_PEERCRED; socket provisioning is the ingress boundary."
 effects = "UDS accept, attributed request routing and per-agent evidence ownership."
 failure = "Missing or conflicting identity is rejected locally; readiness is withheld on invalid startup configuration."
-tests = ["proxy/tests/transport.rs", "tests/proxy_migration/test_agent_api_test_context.py", "cli/tests/test_rust_proxy.py"]
+tests = ["proxy/tests/transport.rs", "tests/proxy_contracts/test_agent_api_test_context.py", "tests/proxy_contracts/test_http_contract.py", "cli/tests/test_rust_proxy.py", "tests/blackbox/installed_ingress.py", "tests/blackbox/installed_lifecycle.py"]
 symbols = [
   "cli/src/safeyolo/sockets.py::directory_for",
   "cli/src/safeyolo/rust_proxy.py::_agent_listeners",
@@ -130,11 +130,11 @@ symbols = [
 [[decisions]]
 id = "authorization"
 inputs = "Untrusted destination, method, path and headers meet operator baseline/task policy, runtime modes and declared test context."
-authority = "The compiled native policy and operator mode snapshot decide on the release path. A temporary UDS policy adapter remains an explicit development configuration; the release CLI requires policy_file."
-checks = "Destination authority and admin/reserved host checks precede the PDP. Agent-specific rules, rate budgets, explicit bypasses and warn modes are evaluated before egress. The temporary adapter serializes decisions through its UDS."
+authority = "The compiled native policy_file and operator mode snapshot decide on the native request path."
+checks = "Destination authority and admin/reserved host checks precede the PDP. Agent-specific rules, rate budgets, explicit bypasses and warn modes are evaluated before egress."
 effects = "Allow, deny or approval response; rate charge; DNS and outbound socket only after applicable admission."
-failure = "Malformed authority, identity conflict, policy load failure, adapter failure and denied requests do not open an origin socket. Configured warning/disabled modes are explicit exceptions."
-tests = ["proxy/tests/network_guard.rs", "proxy/tests/policy.rs", "tests/proxy_migration/test_native_network_policy.py"]
+failure = "Malformed authority, identity conflict, policy load failure and denied requests do not open an origin socket. Configured warning/disabled modes are explicit exceptions."
+tests = ["proxy/tests/network_guard.rs", "proxy/tests/policy.rs", "tests/proxy_contracts/test_native_network_policy.py", "tests/proxy_contracts/test_http_contract.py"]
 symbols = [
   "proxy/src/policy.rs::evaluate",
   "proxy/src/config.rs::validate",
@@ -155,7 +155,7 @@ authority = "The host CLI selects the existing mitmproxy CA file. The admitted C
 checks = "CA import checks certificate authority status, signing use and key match. Leaf issuance checks the destination and CA validity, bounds leaf validity, and rejects a different client SNI."
 effects = "Read existing CA material, sign a destination leaf, construct a rustls server configuration and accept an intercepted TLS connection."
 failure = "Missing or invalid CA fails startup. Invalid destination, expired CA or mismatched SNI fails the intercepted connection without creating a replacement root."
-tests = ["proxy/tests/tls.rs", "proxy/tests/transport.rs", "cli/tests/test_rust_proxy.py"]
+tests = ["proxy/tests/tls.rs", "proxy/tests/transport.rs", "cli/tests/test_rust_proxy.py", "tests/proxy_contracts/test_https_contract.py", "tests/proxy_contracts/test_https_trust_continuity.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "cli/src/safeyolo/rust_proxy.py::_default_native_config",
   "proxy/src/lib.rs::Runtime::load",
@@ -173,7 +173,7 @@ authority = "Gateway token binding and route/contract/risk checks select a servi
 checks = "The guard fingerprints detected incoming credentials. An authenticated service replaces one authorized header and checks the outbound header again. A service without auth still needs gateway selection and does not read the vault. OAuth refresh uses its stored endpoint and a separate guarded outbound path."
 effects = "Vault file reads/writes for authenticated services, authorized header injection, OAuth refresh POST and admitted request delivery."
 failure = "Missing required binding, denied risk grant or failed injection stops delivery. An unavailable vault stops authenticated delivery. Routine audit uses fingerprints; stored raw HTTP flow bodies and headers remain operator-accessible evidence."
-tests = ["proxy/tests/credential_guard.rs", "proxy/tests/gateway_workflow.rs", "tests/proxy_migration/test_gateway_scope.py"]
+tests = ["proxy/tests/credential_guard.rs", "proxy/tests/gateway_workflow.rs", "tests/proxy_contracts/test_gateway_scope.py", "tests/proxy_contracts/test_guard_approval_audit.py", "tests/blackbox/installed_access.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/credentials.rs::unlock",
   "proxy/src/credentials.rs::expose_secret",
@@ -189,20 +189,21 @@ symbols = [
 [[decisions]]
 id = "provider_services"
 inputs = "Agent gateway request, operator service definition and policy binding, configured same-name sandbox agent and its stable ID, and provider guest port. Request headers are untrusted."
-authority = "The service registry and policy select the provider route only for a configured same-name agent. Gateway selection and the configured agent ID precede the stream opened by the mapped http.rs::forward and http.rs::open_outbound functions. The host CLI supplies the Python interpreter for the platform port forward."
-checks = "A provider host cannot pass through the gateway or use opaque CONNECT. The proxy removes agent-supplied identity headers and inserts the configured ID and name. A service without auth needs no vault credential. The Python helper checks the provider name, port and running sandbox before opening the platform stream."
-effects = "An authorized provider request spawns a Python transport process and forwards bytes to the sandbox guest port. Traffic evidence records the provider route rather than an ordinary origin connection."
-failure = "A denied gateway request, missing configured ID, missing helper interpreter, stopped sandbox or closed guest port fails locally. A provider route does not fall back to origin DNS or an existing outbound tunnel."
-tests = ["tests/proxy_migration/test_gateway_provider.py", "cli/tests/test_provider_stream.py", "proxy/tests/gateway_workflow.rs"]
+authority = "The service registry and policy select the provider route only for a configured same-name agent. Gateway selection and the configured agent ID precede the stream opened by the mapped http.rs::forward and http.rs::open_outbound functions. The native platform code opens a runsc or SSH/socat stream to the selected guest port."
+checks = "A provider host cannot pass through the gateway or use opaque CONNECT. The proxy removes agent-supplied identity headers and inserts the configured ID and name. A service without auth needs no vault credential. Native provider_stream::open validates the name and port. host_platform checks the running sandbox and opens its platform stream."
+effects = "An authorized provider request starts the platform transport command and forwards bytes to the sandbox guest port. Traffic evidence records the provider route rather than an ordinary origin connection."
+failure = "A denied gateway request, missing configured ID, unavailable platform transport, stopped sandbox or closed guest port fails locally. A provider route does not fall back to origin DNS or an existing outbound tunnel."
+tests = ["tests/proxy_contracts/test_gateway_provider.py", "proxy/tests/gateway_workflow.rs"]
 symbols = [
   "cli/src/safeyolo/commands/agent.py::authorize",
   "cli/src/safeyolo/rust_proxy.py::start",
-  "cli/src/safeyolo/provider_stream.py::main",
   "proxy/src/admin_api/services.rs::authorize",
   "proxy/src/admin_api/services.rs::persist",
   "proxy/src/services.rs::GatewaySnapshot::provider_for_host",
   "proxy/src/services.rs::GatewaySnapshot::configured_agent_id",
   "proxy/src/provider_stream.rs::open",
+  "proxy/src/host_platform.rs::open_guest_port",
+  "proxy/src/host_platform.rs::is_sandbox_running",
 ]
 
 [[decisions]]
@@ -212,7 +213,7 @@ authority = "Operator token controls Admin routes. Agent token plus trusted list
 checks = "Admin binds 127.0.0.1 and compares bearer bytes in constant time. Agent API remains local for the reserved host; direct flow reads enforce evidence owner."
 effects = "Policy and mode mutation, audit JSONL, SQLite flow storage, authorized raw body reads, terminal export and event stream."
 failure = "Failed authentication and cross-owner flow access return local errors. Raw flow evidence can contain credentials; it is intentionally distinct from routine redacted audit events."
-tests = ["proxy/tests/operator_controls.rs", "proxy/tests/agent_api_flows.rs", "proxy/tests/flow_store_details.rs"]
+tests = ["proxy/tests/operator_controls.rs", "proxy/tests/agent_api_flows.rs", "proxy/tests/flow_store_details.rs", "tests/proxy_contracts/test_http_contract.py", "tests/blackbox/installed_access.py", "tests/blackbox/isolation/installed_access.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/admin_api.rs::authenticate",
   "proxy/src/admin_api.rs::respond_with_context",
@@ -232,7 +233,7 @@ authority = "Only host Admin mutations write the durable policy/grant state. A t
 checks = "Compile and observe a candidate before atomic snapshot publication; locked read-modify-write protects durable edits. Once grants reserve before use and consume after a successful response."
 effects = "Policy and grant file writes, runtime snapshot swap, audit events and task overlay publication."
 failure = "Rejected load retains the prior accepted snapshot. A persistence failure prevents a successful grant completion. Process replacement clears task registration."
-tests = ["proxy/tests/policy.rs", "proxy/tests/state_policy_transition.rs", "tests/proxy_migration/test_agent_api_policy.py"]
+tests = ["proxy/tests/policy.rs", "proxy/tests/state_policy_transition.rs", "tests/proxy_contracts/test_agent_api_policy.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/policy_runtime.rs::load",
   "proxy/src/lib.rs::reload_policy_if_changed",
@@ -250,7 +251,7 @@ authority = "Destination and policy admission in forward/open_egress_for_flow co
 checks = "Reserved/admin targets and resolved addresses are filtered before direct dial. Inner HTTP and CONNECT require separate admission. Provider delivery also requires gateway selection as mapped in provider_services. Response inspection precedes applicable downstream delivery."
 effects = "DNS lookup, direct or parent TCP connection, authorized provider stream, TLS, HTTP/WebSocket send, tunnel relay and response streaming."
 failure = "No direct fallback from a failed parent or provider stream; opaque tunnels and passthrough have explicit inspection limits but retain network admission."
-tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_migration/test_tunnel_contract.py"]
+tests = ["proxy/tests/transport.rs", "proxy/tests/websocket.rs", "tests/proxy_contracts/test_tunnel_contract.py", "tests/proxy_contracts/test_request_headers.py", "tests/blackbox/installed_workloads.py", "tests/blackbox/installed_access.py", "tests/blackbox/installed_lifecycle.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "proxy/src/http.rs::forward",
   "proxy/src/http.rs::open_outbound",
@@ -263,17 +264,19 @@ symbols = [
 [[decisions]]
 id = "other_sinks_and_launch"
 inputs = "Host CLI proxy configuration, packaged binary path, readiness marker, desktop presentation request and internal coordination credentials."
-authority = "CLI selects the native binary and verifies its process/instance readiness. Desktop presenter uses a host-selected interpreter; NATS credentials stay in host data."
-checks = "Startup has no silent Python fallback. Listener reload requires acknowledgement. Presenter validates agent identity and interpreter path."
-effects = "Proxy process spawn, NATS client connection, desktop presenter spawn and readiness publication."
+authority = "CLI selects the native binary and verifies its process/instance readiness. Native desktop_present::present selects an admitted agent and a host preview. NATS credentials stay in host data."
+checks = "Startup has no silent Python fallback. Listener reload requires acknowledgement. Desktop presentation validates agent identity and the configured platform commands."
+effects = "Proxy process spawn, NATS client connection, guest desktop command, native desktop preview listener and readiness publication."
 failure = "A missing binary or readiness mismatch fails startup; unavailable NATS or presenter fails its own request without becoming arbitrary proxy egress."
-tests = ["cli/tests/test_rust_proxy.py", "proxy/tests/desktop_present_workflow.rs", "proxy/tests/coord_fixture.py"]
+tests = ["cli/tests/test_rust_proxy.py", "proxy/tests/desktop_native.rs", "proxy/tests/native_runtime_dependency.rs", "cli/tests/test_command_centre.py", "proxy/tests/coord_fixture.py", "tests/blackbox/installed_state_transition.py"]
 symbols = [
   "cli/src/safeyolo/rust_proxy.py::_binary",
   "cli/src/safeyolo/rust_proxy.py::prepare",
   "cli/src/safeyolo/rust_proxy.py::_wait_ready",
   "cli/src/safeyolo/proxy.py::selected_backend",
   "proxy/src/lib.rs::load_gateway_vault",
+  "proxy/src/desktop_present.rs::present",
+  "proxy/src/desktop_preview.rs::Preview::start",
 ]
 
 [[decisions]]

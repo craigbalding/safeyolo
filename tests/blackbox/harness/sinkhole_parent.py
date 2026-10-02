@@ -16,13 +16,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from sinkhole_router import (
-    SINKHOLE_HOST,
-    SINKHOLE_HOST_HTTPS_PORTS,
-    SINKHOLE_HOSTS,
-    SINKHOLE_HTTP_PORT,
-    SINKHOLE_HTTPS_PORT,
-)
+if __package__:
+    from .sinkhole_router import (
+        SINKHOLE_HOST,
+        SINKHOLE_HOST_HTTPS_PORTS,
+        SINKHOLE_HOSTS,
+        SINKHOLE_HTTP_PORT,
+        SINKHOLE_HTTPS_PORT,
+    )
+else:
+    from sinkhole_router import (
+        SINKHOLE_HOST,
+        SINKHOLE_HOST_HTTPS_PORTS,
+        SINKHOLE_HOSTS,
+        SINKHOLE_HTTP_PORT,
+        SINKHOLE_HTTPS_PORT,
+    )
 
 
 def _open_peer(

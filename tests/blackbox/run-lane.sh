@@ -23,8 +23,7 @@ if [ -z "$LANE" ]; then
 fi
 shift
 
-# A frozen pilot may install a pinned source checkout while exercising the
-# current blackbox harness. The packaged CLI and native binary still come
+# The selected source checkout may differ from the current blackbox harness. The packaged CLI and native binary still come
 # from the same install.sh invocation.
 INSTALL_ROOT="$REPO_ROOT"
 if [ "${1:-}" = "--install-checkout" ]; then
@@ -36,6 +35,14 @@ if [ "${1:-}" = "--install-checkout" ]; then
     shift 2
 fi
 export SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT="$INSTALL_ROOT"
+
+# The installed scenario runner prepares one product, then gives each section
+# a fresh live instance. This option does not select or run assertions.
+PREPARE_ONLY=false
+if [ "${1:-}" = "--prepare-only" ]; then
+    PREPARE_ONLY=true
+    shift
+fi
 
 case "$LANE" in
     systrap|kvm)
@@ -158,22 +165,32 @@ PY
     safeyolo bootstrap --source-checkout "$INSTALL_ROOT"
 fi
 
+if [ "$PREPARE_ONLY" = true ]; then
+    # Resolve through the selected wheel. Only this verified executable is
+    # copied to section instances; NATS credentials and streams are not shared.
+    python3 - "$(command -v safeyolo)" <<'PY'
+import subprocess
+import sys
+from pathlib import Path
+python = Path(sys.argv[1]).read_text().splitlines()[0][2:]
+subprocess.run([python, '-I', '-c',
+               'from safeyolo.coord.nats_runtime import ensure_binary; print(ensure_binary())'], check=True)
+PY
+    echo "Installed product and $LANE boot inputs prepared; no test instance started"
+    exit 0
+fi
+
 if [ "$LANE" = "proxy" ]; then
     # The installed lane must test the binary packaged with this CLI. The
     # direct run-tests.sh selector retains its explicit debug-binary default.
     ARGS=("$@")
-    SELECTED_BACKEND=""
     EXPLICIT_RUST_BIN=false
     for ((i = 0; i < ${#ARGS[@]}; i++)); do
-        if [ "${ARGS[i]}" = "--proxy-impl" ] && [ "$((i + 1))" -lt "${#ARGS[@]}" ]; then
-            SELECTED_BACKEND="${ARGS[i + 1]}"
-        fi
         if [ "${ARGS[i]}" = "--rust-bin" ]; then
             EXPLICIT_RUST_BIN=true
         fi
     done
-    if { [ "$SELECTED_BACKEND" = "rust" ] || [ "$SELECTED_BACKEND" = "both" ]; } && \
-       [ "$EXPLICIT_RUST_BIN" = false ]; then
+    if [ "$EXPLICIT_RUST_BIN" = false ]; then
         INSTALLED_RUST_BIN="$(python3 - "$SCRIPT_DIR" "$(command -v safeyolo)" <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1])

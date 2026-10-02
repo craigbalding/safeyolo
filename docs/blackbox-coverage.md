@@ -1,12 +1,118 @@
 # SafeYolo Blackbox Test Coverage
 
-Generated from test docstrings in `tests/blackbox/`. Do not edit by hand — run `python3 tests/blackbox/gen_docs.py`.
+Generated from native pytest selections and installed procedures in `tests/blackbox/`. Do not edit by hand — run `python3 tests/blackbox/gen_docs.py`.
 
 Each entry states the security property the test asserts and the threat it defends against. The probe (What) describes the specific observation used to confirm the property.
 
-**105 tests across 39 threat categories.**
+**82 distinct pytest methods across 23 threat categories.**
 
-## Host-side
+This is a source inventory, not a passing execution receipt. The ordinary guest selection excludes root containment; the root selection runs root containment and private-key isolation. Private-key scans run under both identities; public-cert checks run as the ordinary user. Parameterization and platform/fixture skips affect executed nodes. The retired host/proxy selection is excluded.
+
+## Installed procedural selections
+
+`run-installed.sh` prepares once and runs these independent sections:
+
+| Actual lane | Selected sections |
+|---|---|
+| `systrap` | isolation, workloads, access, lifecycle, continuity |
+| `kvm` | isolation, ingress, workloads |
+| `vz` | isolation, access, lifecycle, continuity |
+
+### `tests/blackbox/installed_access.py`
+
+Exercise installed access through two live systrap or VZ guests.
+
+Retain service and contract binding/risk approvals, exact credential injection
+and live peer denial, populated owner-positive/peer-negative guest flow search
+and detail, test-context/trace evidence, real NATS Coord and attention, operator
+Plumb approval/exchange/closure, WebSocket peer effects and traffic-inspector
+filter/transcript/export. These observations stay in one installed composition.
+
+### `tests/blackbox/installed_state_transition.py`
+
+Check installed native state through restart, replacement and recovery.
+
+Use the current installed CLI and its exact --install-commit.
+No agent is booted: this is installed host composition, not guest isolation.
+Each return process must read durable state, reset process-local task policy,
+and enforce revocations before deliberately restoring access.
+
+The procedure uses four native process lifetimes. Historical cross-backend
+receipts remain recorded in the issue; they are not a current execution mode.
+
+### `tests/blackbox/installed_ingress.py`
+
+Check installed native ingress through one real gVisor/KVM guest.
+
+Require the selected wheel and packaged executable, authenticated runtime and
+actual KVM runsc argv/UID mapping. Bind guest localhost requests to its mounted
+agent UDS. Observe an exact allowed HTTP marker at the owned origin, a denied
+request with no origin delivery, and protected local API boundaries.
+
+### `tests/blackbox/installed_lifecycle.py`
+
+Exercise installed lifecycle through systrap or physical VZ guests.
+
+Retain live listener add/remove, policy changes during admitted SSE, all five
+default guest-trust TLS cases (valid, wrong SAN, self-signed, future, expired)
+with origin/no-passthrough checks, scoped ignore_hosts removal across held and
+new connections, stable CA/upstream trust/policy and recovery. Keep mixed
+HTTP/SSE/WS/CONNECT drain, three subject cycles and a separate live owner whose
+process, policy and controls survive those cycles. Observe owned stop/cleanup.
+
+### `tests/blackbox/installed_workloads.py`
+
+Exercise installed Linux workloads through one systrap or KVM guest.
+
+Retain package fetch/hash/query/install/payload/purge, read-only Git clone and
+exact commit/marker, held SSE first-event/control/release ordering, WSS echo
+and peer-close state, denied-upgrade canary with no origin delivery, and pinned
+SSH host-key/command through CONNECT. Each selected run owns its fixtures,
+disposable key, SSH server and guest writable state.
+Installed access owns the plain-WS exchange and inspector observations through
+the same guest handshake, payload and close helper.
+
+### Installed host package
+
+`run-installed-package.sh` runs installed_host_smoke.py in smoke mode: current installed launcher, exact wheel/native executable, authenticated runtime identity, owned HTTP allow/deny authorities and verified stop. It boots no guest and proves no guest isolation.
+
+The package also selects `tests/proxy_contracts/test_https_contract.py::test_https_origin_verification` against its packaged executable.
+
+The complete native process/protocol family is separately maintained in `tests/proxy_contracts/`, run once per supported host platform overnight. installed_state_transition.py checks installed durable state through four native process lifetimes on Linux and the hosted Mac. Historical cross-backend receipts remain in the accepted issues. Runner selection describes intended execution, not a passing receipt.
+
+## Installed native ingress
+
+### `tests/blackbox/host/native/test_installed_native.py`
+
+#### TestInstalledNative — The installed native listener serves real host requests during the guest run.
+
+**Threat:** An isolation pass cannot name a native proxy if its host requests ran
+through a different process or never reached an origin.
+
+- **`test_controlled_origin_and_protected_admin`** — The selected agent reaches an owned origin and cannot proxy to admin.
+  - *Probe:* Send one ordinary request to the controlled sinkhole, then one
+to the protected management listener through the same agent socket.
+  - *Consequence if unasserted:* A response alone cannot show origin delivery or admin containment.
+
+## Host process security
+
+### `tests/blackbox/host/security/test_firewall_structural.py`
+
+#### TestProcessSecrecy — Proxy process doesn't leak SafeYolo tokens via its cmdline.
+
+**Threat:** Process command lines are readable by any local user via
+`ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
+the mitmdump invocation, a non-root user on the host (or a
+process that escaped the sandbox) can read them and gain full
+admin control. Tokens must be passed via file or env var instead.
+
+- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the selected proxy cmdline.
+  - *Probe:* Inspect the native receipt's PID or the retained mitmdump
+process command line; assert neither token is a substring.
+  - *Consequence if unasserted:* A token in the cmdline is readable by any local user —
+full admin access leaks to anyone with shell on the host.
+
+## Installed agent identity
 
 ### `tests/blackbox/host/identity/test_agent_identity.py`
 
@@ -54,6 +160,8 @@ and assert sandbox uid 0 maps to host uid 100000, while uid
 maintainer script would gain real host root. If uid 1000 did
 not map to the operator, normal workspace ownership would fail.
 
+## Installed agent persistence and restart
+
 ### `tests/blackbox/host/lifecycle/test_home_persistence.py`
 
 #### TestAgentHomePersistence — Writes to /home/agent persist across `agent stop` and `agent run`.
@@ -97,329 +205,6 @@ returns 200 from the same running sandbox.
   - *Consequence if unasserted:* A recreated token or Unix socket must remain reachable from
 the same sandbox. File-binding the old socket inode made every
 reconnect fail even though the host pathname had been recreated.
-
-### `tests/blackbox/host/native/test_installed_native.py`
-
-#### TestInstalledNative — The installed native listener serves real host requests during the guest run.
-
-**Threat:** An isolation pass cannot name a native proxy if its host requests ran
-through a different process or never reached an origin.
-
-- **`test_controlled_origin_and_protected_admin`** — The selected agent reaches an owned origin and cannot proxy to admin.
-  - *Probe:* Send one ordinary request to the controlled sinkhole, then one
-to the protected management listener through the same agent socket.
-  - *Consequence if unasserted:* A response alone cannot show origin delivery or admin containment.
-
-### `tests/blackbox/host/proxy/test_credential_guard.py`
-
-#### TestCredentialRouting — Credentials reach only their authorised destinations.
-
-**Threat:** An agent with a real OpenAI/Anthropic/GitHub key should be
-able to use it against the legitimate provider, but nothing else.
-If the credential guard lets a request with a live token reach
-an unrelated host, an attacker-in-the-agent can exfiltrate the
-credential itself (by observing the token in their own logs).
-
-- **`test_openai_key_to_openai_allowed`** — OpenAI bearer token passes through to api.openai.com.
-  - *Probe:* POST to api.openai.com with a test OpenAI key in the
-Authorization header; assert 200 and the sinkhole received
-the request with the Authorization header intact.
-  - *Consequence if unasserted:* Confirms the positive path — a legitimate use of an
-OpenAI key actually works. Without this assertion, an overly
-strict credential guard could break the primary workflow.
-- **`test_openai_key_to_evil_blocked`** — OpenAI key sent to evil.com is blocked before leaving the proxy.
-  - *Probe:* POST to evil.com with an OpenAI bearer token; assert
-428 (approval required) and the sinkhole received zero
-requests on evil.com.
-  - *Consequence if unasserted:* A leaked key reaching attacker-controlled infrastructure
-is the core threat credential_guard defends against. This is
-the primary exfiltration vector — a compromised agent posting
-the user's key to any host it can reach.
-- **`test_anthropic_key_to_anthropic_allowed`** — Anthropic x-api-key passes through to api.anthropic.com.
-  - *Probe:* POST to api.anthropic.com with a test Anthropic key in
-x-api-key; assert 200 and the sinkhole received the request
-with the x-api-key header preserved.
-  - *Consequence if unasserted:* Confirms Anthropic's non-Bearer header is recognised as
-a valid credential route — different header scheme from
-OpenAI, so credential_guard must support both.
-- **`test_anthropic_key_to_attacker_blocked`** — Anthropic key sent to attacker.com is blocked.
-  - *Probe:* POST to attacker.com with an Anthropic x-api-key;
-assert 428 and sinkhole saw zero requests on attacker.com.
-  - *Consequence if unasserted:* Symmetric to the OpenAI case — confirms both credential
-formats are scoped to their legitimate hosts.
-- **`test_no_credentials_passes_through`** — Requests without credentials are not blocked by credential_guard.
-  - *Probe:* GET httpbin.org/get with no Authorization headers;
-assert 200 and sinkhole saw the request.
-  - *Consequence if unasserted:* credential_guard only triggers on credential presence.
-A broken implementation that blocks any request to a
-non-allowlisted host would be network_guard's job, not this
-addon's — confirm the boundaries are respected.
-
-#### TestCredentialInBody — Credentials embedded in request bodies are blocked.
-
-**Threat:** Agents can put credentials in JSON/form bodies, not just
-headers. If the guard only scans headers, an attacker can put
-a stolen key in the request body and exfiltrate through any
-endpoint that accepts POST data. The body-scanning path exists
-behind credguard_scan_bodies=true but isn't wired up yet.
-
-- **`test_key_in_json_body_blocked`** — OpenAI key in a JSON body is blocked when body scanning is on.
-  - *Probe:* POST to evil.com with the OpenAI test key inside a JSON
-body (not in headers); assert 428/403 and no leak to sinkhole.
-  - *Consequence if unasserted:* Closes the header-only evasion — without body scanning,
-`{"api_key": "sk-..."}` to an arbitrary host is a straight
-exfil path. Requires credguard_scan_bodies=true, which is
-not yet default.
-
-#### TestBlockResponseContent — Block responses carry diagnostic data for humans and agents.
-
-**Threat:** When a request is blocked, the agent needs enough information
-in the response to understand what happened — and the operator
-needs an audit identifier to correlate with logs. A bare 428 with
-no body makes both roles fly blind.
-
-- **`test_block_response_includes_event_id`** — Block response body contains event_id or request_id.
-  - *Probe:* Trigger a block by sending an OpenAI key to evil.com,
-parse the 428 body as JSON, assert either 'event_id' or
-'request_id' is present.
-  - *Consequence if unasserted:* The ID lets the operator run `safeyolo explain <id>` to
-see the full decision chain. Without it, block diagnostics
-have to be matched to logs by timestamp — fragile and slow.
-- **`test_block_response_indicates_approval_required`** — Block response body mentions 'approval' or 'prompt'.
-  - *Probe:* Trigger a block; assert the lowercased response body
-contains 'approval' or 'prompt'.
-  - *Consequence if unasserted:* The agent reads the block response to decide whether to
-surface an approval UX to the user or just fail. Without a
-clear signal in the body, agents default to treating 428 as
-a permanent failure.
-
-### `tests/blackbox/host/proxy/test_network_guard.py`
-
-#### TestAccessControl — Allowlisted domains pass through; blocked domains are stopped.
-
-**Threat:** network_guard is the coarse-grained "what destinations is
-this agent allowed to reach at all" layer. Failure modes here
-are either over-permissive (agent reaches a blocked host, data
-leaks) or under-permissive (legitimate traffic fails, breaks
-real workflows).
-
-- **`test_allowed_domain_passes`** — Allowlisted httpbin.org receives a GET through the proxy.
-  - *Probe:* GET httpbin.org/get through the proxy; assert 200 and
-the sinkhole saw one request.
-  - *Consequence if unasserted:* Positive-path check — if allowlisted hosts don't actually
-reach their upstream, the agent loses legitimate connectivity
-and users will disable network_guard to get work done.
-
-#### TestResponseRequestId — SafeYolo owns the correlation header returned to the agent.
-
-**Threat:** An origin-controlled ID can misdirect diagnostics or point to no
-trace at all, breaking the proxy's downstream correlation contract.
-
-- **`test_origin_header_is_replaced_and_resolves_to_trace`** — Origin header is replaced by one canonical, traceable request ID.
-  - *Probe:* Send a traced request to a sinkhole route that returns its own
-X-SafeYolo-Request-Id; assert the client sees one different ID and
-that the returned value resolves through the agent-scoped /trace API.
-  - *Consequence if unasserted:* Without this boundary check, unit tests could pass while the
-loaded proxy still returns an origin-controlled or untraceable ID.
-
-#### TestRateLimiting — Per-host request budgets are enforced without spurious denies.
-
-**Threat:** network_guard caps total request volume to each host to
-contain runaway loops and cost spikes. If the accounting drops
-or double-counts, either budgets block legitimate traffic (false
-positive) or never fire (the cap is meaningless).
-
-- **`test_multiple_requests_allowed_within_budget`** — Five requests inside the budget all succeed.
-  - *Probe:* Reset budgets; issue 5 GETs to httpbin.org; assert all
-5 returned 200 and the sinkhole saw 5.
-  - *Consequence if unasserted:* Confirms the rate limiter isn't tripping on normal
-volumes. A false-positive rate limit at low call counts
-would make the proxy useless for any real workload.
-
-#### TestProxyHeaderStripping — Proxy-specific headers are consumed, not forwarded upstream.
-
-**Threat:** `Proxy-Authorization` (RFC 7235) is credentials for the proxy
-itself — not for the origin server. Forwarding it upstream leaks
-the proxy credential to every destination the agent talks to,
-and violates hop-by-hop header semantics.
-
-- **`test_proxy_authorization_not_forwarded`** — Proxy-Authorization header is stripped before reaching upstream.
-  - *Probe:* Send GET with Proxy-Authorization: Basic secret123;
-assert 200, and the sinkhole's received headers do NOT
-contain Proxy-Authorization.
-  - *Consequence if unasserted:* Hop-by-hop header leak would expose the proxy credential
-to every upstream — a straight credential disclosure bug.
-
-### `tests/blackbox/host/proxy/test_upstream_cert_validation.py`
-
-#### TestEccCrossSignedChain — Upstream validation of an ECC leaf whose chain reaches the
-
-**Threat:** Mirrors example.com's shape. If certifi's bundle lacks a root
-the merge was supposed to supply, or the chain builder fails to
-traverse the bridge cert, validation drops and the curl hangs
-(the failure surfaces as time-out or 502 from mitmproxy).
-
-- **`test_chain_validates_end_to_end`** — GET https://example-chain-test.test/ through the proxy returns 200.
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18444 HTTPS endpoint. The sinkhole presents the chain
-[ECC leaf, ECC intermediate, test-ca-b cross-signed by
-test-ca]. mitmproxy validates it against the merged bundle,
-accepts, MITMs, and forwards to us.
-  - *Consequence if unasserted:* A green 200 confirms the chain-shape regression that
-has bitten us twice is not currently present. A red (timeout,
-502, or TLS verify error from mitmproxy) means something in
-`_merge_system_cas_into_certifi` or the upstream TLS context
-is broken.
-
-#### TestRsaDeepChain — Upstream validation of a 4-deep RSA chain (leaf -> intA -> intB -> root).
-
-**Threat:** Many real-world CDN chains (Amazon CloudFront, Microsoft,
-some Akamai deployments) are 4-deep. Chain builder regressions
-around depth limits, path-length constraints, or intermediate
-caching surface here without needing public internet access.
-
-- **`test_four_deep_chain_validates`** — GET https://rsa-deep-chain.test/ through the proxy returns 200.
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18445 HTTPS endpoint. The sinkhole presents the chain
-[RSA leaf, RSA intermediate A (pathlen:0), RSA intermediate B
-(pathlen:1)]. mitmproxy walks leaf -> A -> B -> ca.crt and
-accepts.
-  - *Consequence if unasserted:* A green 200 confirms the chain builder handles 4-deep
-chains with path-length-constrained intermediates. A red means
-either the depth is being truncated, or the pathlen constraint
-is being misinterpreted -- both would break real CDN upstreams.
-
-#### TestNameConstrainedIntermediate — Upstream validation of a leaf under a name-constrained intermediate.
-
-**Threat:** X.509 nameConstraints (RFC 5280 s4.2.1.10) is implemented
-inconsistently across TLS stacks -- OpenSSL, Python ssl, and
-mitmproxy have each had bugs at various versions. An intermediate
-that permits DNS:nc-constrained.test must still validate a leaf
-whose SAN is within that subtree.
-
-- **`test_leaf_in_permitted_subtree_validates`** — GET https://nc-constrained.test/ through the proxy returns 200.
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18446 HTTPS endpoint. The intermediate has critical
-nameConstraints permitting DNS:nc-constrained.test and
-  - *Consequence if unasserted:* A green 200 confirms mitmproxy honours nameConstraints
-correctly when the leaf is within the permitted subtree. A red
-502 likely means the validator is rejecting leaves under
-name-constrained intermediates outright (a known bug class in
-some TLS stacks).
-
-#### TestExtraIntermediatesIgnored — Upstream validation when server presents extra, unrelated intermediates.
-
-**Threat:** Real-world servers sometimes include extras in the chain due
-to SSLCertificateChainFile misconfiguration or bundle generation
-errors. An over-strict validator that refuses any chain containing
-certs outside the verification path would break these upstreams.
-mitmproxy should find the correct path and silently ignore the rest.
-
-- **`test_junk_certs_in_chain_dont_break_verify`** — GET https://extra-intermediates.test/ through the proxy returns 200.
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18447 HTTPS endpoint. The sinkhole presents the chain
-[leaf, real intermediate, junk CA A, junk CA B]. Only
-`leaf -> real intermediate -> ca.crt` is on the verification
-path; the two junk CAs are unrelated self-signed certs.
-  - *Consequence if unasserted:* A green 200 confirms the chain builder picks the right
-path and ignores extras. A red means either the builder got
-confused by the junk, or it rejected the whole chain for
-containing unrelated certs -- either would break real upstreams
-that ship mis-bundled intermediates.
-
-#### TestExpiredLeafRejected — Must-fail: upstream MUST reject a cert whose notAfter is in the past.
-
-**Threat:** Accepting expired certs has historically regressed in TLS
-stacks (most famously GnuTLS CVE-2014-3466, but also ssl stacks
-whose expiry check lived in a flag disabled by default). If SafeYolo
-ever accepts an expired upstream cert, attackers who compromised an
-expired key long after its issuer stopped caring could impersonate
-the upstream. This test is the canary.
-
-- **`test_expired_cert_causes_upstream_failure`** — GET https://expired-leaf.test/ through the proxy returns 502 (or errors).
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18448 HTTPS endpoint, which presents a valid chain whose
-leaf has notAfter=2021-01-01 (years in the past). mitmproxy
-walks the chain, validates the signatures (all fine), then
-checks validity windows and MUST reject.
-  - *Consequence if unasserted:* Any response other than an upstream-verify failure
-(connection error or 502) means SafeYolo accepted an expired
-cert -- a regression that would silently weaken upstream
-authentication across the board.
-
-#### TestWrongSanRejected — Must-fail: upstream MUST reject a cert whose SAN doesn't match the host.
-
-**Threat:** Hostname verification is the most basic TLS invariant after
-chain trust. A bug that accepts any valid-chained cert regardless
-of hostname would let anyone with ANY cert signed by a trusted CA
-impersonate ANY upstream. This test ensures the SAN-match check
-still fires.
-
-- **`test_cert_with_mismatched_san_causes_failure`** — GET https://wrong-san.test/ through the proxy returns 502 (or errors).
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18449 HTTPS endpoint. The leaf has SAN=DNS:other-name.test
-only -- neither the requested hostname (wrong-san.test) nor the
-connection target IP (127.0.0.1) appears. The chain itself is
-valid, so the only reason to reject is the hostname mismatch.
-  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
-SafeYolo is accepting certs without checking SAN -- a
-catastrophic regression that breaks TLS authentication entirely.
-
-#### TestSelfSignedLeafRejected — Must-fail: upstream MUST reject a self-signed leaf with no trust path.
-
-**Threat:** A self-signed leaf whose issuer isn't in the trust store has
-no path to a trusted root. Accepting it would mean anyone with a
-key can generate a cert for any hostname and pass verification.
-This test ensures SafeYolo's trust store isn't being bypassed.
-
-- **`test_self_signed_cert_causes_failure`** — GET https://self-signed.test/ through the proxy returns 502 (or errors).
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18450 HTTPS endpoint, which presents a single self-signed
-leaf (SAN=self-signed.test, 127.0.0.1). The leaf signs itself;
-no trusted issuer is present in the chain.
-  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
-SafeYolo is accepting untrusted roots -- TLS trust is broken.
-
-#### TestAiaOnlyRejected — Must-fail: upstream MUST reject a chain that presents only the leaf.
-
-**Threat:** When the server omits intermediates, the verifier has no path
-to a trusted root unless it chases the AIA caIssuers URL. Python
-ssl / OpenSSL default to NOT chasing AIA -- servers are expected
-to ship the full chain. mitmproxy inherits that. If it ever flips
-to AIA-chasing (custom verify callback, new OpenSSL flag), an
-attacker who controls the AIA URL or can MITM the HTTP fetch
-could inject arbitrary intermediates -- a silent widening of the
-trust surface. This test documents current "fails deterministically"
-behavior; a 200 here means chain-building policy changed and the
-assertion needs an explicit update.
-
-- **`test_missing_intermediate_causes_failure`** — GET https://aia-only.test/ through the proxy returns 502 (or errors).
-  - *Probe:* Route through SafeYolo's mitmproxy to the sinkhole's
-port-18451 HTTPS endpoint, which presents ONLY the leaf --
-the intermediate is deliberately absent from the chain PEM.
-The leaf's AIA caIssuers extension points at a local URL
-that a future AIA-chaser could hit, but today nothing fetches
-it; chain-building halts at the missing issuer.
-  - *Consequence if unasserted:* Any response other than an upstream-verify failure means
-mitmproxy started AIA-chasing without an explicit policy
-decision -- a silent, auditable change to what SafeYolo
-accepts as a valid upstream chain.
-
-### `tests/blackbox/host/security/test_firewall_structural.py`
-
-#### TestProcessSecrecy — Proxy process doesn't leak SafeYolo tokens via its cmdline.
-
-**Threat:** Process command lines are readable by any local user via
-`ps aux` or `/proc/PID/cmdline`. If SafeYolo tokens appear in
-the mitmdump invocation, a non-root user on the host (or a
-process that escaped the sandbox) can read them and gain full
-admin control. Tokens must be passed via file or env var instead.
-
-- **`test_no_tokens_in_process_cmdline`** — Admin and agent tokens do not appear in the selected proxy cmdline.
-  - *Probe:* Inspect the native receipt's PID or the retained mitmdump
-process command line; assert neither token is a substring.
-  - *Consequence if unasserted:* A token in the cmdline is readable by any local user —
-full admin access leaks to anyone with shell on the host.
 
 ## In-sandbox (isolation)
 
@@ -511,31 +296,6 @@ exhaust operator attention.
   - *Consequence if unasserted:* /policy is a read-only diagnostic endpoint. A 200 would
 indicate method-router confusion — another mutation surface
 silently opened.
-
-#### TestAgentAPICrossAgentIsolation — Agent API returns only the calling agent's data.
-
-**Threat:** Multiple agents share the same proxy and flow store. If the
-API returns flows belonging to other agents, one agent can read
-another's request bodies (credentials, PII, contents). The scope
-is enforced by resolving the caller's source IP through
-service_discovery; this tests the end-to-end isolation, not the
-mechanism.
-
-- **`test_flow_search_scoped_to_calling_agent`** — Flow search returns only flows from the caller's subnet.
-  - *Probe:* Emit a tagged probe through the proxy, then query
-/api/flows/search. For each returned flow, assert the
-client address is in this agent's subnet (not another
-agent's).
-  - *Consequence if unasserted:* A cross-agent leak here is a full information
-disclosure — one agent reads another's request contents,
-including credentials and response bodies.
-- **`test_gateway_services_scoped`** — GET /gateway/services responds without error as this agent.
-  - *Probe:* GET /gateway/services with the agent token; assert 200
-and the response body parses as JSON without an 'error' key.
-  - *Consequence if unasserted:* A smoke test for the scoping mechanism — the response
-shape varies, so we verify the endpoint functions for the
-calling agent. Cross-agent leakage in the detailed contents
-is covered by test_flow_search_scoped_to_calling_agent.
 
 ### `tests/blackbox/isolation/test_key_isolation.py`
 
@@ -852,11 +612,6 @@ packages. On Linux that root is deliberately namespace-root,
 mapped to an unprivileged subordinate host uid. Kernel modules,
 host memory, and eBPF remain unavailable regardless of guest uid.
 
-- **`test_runs_as_nonroot`** — Agent process uid is not 0.
-  - *Probe:* os.getuid() != 0.
-  - *Consequence if unasserted:* Running as root in the sandbox elevates the impact of
-every subsequent bug. Even with namespaces, root-inside-a-
-container is one kernel vuln away from host root.
 - **`test_expected_uid`** — Agent process runs as uid 1000.
   - *Probe:* os.getuid() == 1000.
   - *Consequence if unasserted:* The attribution chain (service_discovery, bind-mount

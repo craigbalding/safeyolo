@@ -566,16 +566,6 @@ class TestGuestPrivilegeBoundary:
     host memory, and eBPF remain unavailable regardless of guest uid.
     """
 
-    def test_runs_as_nonroot(self):
-        """Agent process uid is not 0.
-
-        What: os.getuid() != 0.
-        Why: Running as root in the sandbox elevates the impact of
-        every subsequent bug. Even with namespaces, root-inside-a-
-        container is one kernel vuln away from host root.
-        """
-        assert os.getuid() != 0, "Running as root (UID 0)"
-
     def test_expected_uid(self):
         """Agent process runs as uid 1000.
 

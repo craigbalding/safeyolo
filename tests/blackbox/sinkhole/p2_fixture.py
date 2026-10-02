@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from tests.proxy_migration.websocket_peer import Peer
+from tests.proxy_contracts.websocket_peer import Peer
 
 MARKER = re.compile(r"p2-[0-9a-f]{32}\Z")
 P4_MARKER = re.compile(r"p4-[0-9a-f]{32}\Z")

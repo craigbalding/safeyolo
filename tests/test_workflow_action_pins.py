@@ -80,7 +80,7 @@ def test_setup_uv_preserves_v5_cache_pruning_behavior() -> None:
 
 def test_proxy_rust_broad_test_and_build_step_has_platform_limits() -> None:
     workflow = yaml.safe_load((WORKFLOW_DIR / "proxy-rust.yml").read_text(encoding="utf-8"))
-    steps = workflow["jobs"]["http-slice"]["steps"]
+    steps = workflow["jobs"]["contracts"]["steps"]
     broad_step = next(step for step in steps if step.get("name") == "Test and build the Rust proxy")
     assert broad_step["timeout-minutes"] == "${{ matrix.os == 'macos-latest' && 20 || 10 }}"
     assert "../scripts/cargo_with_space.sh test --locked" in broad_step["run"]

@@ -89,8 +89,9 @@ The explicit rollback target for this cutover is source commit
 prebuilt wheel. Keep a separate checkout of that exact commit: its installer
 uses an editable uv tool installation, and its Python proxy imports `pdp/`
 from the checkout. Its installer resolves dependencies when it runs. The
-[Linux B4 result](https://github.com/craigbalding/safeyolo/pull/828) is
-preparatory; installed macOS return and final-F acceptance are still pending.
+[Linux B4 result](https://github.com/craigbalding/safeyolo/pull/828) is a
+preparatory historical result. The completed cutover acceptance is recorded
+in [#640](https://github.com/craigbalding/safeyolo/issues/640).
 Use the selected checkpoint on
 an instance whose state you intend to reuse; test changes first in a
 disposable instance. The current package cannot run the Python backend.
@@ -209,9 +210,9 @@ for the experiment workflow.
 #### Start options
 
 Normal startup uses the Rust proxy and its generated instance configuration.
-The old Python backend and source/test start flags are unavailable. Historical
-comparisons run from a pinned prior checkout with their own environment; see
-[the migration contract](../tests/proxy_migration/CONTRACT.md).
+The old Python backend and source/test start flags are unavailable. The
+[contract notes](../tests/proxy_contracts/CONTRACT.md) retain historical migration
+receipts; they do not prescribe a production comparator or routine PR gate.
 
 ```bash
 safeyolo start
