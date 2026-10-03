@@ -30,6 +30,15 @@ import sys
 import warnings
 from pathlib import Path
 
+
+def pytest_configure(config):
+    """Register retained outcomes for direct or repository-wide collection."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from pytest_observations import pytest_configure as configure_observations
+
+    configure_observations(config)
+
+
 collect_ignore_glob: list[str] = []
 
 

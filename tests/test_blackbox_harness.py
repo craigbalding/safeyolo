@@ -1008,7 +1008,7 @@ def installed_section_commands(tmp_path, monkeypatch):
     section = scripts / "run-tests.sh"
     section.write_text(
         f"#!{sys.executable}\n"
-        "import json, os, pathlib, sys, uuid\n"
+        "import datetime, json, os, pathlib, sys, uuid\n"
         "root = pathlib.Path(os.environ['SAFEYOLO_TEST_CONFIG_DIR'])\n"
         "source = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])\n"
         "assert '--proxy-impl' in sys.argv and 'rust' in sys.argv\n"
@@ -1026,6 +1026,16 @@ def installed_section_commands(tmp_path, monkeypatch):
         "    (root / name).write_text(uuid.uuid4().hex)\n"
         "(root / 'selection.json').write_text(json.dumps(sys.argv[1:]))\n"
         "(root / 'nats-instance').write_text(os.environ['SAFEYOLO_NATS_TEST_INSTANCE'])\n"
+        "artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])\n"
+        "if root.name == 'isolation' and not os.environ.get('OMIT_OBSERVATIONS'):\n"
+        "    for suite in ('native', 'security', 'identity', 'isolation', 'root-isolation', 'lifecycle'):\n"
+        "        now = datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
+        "        (artifacts / ('pytest-' + suite + '.json')).write_text(json.dumps({\n"
+        "            'schema_version': 1, 'started_at': now, 'finished_at': now, 'exit': 0, 'deselected': 0,\n"
+        "            'suite': suite, 'run_id': os.environ['SAFEYOLO_BLACKBOX_RUN_ID'],\n"
+        "            'source_revision': os.environ['SAFEYOLO_BLACKBOX_INSTALL_REVISION'],\n"
+        "            'collected': 1, 'collection_errors': 0, 'omitted_cases': 0, 'counts': {'passed': 1},\n"
+        "            'cases': [{'test': 'test_fixture.py::test_case', 'case_sha256': 'f'*64, 'outcome': 'passed', 'phase': 'call'}]}))\n"
         "if root.name == 'isolation': sys.exit(int(os.environ.get('FAIL_SECTION', '0')))\n"
     )
     prepare.chmod(0o755)
@@ -1187,6 +1197,92 @@ def test_installed_sections_attribute_preparation_failure_without_starting_secti
     assert report["preparation"]["exit"] == 9
     assert report["sections"] == []
     assert not (directory / "isolation").exists()
+
+
+def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    monkeypatch.setenv("OMIT_OBSERVATIONS", "1")
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
+        tmp_path / "installed", artifacts,
+    ) == 2
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    isolation, access = report["sections"]
+    assert isolation["result"] == "evidence_failure" and isolation["exit"] == 2
+    assert isolation["cleanup"] == "stopped"
+    assert len(isolation["evidence_failures"]) == 6
+    assert access["result"] == "passed", "clean failure must retain independent continuation"
+
+
+def test_installed_staged_preparation_failure_retains_every_unexecuted_section(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    from tests.blackbox import installed_staging
+
+    def reject(*args):
+        raise ValueError("input index does not match trusted digest")
+
+    monkeypatch.setattr(installed_staging, "prepare_inputs", reject)
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "vz", installed_sections.SECTIONS["vz"], installed_section_commands, "a" * 40,
+        directory, artifacts, staged_inputs=tmp_path / "payload", staged_sha256="b" * 64,
+    ) == 2
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert report["preparation"]["exit"] == 2
+    assert report["unexecuted_sections"] == list(installed_sections.SECTIONS["vz"])
+    assert not (directory / "prepared").exists(), "staged rejection must not fall back to source preparation"
+
+
+def test_vz_continuity_forwards_the_allocated_parent_ports_and_private_state(
+    tmp_path, installed_section_commands, monkeypatch
+):
+    repository = installed_section_commands
+    test_bin = repository / ".venv/bin"
+    test_bin.mkdir(parents=True)
+    (test_bin / "python").symlink_to(sys.executable)
+    procedure = repository / "tests/blackbox/installed_state_transition.py"
+    procedure.write_text("""
+import json, os, pathlib, sys
+output = pathlib.Path(sys.argv[sys.argv.index('--output')+1])
+root = pathlib.Path(sys.argv[sys.argv.index('--config-dir')+1])
+assert not root.exists()
+root.mkdir()
+output.write_text(json.dumps({'args': sys.argv[1:], 'nats_ports': os.environ['SAFEYOLO_NATS_TEST_PORTS']}))
+""")
+    # This is an invocation control on Linux, not a physical Mac port witness.
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "vz", ("continuity",), repository, "a" * 40, directory, artifacts,
+    ) == 0
+    document = json.loads((artifacts / "continuity/installed-continuity.json").read_text())
+    arguments = document["args"]
+    for flag, value in installed_sections.VZ_CONTINUITY_DEFAULTS.items():
+        assert arguments[arguments.index(f"--{flag}") + 1] == str(value)
+    assert arguments[arguments.index("--state-parent") + 1] == str(directory)
+    assert arguments[arguments.index("--prepared-config") + 1] == str(directory / "prepared")
+    assert document["nats_ports"] == "46370,46372"
+
+
+def test_vz_port_preflight_preserves_a_foreign_live_listener(tmp_path, installed_section_commands):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as foreign:
+        foreign.bind(("127.0.0.1", 46373))
+        foreign.listen()
+        directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+        assert installed_sections.run_sections(
+            "vz", ("continuity",), installed_section_commands, "a" * 40, directory, artifacts,
+        ) == 2
+        report = json.loads((artifacts / "installed-sections.json").read_text())
+        assert report["unexecuted_sections"] == ["continuity"]
+        assert report["sections"][0]["executed"] is False
+        assert "46373" in report["sections"][0]["error"]
+        assert not (directory / "continuity").exists()
+        with socket.create_connection(foreign.getsockname(), timeout=1):
+            accepted, _ = foreign.accept()
+            accepted.close()
 
 
 @pytest.mark.parametrize("failure,expected,results", [

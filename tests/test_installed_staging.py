@@ -1,0 +1,244 @@
+"""Exercise offline wheel preparation and transferred-input rejection."""
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from tests.blackbox import installed_staging as staging
+
+
+@pytest.fixture
+def staged_payload(tmp_path, monkeypatch):
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+    for name in ("uv.lock", "pyproject.toml"):
+        (checkout / name).write_text("fixture selected inputs\n")
+    (checkout / ".gitignore").write_text("proxy/target/\n")
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture",
+                    "-c", "user.email=fixture@example.test", "-c", "core.hooksPath=/dev/null",
+                    "commit", "-qm", "Selected source"], check=True)
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    nats_bytes = b"#!/bin/sh\nprintf 'fixture-nats\\n'\n"
+    nats_hash = hashlib.sha256(nats_bytes).hexdigest()
+    wheel = tmp_path / "safeyolo-0.1.0-py3-none-any.whl"
+    contents = {
+        "safeyolo/__init__.py": "",
+        "safeyolo/_build_identity.json": json.dumps({"state": "known", "source_revision": revision}),
+        "safeyolo/cli.py": """
+import os, sys
+from pathlib import Path
+def main():
+    if '--version' in sys.argv:
+        print('safeyolo 0.1.0')
+    else:
+        assert sys.argv[1:] == ['init', '--no-interactive']
+        root = Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+        for name in ('bin', 'share', 'data'):
+            (root / name).mkdir(parents=True)
+""",
+        "safeyolo/bin/safeyolo-proxy": "#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 (fixture)\\n'\n",
+        "safeyolo/coord/__init__.py": "",
+        "safeyolo/coord/nats_runtime.py": f"""
+import hashlib, os
+from pathlib import Path
+NATS_VERSION = 'fixture-version'
+def _sha256_of(path): return hashlib.sha256(path.read_bytes()).hexdigest()
+def _expected_binary_sha256(): return {nats_hash!r}
+def nats_binary_path(): return Path(os.environ['SAFEYOLO_COORD_DATA_DIR']) / 'nats/bin/fixture-version/nats-server'
+def ensure_binary():
+    target = nats_binary_path()
+    assert _sha256_of(target) == _expected_binary_sha256()
+    return target
+""",
+        "safeyolo-0.1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: safeyolo\nVersion: 0.1.0\n",
+        "safeyolo-0.1.0.dist-info/WHEEL": "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        "safeyolo-0.1.0.dist-info/entry_points.txt": "[console_scripts]\nsafeyolo = safeyolo.cli:main\n",
+        "safeyolo-0.1.0.dist-info/RECORD": "",
+    }
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, value in contents.items():
+            info = zipfile.ZipInfo(name)
+            info.external_attr = (0o100755 if name.endswith("safeyolo-proxy") else 0o100644) << 16
+            archive.writestr(info, value)
+    native = checkout / "proxy/target/release/safeyolo-proxy"
+    native.parent.mkdir(parents=True)
+    native.write_text(contents["safeyolo/bin/safeyolo-proxy"])
+    native.chmod(0o755)
+    prepared = tmp_path / "prepared-build"
+    for name in ("bin/safeyolo-vm", "bin/vsock-term", *(f"share/{name}" for name in staging.BOOT_FILES)):
+        path = prepared / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture input " + name.encode())
+    nats = prepared / "data/coord/nats/bin/fixture-version/nats-server"
+    nats.parent.mkdir(parents=True)
+    nats.write_bytes(nats_bytes)
+    nats.chmod(0o755)
+    (prepared / "data/admin_token").write_text("private-build-secret")
+    (prepared / "vault.json").write_text("private-build-secret")
+    provenance = tmp_path / "boot-provenance.json"
+    provenance.write_text(json.dumps({name: {"source_revision": digit * 40,
+                                          "sha256": staging._sha256(prepared / "share" / name)}
+                                     for name, digit in zip(staging.BOOT_FILES, "bcd")}))
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    # No dependencies are needed by this tiny installed fixture. The payload
+    # still exercises the directory's closed set of hashed wheel inputs.
+    (wheelhouse / "unused-1.0-py3-none-any.whl").write_bytes(b"unused hashed fixture")
+    helper = {"git_sha": revision, "git_dirty": False, "architecture": "arm64", "build_profile": "production"}
+    monkeypatch.setattr(staging.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(staging.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(staging, "helper_identity", lambda *args: helper)
+    monkeypatch.setattr(staging, "requirements", lambda *args, **kwargs: "")
+    payload = tmp_path / "payload"
+    index = staging.package_inputs(checkout, revision, wheel, wheelhouse, prepared, provenance, payload)
+    return payload, staging._sha256(index), checkout, revision
+
+
+def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_path, staged_payload):
+    payload, digest, checkout, revision = staged_payload
+    (checkout / "proxy/target/release/safeyolo-proxy").unlink()
+    # An unindexed transfer residue must not become a runtime input merely
+    # because it shares a directory with verified boot files or helpers.
+    (payload / "share/cache-paths.txt").write_text("/unapproved-host-path\n")
+    (payload / "bin/unapproved-helper").write_text("unapproved helper")
+    directory = tmp_path / "execution"
+    directory.mkdir()
+    source = directory / "prepared"
+    env = {**os.environ, "SAFEYOLO_CONFIG_DIR": str(source),
+           "SAFEYOLO_COORD_DATA_DIR": str(source / "data/coord"),
+           "UV_CACHE_DIR": str(tmp_path / "empty-cache")}
+    report = staging.prepare_inputs(payload, digest, checkout, revision, directory, Path(sys.executable), env)
+    assert report["source_revision"] == revision
+    assert report["nats_version"] == "fixture-version"
+    assert [item["source_revision"] for item in report["boot_inputs"].values()] == [digit * 40 for digit in "bcd"]
+    for name in staging.BOOT_FILES:
+        assert (source / "share" / name).resolve() == payload / "share" / name
+    assert (source / "bin/safeyolo-vm").resolve() == payload / "bin/safeyolo-vm"
+    assert not (source / "share/cache-paths.txt").exists()
+    assert not (source / "bin/unapproved-helper").exists()
+    assert (source / "data/coord/nats/bin/fixture-version/nats-server").read_bytes() == (payload / "nats/nats-server").read_bytes()
+    assert not (source / "data/admin_token").exists()
+    assert not any(b"private-build-secret" in path.read_bytes() for path in payload.rglob("*") if path.is_file())
+    for name in ("cli", "tests"):
+        installed = directory / name / "bin/python"
+        subprocess.run([str(installed), "-I", "-c",
+                        f"import safeyolo, pathlib, json; p=pathlib.Path(safeyolo.__file__); assert 'site-packages' in str(p); assert json.loads((p.parent/'_build_identity.json').read_text())['source_revision']=={revision!r}"],
+                       check=True)
+    assert not (checkout / ".venv").exists(), "offline preparation must not invoke uv sync"
+    assert (checkout / "proxy/target/release/safeyolo-proxy").read_bytes() == (payload / "native/safeyolo-proxy").read_bytes()
+
+
+@pytest.mark.parametrize("failure", ["wrong-index", "mixed-source", "host", "tampered-wheel", "missing-boot",
+                                     "outside", "extra-wheel", "changed-lock", "unfrozen-requirements", "boot-origin"])
+def test_transfer_rejects_unverified_inputs_before_executing_payload(tmp_path, staged_payload, failure):
+    payload, digest, checkout, revision = staged_payload
+    index_path = payload / staging.INDEX_NAME
+    index = json.loads(index_path.read_text())
+    if failure == "wrong-index":
+        digest = "0" * 64
+    elif failure == "mixed-source":
+        index["source_revision"] = "e" * 40
+    elif failure == "host":
+        index["host"]["machine"] = "x86_64"
+    elif failure == "tampered-wheel":
+        (payload / index["wheel"]).write_bytes(b"replaced wheel")
+    elif failure == "missing-boot":
+        (payload / "share/Image").unlink()
+    elif failure == "outside":
+        outside = tmp_path / "outside"
+        outside.write_bytes(b"unapproved")
+        index["files"]["../outside"] = staging._sha256(outside)
+    elif failure == "extra-wheel":
+        (payload / "wheelhouse/unverified.whl").write_bytes(b"unverified")
+    elif failure == "changed-lock":
+        (checkout / "uv.lock").write_text("changed lock")
+    elif failure == "unfrozen-requirements":
+        (payload / "runtime-requirements.txt").write_text("unapproved==1\n")
+        index["files"]["runtime-requirements.txt"] = staging._sha256(payload / "runtime-requirements.txt")
+    else:
+        index["boot_inputs"]["Image"]["source_revision"] = "unknown"
+    index_path.write_text(json.dumps(index))
+    if failure != "wrong-index":
+        digest = staging._sha256(index_path)
+    with pytest.raises((ValueError, OSError)):
+        staging.verified_inputs(payload, digest, checkout, revision)
+
+
+def test_requirements_use_the_real_frozen_project_export():
+    # This probes the uv exporter against the maintained lock, independently
+    # of the dependency-free fixture used for offline installation above.
+    checkout = Path(__file__).resolve().parents[1]
+    runtime = staging.requirements(checkout, dev=False)
+    tests = staging.requirements(checkout, dev=True)
+    assert "--hash=sha256:" in runtime and "pytest==" not in runtime
+    assert "pytest==" in tests and "--hash=sha256:" in tests
+    assert "-e ." not in runtime + tests
+
+
+def test_staging_help_runs_before_a_product_environment_exists(tmp_path):
+    environment = tmp_path / "python"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(environment)], check=True)
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"}}
+    script = Path(__file__).resolve().parent / "blackbox/installed_staging.py"
+    result = subprocess.run([str(environment / "bin/python"), str(script), "--help"],
+                            env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--boot-provenance" in result.stdout
+
+
+@pytest.mark.parametrize("signature_valid", [False, True])
+def test_helper_signature_is_checked_before_transferred_code_runs(tmp_path, monkeypatch, signature_valid):
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    executed = tmp_path / "helper-executed"
+    codesign = commands / "codesign"
+    codesign.write_text(f"#!/bin/sh\nexit {0 if signature_valid else 7}\n")
+    codesign.chmod(0o755)
+    helper = tmp_path / "safeyolo-vm"
+    identity = {"git_sha": "a" * 40, "git_dirty": False, "architecture": "arm64", "build_profile": "production"}
+    helper.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(executed)!r}).touch()\nprint({json.dumps(identity)!r})\n")
+    helper.chmod(0o755)
+    vm = tmp_path / "source/vm"
+    vm.mkdir(parents=True)
+    (vm / "build-info.py").write_text("import sys\nassert sys.argv[1:4] == ['verify', '--profile', 'production']\n")
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
+    if signature_valid:
+        assert staging.helper_identity(vm.parent, helper, "a" * 40) == identity
+        assert executed.exists()
+    else:
+        with pytest.raises(subprocess.CalledProcessError):
+            staging.helper_identity(vm.parent, helper, "a" * 40)
+        assert not executed.exists(), "an invalid signature must stop before executing the transferred helper"
+
+
+def test_generated_input_index_shapes_fail_without_executing_payload(staged_payload):
+    payload, _, checkout, revision = staged_payload
+    path = payload / staging.INDEX_NAME
+    original = json.loads(path.read_text())
+    values = st.recursive(st.none() | st.booleans() | st.integers() | st.text(max_size=60),
+                          lambda child: st.lists(child, max_size=5) | st.dictionaries(st.text(max_size=30), child, max_size=5),
+                          max_leaves=10)
+
+    @given(field=st.sampled_from(["schema_version", "source_revision", "host", "source_hashes", "files", "wheel",
+                                 "wheel_identity", "boot_inputs"]), value=values)
+    def reject_or_verify(field, value):
+        document = {**original, field: value}
+        path.write_text(json.dumps(document))
+        try:
+            verified = staging.verified_inputs(payload, staging._sha256(path), checkout, revision)
+        except (OSError, ValueError):
+            return
+        assert verified["source_revision"] == revision
+        assert verified["wheel_identity"] == original["wheel_identity"]
+
+    reject_or_verify()

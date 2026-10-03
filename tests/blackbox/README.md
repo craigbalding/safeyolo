@@ -31,13 +31,18 @@ On a fresh KVM-capable acceptance guest:
 ./tests/blackbox/run-installed.sh kvm
 ```
 
-On the physical Apple Silicon host:
+For the constrained Bristol account, prepare inputs on Tart and use the
+[offline hardware path](hardware/README.md#consume-the-verified-payload-on-bristol).
+The following command builds on a disposable physical Apple Silicon host with
+the build prerequisites:
 
 ```sh
 ./tests/blackbox/run-installed.sh vz
 ```
 
-The runner creates a disk-backed directory under the operator's home. It calls
+The runner creates a disk-backed directory under the operator's home;
+`--state-parent PATH` selects another short, private disk-backed parent. By
+default it calls
 `run-lane.sh --prepare-only` once: the supported `install.sh` wheel/native
 build, locked host test dependencies, bootstrap prerequisites, kernel/rootfs,
 and (VZ) source-built helper. Linux preparation reads
@@ -76,8 +81,16 @@ preparation, each section's exit/result, and owned cleanup separately. Section
 reports are below their behavior-named directories. Failed state/logs remain
 in the printed private instance directory for diagnosis.
 
+The isolation section also retains bounded actual pytest outcomes for each
+host and guest invocation. Test parameters, captures and exception text are
+omitted. Skipped and unexecuted assertions are explicit; skips are limitations.
+Missing, stale or incomplete observations produce `evidence_failure` when a
+zero section exit would otherwise hide them. Preparation failure leaves every
+requested section explicitly unexecuted.
+
 Exit 0 means the selected checks and cleanup passed; 1 means an assertion
-failed; 2 means preparation, execution infrastructure or cleanup failed.
+failed; 2 means preparation, execution infrastructure, retained evidence or
+cleanup failed.
 Another independent section may run after a failed assertion or setup only
 when owned cleanup establishes a clean boundary. A cleanup failure stops the
 remaining sections and is recorded as `cleanup_failure`. A later inspection

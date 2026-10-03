@@ -1120,14 +1120,14 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=native pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=security pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1142,7 +1142,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=identity pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1150,10 +1150,27 @@ if [ "$RUN_ISOLATION" = true ]; then
 
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
+    # Reports go through the owned guest home, which is mounted in both
+    # platform implementations. The workspace and config share can be read-only.
+    GUEST_OBSERVATIONS=""
+    if [ -n "${SAFEYOLO_BLACKBOX_OBSERVATIONS_DIR:-}" ]; then
+        printf -v observation_run_id '%q' "$SAFEYOLO_BLACKBOX_RUN_ID"
+        printf -v observation_revision '%q' "$SAFEYOLO_BLACKBOX_INSTALL_REVISION"
+        GUEST_OBSERVATIONS="SAFEYOLO_BLACKBOX_RUN_ID=$observation_run_id SAFEYOLO_BLACKBOX_INSTALL_REVISION=$observation_revision"
+    fi
+    ISOLATION_OBSERVATIONS=""
+    ROOT_OBSERVATIONS=""
+    if [ -n "$GUEST_OBSERVATIONS" ]; then
+        ISOLATION_OBSERVATIONS="$GUEST_OBSERVATIONS SAFEYOLO_BLACKBOX_PYTEST_SUITE=isolation SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=/home/agent/bb-isolation.json"
+        ROOT_OBSERVATIONS="$GUEST_OBSERVATIONS SAFEYOLO_BLACKBOX_PYTEST_SUITE=root-isolation SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=/home/agent/bb-root-isolation.json"
+    fi
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+        "cd /workspace/tests/blackbox/isolation && $ISOLATION_OBSERVATIONS SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
+    if [ -n "$GUEST_OBSERVATIONS" ] && [ -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-isolation.json" ]; then
+        cp "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-isolation.json" "$ARTIFACTS_DIR/pytest-isolation.json"
+    fi
     set -e
     echo ""
 
@@ -1161,8 +1178,11 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" --root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
+        "cd /workspace/tests/blackbox/isolation && $ROOT_OBSERVATIONS SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
+    if [ -n "$GUEST_OBSERVATIONS" ] && [ -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-root-isolation.json" ]; then
+        cp "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-root-isolation.json" "$ARTIFACTS_DIR/pytest-root-isolation.json"
+    fi
     set -e
     echo ""
 
@@ -1176,7 +1196,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=lifecycle pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
     LIFECYCLE_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
