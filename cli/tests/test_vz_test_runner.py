@@ -94,6 +94,29 @@ def test_real_deadline_stops_and_reaps_helper(supervised_vm, monkeypatch):
     assert not (supervised_vm / "vm-supervisor.json").exists()
 
 
+@pytest.mark.parametrize("exit_mode", ("deadline", "helper_exit", "missing_helper_pid"))
+def test_public_stop_reclaims_supervision_after_helper_exit(supervised_vm, monkeypatch, exit_mode):
+    from safeyolo import agent_lifecycle, platform
+    from safeyolo.platform.darwin import DarwinPlatform
+
+    monkeypatch.setattr(platform, "get_platform", lambda: DarwinPlatform())
+    if exit_mode == "deadline":
+        monkeypatch.setenv("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS", "1")
+    process = vm.start_vm("probe", "/workspace", background=True, ephemeral=True)
+    helper_pid = int((supervised_vm / "vm.pid").read_text())
+    if exit_mode != "deadline":
+        os.kill(helper_pid, signal.SIGTERM)
+    assert process.wait(timeout=4) == (124 if exit_mode == "deadline" else 256 - signal.SIGTERM)
+    assert not process_is_alive(helper_pid)
+    if exit_mode == "missing_helper_pid":
+        (supervised_vm / "vm.pid").unlink()
+    result = agent_lifecycle.stop_agent_by_name("probe")
+    assert result.sandbox_state == "stopped" and result.error is None
+    assert not (supervised_vm / "vm-supervisor.json").exists()
+    assert not (supervised_vm / "vm.pid").exists()
+    assert not (supervised_vm / "vm.token").exists()
+
+
 def test_relaunch_preserves_existing_real_runner_and_helper(supervised_vm):
     process = vm.start_vm("probe", "/workspace", background=True, ephemeral=True)
     receipt = supervised_vm / "vm-supervisor.json"
@@ -172,7 +195,8 @@ def test_cancellation_during_registration_stops_real_runner(supervised_vm, monke
     assert runner and not process_is_alive(runner[0])
 
 
-def test_reused_foreign_process_is_never_signalled(tmp_config_dir):
+@pytest.mark.parametrize("public_stop", (False, True))
+def test_reused_foreign_process_is_never_signalled(tmp_config_dir, monkeypatch, public_stop):
     foreign = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         directory = tmp_config_dir / "agents/probe"
@@ -181,14 +205,23 @@ def test_reused_foreign_process_is_never_signalled(tmp_config_dir):
             "pid": foreign.pid, "start_token": "older-runner",
             "helper_pid": foreign.pid, "helper_start_token": "older-helper",
         }))
-        vm.stop_vm("probe")
+        if public_stop:
+            from safeyolo import agent_lifecycle, platform
+            from safeyolo.platform.darwin import DarwinPlatform
+
+            monkeypatch.setattr(platform, "get_platform", lambda: DarwinPlatform())
+            assert agent_lifecycle.stop_agent_by_name("probe").sandbox_state == "stopped"
+        else:
+            vm.stop_vm("probe")
         assert foreign.poll() is None
+        assert not (directory / "vm-supervisor.json").exists()
     finally:
         foreign.terminate()
         foreign.wait(timeout=3)
 
 
-def test_unknown_live_process_identity_keeps_cleanup_failure(tmp_config_dir, monkeypatch):
+@pytest.mark.parametrize("public_stop", (False, True))
+def test_unknown_live_process_identity_keeps_cleanup_failure(tmp_config_dir, monkeypatch, public_stop):
     directory = tmp_config_dir / "agents/probe"
     directory.mkdir(parents=True)
     receipt = directory / "vm-supervisor.json"
@@ -197,8 +230,39 @@ def test_unknown_live_process_identity_keeps_cleanup_failure(tmp_config_dir, mon
     monkeypatch.setattr(vm, "process_is_alive", lambda pid: True)
     monkeypatch.setattr(vm, "process_start_token", lambda pid: None)
     with pytest.raises(vm.VMError, match="Cannot establish"):
-        vm.stop_vm("probe")
+        if public_stop:
+            from safeyolo import agent_lifecycle, platform
+            from safeyolo.platform.darwin import DarwinPlatform
+
+            monkeypatch.setattr(platform, "get_platform", lambda: DarwinPlatform())
+            agent_lifecycle.stop_agent_by_name("probe")
+        else:
+            vm.stop_vm("probe")
     assert receipt.exists()
+
+
+def test_public_stop_retains_receipt_for_live_owned_helper_without_runner(tmp_config_dir, monkeypatch):
+    from safeyolo import agent_lifecycle, platform
+    from safeyolo.platform.darwin import DarwinPlatform
+
+    monkeypatch.setattr(platform, "get_platform", lambda: DarwinPlatform())
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait(timeout=3)
+    helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    directory = tmp_config_dir / "agents/probe"
+    directory.mkdir(parents=True)
+    receipt = directory / "vm-supervisor.json"
+    receipt.write_text(json.dumps({"pid": exited.pid, "start_token": "earlier-runner",
+                                   "helper_pid": helper.pid, "helper_start_token": process_start_token(helper.pid)}))
+    try:
+        with pytest.raises(vm.VMError, match="owned helper did not stop"):
+            agent_lifecycle.stop_agent_by_name("probe")
+        assert helper.poll() is None
+        assert receipt.exists(), "failed owned cleanup must remain visible"
+    finally:
+        helper.terminate()
+        helper.wait(timeout=3)
+        vm.stop_vm("probe")
 
 
 @given(

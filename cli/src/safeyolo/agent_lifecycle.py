@@ -202,6 +202,7 @@ def stop_agent_by_name(
 def _stop_agent_by_name(name: str, *, agent_id: str, on_phase: Callable[[str], None] | None) -> AgentRuntime:
     from .agent_command_supervisor import request_command_supervisor_stop
     from .agent_launchers import stop_launcher
+    from .config import get_agents_dir
     from .platform import get_platform
 
     if on_phase:
@@ -216,7 +217,10 @@ def _stop_agent_by_name(name: str, *, agent_id: str, on_phase: Callable[[str], N
     # otherwise it may treat the shutdown as a crash and relaunch the agent.
     stop_launcher(name)
     platform = get_platform()
-    if not platform.is_sandbox_running(name):
+    # A deadline can reap the helper before public stop. Still consume its
+    # identity-bound supervision receipt through the platform cleanup path.
+    vz_cleanup_pending = (get_agents_dir() / name / "vm-supervisor.json").exists()
+    if not platform.is_sandbox_running(name) and not vz_cleanup_pending:
         return _runtime(name, agent_id)
 
     if on_phase:

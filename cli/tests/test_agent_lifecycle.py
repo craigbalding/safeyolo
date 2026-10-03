@@ -159,3 +159,18 @@ def test_stop_agent_stops_supervisor_and_running_sandbox():
     assert result.sandbox_state == "stopped"
     assert result.agent_state == "stopped"
     assert write_event.call_args.args[0] == "agent.stopped"
+
+
+def test_stop_agent_without_running_sandbox_or_vz_receipt_remains_a_noop(tmp_config_dir):
+    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
+    platform.is_sandbox_running.return_value = False
+    with (
+        patch("safeyolo.agent_lifecycle.get_agent_by_id",
+              return_value=("probe", {"agent_id": "ag-probe"}), autospec=True),
+        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
+        patch("safeyolo.events.write_event", autospec=True) as write_event,
+    ):
+        result = stop_agent("ag-probe")
+    assert result.sandbox_state == "stopped"
+    platform.stop_sandbox.assert_not_called()
+    write_event.assert_not_called()

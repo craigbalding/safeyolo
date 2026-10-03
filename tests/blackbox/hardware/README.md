@@ -93,6 +93,8 @@ the supervisor PID/start token separately in `vm-supervisor.json`; `vm.pid` and
 helper. Section cleanup checks both recorded processes and retains a failure
 if owned cleanup cannot be established. Independent host teardown remains a
 deployment prerequisite.
+Public stop also consumes the supervision receipt after a deadline or helper
+exit, even when the helper PID file is absent.
 If a recorded runner or helper is still active, a new launch preserves its
 receipt and fails before spawning another process. A stopped receipt can be
 reclaimed; a reused PID with a different start token remains untouched.
