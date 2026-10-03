@@ -151,7 +151,7 @@ def test_installed_binary_comes_from_cli_loaded_package(tmp_path: Path, smoke_mo
     (package / "bin").mkdir(parents=True)
     (package / "__init__.py").touch()
     binary = _executable(package / "bin" / "safeyolo-proxy", "safeyolo-proxy 0.1.0")
-    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _cli: {"package_location": str(package / "__init__.py")})
+    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _cli, *, env=None: {"package_location": str(package / "__init__.py")})
 
     selected, _ = smoke_module._installed_rust_binary(tmp_path / "safeyolo")
 

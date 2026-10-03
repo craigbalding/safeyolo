@@ -58,20 +58,29 @@ def job_members(job: dict) -> list[int]:
             fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
         except (FileNotFoundError, ProcessLookupError):
             continue  # The inspected process exited during the kernel snapshot.
-        if int(fields[2]) == pid and int(fields[3]) == pid and fields[0] != "Z":
+        if int(fields[3]) == pid and fields[0] != "Z":
             members.append(int(path.name))
     return members
 
 
 def stop_job(job: dict) -> None:
     """Kill only the owned session and establish inactivity within a deadline."""
-    if job_members(job):
-        try:
-            os.killpg(job["pid"], signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # The last owned session member exited before the signal.
     deadline = time.monotonic() + 10
-    while job_members(job):
+    while members := job_members(job):
+        for pid in members:
+            try:
+                descriptor = os.pidfd_open(pid)
+            except ProcessLookupError:
+                continue  # This member exited after the session snapshot.
+            try:
+                # Job control creates other groups inside the owned session.
+                # Pin each signal to its process, never a reusable group number.
+                if os.getsid(pid) == job["pid"]:
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # A departed/reused PID cannot redirect the opened handle.
+            finally:
+                os.close(descriptor)
         if time.monotonic() >= deadline:
             raise TimeoutError("owned KVM job survived termination")
         time.sleep(0.05)

@@ -68,9 +68,14 @@ interface has no fixed job ID. The execution account is `rundeck`, user ID 112.
 Hardware-control and publication credentials stay outside candidate commands.
 The host adapter records each provisioning or execution job's PID/start token
 in its owner journal. It owns a separate process group, stops that group after
-exit, timeout or cancellation, and observes its inactivity before guest cleanup
-or journal release. Linux `/proc` must permit this observation; unavailable
-inspection leaves cleanup failed. A stale journal with a live job is preserved.
+exit, timeout or cancellation, and observes every live member of the job's
+session before guest cleanup or journal release. Job control can put a child
+in another process group within that session. Cleanup signals each verified
+session member through a Linux PID handle, so a reused PID or group number
+cannot redirect the signal. The leader remains unreaped during termination.
+Linux `/proc` and PID handles must permit observation and signaling; a failure
+leaves cleanup failed and preserves the job journal. A stale journal with a
+live job is preserved.
 
 The following host commands run through that approved Rundeck invocation as
 `rundeck` on devstack. Before allocation, inspect current inventory, lease

@@ -132,6 +132,7 @@ def test_late_provision_child_cannot_allocate_after_timeout_or_cancellation(host
     child_code.write_text(f"""
 import os, sys, time
 from pathlib import Path
+assert os.getpgrp() != os.getsid(0), 'the delayed allocator must exercise a separate owned process group'
 Path({str(child_pid)!r}).write_text(str(os.getpid()))
 while not Path({str(release)!r}).exists(): time.sleep(0.01)
 os.execv(sys.executable, [sys.executable, {str(tmp_path / 'harness-fixture.py')!r}, 'provision', *sys.argv[1:]])
@@ -144,7 +145,7 @@ process=subprocess.Popen([sys.executable, {str(child_code)!r}, *sys.argv[1:]])
 while not Path({str(child_pid)!r}).exists(): time.sleep(0.01)
 if {cancellation != 'early_exit'!r}: process.wait()
 """)
-    (kvm_host.JOBS / "provision.sh").write_text(f'exec {sys.executable} {wrapper} "$@"\n')
+    (kvm_host.JOBS / "provision.sh").write_text(f'set -m\n{sys.executable} {wrapper} "$@" &\nwait "$!"\n')
     owner = "issue889-" + "a" * 32
     job_command = kvm_host.command
 
