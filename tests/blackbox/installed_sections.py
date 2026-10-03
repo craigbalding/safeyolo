@@ -71,8 +71,6 @@ def console_process(root: Path) -> dict | None:
         from .installed_host_smoke import _process_start_token
     else:
         from installed_host_smoke import _process_start_token
-    from safeyolo.traffic_session import find_private_tmux
-
     path = root.resolve() / "data/traffic-tmux.sock"
     try:
         mode = path.lstat().st_mode
@@ -89,24 +87,33 @@ def console_process(root: Path) -> dict | None:
                 return None
             raise
     private = root / "bin/safeyolo-tmux"
-    tmux = private if private.is_file() else find_private_tmux()
+    if private.is_file():
+        tmux = private
+    else:
+        # Standalone preparation has no CLI package in this parent. Only a
+        # live console without a copied runtime needs the installed fallback.
+        from safeyolo.traffic_session import find_private_tmux
+
+        tmux = find_private_tmux()
     result = subprocess.run(
         [str(tmux), "-S", str(path), "-f", "/dev/null", "display-message", "-p", "-t", "safeyolo-traffic:0.0",
-         "#{pid}\n#{socket_path}\n#{session_id}\n#{pane_id}\n#{pane_pid}"],
+         "#{pid} #{session_id} #{pane_id} #{pane_pid} #{socket_path}"],
         capture_output=True, text=True, check=True, timeout=5,
     )
-    fields = result.stdout.splitlines()
-    if (len(fields) != 5 or fields[1] != str(path) or re.fullmatch(r"\$[0-9]+", fields[2]) is None
-            or re.fullmatch(r"%[0-9]+", fields[3]) is None or not fields[0].isascii() or not fields[0].isdecimal()
-            or not fields[4].isascii() or not fields[4].isdecimal()):
+    # tmux replaces control characters inside the format in a C locale. Use
+    # printable separators, leaving the socket path (including spaces) last.
+    fields = result.stdout.removesuffix("\n").split(" ", 4)
+    if (len(fields) != 5 or fields[4] != str(path) or re.fullmatch(r"\$[0-9]+", fields[1]) is None
+            or re.fullmatch(r"%[0-9]+", fields[2]) is None or not fields[0].isascii() or not fields[0].isdecimal()
+            or not fields[3].isascii() or not fields[3].isdecimal()):
         raise ValueError("cannot verify private traffic console identity")
     pid = int(fields[0])
     token = _process_start_token(pid)
-    if pid <= 1 or int(fields[4]) <= 1 or token is None:
+    if pid <= 1 or int(fields[3]) <= 1 or token is None:
         raise ValueError("cannot observe private traffic console process identity")
     return {"pid": pid, "start_token": token,
-            "console": {"tmux": str(tmux), "socket": str(path), "session": fields[2],
-                        "pane": fields[3], "pane_pid": fields[4]}}
+            "console": {"tmux": str(tmux), "socket": str(path), "session": fields[1],
+                        "pane": fields[2], "pane_pid": fields[3]}}
 
 
 def stop_owned_console(processes: list[dict]) -> list[str]:

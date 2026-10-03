@@ -1971,10 +1971,15 @@ def test_installed_source_rejects_ambiguous_commit_before_preparation(tmp_path):
     assert "Prepared product and section state:" not in result.stdout
 
 
-def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_path):
+def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_path, monkeypatch):
+    # The hardware wrapper can leave tmux in the C locale. Observe all exact
+    # identities there without relying on an ambient UTF-8 LC_CTYPE.
+    monkeypatch.setenv("LANG", "C")
+    monkeypatch.setenv("LC_ALL", "C")
+    monkeypatch.delenv("LC_CTYPE", raising=False)
     # Darwin's temporary pytest paths can exceed the Unix socket limit.
     console_directory = tempfile.TemporaryDirectory(prefix="t889-", dir="/tmp")
-    root = Path(console_directory.name) / "instance"
+    root = Path(console_directory.name) / "instance space"
     (root / "data").mkdir(parents=True)
     (root / "config.yaml").write_text("owned fixture")
     cli = tmp_path / "cli"
