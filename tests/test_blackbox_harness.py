@@ -1443,22 +1443,46 @@ def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
 def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
     tmp_path, monkeypatch, installed_section_commands, section_exit
 ):
-    """Read an actual failed pytest run while preserving section precedence."""
+    """Retain real guest pytest failures through local config and section precedence."""
     run = installed_sections.subprocess.run
-    suite = tmp_path / "test_failed_observation.py"
-    suite.write_text("def test_failed_observation(): assert False, 'fixture-private-diagnostic'\n")
+    blackbox = tmp_path / "guest-workspace/tests/blackbox"
+    isolation = blackbox / "isolation"
+    isolation.mkdir(parents=True)
+    source = ROOT / "tests/blackbox"
+    for name in ("_docstring_lint.py", "pytest_observations.py"):
+        shutil.copy2(source / name, blackbox / name)
+    for name in ("conftest.py", "pytest.ini"):
+        shutil.copy2(source / "isolation" / name, isolation / name)
+    suite = isolation / "test_failed_observation.py"
+    suite.write_text('''def test_failed_observation():
+    """Retain a failed guest assertion.
+
+    What: Fail one disposable assertion under the real guest conftest.
+    Why: A successful section cannot erase a failed pytest outcome.
+    """
+    assert False, 'fixture-private-diagnostic'
+''')
     monkeypatch.setenv("FAIL_SECTION", str(section_exit))
 
     def retain_failed_pytest(command, **options):
         result = run(command, **options)
         if Path(command[0]).name == "run-tests.sh" and Path(options["env"]["SAFEYOLO_TEST_CONFIG_DIR"]).name == "isolation":
-            env = {**options["env"], "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
-                   "PYTEST_ADDOPTS": "", "SAFEYOLO_BLACKBOX_PYTEST_SUITE": "isolation"}
-            pytest_result = run(
-                [sys.executable, "-m", "pytest", "-q", "-p", "tests.blackbox.pytest_observations", str(suite)],
-                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False,
-            )
-            assert pytest_result.returncode == 1, pytest_result.stdout + pytest_result.stderr
+            env = {key: value for key, value in options["env"].items()
+                   if key not in ("PYTHONPATH", "SAFEYOLO_BLACKBOX_OBSERVATIONS_DIR")}
+            env.update(PYTEST_ADDOPTS="", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+                       SAFEYOLO_BLACKBOX_ISOLATION="1")
+            for pytest_suite in ("isolation", "root-isolation"):
+                retained = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / f"pytest-{pytest_suite}.json"
+                retained.unlink()  # The fake section's report must not hide missing guest output.
+                output = tmp_path / "guest-home" / f"bb-{pytest_suite}.json"
+                env.update(SAFEYOLO_BLACKBOX_PYTEST_SUITE=pytest_suite,
+                           SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=str(output))
+                pytest_result = run(
+                    [sys.executable, "-m", "pytest", "-q", suite.name],
+                    cwd=isolation, env=env, capture_output=True, text=True, timeout=30, check=False,
+                )
+                assert pytest_result.returncode == 1, pytest_result.stdout + pytest_result.stderr
+                shutil.copy2(output, retained)
         return result
 
     monkeypatch.setattr(installed_sections.subprocess, "run", retain_failed_pytest)
@@ -1471,9 +1495,10 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
     summary = json.loads(summary_text)
     isolation, access = summary["sections"]
     assert isolation["result"] == {0: "evidence_failure", 1: "assertion_failure", 2: "preparation_failure"}[section_exit]
-    assert isolation["evidence_failure_count"] == (1 if section_exit == 0 else 0)
-    observed = next(data for data in isolation["pytest"] if data["suite"] == "isolation")
-    assert observed["exit"] == 1 and observed["counts"] == {"failed": 1}
+    assert isolation["evidence_failure_count"] == (2 if section_exit == 0 else 0)
+    observed = [data for data in isolation["pytest"] if data["suite"] in ("isolation", "root-isolation")]
+    assert len(observed) == 2
+    assert all(data["exit"] == 1 and data["counts"] == {"failed": 1} for data in observed)
     assert isolation["cleanup"] == access["cleanup"] == "stopped"
     assert access["result"] == "passed" and summary["unexecuted_sections"] == []
     assert "fixture-private-diagnostic" not in summary_text and str(tmp_path) not in summary_text
