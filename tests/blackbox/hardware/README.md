@@ -111,7 +111,12 @@ On the approved arm64 macOS build host, use a clean checkout at `SELECTED_SHA`.
 Build the release native proxy and wheel through the maintained installation
 path. Build and sign the matching VM helper through `vm/Makefile`. Prepare the
 compatible boot inputs and the selected verified NATS executable once.
-Compilation belongs on Tart.
+The preparation also builds private tmux from the selected source's pinned
+tmux, libevent and utf8proc releases when the installed CLI has no private
+runtime. Tart needs Command Line Tools (C compiler, make, yacc and macOS
+ncurses headers). The producer checks release hashes before extraction,
+links libevent and utf8proc statically, signs the binary, and rejects
+dependencies outside macOS system libraries. Compilation belongs on Tart.
 
 Before the command below, the trusted build invocation must supply these paths:
 
@@ -120,7 +125,7 @@ Before the command below, the trusted build invocation must supply these paths:
 | `SELECTED_SHA` | The full selected 40-character source commit |
 | `BUILD_WHEEL` | That commit's wheel, containing its source stamp and release native proxy |
 | `WHEELHOUSE` | Offline wheels for the runtime and development dependency closures exported from `uv.lock` |
-| `PREPARED_INPUTS` | Prepared `bin/`, `share/` and verified `data/coord/nats/bin/` inputs |
+| `PREPARED_INPUTS` | Prepared `bin/`, `share/`, private tmux with license notices, and verified `data/coord/nats/bin/` inputs |
 | `BOOT_PROVENANCE` | Original source revision and SHA-256 for each boot file, as described below |
 | `STAGED_OUTPUT` | A new disk-backed directory outside the checkout for this attempt's payload |
 
@@ -143,8 +148,9 @@ python3 tests/blackbox/installed_staging.py \
 
 The command prints the `staged-inputs.json` path and its SHA-256. The payload
 contains only the selected wheel, original release native binary, dependency
-wheels, frozen requirements, signed helper, `vsock-term`, boot inputs and NATS
-binary. It copies no live configuration, vault, token, private key, certificate
+wheels, frozen requirements, signed helper, `vsock-term`, boot inputs, NATS,
+signed private tmux and its third-party license notices. It copies no live
+configuration, vault, token, private key, certificate
 or Coord stream. Keep the input index digest in the trusted controller's
 attempt result, separately from the transferred payload.
 
@@ -330,12 +336,23 @@ compatible interpreter. Keep the configuration outside all tested trees.
 Tart needs the maintained build/install prerequisites, signing identity,
 `vsock-term` and boot inputs. Bristol needs uv, compatible offline wheels,
 verified NATS, the existing direct deadline runner and the supported private
-tmux runtime or an independently verified supported host prerequisite. The
-current staging allowlist does not transfer tmux. [#909](https://github.com/craigbalding/safeyolo/issues/909)
-owns that installed-runtime repair; establish its supported path before claiming
-VZ readiness. [#908](https://github.com/craigbalding/safeyolo/issues/908) separately
-owns the Darwin parent-reaping cleanup fixture. Its known fixture failure does
-not establish failed physical cleanup or permit weaker survivor checks.
+tmux runtime transferred by the staged allowlist. Offline preparation verifies
+its signature, library dependencies, hash, version and final installed lookup.
+Isolation, access and lifecycle link immutable prepared host binaries; the
+lifecycle owner uses those same inputs with its own state and session socket.
+Continuity and the host-package witness copy the private tmux and NATS binary
+bytes into their new instances, without sessions, credentials or streams.
+KVM preparation uses bootstrap's documented Linux tmux prerequisite; the
+current wheel supplies no additional private runtime and needs no redundant
+copy on that lane.
+
+The minimal [#909](https://github.com/craigbalding/safeyolo/issues/909) runtime
+repair and [#908](https://github.com/craigbalding/safeyolo/issues/908) parent-owned
+fixture reaping correction are included here. Exact-head actual-Mac public
+start, missing-runtime and owned-teardown controls remain required before VZ
+readiness. The reaping fixture keeps genuine survivor and result-code controls;
+its correction does not prove physical cleanup or weaken production checks.
+Broader hosted recovery stays in those existing issues.
 
 Before allocation, refresh devstack inventory, lease, running work and capacity.
 The adapter checks usable KVM API 12, four CPUs, 10 GiB available memory and

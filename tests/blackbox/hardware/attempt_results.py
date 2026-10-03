@@ -126,9 +126,13 @@ def runtime_result(data: dict, summary: dict, section_interval: tuple[datetime, 
 
 def preparation_result(data: dict, lane: str, revision: str) -> dict:
     result = {"exit": integer(data["exit"])}
-    for name in ("native_sha256", "wheel_sha256", "input_index_sha256"):
+    for name in ("native_sha256", "wheel_sha256", "input_index_sha256", "tmux_sha256"):
         if name in data:
             result[name] = hexadecimal(data[name], 64)
+    if "tmux_version" in data:
+        if not isinstance(data["tmux_version"], str) or re.fullmatch(r"tmux [0-9]+(?:\.[0-9]+)*[a-z]?", data["tmux_version"]) is None:
+            raise ValueError("prepared private tmux version is invalid")
+        result["tmux_version"] = data["tmux_version"]
     if "source_revision" in data:
         if data["source_revision"] != revision:
             raise ValueError("prepared source differs from selected commit")
@@ -147,7 +151,8 @@ def preparation_result(data: dict, lane: str, revision: str) -> dict:
     if result["exit"] == 0:
         required = {"native_sha256"}
         if lane == "vz":
-            required |= {"wheel_sha256", "source_revision", "input_index_sha256", "boot_inputs", "vm_helper"}
+            required |= {"wheel_sha256", "source_revision", "input_index_sha256", "boot_inputs", "vm_helper",
+                         "tmux_sha256", "tmux_version"}
         if not required <= result.keys():
             raise ValueError("successful preparation lacks installed input identities")
     return result

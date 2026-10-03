@@ -20,13 +20,16 @@ from pathlib import Path
 
 if __package__:
     from .installed_host_smoke import SmokeError, _installed_rust_binary, _sha256
+    from .prepare_tmux import verify_mac_tmux
 else:
     # The packaging entrypoint can run before a CLI environment is installed.
     # Reuse only the source tree's stdlib process-identity helper in this parent.
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli/src"))
     from installed_host_smoke import SmokeError, _installed_rust_binary, _sha256
+    from prepare_tmux import verify_mac_tmux
 
 BOOT_FILES = ("Image", "initramfs.cpio.gz", "rootfs-base.ext4")
+TMUX_LICENSES = tuple(f"share/tmux-licenses/{name}.txt" for name in ("tmux", "libevent", "utf8proc"))
 INDEX_NAME = "staged-inputs.json"
 
 
@@ -103,10 +106,13 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
     nats = list((prepared / "data/coord/nats/bin").glob("*/nats-server"))
     if len(nats) != 1:
         raise ValueError("prepared inputs must contain one verified NATS executable")
+    tmux = prepared / "bin/safeyolo-tmux"
+    tmux_version = verify_mac_tmux(tmux)
     output.mkdir(parents=True, exist_ok=False)
     inputs = {f"wheel/{wheel.name}": wheel, "native/safeyolo-proxy": native, "nats/nats-server": nats[0],
               "bin/safeyolo-vm": prepared / "bin/safeyolo-vm",
-              "bin/vsock-term": prepared / "bin/vsock-term"}
+              "bin/vsock-term": prepared / "bin/vsock-term", "bin/safeyolo-tmux": tmux}
+    inputs.update({name: prepared / name for name in TMUX_LICENSES})
     inputs.update({f"share/{name}": prepared / "share" / name for name in BOOT_FILES})
     inputs.update({f"wheelhouse/{path.name}": path for path in wheels})
     for relative, source in inputs.items():
@@ -120,7 +126,7 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
         "host": {"system": "Darwin", "machine": "arm64"},
         "source_hashes": {name: _sha256(checkout / name) for name in ("uv.lock", "pyproject.toml")},
         "wheel": f"wheel/{wheel.name}", "wheel_identity": wheel_stamp,
-        "vm_helper": helper, "boot_inputs": boot_inputs,
+        "vm_helper": helper, "boot_inputs": boot_inputs, "tmux_version": tmux_version,
         "files": {path.relative_to(output).as_posix(): _sha256(path)
                   for path in output.rglob("*") if path.is_file()},
     }
@@ -171,9 +177,12 @@ def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision:
     if not isinstance(wheel, str) or not wheel.startswith("wheel/") or not wheel.endswith(".whl"):
         raise ValueError("staged inputs have no selected wheel")
     required = {wheel, "native/safeyolo-proxy", "runtime-requirements.txt", "test-requirements.txt", "bin/safeyolo-vm",
-                "bin/vsock-term", "nats/nats-server", *(f"share/{name}" for name in BOOT_FILES)}
+                "bin/vsock-term", "bin/safeyolo-tmux", *TMUX_LICENSES, "nats/nats-server",
+                *(f"share/{name}" for name in BOOT_FILES)}
     if not required.issubset(files):
         raise ValueError("staged inputs are incomplete")
+    if not isinstance(index.get("tmux_version"), str) or re.fullmatch(r"tmux [0-9]+(?:\.[0-9]+)*[a-z]?", index["tmux_version"]) is None:
+        raise ValueError("staged inputs have no private tmux version")
     index["boot_inputs"] = verify_boot_provenance(
         index.get("boot_inputs"), {name: files[f"share/{name}"] for name in BOOT_FILES},
     )
@@ -200,6 +209,8 @@ def prepare_inputs(payload: Path, expected_hash: str, checkout: Path, revision: 
     helper = helper_identity(checkout, payload / "bin/safeyolo-vm", revision)
     if helper != index["vm_helper"]:
         raise ValueError("transferred VM helper identity differs from its build identity")
+    if verify_mac_tmux(payload / "bin/safeyolo-tmux") != index["tmux_version"]:
+        raise ValueError("transferred private tmux version differs from its build identity")
     version = subprocess.check_output([str(python), "-I", "-c", "import sys; print(sys.version_info[:2])"], text=True).strip()
     if version not in {"(3, 12)", "(3, 13)"}:
         raise ValueError("offline preparation needs an installed Python 3.12 or 3.13 interpreter")
@@ -231,7 +242,7 @@ def prepare_inputs(payload: Path, expected_hash: str, checkout: Path, revision: 
     subprocess.run([str(cli), "init", "--no-interactive"], env=env, check=True)
     # init creates empty input directories. Never copy live configuration,
     # tokens, vaults, keys, NATS credentials or streams from the build host.
-    for relative in (*(f"share/{name}" for name in BOOT_FILES), "bin/safeyolo-vm", "bin/vsock-term"):
+    for relative in (*(f"share/{name}" for name in BOOT_FILES), "bin/safeyolo-vm", "bin/vsock-term", "bin/safeyolo-tmux"):
         (source / relative).symlink_to(payload / relative)
     code = """
 import shutil, sys
@@ -251,9 +262,17 @@ print(n.NATS_VERSION)
         [str(directory / "cli/bin/python"), "-I", "-c", code, str(payload / "nats/nats-server")],
         env=env, text=True, timeout=30,
     ).strip()
+    # Verify the selected installed lookup, not a system fallback, after staging.
+    subprocess.run([str(directory / "cli/bin/python"), "-I", "-c", """
+import sys
+from pathlib import Path
+from safeyolo.traffic_session import find_private_tmux
+assert find_private_tmux(allow_system=False) == Path(sys.argv[1])
+""", str(source / "bin/safeyolo-tmux")], env=env, check=True, timeout=30)
     return {"input_index_sha256": expected_hash, "source_revision": revision,
             "wheel_sha256": index["files"][index["wheel"]], "cli": cli_identity,
             "native_sha256": _sha256(binary), "vm_helper": helper, "nats_version": nats_version,
+            "tmux_sha256": index["files"]["bin/safeyolo-tmux"], "tmux_version": index["tmux_version"],
             "boot_inputs": index["boot_inputs"]}
 
 

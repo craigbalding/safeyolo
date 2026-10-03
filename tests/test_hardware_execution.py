@@ -15,9 +15,14 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from safeyolo.runtime_identity import process_is_alive, process_start_token
+from tests import test_hardware_attempt_results
 from tests.blackbox.hardware import attempt_results, install_schedule, kvm_host, mac_host, paired
 
-pytest_plugins = ("tests.test_hardware_attempt_results",)
+# Local fixture aliases work whether the supplying test module was collected
+# before or after this one. Registering it as a plugin depended on that order.
+runner_commands = test_hardware_attempt_results.runner_commands
+runner_summary = test_hardware_attempt_results.runner_summary
+github_fixture = test_hardware_attempt_results.github_fixture
 
 
 @pytest.fixture

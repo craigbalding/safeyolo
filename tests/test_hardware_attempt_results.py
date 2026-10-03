@@ -269,6 +269,7 @@ def test_pair_requires_both_reports_cleanup_and_verified_publication(runner_summ
     document.update(lane="vz", run_id=vz["run_id"], started_at=stamp, finished_at=stamp,
                     requested_sections=list(installed_sections.SECTIONS["vz"]))
     document["preparation"].update(source_revision="a" * 40, wheel_sha256="d" * 64, input_index_sha256="e" * 64,
+                                   tmux_sha256="7" * 64, tmux_version="tmux 3.7c",
                                    vm_helper={"git_sha": "a" * 40, "git_dirty": False, "architecture": "arm64", "build_profile": "production"},
                                    boot_inputs={name: {"source_revision": "b" * 40, "sha256": "f" * 64}
                                                 for name in attempt_results.BOOT_FILES})

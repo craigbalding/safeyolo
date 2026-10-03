@@ -54,9 +54,13 @@ def check_vz_ports() -> list[str]:
     return failures
 
 
-def copy_prepared_nats(source: Path, root: Path) -> None:
-    """Reuse only verified binary bytes; credentials/JetStream stay private."""
+def copy_prepared_runtime(source: Path, root: Path) -> None:
+    """Reuse prepared executables; credentials, sessions and streams stay private."""
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
+    tmux = source / "bin/safeyolo-tmux"
+    if tmux.is_file():
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tmux, root / "bin/safeyolo-tmux")
 
 
 def owned_processes(root: Path) -> list[dict]:
@@ -255,6 +259,7 @@ def publication_summary(report: dict) -> dict:
     preparation = report["preparation"]
     selected_preparation = {name: preparation[name] for name in (
         "exit", "input_index_sha256", "source_revision", "wheel_sha256", "native_sha256",
+        "tmux_sha256", "tmux_version",
     ) if name in preparation}
     if "vm_helper" in preparation:
         selected_preparation["vm_helper"] = {name: preparation["vm_helper"][name] for name in (
@@ -356,7 +361,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     source = directory / "prepared"
     env = os.environ.copy()
     for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR", "SAFEYOLO_VM_HELPER", "PYTHONPATH", "PYTHONHOME",
-                 "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR", "SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH"):
+                 "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR", "SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH", "SAFEYOLO_TMUX_BIN"):
         env.pop(name, None)
     for name in ("SAFEYOLO_VZ_TEST_RUNNER", "SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"):
         env.pop(name, None)

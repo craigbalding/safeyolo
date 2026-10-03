@@ -48,7 +48,7 @@ if __package__:
         _process_start_token,
         _runtime_observation,
     )
-    from .installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from .installed_sections import copy_prepared_runtime, owned_processes, surviving_processes
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -58,7 +58,7 @@ else:
         _process_start_token,
         _runtime_observation,
     )
-    from installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from installed_sections import copy_prepared_runtime, owned_processes, surviving_processes
 
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
@@ -251,6 +251,7 @@ def env_for(root: Path) -> dict:
     env.pop("SAFEYOLO_RUST_PROXY", None)
     env.pop("SAFEYOLO_PYTHON_SOURCE", None)
     env.pop("SAFEYOLO_PDP_DIR", None)
+    env.pop("SAFEYOLO_TMUX_BIN", None)
     env["SAFEYOLO_CONFIG_DIR"] = str(root)
     env["SAFEYOLO_LOGS_DIR"] = str(root / "logs")
     env["SAFEYOLO_COORD_DATA_DIR"] = str(root / "data" / "coord")
@@ -456,7 +457,7 @@ def main() -> None:
     parser.add_argument("--state-parent", required=True, type=Path)
     parser.add_argument("--config-dir", type=Path, help="New isolated directory for the native procedure")
     parser.add_argument("--output", type=Path, help="Bounded native result report")
-    parser.add_argument("--prepared-config", type=Path, help="Prepared product's verified NATS executable")
+    parser.add_argument("--prepared-config", type=Path, help="Prepared product's NATS and private tmux executables")
     parser.add_argument("--origin-host", default="127.0.0.2", help="HTTP/TLS fixture authority and policy host")
     parser.add_argument("--origin-bind", help="Fixture bind address; uses the owned HTTP parent when different from --origin-host")
     parser.add_argument("--http-port", type=int, default=0, help="HTTP fixture port (default: ephemeral)")
@@ -476,7 +477,9 @@ def main() -> None:
         root = Path(tempfile.mkdtemp(prefix="installed-continuity-", dir=args.state_parent))
     env = env_for(root)
     if args.prepared_config is not None:
-        copy_prepared_nats(args.prepared_config, root)
+        copy_prepared_runtime(args.prepared_config, root)
+    if (root / "bin/safeyolo-tmux").is_file():
+        env["SAFEYOLO_TMUX_BIN"] = str(root / "bin/safeyolo-tmux")
     stages: list[dict] = []
     active: Path | None = None
     nats_started = False

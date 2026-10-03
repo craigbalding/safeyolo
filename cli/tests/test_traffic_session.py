@@ -42,6 +42,30 @@ def test_config_local_private_tmux_precedes_system(tmp_path, monkeypatch):
         assert find_private_tmux() == binary
 
 
+def test_private_only_lookup_does_not_mask_missing_runtime_with_system(tmp_path, monkeypatch):
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("SAFEYOLO_TMUX_BIN", raising=False)
+    with patch("safeyolo.traffic_session.shutil.which", return_value="/usr/bin/tmux", autospec=True) as which:
+        with pytest.raises(RuntimeError, match="private tmux runtime is missing"):
+            find_private_tmux(allow_system=False)
+        which.assert_not_called()
+
+
+def test_private_only_lookup_finds_instance_and_rejects_removed_explicit_runtime(tmp_path, monkeypatch):
+    monkeypatch.delenv("SAFEYOLO_TMUX_BIN", raising=False)
+    binary = tmp_path / "bin/safeyolo-tmux"
+    binary.parent.mkdir()
+    binary.write_text("binary")
+    binary.chmod(0o755)
+    monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
+    assert find_private_tmux(allow_system=False) == binary
+    monkeypatch.setenv("SAFEYOLO_TMUX_BIN", str(binary))
+    binary.unlink()
+    with patch("safeyolo.traffic_session.shutil.which", return_value="/usr/bin/tmux", autospec=True):
+        with pytest.raises(RuntimeError, match="not executable"):
+            find_private_tmux()
+
+
 def test_start_uses_private_socket_and_shell_quotes_command(tmp_path, monkeypatch):
     monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(tmp_path))
     tmux = Path("/opt/safeyolo/tmux")

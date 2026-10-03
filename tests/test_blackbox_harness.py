@@ -1235,6 +1235,19 @@ if marker.exists():
     monkeypatch.setenv("FIXTURE_INSTALLED_RUNNER", str(installed_pytest_runner))
     for slot in INSTALLED_PYTEST_SLOTS:
         monkeypatch.setenv(f"FIXTURE_{slot}_EXIT", str(section_exit if slot == "ISOLATION" else 0))
+    # pytest owns this child. Darwin keeps a terminated child observable until
+    # that parent waits; the stop subprocess cannot reap it on pytest's behalf.
+    reaped = threading.Event()
+    reap_errors = []
+    def reap_owned_child():
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired as exc:
+            reap_errors.append(exc)
+        finally:
+            reaped.set()
+    reaper = threading.Thread(target=reap_owned_child)
+    reaper.start()
     try:
         result = installed_sections.run_sections(
             "systrap", (first_section, "access"), repository, "a" * 40, directory, artifacts
@@ -1251,7 +1264,8 @@ if marker.exists():
             assert len(report["sections"]) == 1
             assert not (directory / "access/access-started").exists()
         else:
-            process.wait(timeout=5)
+            assert reaped.wait(timeout=5), "the owning pytest parent must reap the stopped child"
+            assert not reap_errors
             expected = 1 if section_exit == 1 else 2
             # The trap-only access fixture has no retained runtime observation.
             # Preserve the first assertion result and the later evidence failure.
@@ -1265,7 +1279,8 @@ if marker.exists():
     finally:
         if process.poll() is None:
             process.terminate()
-        process.wait(timeout=5)
+        reaper.join(timeout=5)
+        assert not reaper.is_alive(), "owned fixture child reaping must finish"
 
 
 def test_installed_sections_attribute_preparation_failure_without_starting_section(

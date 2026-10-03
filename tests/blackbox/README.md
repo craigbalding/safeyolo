@@ -45,7 +45,10 @@ The runner creates a disk-backed directory under the operator's home;
 default it calls
 `run-lane.sh --prepare-only` once: the supported `install.sh` wheel/native
 build, locked host test dependencies, bootstrap prerequisites, kernel/rootfs,
-and (VZ) source-built helper. Linux preparation reads
+and (VZ) source-built helper. Mac preparation also supplies a private tmux
+runtime; physical VZ inputs are built and packaged on Tart for offline Bristol
+execution through the [hardware deployment path](hardware/README.md).
+Linux preparation reads
 `bootstrap --check --json` rather than maintaining another dependency list.
 For KVM it grants the current operator UID access to `/dev/kvm`; product
 bootstrap supplies the persistent udev rule and subordinate-UID ACL. Systrap
@@ -59,6 +62,9 @@ Coord test instance and writable state. The lifecycle section's separate live
 owner also gets its own instance. Sharing preparation does not share live
 scenario state. NATS executable bytes are prepared once and reverified by the
 installed launcher in each instance; credentials and JetStream data are private.
+Private tmux bytes are reused in fresh Mac instances; session sockets remain
+under each instance's own data directory. KVM uses bootstrap's supported
+Linux tmux prerequisite.
 Individual procedural compositions remain intact.
 
 | Lane | Independent sections |

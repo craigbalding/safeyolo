@@ -424,9 +424,13 @@ if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
     python3 - "$SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR" "$SAFEYOLO_CONFIG_DIR" <<'PY'
 import sys
 from pathlib import Path
-from installed_sections import copy_prepared_nats
-copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
+from installed_sections import copy_prepared_runtime
+copy_prepared_runtime(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
+    if [ -f "$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux" ]; then
+        # A missing staged runtime must not fall through to another host tool.
+        export SAFEYOLO_TMUX_BIN="$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux"
+    fi
 fi
 
 if [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ]; then

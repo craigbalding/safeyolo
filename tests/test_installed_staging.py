@@ -15,6 +15,8 @@ from hypothesis import strategies as st
 from tests.blackbox import installed_sections
 from tests.blackbox import installed_staging as staging
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.fixture
 def staged_payload(tmp_path, monkeypatch):
@@ -34,6 +36,14 @@ def staged_payload(tmp_path, monkeypatch):
     wheel = tmp_path / "safeyolo-0.1.0-py3-none-any.whl"
     contents = {
         "safeyolo/__init__.py": "",
+        "safeyolo/traffic_session.py": (ROOT / "cli/src/safeyolo/traffic_session.py").read_text(),
+        "safeyolo/runtime_identity.py": (ROOT / "cli/src/safeyolo/runtime_identity.py").read_text(),
+        "safeyolo/config.py": """
+import os
+from pathlib import Path
+def get_config_dir(): return Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+def get_data_dir(): return get_config_dir() / 'data'
+""",
         "safeyolo/_build_identity.json": json.dumps({"state": "known", "source_revision": revision}),
         "safeyolo/cli.py": """
 import os, sys
@@ -84,6 +94,13 @@ def ensure_binary():
     nats.parent.mkdir(parents=True)
     nats.write_bytes(nats_bytes)
     nats.chmod(0o755)
+    tmux = prepared / "bin/safeyolo-tmux"
+    tmux.write_bytes(b"#!/bin/sh\nprintf 'tmux 3.7c\\n'\n")
+    tmux.chmod(0o755)
+    for name in staging.TMUX_LICENSES:
+        path = prepared / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture license")
     (prepared / "data/admin_token").write_text("private-build-secret")
     (prepared / "vault.json").write_text("private-build-secret")
     provenance = tmp_path / "boot-provenance.json"
@@ -99,6 +116,8 @@ def ensure_binary():
     monkeypatch.setattr(staging.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(staging.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(staging, "helper_identity", lambda *args: helper)
+    monkeypatch.setattr(staging, "verify_mac_tmux", lambda path: subprocess.check_output(
+        [str(path), "-V"], text=True, timeout=5).strip())
     monkeypatch.setattr(staging, "requirements", lambda *args, **kwargs: "")
     payload = tmp_path / "payload"
     index = staging.package_inputs(checkout, revision, wheel, wheelhouse, prepared, provenance, payload)
@@ -121,10 +140,13 @@ def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_pat
     report = staging.prepare_inputs(payload, digest, checkout, revision, directory, Path(sys.executable), env)
     assert report["source_revision"] == revision
     assert report["nats_version"] == "fixture-version"
+    assert report["tmux_version"] == "tmux 3.7c"
+    assert report["tmux_sha256"] == staging._sha256(payload / "bin/safeyolo-tmux")
     assert [item["source_revision"] for item in report["boot_inputs"].values()] == [digit * 40 for digit in "bcd"]
     for name in staging.BOOT_FILES:
         assert (source / "share" / name).resolve() == payload / "share" / name
     assert (source / "bin/safeyolo-vm").resolve() == payload / "bin/safeyolo-vm"
+    assert (source / "bin/safeyolo-tmux").resolve() == payload / "bin/safeyolo-tmux"
     assert not (source / "share/cache-paths.txt").exists()
     assert not (source / "bin/unapproved-helper").exists()
     assert (source / "data/coord/nats/bin/fixture-version/nats-server").read_bytes() == (payload / "nats/nats-server").read_bytes()
@@ -185,7 +207,8 @@ def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_report
 
 
 @pytest.mark.parametrize("failure", ["wrong-index", "mixed-source", "host", "tampered-wheel", "missing-boot",
-                                     "outside", "extra-wheel", "changed-lock", "unfrozen-requirements", "boot-origin"])
+                                     "outside", "extra-wheel", "changed-lock", "unfrozen-requirements", "boot-origin",
+                                     "missing-tmux", "tampered-tmux", "missing-tmux-index", "invalid-tmux-version"])
 def test_transfer_rejects_unverified_inputs_before_executing_payload(tmp_path, staged_payload, failure):
     payload, digest, checkout, revision = staged_payload
     index_path = payload / staging.INDEX_NAME
@@ -200,6 +223,14 @@ def test_transfer_rejects_unverified_inputs_before_executing_payload(tmp_path, s
         (payload / index["wheel"]).write_bytes(b"replaced wheel")
     elif failure == "missing-boot":
         (payload / "share/Image").unlink()
+    elif failure == "missing-tmux":
+        (payload / "bin/safeyolo-tmux").unlink()
+    elif failure == "tampered-tmux":
+        (payload / "bin/safeyolo-tmux").write_bytes(b"foreign runtime")
+    elif failure == "missing-tmux-index":
+        del index["files"]["bin/safeyolo-tmux"]
+    elif failure == "invalid-tmux-version":
+        index["tmux_version"] = "fixture-private-secret\n"
     elif failure == "outside":
         outside = tmp_path / "outside"
         outside.write_bytes(b"unapproved")
@@ -276,7 +307,7 @@ def test_generated_input_index_shapes_fail_without_executing_payload(staged_payl
                           max_leaves=10)
 
     @given(field=st.sampled_from(["schema_version", "source_revision", "host", "source_hashes", "files", "wheel",
-                                 "wheel_identity", "boot_inputs"]), value=values)
+                                 "wheel_identity", "boot_inputs", "tmux_version"]), value=values)
     def reject_or_verify(field, value):
         document = {**original, field: value}
         path.write_text(json.dumps(document))
