@@ -343,13 +343,16 @@ def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[li
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
                  directory: Path, artifacts: Path, *, staged_inputs: Path | None = None,
                  staged_sha256: str | None = None, python: Path | None = None,
-                 continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None) -> int:
+                 continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None,
+                 run_id: str | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     if __package__:
         from .installed_host_smoke import SmokeError, _sha256
     else:
         from installed_host_smoke import SmokeError, _sha256
 
+    if run_id is not None and re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+        raise ValueError("installed run ID must be a 32-character hexadecimal identifier")
     source = directory / "prepared"
     env = os.environ.copy()
     for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR", "SAFEYOLO_VM_HELPER", "PYTHONPATH", "PYTHONHOME",
@@ -365,7 +368,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(source / "data/coord"),
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
-    run_id = uuid.uuid4().hex
+    run_id = run_id or uuid.uuid4().hex
     report = {"source_revision": revision, "lane": lane, "run_id": run_id,
               "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "exit": None,
               "requested_sections": list(sections),
@@ -542,6 +545,7 @@ def main() -> int:
     parser.add_argument("lane", choices=SECTIONS)
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
     parser.add_argument("--install-commit", help="exact commit; defaults to this checkout's HEAD")
+    parser.add_argument("--run-id", help="Invocation identifier supplied by the trusted paired caller")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
     parser.add_argument("--staged-inputs", type=Path, help="Verified Tart-built offline VZ inputs")
     parser.add_argument("--staged-sha256", help="Input index SHA-256 supplied by the trusted caller")
@@ -556,6 +560,8 @@ def main() -> int:
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR", REPOSITORY / "tests/blackbox/artifacts")))
     args = parser.parse_args()
+    if args.run_id is not None and re.fullmatch(r"[0-9a-f]{32}", args.run_id) is None:
+        parser.error("--run-id must be a 32-character hexadecimal identifier")
     if bool(args.staged_inputs) != bool(args.staged_sha256):
         parser.error("--staged-inputs and --staged-sha256 must be supplied together")
     if args.staged_inputs is not None and args.lane != "vz":
@@ -590,6 +596,7 @@ def main() -> int:
                         staged_inputs=args.staged_inputs.resolve() if args.staged_inputs else None,
                         staged_sha256=args.staged_sha256, python=args.python,
                         continuity_options=tuple(continuity_options),
+                        run_id=args.run_id,
                         vz_test_runner=(args.vz_test_runner, args.vz_test_timeout_seconds)
                         if args.vz_test_runner is not None else None)
 
