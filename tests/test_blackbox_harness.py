@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 
 import pytest
 import yaml
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from tests.blackbox import installed_lifecycle as lifecycle
@@ -1364,6 +1364,95 @@ def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
     assert summary["exit"] == 2
     assert summary["sections"][0]["evidence_failure_count"] == 6
     assert "evidence_failures" not in summary["sections"][0]
+
+
+@pytest.mark.parametrize("section_exit", [0, 1, 2])
+def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
+    tmp_path, monkeypatch, installed_section_commands, section_exit
+):
+    """Read an actual failed pytest run while preserving section precedence."""
+    run = installed_sections.subprocess.run
+    suite = tmp_path / "test_failed_observation.py"
+    suite.write_text("def test_failed_observation(): assert False, 'fixture-private-diagnostic'\n")
+    monkeypatch.setenv("FAIL_SECTION", str(section_exit))
+
+    def retain_failed_pytest(command, **options):
+        result = run(command, **options)
+        if Path(command[0]).name == "run-tests.sh" and Path(options["env"]["SAFEYOLO_TEST_CONFIG_DIR"]).name == "isolation":
+            env = {**options["env"], "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                   "PYTEST_ADDOPTS": "", "SAFEYOLO_BLACKBOX_PYTEST_SUITE": "isolation"}
+            pytest_result = run(
+                [sys.executable, "-m", "pytest", "-q", "-p", "tests.blackbox.pytest_observations", str(suite)],
+                cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30, check=False,
+            )
+            assert pytest_result.returncode == 1, pytest_result.stdout + pytest_result.stderr
+        return result
+
+    monkeypatch.setattr(installed_sections.subprocess, "run", retain_failed_pytest)
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
+        tmp_path / "installed", artifacts,
+    ) == (section_exit or 2)
+    summary_text = (artifacts / "installed-summary.json").read_text()
+    summary = json.loads(summary_text)
+    isolation, access = summary["sections"]
+    assert isolation["result"] == {0: "evidence_failure", 1: "assertion_failure", 2: "preparation_failure"}[section_exit]
+    assert isolation["evidence_failure_count"] == (1 if section_exit == 0 else 0)
+    observed = next(data for data in isolation["pytest"] if data["suite"] == "isolation")
+    assert observed["exit"] == 1 and observed["counts"] == {"failed": 1}
+    assert isolation["cleanup"] == access["cleanup"] == "stopped"
+    assert access["result"] == "passed" and summary["unexecuted_sections"] == []
+    assert "fixture-private-diagnostic" not in summary_text and str(tmp_path) not in summary_text
+    assert not list((tmp_path / "installed").glob("*/agents/*/container.pid"))
+
+
+def test_generated_pytest_results_are_consistent_with_successful_sections(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    """Retain failed and skipped outcomes through actual section reports."""
+    run = installed_sections.subprocess.run
+    attempt_number = 0
+
+    @settings(max_examples=30, deadline=None)
+    @given(suite=st.sampled_from(installed_sections.PYTEST_SUITES), exit_code=st.integers(min_value=0, max_value=5),
+           outcome=st.sampled_from(("passed", "failed", "skipped")))
+    @example(suite="isolation", exit_code=0, outcome="failed")
+    @example(suite="native", exit_code=2, outcome="passed")
+    @example(suite="isolation", exit_code=0, outcome="passed")
+    @example(suite="isolation", exit_code=0, outcome="skipped")
+    def check_result(suite, exit_code, outcome):
+        nonlocal attempt_number
+        attempt_number += 1
+
+        def alter_pytest_result(command, **options):
+            result = run(command, **options)
+            if Path(command[0]).name == "run-tests.sh" and Path(options["env"]["SAFEYOLO_TEST_CONFIG_DIR"]).name == "isolation":
+                path = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / f"pytest-{suite}.json"
+                data = json.loads(path.read_text())
+                data.update(exit=exit_code, counts={outcome: 1})
+                data["cases"][0].update(outcome=outcome, phase="setup" if outcome == "skipped" else "call")
+                path.write_text(json.dumps(data))
+            return result
+
+        monkeypatch.setattr(installed_sections.subprocess, "run", alter_pytest_result)
+        attempt = tmp_path / str(attempt_number)
+        artifacts = attempt / "artifacts"
+        failed = exit_code != 0 or outcome == "failed"
+        assert installed_sections.run_sections(
+            "kvm", ("isolation", "workloads"), installed_section_commands, "a" * 40,
+            attempt / "installed", artifacts,
+        ) == (2 if failed else 0)
+        summary = json.loads((artifacts / "installed-summary.json").read_text())
+        isolation, continuation = summary["sections"]
+        assert isolation["result"] == ("evidence_failure" if failed else "passed")
+        assert isolation["evidence_failure_count"] == int(failed)
+        assert isolation["cleanup"] == continuation["cleanup"] == "stopped"
+        assert continuation["result"] == "passed"
+        observed = next(data for data in isolation["pytest"] if data["suite"] == suite)
+        assert observed["exit"] == exit_code and observed["counts"] == {outcome: 1}
+
+    check_result()
 
 
 @pytest.mark.parametrize("failure", (

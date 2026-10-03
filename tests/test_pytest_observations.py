@@ -122,3 +122,29 @@ def test_generated_observation_field_shapes_are_reported_as_incomplete(tmp_path)
         assert len(observations) in (5, 6)
 
     report_failure()
+
+
+@pytest.mark.parametrize("report_type", ["symlink", "fifo", "directory"])
+def test_observation_reader_rejects_nonregular_reports_before_reading(tmp_path, monkeypatch, report_type):
+    for suite in PYTEST_SUITES:
+        (tmp_path / f"pytest-{suite}.json").write_text(json.dumps(observation(suite)))
+    report = tmp_path / "pytest-isolation.json"
+    report.unlink()
+    if report_type == "symlink":
+        target = tmp_path / "private-instance.json"
+        target.write_text(json.dumps(observation("isolation")))
+        report.symlink_to(target)
+    elif report_type == "fifo":
+        os.mkfifo(report)
+    else:
+        report.mkdir()
+    read_text = Path.read_text
+
+    def read_regular_report(path, *args, **kwargs):
+        assert path != report, "a nonregular report must not be opened"
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_regular_report)
+    observations, failures = pytest_observations(tmp_path, "a" * 32, "b" * 40)
+    assert len(observations) == 5
+    assert len(failures) == 1 and failures[0].startswith("isolation:")

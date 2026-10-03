@@ -132,7 +132,11 @@ retains pytest collection and actual pass/fail/skip/unexecuted outcomes from
 host and guest calls, without captured output, tracebacks or parameter values.
 Missing, stale, mismatched or incomplete pytest observations produce an
 `evidence_failure` when the command would otherwise pass. Recorded skips
-remain limitations. A cleanup failure stops continuation. A port preflight
+remain limitations. A retained failed outcome or nonzero pytest exit also
+prevents a zero section exit from becoming a pass. An earlier assertion or
+infrastructure failure keeps its exit classification. The reader rejects
+symlinks and special files before opening pytest reports.
+A cleanup failure stops continuation. A port preflight
 failure leaves the section explicitly unexecuted and never signals a foreign
 listener.
 

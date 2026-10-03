@@ -289,7 +289,10 @@ def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[li
     observations, failures = [], []
     for suite in PYTEST_SUITES:
         try:
-            data = json.loads((artifacts / f"pytest-{suite}.json").read_text())
+            path = artifacts / f"pytest-{suite}.json"
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError("observation must be a regular report")
+            data = json.loads(path.read_text())
         except (OSError, ValueError) as exc:
             failures.append(f"{suite}: retained pytest observations unavailable ({type(exc).__name__})")
             continue
@@ -496,6 +499,11 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             section_exit = 2
         observations, evidence_failures = (pytest_observations(section_artifacts, run_id, revision)
                                            if section == "isolation" else ([], []))
+        if section_exit == 0:
+            # A successful command cannot clear a failure in its retained
+            # outcomes. The existing runner still owns exit classification.
+            evidence_failures.extend(f"{data['suite']}: pytest observations contradict successful section exit"
+                                     for data in observations if data["exit"] or data["counts"].get("failed"))
         finished_at = datetime.now(UTC).isoformat()
         installed_runtime = None
         if section != "continuity" and executed:
