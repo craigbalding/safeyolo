@@ -1,7 +1,8 @@
 # Hardware blackbox deployment
 
-The hardware path pairs fresh Linux KVM acceptance on devstack with physical
-Apple Silicon VZ acceptance through Bristol's `sy-agent` account. Tart builds,
+The hardware path pairs fresh Linux Kernel-based Virtual Machine (KVM)
+acceptance on devstack with physical Apple Silicon Virtualization.framework
+(VZ) acceptance through Bristol's `sy-agent` account. Tart builds,
 signs and packages the macOS inputs. Bristol verifies transferred inputs and
 executes offline. Both lanes must use one selected full source commit.
 
@@ -88,7 +89,8 @@ The installed runner accepts the existing host deadline runner and a positive
 per-helper deadline. Both CLI and native lifecycle launches invoke
 `/Users/sy-agent/bin/run-vz-test --timeout-seconds N -- /absolute/path/to/safeyolo-vm run ...`
 directly. The host runner stops and reaps its own child. The section state records
-the supervisor PID/start token separately in `vm-supervisor.json`; `vm.pid` and
+the supervisor process identifier (PID) and start token separately in
+`vm-supervisor.json`; `vm.pid` and
 `vm.token` identify the actual helper. Snapshot signals continue to target the
 helper. Section cleanup checks both recorded processes and retains a failure
 if owned cleanup cannot be established. Independent host teardown remains a
@@ -134,6 +136,18 @@ remain limitations. A cleanup failure stops continuation. A port preflight
 failure leaves the section explicitly unexecuted and never signals a foreign
 listener.
 
+Each guest section also retains an installed runtime observation in the
+summary. The attached probe reads the selected installed wheel's source stamp,
+checks its packaged native executable and authenticates the running process.
+The section reader binds that observation to this invocation's run identifier,
+selected source commit, section interval and prepared source binary hash. It
+also checks the execution host's system and architecture. It reuses the
+platform check from `doctor.json`. Missing, stale, malformed or mismatched
+runtime/platform reports produce an `evidence_failure` when the section would
+otherwise pass. An earlier assertion or cleanup failure keeps its precedence.
+After established cleanup, an evidence failure allows independent sections to
+continue and leaves the lane failed.
+
 The runner also writes `installed-summary.json` before product preparation,
 after each section and at completion. This separate summary selects the source
 commit, run ID, timestamps, requested and unexecuted sections, preparation exit
@@ -142,6 +156,12 @@ and sanitized pytest observations. It omits instance paths, raw diagnostic
 text, captures, raw flow/inspector exports and arbitrary additional fields.
 Boot entries retain only their original source revision and hash. The private
 report and logs remain available for diagnosis.
+The installed runtime projection contains the installed wheel source revision,
+native binary hash, capture time, reported isolation platform, host system and
+architecture, process PID/start token and authenticated instance ID. It omits
+the CLI/package/executable paths, native configuration, listener paths,
+readiness files and added nested fields. Continuity remains host composition
+evidence; its report is not a guest runtime or physical-host observation.
 
 An unfinished summary has null `exit` and `finished_at`. A finished partial
 selection has `full_section_selection: false`, even when its commands exit

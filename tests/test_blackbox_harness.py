@@ -984,6 +984,9 @@ def installed_section_commands(tmp_path, monkeypatch):
     repository = tmp_path / "repository"
     scripts = repository / "tests/blackbox"
     scripts.mkdir(parents=True)
+    built = repository / "proxy/target/release/safeyolo-proxy"
+    built.parent.mkdir(parents=True)
+    built.write_bytes(b"selected native fixture")
     prepare = scripts / "run-lane.sh"
     stop_script = f"#!{sys.executable}\n" + "\n".join([
         "import os, pathlib, sys",
@@ -1011,7 +1014,7 @@ def installed_section_commands(tmp_path, monkeypatch):
     section = scripts / "run-tests.sh"
     section.write_text(
         f"#!{sys.executable}\n"
-        "import datetime, json, os, pathlib, sys, uuid\n"
+        "import datetime, hashlib, json, os, pathlib, platform, sys, uuid\n"
         "root = pathlib.Path(os.environ['SAFEYOLO_TEST_CONFIG_DIR'])\n"
         "source = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])\n"
         "assert '--proxy-impl' in sys.argv and 'rust' in sys.argv\n"
@@ -1030,6 +1033,23 @@ def installed_section_commands(tmp_path, monkeypatch):
         "(root / 'selection.json').write_text(json.dumps(sys.argv[1:]))\n"
         "(root / 'nats-instance').write_text(os.environ['SAFEYOLO_NATS_TEST_INSTANCE'])\n"
         "artifacts = pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR'])\n"
+        "lane = sys.argv[sys.argv.index('--expect-platform') + 1]\n"
+        "revision = os.environ['SAFEYOLO_BLACKBOX_INSTALL_REVISION']\n"
+        "pid = os.getpid()\n"
+        "binary = source / 'package/bin/safeyolo-proxy'\n"
+        "now = datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
+        "runtime = {'status': 'attached_ready', 'captured_at': now, 'run_id': os.environ['SAFEYOLO_BLACKBOX_RUN_ID'],\n"
+        "    'source_revision': revision, 'build_identity': {'state': 'known', 'source_revision': revision},\n"
+        "    'host': {'system': 'Darwin' if lane == 'vz' else platform.system(), 'machine': 'arm64' if lane == 'vz' else platform.machine()},\n"
+        "    'cli': {'package_location': str(source / 'package/__init__.py')},\n"
+        "    'candidate': {'path': str(binary), 'sha256': hashlib.sha256((pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT']) / 'proxy/target/release/safeyolo-proxy').read_bytes()).hexdigest()},\n"
+        "    'runtime': {'status': 'ready', 'pid': pid, 'actual_executable': str(binary),\n"
+        "        'receipt': {'pid': pid, 'start_token': f'darwin:{pid}:123:456' if lane == 'vz' else f'linux:00000000-0000-0000-0000-000000000000:{pid}:123'},\n"
+        "        'readiness': {'ready': True, 'pid': pid, 'backend': 'rust-m2', 'instance_id': 'f'*32, 'listeners': 1},\n"
+        "        'authenticated_runtime_identity': {'status': 'authenticated', 'schema_version': 1, 'instance_id': 'f'*32}}}\n"
+        "(artifacts / 'installed-rust-runtime.json').write_text(json.dumps(runtime))\n"
+        "prefix = {'systrap': 'systrap ', 'kvm': 'KVM ', 'vz': 'Apple Virtualization.framework '}[lane]\n"
+        "(artifacts / 'doctor.json').write_text(json.dumps({'checks': [{'name': 'Isolation platform', 'message': prefix + 'fixture'}]}))\n"
         "if root.name == 'isolation' and not os.environ.get('OMIT_OBSERVATIONS'):\n"
         "    for suite in ('native', 'security', 'identity', 'isolation', 'root-isolation', 'lifecycle'):\n"
         "        now = datetime.datetime.now(datetime.timezone.utc).isoformat()\n"
@@ -1176,12 +1196,15 @@ if marker.exists():
         else:
             process.wait(timeout=5)
             expected = 1 if section_exit == 1 else 2
-            assert result == expected
+            # The trap-only access fixture has no retained runtime observation.
+            # Preserve the first assertion result and the later evidence failure.
+            assert result == 2
             assert first["exit"] == expected
             assert first["result"] == ("assertion_failure" if expected == 1 else "preparation_failure")
             assert first["cleanup"] == "stopped"
             assert len(report["sections"]) == 2
             assert (directory / "access/access-started").is_file()
+            assert report["sections"][1]["result"] == "evidence_failure"
     finally:
         if process.poll() is None:
             process.terminate()
@@ -1287,6 +1310,11 @@ def test_generated_nested_private_annotations_do_not_enter_written_summary(
             report["preparation"]["private_instance"] = annotation
             for row in report["sections"]:
                 row["private_instance"] = annotation
+                runtime = row.get("installed_runtime")
+                if runtime is not None:
+                    runtime["private_instance"] = annotation
+                    runtime["host"]["private_instance"] = annotation
+                    runtime["process"]["private_instance"] = annotation
                 for observation in row.get("pytest", []):
                     observation["raw_inspector_export"] = annotation
                     observation["counts"]["private_instance"] = annotation
@@ -1310,6 +1338,9 @@ def test_generated_nested_private_annotations_do_not_enter_written_summary(
         assert all(observation["counts"] == {"passed": 1}
                    for observation in summary["sections"][0]["pytest"])
         assert summary["sections"][0]["pytest"][0]["cases"][0]["test"] == "test_fixture.py::test_case"
+        assert all(row["installed_runtime"]["wheel_source_revision"] == "a" * 40
+                   and row["installed_runtime"]["native_sha256"] == hashlib.sha256(b"selected native fixture").hexdigest()
+                   and row["installed_runtime"]["isolation_platform"] == "kvm" for row in summary["sections"])
 
     omit_private_fields()
 
@@ -1333,6 +1364,227 @@ def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
     assert summary["exit"] == 2
     assert summary["sections"][0]["evidence_failure_count"] == 6
     assert "evidence_failures" not in summary["sections"][0]
+
+
+@pytest.mark.parametrize("failure", (
+    "missing", "symlink", "fifo", "runtime-scalar", "runtime-list", "doctor-missing", "doctor-scalar", "doctor-checks",
+    "platform", "run", "source", "wheel", "wheel-state", "native", "executable", "captured", "past", "future", "timezone", "host", "machine",
+    "process", "pid-bool", "receipt-pid", "readiness", "backend", "start-token", "auth", "auth-schema", "auth-instance",
+))
+@pytest.mark.timeout(15)
+def test_installed_runtime_evidence_failure_is_saved_without_hiding_clean_continuation(
+    tmp_path, monkeypatch, installed_section_commands, failure
+):
+    run = installed_sections.subprocess.run
+    marker = "fixture-runtime-private-secret"
+
+    def alter_saved_observation(command, **options):
+        result = run(command, **options)
+        if Path(command[0]).name != "run-tests.sh" or "--access" not in command:
+            return result
+        artifacts = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"])
+        path = artifacts / "installed-rust-runtime.json"
+        data = json.loads(path.read_text())
+        data["private_instance"] = {"admin_token": marker}
+        if failure in {"missing", "symlink", "fifo"}:
+            path.unlink()
+            if failure == "symlink":
+                private = artifacts / "private-token.json"
+                private.write_text(json.dumps({"private_token": marker}))
+                path.symlink_to(private)
+            elif failure == "fifo":
+                os.mkfifo(path)
+            return result
+        if failure == "doctor-missing":
+            (artifacts / "doctor.json").unlink()
+        elif failure.startswith("doctor-") or failure == "platform":
+            doctor = {"checks": [{"name": "Isolation platform", "message": "KVM fixture"}]}
+            if failure == "doctor-scalar":
+                doctor = marker
+            elif failure == "doctor-checks":
+                doctor["checks"] = [marker]
+            (artifacts / "doctor.json").write_text(json.dumps(doctor))
+        elif failure in {"runtime-scalar", "runtime-list"}:
+            data = marker if failure == "runtime-scalar" else [marker]
+        elif failure in {"run", "source", "captured"}:
+            data[{"run": "run_id", "source": "source_revision", "captured": "captured_at"}[failure]] = {
+                "run": "b" * 32, "source": "b" * 40, "captured": marker,
+            }[failure]
+        elif failure in {"past", "future"}:
+            data["captured_at"] = "2020-01-01T00:00:00+00:00" if failure == "past" else "9999-01-01T00:00:00+00:00"
+        elif failure == "timezone":
+            data["captured_at"] = "2020-01-01T00:00:00"
+        elif failure.startswith("wheel"):
+            data["build_identity"]["state" if failure == "wheel-state" else "source_revision"] = marker
+        elif failure == "native":
+            data["candidate"]["sha256"] = "e" * 64
+        elif failure == "executable":
+            data["runtime"]["actual_executable"] = "/unrelated/" + marker
+        elif failure in {"host", "machine"}:
+            data["host"]["system" if failure == "host" else "machine"] = {} if failure == "machine" else "Darwin"
+        elif failure == "process":
+            data["runtime"] = marker
+        elif failure == "pid-bool":
+            data["runtime"]["pid"] = True
+        elif failure.startswith("receipt") or failure == "start-token":
+            data["runtime"]["receipt"]["pid" if failure == "receipt-pid" else "start_token"] = marker
+        elif failure in {"readiness", "backend"}:
+            data["runtime"]["readiness"]["ready" if failure == "readiness" else "backend"] = marker
+        else:
+            data["runtime"]["authenticated_runtime_identity"][{
+                "auth": "status", "auth-schema": "schema_version", "auth-instance": "instance_id",
+            }[failure]] = True if failure == "auth-schema" else marker
+        path.write_text(json.dumps(data))
+        return result
+
+    monkeypatch.setattr(installed_sections.subprocess, "run", alter_saved_observation)
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "systrap", ("access", "workloads"), installed_section_commands, "a" * 40,
+        tmp_path / "installed", artifacts,
+    ) == 2
+    private = json.loads((artifacts / "installed-sections.json").read_text())
+    summary_text = (artifacts / "installed-summary.json").read_text()
+    summary = json.loads(summary_text)
+    first, continuation = summary["sections"]
+    assert first["exit"] == 2 and first["result"] == "evidence_failure" and first["cleanup"] == "stopped"
+    assert first["evidence_failure_count"] == 1 and "installed_runtime" not in first
+    assert continuation["exit"] == 0 and continuation["result"] == "passed" and continuation["cleanup"] == "stopped"
+    assert continuation["installed_runtime"]["run_id"] == private["run_id"]
+    assert summary["exit"] == 2 and summary["finished_at"] and summary["unexecuted_sections"] == []
+    assert marker not in summary_text and str(tmp_path) not in summary_text
+    assert marker not in private["sections"][0]["evidence_failures"][0]
+
+
+def test_generated_runtime_annotations_do_not_enter_installed_publication(tmp_path, monkeypatch, installed_section_commands):
+    run = installed_sections.subprocess.run
+    values = st.recursive(st.none() | st.booleans() | st.integers() | st.text(max_size=30),
+                          lambda children: st.lists(children, max_size=3)
+                          | st.dictionaries(st.text(max_size=20), children, max_size=3), max_leaves=8)
+    attempts = 0
+
+    @settings(max_examples=20, deadline=None)
+    @given(annotation=values)
+    def project(annotation):
+        nonlocal attempts
+        attempts += 1
+        marker = "fixture-runtime-private-secret"
+
+        def annotate_report(command, **options):
+            result = run(command, **options)
+            if Path(command[0]).name == "run-tests.sh":
+                path = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / "installed-rust-runtime.json"
+                data = json.loads(path.read_text())
+                for fields in (data, data["host"], data["candidate"], data["build_identity"], data["runtime"],
+                               data["runtime"]["receipt"], data["runtime"]["authenticated_runtime_identity"]):
+                    fields["private_instance"] = {"admin_token": marker, "annotation": annotation}
+                path.write_text(json.dumps(data))
+            return result
+
+        monkeypatch.setattr(installed_sections.subprocess, "run", annotate_report)
+        attempt = tmp_path / str(attempts)
+        artifacts = attempt / "artifacts"
+        assert installed_sections.run_sections(
+            "kvm", installed_sections.SECTIONS["kvm"], installed_section_commands, "a" * 40,
+            attempt / "installed", artifacts,
+        ) == 0
+        text = (artifacts / "installed-summary.json").read_text()
+        summary = json.loads(text)
+        assert marker not in text and str(tmp_path) not in text
+        assert summary["preparation"]["native_sha256"] == hashlib.sha256(b"selected native fixture").hexdigest()
+        for row in summary["sections"]:
+            observed = row["installed_runtime"]
+            assert observed["wheel_source_revision"] == "a" * 40 and observed["run_id"] == summary["run_id"]
+            assert observed["isolation_platform"] == "kvm" and observed["process"]["pid"] > 1
+            assert set(observed["process"]) == {"pid", "start_token", "instance_id"}
+
+    project()
+
+
+def test_generated_invalid_runtime_fields_fail_at_the_retained_report_boundary(tmp_path, installed_section_commands):
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "kvm", ("ingress",), installed_section_commands, "a" * 40, tmp_path / "installed", artifacts,
+    ) == 0
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    row = report["sections"][0]
+    path = artifacts / "ingress/installed-rust-runtime.json"
+    original = json.loads(path.read_text())
+    fields = st.sampled_from((
+        ("status",), ("run_id",), ("source_revision",), ("captured_at",),
+        ("build_identity",), ("build_identity", "source_revision"), ("build_identity", "state"),
+        ("candidate",), ("candidate", "sha256"), ("candidate", "path"), ("cli", "package_location"),
+        ("host",), ("host", "system"), ("host", "machine"), ("runtime",), ("runtime", "status"), ("runtime", "pid"),
+        ("runtime", "receipt"), ("runtime", "receipt", "start_token"), ("runtime", "readiness"),
+        ("runtime", "authenticated_runtime_identity"), ("runtime", "authenticated_runtime_identity", "schema_version"),
+    ))
+    nested = st.recursive(st.none() | st.booleans() | st.integers(max_value=0),
+                          lambda children: st.lists(children, max_size=3)
+                          | st.dictionaries(st.text(max_size=15), children, max_size=3), max_leaves=8)
+    marker = "fixture-runtime-private-secret"
+
+    @settings(max_examples=80, deadline=None)
+    @given(field=fields, value=nested | st.text(max_size=30).map(lambda text: marker + text))
+    def reject(field, value):
+        data = copy.deepcopy(original)
+        parent = data
+        for name in field[:-1]:
+            parent = parent[name]
+        parent[field[-1]] = value
+        path.write_text(json.dumps(data))
+        observed, failures = installed_sections.installed_runtime_observation(
+            path.parent, report, row["started_at"], row["finished_at"],
+        )
+        assert observed is None and len(failures) == 1
+        assert marker not in failures[0]
+
+    reject()
+
+
+def test_vz_runtime_projection_uses_darwin_identity_in_a_controlled_host_context(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    """A Linux fixture substitutes host discovery; this does not boot a VZ guest."""
+    monkeypatch.setattr(installed_sections.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(installed_sections.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "vz", ("access", "lifecycle"), installed_section_commands, "a" * 40, tmp_path / "installed", artifacts,
+    ) == 0
+    summary = json.loads((artifacts / "installed-summary.json").read_text())
+    for row in summary["sections"]:
+        observed = row["installed_runtime"]
+        assert observed["host"] == {"system": "Darwin", "machine": "arm64"}
+        assert observed["isolation_platform"] == "vz"
+        assert observed["process"]["start_token"].startswith(f"darwin:{observed['process']['pid']}:")
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_installed_attached_invocation_receives_selected_source_before_guest_tests(tmp_path, explicit):
+    """Execute the maintained Bash invocation with a bounded argument spy."""
+    source = (ROOT / "tests/blackbox/run-tests.sh").read_text()
+    selection = source[source.index("INSTALL_COMMIT_ARGS=()"):
+                       source.index("# The physical VZ test account")]
+    start = source.index('if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then\n    ARTIFACTS_DIR=')
+    attached = source[start:source.index("\ntrap - ERR", start)]
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    recorded = tmp_path / "args.json"
+    (scripts / "installed_host_smoke.py").write_text(
+        "import json, os, pathlib, sys\npathlib.Path(os.environ['FIXTURE_ARGS']).write_text(json.dumps(sys.argv[1:]))\n"
+    )
+    env = dict(os.environ, INSTALL_COMMIT="a" * 40 if explicit else "",
+               SAFEYOLO_BLACKBOX_INSTALL_REVISION="b" * 40, PROXY_IMPL="rust", RUN_ISOLATION="true",
+               SCRIPT_DIR=str(scripts), INSTALLED_CLI="/installed cli", INSTALLED_RUST_BIN="/packaged native",
+               SAFEYOLO_CONFIG_DIR="/private instance", AGENT_NAME="bbtest", FIXTURE_ARGS=str(recorded))
+    result = subprocess.run(["bash", "-c", "set -euo pipefail\n" + selection + attached], env=env,
+                            capture_output=True, text=True, check=False, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    args = json.loads(recorded.read_text())
+    assert args[args.index("--install-commit") + 1] == ("a" * 40 if explicit else "b" * 40)
+    assert args[args.index("--cli") + 1] == "/installed cli"
+    assert args[args.index("--rust-bin") + 1] == "/packaged native"
 
 
 def test_installed_staged_preparation_failure_retains_every_unexecuted_section(
@@ -1483,7 +1735,7 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
     """A clean-shell parent must inspect cleanup and save each section result."""
     repository = installed_section_commands
     scripts = repository / "tests/blackbox"
-    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py"):
+    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py", "assert-platform.py"):
         shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
     package = repository / "cli/src/safeyolo"
     package.mkdir(parents=True)

@@ -242,6 +242,11 @@ INSTALL_COMMIT_ARGS=()
 if [ -n "$INSTALL_COMMIT" ]; then
     INSTALL_COMMIT_ARGS=(--install-commit "$INSTALL_COMMIT")
 fi
+RUNTIME_COMMIT_ARGS=()
+RUNTIME_COMMIT="${INSTALL_COMMIT:-${SAFEYOLO_BLACKBOX_INSTALL_REVISION:-}}"
+if [ -n "$RUNTIME_COMMIT" ]; then
+    RUNTIME_COMMIT_ARGS=(--install-commit "$RUNTIME_COMMIT")
+fi
 
 # The physical VZ test account has six assigned localhost TCP ports. All
 # native selections use one HTTP fixture listener for parent, origin, and
@@ -1062,7 +1067,8 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
         --mode attached --cli "$INSTALLED_CLI" --rust-bin "$INSTALLED_RUST_BIN" \
         --rust-config "$SAFEYOLO_CONFIG_DIR/data/native.json" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --working-directory "$SCRIPT_DIR" \
-        --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json"; then
+        --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+        "${RUNTIME_COMMIT_ARGS[@]+"${RUNTIME_COMMIT_ARGS[@]}"}"; then
         echo "ERROR: installed Rust runtime identity was not verified" >&2
         exit 2
     fi

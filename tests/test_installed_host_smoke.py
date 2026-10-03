@@ -100,6 +100,52 @@ def test_cli_identity_rejects_launcher_without_usable_interpreter(tmp_path: Path
         smoke_module._cli_identity(cli)
 
 
+@pytest.mark.parametrize("failure", [None, "source", "unknown", "schema", "missing", "foreign-native"])
+def test_attached_selected_wheel_identity_precedes_process_observation(tmp_path, smoke_module, monkeypatch, failure):
+    """Read the actual installed stamp; reject mismatches before authenticating."""
+    package = tmp_path / "site-packages/safeyolo"
+    (package / "bin").mkdir(parents=True)
+    binary = _executable(package / "bin/safeyolo-proxy", "safeyolo-proxy 0.1.0 (fixture)")
+    revision = "a" * 40
+    marker = "fixture-wheel-private-secret"
+    stamp = {"schema_version": 1, "source_revision": revision, "state": "known", "private_instance": {"token": marker}}
+    if failure == "source":
+        stamp["source_revision"] = "b" * 40
+    elif failure == "unknown":
+        stamp["state"] = "unknown"
+    elif failure == "schema":
+        stamp["schema_version"] = True
+    if failure != "missing":
+        (package / "_build_identity.json").write_text(json.dumps(stamp))
+    if failure == "foreign-native":
+        binary = _executable(tmp_path / "foreign-proxy", "safeyolo-proxy 0.1.0 (fixture)")
+    cli = {"package_location": str(package / "__init__.py")}
+    monkeypatch.setattr(smoke_module, "_cli_identity", lambda _value: cli)
+    monkeypatch.setattr(smoke_module, "_substrate_identity", lambda _root: {"status": "discovered", "kind": "gvisor"})
+    monkeypatch.setattr(smoke_module, "_native_config", lambda *_args: {})
+    observed = []
+    monkeypatch.setattr(smoke_module, "_runtime_observation", lambda *_args, **_kwargs: observed.append(True) or {"status": "ready"})
+    agent = {"agent_id": "alice"}
+    monkeypatch.setattr(smoke_module, "_agent_map", lambda _root: [agent])
+    monkeypatch.setattr(smoke_module, "_probe_agent_health", lambda *_args: {"status": 200})
+    monkeypatch.setenv("SAFEYOLO_BLACKBOX_RUN_ID", "e" * 32)
+    output = tmp_path / "runtime.json"
+    result = smoke_module.main([
+        "--mode", "attached", "--cli", "fixture", "--rust-bin", str(binary), "--rust-config", str(tmp_path / "native.json"),
+        "--config-dir", str(tmp_path), "--working-directory", str(tmp_path), "--agent", "alice",
+        "--install-commit", revision, "--output", str(output),
+    ])
+    report = json.loads(output.read_text())
+    assert result == (2 if failure else 0)
+    assert observed == ([] if failure else [True])
+    assert marker not in output.read_text()
+    if not failure:
+        assert report["source_revision"] == revision
+        assert report["build_identity"] == {"source_revision": revision, "state": "known"}
+        assert report["run_id"] == "e" * 32
+        assert report["candidate"]["sha256"] == smoke_module._sha256(binary)
+
+
 def test_installed_binary_comes_from_cli_loaded_package(tmp_path: Path, smoke_module, monkeypatch) -> None:
     package = tmp_path / "site-packages" / "safeyolo"
     (package / "bin").mkdir(parents=True)

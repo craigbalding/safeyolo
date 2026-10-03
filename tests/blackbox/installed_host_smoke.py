@@ -779,6 +779,19 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": args.mode}
     try:
+        if args.install_commit:
+            stamp = _read_json(Path(cli["package_location"]).parent / "_build_identity.json", "installed wheel identity")
+            if (type(stamp.get("schema_version")) is not int or stamp["schema_version"] != 1
+                    or stamp.get("source_revision") != args.install_commit or stamp.get("state") != "known"):
+                raise SmokeError("installed wheel source revision does not match --install-commit")
+            packaged = Path(cli["package_location"]).parent / "bin/safeyolo-proxy"
+            if packaged.resolve() != candidate_path.resolve():
+                raise SmokeError("selected native executable is not the installed wheel's proxy")
+            report["candidate"]["path"] = str(packaged.resolve())
+            report["source_revision"] = stamp["source_revision"]
+            report["build_identity"] = {"source_revision": stamp["source_revision"], "state": "known"}
+        if os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"):
+            report["run_id"] = os.environ["SAFEYOLO_BLACKBOX_RUN_ID"]
         _require_substrate(substrate)
         native_path = _absolute_path(args.rust_config, cwd)
         native = _native_config(native_path, cwd)

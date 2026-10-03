@@ -13,15 +13,18 @@ import argparse
 import collections
 import json
 import os
+import platform
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import uuid
 import zipfile
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -162,6 +165,86 @@ def pytest_summary(data: dict) -> dict:
     }
 
 
+def installed_runtime_summary(data: dict) -> dict:
+    """Retain observed identities without instance paths or added annotations."""
+    return {name: data[name] for name in (
+        "run_id", "source_revision", "captured_at", "isolation_platform", "native_sha256", "wheel_source_revision",
+    )} | {
+        "host": {name: data["host"][name] for name in ("system", "machine")},
+        "process": {name: data["process"][name] for name in ("pid", "start_token", "instance_id")},
+    }
+
+
+def installed_runtime_observation(artifacts: Path, report: dict, started_at: str, finished_at: str) -> tuple[dict | None, list[str]]:
+    """Bind the named attached observation to this section and selected build.
+
+    The attached probe authenticates the live process before section cleanup.
+    Reading its report does not independently prove physical host ownership.
+    """
+    if __package__:
+        from .installed_host_smoke import SmokeError, _read_json, _validate_marker
+    else:
+        from installed_host_smoke import SmokeError, _read_json, _validate_marker
+    platform_probe = import_module(f"{__package__}.assert-platform" if __package__ else "assert-platform")
+    try:
+        # Never read a special file or follow a report symlink into instance state.
+        for name in ("installed-rust-runtime.json", "doctor.json"):
+            if not stat.S_ISREG((artifacts / name).lstat().st_mode):
+                raise ValueError("observation must be a regular report")
+        data = _read_json(artifacts / "installed-rust-runtime.json", "installed runtime")
+        doctor = _read_json(artifacts / "doctor.json", "installed platform")
+        if (not isinstance(doctor.get("checks"), list)
+                or any(not isinstance(check, dict) for check in doctor["checks"])):
+            raise ValueError("invalid platform checks")
+        actual_platform, _message = platform_probe.reported_platform(doctor)
+        if (data["status"] != "attached_ready" or data["run_id"] != report["run_id"]
+                or data["source_revision"] != report["source_revision"]
+                or data["build_identity"]["source_revision"] != report["source_revision"]
+                or data["build_identity"]["state"] != "known" or actual_platform != report["lane"]):
+            raise ValueError("mismatched installed identity")
+        captured = datetime.fromisoformat(data["captured_at"])
+        if (captured.tzinfo is None
+                or not datetime.fromisoformat(started_at) <= captured <= datetime.fromisoformat(finished_at)):
+            raise ValueError("stale installed observation")
+        host = data["host"]
+        system = "Darwin" if report["lane"] == "vz" else "Linux"
+        if (host["system"] != system or host["system"] != platform.system()
+                or host["machine"] != platform.machine()):
+            raise ValueError("mismatched installed host")
+        native_sha256 = data["candidate"]["sha256"]
+        if native_sha256 != report["preparation"]["native_sha256"]:
+            raise ValueError("native executable differs from the prepared selected build")
+        runtime = data["runtime"]
+        receipt, readiness, authenticated = runtime["receipt"], runtime["readiness"], runtime["authenticated_runtime_identity"]
+        pid = runtime["pid"]
+        if (runtime["status"] != "ready" or type(pid) is not int or pid <= 1
+                or type(receipt["pid"]) is not int or receipt["pid"] != pid
+                or not isinstance(readiness, dict)):
+            raise ValueError("invalid process identity")
+        _validate_marker(readiness, pid)
+        if (authenticated["status"] != "authenticated" or type(authenticated["schema_version"]) is not int
+                or authenticated["schema_version"] != 1
+                or authenticated["instance_id"] != readiness["instance_id"]
+                or re.fullmatch(r"[0-9a-f]{32}", authenticated["instance_id"]) is None):
+            raise ValueError("invalid authenticated process identity")
+        token_pattern = (rf"darwin:{pid}:[0-9]+:[0-9]+" if system == "Darwin"
+                         else rf"linux:[0-9a-f]{{8}}(?:-[0-9a-f]{{4}}){{3}}-[0-9a-f]{{12}}:{pid}:[0-9]+")
+        if re.fullmatch(token_pattern, receipt["start_token"]) is None:
+            raise ValueError("invalid process start identity")
+        packaged = Path(data["cli"]["package_location"]).parent / "bin/safeyolo-proxy"
+        if (Path(data["candidate"]["path"]) != packaged
+                or Path(runtime["actual_executable"]) != packaged):
+            raise ValueError("runtime did not observe the installed wheel's native executable")
+    except (SmokeError, OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        # Do not copy raw paths, exception text or a malformed field to publication.
+        return None, [f"installed runtime/platform observation unavailable or invalid ({type(exc).__name__})"]
+    return {"run_id": data["run_id"], "source_revision": data["source_revision"],
+            "wheel_source_revision": data["build_identity"]["source_revision"], "captured_at": data["captured_at"],
+            "isolation_platform": actual_platform, "native_sha256": native_sha256,
+            "host": {"system": system, "machine": host["machine"]},
+            "process": {"pid": pid, "start_token": receipt["start_token"], "instance_id": authenticated["instance_id"]}}, []
+
+
 def publication_summary(report: dict) -> dict:
     """Project the owned runner report; private reports and logs stay private.
 
@@ -188,8 +271,10 @@ def publication_summary(report: dict) -> dict:
             "section", "executed", "started_at", "finished_at", "exit", "result", "cleanup",
         )}
         selected["cleanup_failure_count"] = len(row["cleanup_failures"])
+        selected["evidence_failure_count"] = len(row["evidence_failures"])
+        if row.get("installed_runtime") is not None:
+            selected["installed_runtime"] = installed_runtime_summary(row["installed_runtime"])
         if row["section"] == "isolation":
-            selected["evidence_failure_count"] = len(row["evidence_failures"])
             selected["pytest"] = [pytest_summary(data) for data in row["pytest"]]
         sections.append(selected)
     return {"schema_version": 1, **{name: report[name] for name in (
@@ -258,9 +343,9 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                  continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     if __package__:
-        from .installed_host_smoke import SmokeError
+        from .installed_host_smoke import SmokeError, _sha256
     else:
-        from installed_host_smoke import SmokeError
+        from installed_host_smoke import SmokeError, _sha256
 
     source = directory / "prepared"
     env = os.environ.copy()
@@ -329,6 +414,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                 cwd=REPOSITORY, env=env, check=False,
             )
             preparation_exit = prepared.returncode
+        if not preparation_exit:
+            preparation_identity["native_sha256"] = _sha256(checkout / "proxy/target/release/safeyolo-proxy")
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
         report["preparation"] = {"exit": 2, "error": str(exc), "config_dir": str(source)}
         save(2)
@@ -409,18 +496,24 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             section_exit = 2
         observations, evidence_failures = (pytest_observations(section_artifacts, run_id, revision)
                                            if section == "isolation" else ([], []))
+        finished_at = datetime.now(UTC).isoformat()
+        installed_runtime = None
+        if section != "continuity" and executed:
+            installed_runtime, runtime_failures = installed_runtime_observation(section_artifacts, report, started_at, finished_at)
+            evidence_failures += runtime_failures
         row = {"section": section, "config_dir": str(instance), "prepared_config_dir": str(source),
                "executed": executed,
-               "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
+               "started_at": started_at, "finished_at": finished_at,
                "exit": section_exit, "result": "cleanup_failure" if failures else
                "passed" if section_exit == 0 else
                "assertion_failure" if section_exit == 1 else "preparation_failure",
-               "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures}
+               "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures,
+               "installed_runtime": installed_runtime, "evidence_failures": evidence_failures}
         if section == "isolation":
-            row.update(pytest=observations, evidence_failures=evidence_failures)
-            if evidence_failures and section_exit == 0 and not failures:
-                row.update(exit=2, result="evidence_failure")
-                section_exit = 2
+            row["pytest"] = observations
+        if evidence_failures and section_exit == 0 and not failures:
+            row.update(exit=2, result="evidence_failure")
+            section_exit = 2
         if error is not None:
             row["error"] = error
         report["sections"].append(row)
