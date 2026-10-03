@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import re
 import shutil
@@ -33,21 +34,31 @@ TMUX_LICENSES = tuple(f"share/tmux-licenses/{name}.txt" for name in ("tmux", "li
 INDEX_NAME = "staged-inputs.json"
 
 
-def selected_source(checkout: Path, revision: str) -> None:
+def staging_environment() -> dict[str, str]:
+    """Preserve build/network inputs without control or publication principals."""
+    return {name: value for name, value in os.environ.items() if name in {
+        "HOME", "USER", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
+        "NO_PROXY", "no_proxy", "UV_CACHE_DIR", "CARGO_HOME", "RUSTUP_HOME",
+    }}
+
+
+def selected_source(checkout: Path, revision: str, *, env: dict | None = None) -> None:
     """Reject a moving, dirty or mismatched source selection."""
-    actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    env = staging_environment() if env is None else env
+    actual = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], env=env, text=True).strip()
     if re.fullmatch(r"[0-9a-f]{40}", revision) is None or actual != revision:
         raise ValueError("staged inputs require the exact full selected source commit")
-    if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], text=True).strip():
+    if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"], env=env, text=True).strip():
         raise ValueError("staged source checkout must be clean")
 
 
-def requirements(checkout: Path, *, dev: bool) -> str:
+def requirements(checkout: Path, *, dev: bool, env: dict | None = None) -> str:
     """Use uv's frozen lock exporter for both offline dependency closures."""
     return subprocess.check_output(
         ["uv", "export", "--offline", "--frozen", "--no-emit-workspace", "--no-header", "--no-annotate",
          *(["--group", "dev"] if dev else ["--no-dev"])],
-        cwd=checkout, text=True, timeout=60,
+        cwd=checkout, env=staging_environment() if env is None else env, text=True, timeout=60,
     )
 
 
@@ -65,11 +76,12 @@ def wheel_identity(wheel: Path, revision: str) -> dict:
     return {"source_revision": revision, "native_sha256": digest}
 
 
-def helper_identity(checkout: Path, helper: Path, revision: str) -> dict:
+def helper_identity(checkout: Path, helper: Path, revision: str, *, env: dict | None = None) -> dict:
     """Reuse the helper's embedded identity and existing signing verifier."""
-    subprocess.run(["codesign", "--verify", "--strict", str(helper)], check=True, timeout=30)
+    env = staging_environment() if env is None else env
+    subprocess.run(["codesign", "--verify", "--strict", str(helper)], env=env, check=True, timeout=30)
     identity = json.loads(subprocess.check_output(
-        [str(helper), "--version", "--json"], text=True, timeout=30,
+        [str(helper), "--version", "--json"], env=env, text=True, timeout=30,
     ))
     if (not isinstance(identity, dict) or identity.get("git_sha") != revision or identity.get("git_dirty") is not False
             or identity.get("architecture") != "arm64"
@@ -77,15 +89,16 @@ def helper_identity(checkout: Path, helper: Path, revision: str) -> dict:
         raise ValueError("staged VM helper does not identify the clean selected arm64 commit")
     subprocess.run(
         ["python3", str(checkout / "vm/build-info.py"), "verify", "--profile",
-         identity["build_profile"], str(helper)], check=True, timeout=60,
+         identity["build_profile"], str(helper)], env=env, check=True, timeout=60,
     )
     return identity
 
 
 def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
-                   prepared: Path, boot_provenance: Path, output: Path) -> Path:
+                   prepared: Path, boot_provenance: Path, output: Path, *, env: dict | None = None) -> Path:
     """Copy only installation inputs; exclude credentials and instance state."""
-    selected_source(checkout, revision)
+    env = staging_environment() if env is None else env
+    selected_source(checkout, revision, env=env)
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("VZ inputs must be packaged on the arm64 macOS build host")
     boot_inputs = verify_boot_provenance(
@@ -95,9 +108,9 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
     native = checkout / "proxy/target/release/safeyolo-proxy"
     if _sha256(native) != wheel_stamp["native_sha256"]:
         raise ValueError("staged wheel differs from the selected source release binary")
-    helper = helper_identity(checkout, prepared / "bin/safeyolo-vm", revision)
-    runtime_requirements = requirements(checkout, dev=False)
-    test_requirements = requirements(checkout, dev=True)
+    helper = helper_identity(checkout, prepared / "bin/safeyolo-vm", revision, env=env)
+    runtime_requirements = requirements(checkout, dev=False, env=env)
+    test_requirements = requirements(checkout, dev=True, env=env)
     wheels = sorted(wheelhouse.glob("*.whl"))
     if not wheels:
         raise ValueError("staged dependencies require a populated wheelhouse")
@@ -107,7 +120,7 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
     if len(nats) != 1:
         raise ValueError("prepared inputs must contain one verified NATS executable")
     tmux = prepared / "bin/safeyolo-tmux"
-    tmux_version = verify_mac_tmux(tmux)
+    tmux_version = verify_mac_tmux(tmux, env=env)
     output.mkdir(parents=True, exist_ok=False)
     inputs = {f"wheel/{wheel.name}": wheel, "native/safeyolo-proxy": native, "nats/nats-server": nats[0],
               "bin/safeyolo-vm": prepared / "bin/safeyolo-vm",
@@ -149,7 +162,7 @@ def verify_boot_provenance(provenance: object, hashes: dict) -> dict:
     return verified
 
 
-def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision: str) -> dict:
+def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision: str, *, env: dict | None = None) -> dict:
     """Validate a transferred payload before executing any of its bytes."""
     index_path = payload / INDEX_NAME
     if not isinstance(expected_hash, str) or re.fullmatch(r"[0-9a-f]{64}", expected_hash) is None or _sha256(index_path) != expected_hash:
@@ -192,7 +205,7 @@ def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision:
     if not actual_wheels or actual_wheels != indexed_wheels or any(not name.endswith(".whl") for name in actual_wheels):
         raise ValueError("staged wheelhouse must contain only indexed wheels")
     for name, dev in (("runtime-requirements.txt", False), ("test-requirements.txt", True)):
-        if (payload / name).read_text() != requirements(checkout, dev=dev):
+        if (payload / name).read_text() != requirements(checkout, dev=dev, env=env):
             raise ValueError("staged requirements differ from the frozen selected lock")
     if index.get("wheel_identity") != wheel_identity(payload / wheel, revision):
         raise ValueError("staged wheel identity differs from its index")
@@ -204,14 +217,14 @@ def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision:
 def prepare_inputs(payload: Path, expected_hash: str, checkout: Path, revision: str,
                    directory: Path, python: Path, env: dict) -> dict:
     """Install verified wheels offline once and reuse immutable boot inputs."""
-    selected_source(checkout, revision)
-    index = verified_inputs(payload, expected_hash, checkout, revision)
-    helper = helper_identity(checkout, payload / "bin/safeyolo-vm", revision)
+    selected_source(checkout, revision, env=env)
+    index = verified_inputs(payload, expected_hash, checkout, revision, env=env)
+    helper = helper_identity(checkout, payload / "bin/safeyolo-vm", revision, env=env)
     if helper != index["vm_helper"]:
         raise ValueError("transferred VM helper identity differs from its build identity")
-    if verify_mac_tmux(payload / "bin/safeyolo-tmux") != index["tmux_version"]:
+    if verify_mac_tmux(payload / "bin/safeyolo-tmux", env=env) != index["tmux_version"]:
         raise ValueError("transferred private tmux version differs from its build identity")
-    version = subprocess.check_output([str(python), "-I", "-c", "import sys; print(sys.version_info[:2])"], text=True).strip()
+    version = subprocess.check_output([str(python), "-I", "-c", "import sys; print(sys.version_info[:2])"], env=env, text=True).strip()
     if version not in {"(3, 12)", "(3, 13)"}:
         raise ValueError("offline preparation needs an installed Python 3.12 or 3.13 interpreter")
     # Installed identity checks compare the original source release artifact
@@ -233,7 +246,7 @@ def prepare_inputs(payload: Path, expected_hash: str, checkout: Path, revision: 
                         "-r", str(payload / requirement_file)], env=env, check=True)
         subprocess.run([*base, str(payload / index["wheel"])], env=env, check=True)
     cli = directory / "cli/bin/safeyolo"
-    binary, cli_identity = _installed_rust_binary(cli)
+    binary, cli_identity = _installed_rust_binary(cli, env=env)
     if _sha256(binary) != index["wheel_identity"]["native_sha256"]:
         raise ValueError("installed native binary differs from the staged wheel")
     (directory / "bin").mkdir()

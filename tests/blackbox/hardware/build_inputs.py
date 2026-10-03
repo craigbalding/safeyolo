@@ -20,12 +20,24 @@ from pathlib import Path
 
 if __package__:
     from ..installed_host_smoke import _sha256
-    from ..installed_staging import BOOT_FILES, package_inputs, selected_source, verify_boot_provenance
+    from ..installed_staging import (
+        BOOT_FILES,
+        package_inputs,
+        selected_source,
+        staging_environment,
+        verify_boot_provenance,
+    )
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from installed_host_smoke import _sha256
-    from installed_staging import BOOT_FILES, package_inputs, selected_source, verify_boot_provenance
+    from installed_staging import (
+        BOOT_FILES,
+        package_inputs,
+        selected_source,
+        staging_environment,
+        verify_boot_provenance,
+    )
 
 
 def build_command(command: list[str], checkout: Path, env: dict, log, deadline: float) -> None:
@@ -72,11 +84,7 @@ def build_payload(checkout: Path, revision: str, boot_inputs: Path, provenance_p
     provenance_file.write_text(json.dumps(provenance, indent=2) + "\n")
     # Test/build commands receive runtime and mediated-network settings, not
     # the control process's publication, service or SSH-agent authority.
-    env = {name: value for name, value in os.environ.items() if name in {
-        "HOME", "USER", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
-        "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
-        "NO_PROXY", "no_proxy", "UV_CACHE_DIR", "CARGO_HOME", "RUSTUP_HOME",
-    }}
+    env = staging_environment()
     env.update(UV_TOOL_DIR=str(output / "uv-tools"), UV_TOOL_BIN_DIR=str(output / "bin"),
                SAFEYOLO_CONFIG_DIR=str(prepared), SAFEYOLO_LOGS_DIR=str(prepared / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(prepared / "data/coord"),
@@ -100,7 +108,7 @@ def build_payload(checkout: Path, revision: str, boot_inputs: Path, provenance_p
     if len(wheels) != 1:
         raise ValueError("selected build must produce exactly one product wheel")
     return package_inputs(checkout, revision, wheels[0], wheelhouse, prepared,
-                          provenance_file, output / "payload")
+                          provenance_file, output / "payload", env=env)
 
 
 def main() -> int:

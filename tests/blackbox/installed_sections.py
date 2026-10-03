@@ -116,9 +116,9 @@ def surviving_processes(processes: list[dict]) -> list[str]:
     return failures
 
 
-def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]:
+def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | None = None) -> list[str]:
     """Stop only this section's agents/proxy and report surviving owned state."""
-    env = os.environ.copy()
+    env = (os.environ if env is None else env).copy()
     env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(root / "data/coord"),
                SAFEYOLO_SUBNET_BASE="76" if owner else "75")
@@ -495,9 +495,9 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             error = str(exc)
             section_exit = 2
         finally:
-            failures = cleanup_instance(cli, instance)
+            failures = cleanup_instance(cli, instance, env=section_env)
             if section == "lifecycle":
-                failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
+                failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True, env=section_env)
             if lane == "vz" and not port_failures:
                 failures += check_vz_ports()
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:

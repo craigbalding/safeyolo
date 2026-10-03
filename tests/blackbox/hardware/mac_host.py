@@ -24,12 +24,16 @@ from pathlib import Path
 
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from harness.macos_process_argv import process_argv
     from installed_sections import check_vz_ports, cleanup_instance, owned_processes
+
+    from tests.blackbox.hardware.attempt_results import read_json
 else:
     from ..harness.macos_process_argv import process_argv
     from ..installed_sections import check_vz_ports, cleanup_instance, owned_processes
+    from .attempt_results import read_json
 
 from safeyolo.runtime_identity import process_is_alive, process_start_token
 
@@ -39,6 +43,34 @@ def process_arguments(pid: int) -> list[str]:
     if platform.system() == "Linux":
         return Path(f"/proc/{pid}/cmdline").read_bytes().decode().rstrip("\0").split("\0")
     return [os.fsdecode(value) for value in process_argv(pid)]
+
+
+def section_environment() -> dict[str, str]:
+    """Give offline candidate commands runtime settings without host principals."""
+    env = {name: value for name, value in os.environ.items() if name in {
+        "HOME", "USER", "PATH", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
+    }}
+    env.update(BASH_ENV="/dev/null", UV_OFFLINE="1", UV_PYTHON_DOWNLOADS="never", CARGO_BUILD_JOBS="1")
+    return env
+
+
+def cleanup_environment(instance: Path) -> dict[str, str]:
+    """Restore this section's NATS identity without inheriting host principals."""
+    env = section_environment()
+    try:
+        record = read_json(instance / "data/coord/nats/nats.pid.json")
+    except FileNotFoundError:
+        return env  # This section has no retained NATS runtime to stop.
+    # Match the selected NATS token/server-name contract and Bristol's ports.
+    if (not isinstance(record, dict) or not isinstance(record.get("test_instance"), str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,32}", record["test_instance"]) is None
+            or not isinstance(record.get("server_name"), str)
+            or not record["server_name"].startswith(f"safeyolo-test-{record['test_instance']}-")
+            or type(record.get("client_port")) is not int or record["client_port"] != 46370
+            or type(record.get("monitor_port")) is not int or record["monitor_port"] != 46372):
+        raise ValueError("owned VZ NATS record has no valid test identity/fixed ports")
+    env.update(SAFEYOLO_NATS_TEST_INSTANCE=record["test_instance"], SAFEYOLO_NATS_TEST_PORTS="46370,46372")
+    return env
 
 
 def same_process_live(row: dict) -> bool:
@@ -147,7 +179,8 @@ def cleanup(row: dict) -> bool:
         if cli.is_file():
             for instance in prepared.iterdir():
                 if instance.is_dir() and (instance / "config.yaml").is_file():
-                    failures.extend(cleanup_instance(cli, instance, owner=instance.name == "lifecycle-owner"))
+                    failures.extend(cleanup_instance(cli, instance, owner=instance.name == "lifecycle-owner",
+                                                     env=cleanup_environment(instance)))
     stop_processes(row["processes"][1:], roots)
     # A runner killed between launch and the periodic snapshot still has its
     # exact owned marker. Observe and stop that identity before declaring exit.
@@ -239,12 +272,9 @@ def run_lane(owner: str, root: Path, state: Path, python: Path, revision: str,
             receive_inputs(root, archive_input if archive_input is not None else sys.stdin.buffer, archive_digest)
             result["stage"] = "preflight"
             helper = root / "payload/bin/safeyolo-vm"
-            subprocess.run([str(helper), "check"], check=True, capture_output=True, timeout=30)
+            env = section_environment()
+            subprocess.run([str(helper), "check"], env=env, check=True, capture_output=True, timeout=30)
             result["stage"] = "execution"
-            env = {name: value for name, value in os.environ.items() if name in {
-                "HOME", "USER", "PATH", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "NODE_EXTRA_CA_CERTS",
-            }}
-            env.update(BASH_ENV="/dev/null", UV_OFFLINE="1", UV_PYTHON_DOWNLOADS="never", CARGO_BUILD_JOBS="1")
             arguments = [str(root / "source/tests/blackbox/run-installed.sh"), "vz", "--install-commit", revision,
                          "--run-id", run_id, "--staged-inputs", str(root / "payload"), "--staged-sha256", digest,
                          "--python", str(python), "--state-parent", str(state), "--artifacts", str(root / "results"),

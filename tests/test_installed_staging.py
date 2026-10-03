@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -24,6 +25,17 @@ def staged_payload(tmp_path, monkeypatch):
     checkout.mkdir()
     for name in ("uv.lock", "pyproject.toml"):
         (checkout / name).write_text("fixture selected inputs\n")
+    observer = tmp_path / "input-invocations.jsonl"
+    observe = f"""
+import json, os
+from pathlib import Path
+with Path({str(observer)!r}).open('a') as output:
+    output.write(json.dumps({{'command': __file__, 'has_principal': 'GH_TOKEN' in os.environ,
+                             'proxy': os.environ.get('HTTPS_PROXY'), 'ca': os.environ.get('SSL_CERT_FILE')}}) + '\\n')
+"""
+    vm = checkout / "vm"
+    vm.mkdir()
+    (vm / "build-info.py").write_text(observe + "import sys\nassert sys.argv[1:4] == ['verify', '--profile', 'production']\n")
     (checkout / ".gitignore").write_text("proxy/target/\n")
     subprocess.run(["git", "init", "-q", str(checkout)], check=True)
     subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
@@ -35,7 +47,7 @@ def staged_payload(tmp_path, monkeypatch):
     nats_hash = hashlib.sha256(nats_bytes).hexdigest()
     wheel = tmp_path / "safeyolo-0.1.0-py3-none-any.whl"
     contents = {
-        "safeyolo/__init__.py": "",
+        "safeyolo/__init__.py": observe,
         "safeyolo/traffic_session.py": (ROOT / "cli/src/safeyolo/traffic_session.py").read_text(),
         "safeyolo/runtime_identity.py": (ROOT / "cli/src/safeyolo/runtime_identity.py").read_text(),
         "safeyolo/config.py": """
@@ -45,7 +57,7 @@ def get_config_dir(): return Path(os.environ['SAFEYOLO_CONFIG_DIR'])
 def get_data_dir(): return get_config_dir() / 'data'
 """,
         "safeyolo/_build_identity.json": json.dumps({"state": "known", "source_revision": revision}),
-        "safeyolo/cli.py": """
+        "safeyolo/cli.py": observe + """
 import os, sys
 from pathlib import Path
 def main():
@@ -57,7 +69,7 @@ def main():
         for name in ('bin', 'share', 'data'):
             (root / name).mkdir(parents=True)
 """,
-        "safeyolo/bin/safeyolo-proxy": "#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 (fixture)\\n'\n",
+        "safeyolo/bin/safeyolo-proxy": f"#!{sys.executable}\n" + observe + "print('safeyolo-proxy 0.1.0 (fixture)')\n",
         "safeyolo/coord/__init__.py": "",
         "safeyolo/coord/nats_runtime.py": f"""
 import hashlib, os
@@ -95,7 +107,7 @@ def ensure_binary():
     nats.write_bytes(nats_bytes)
     nats.chmod(0o755)
     tmux = prepared / "bin/safeyolo-tmux"
-    tmux.write_bytes(b"#!/bin/sh\nprintf 'tmux 3.7c\\n'\n")
+    tmux.write_text(f"#!{sys.executable}\n" + observe + "print('tmux 3.7c')\n")
     tmux.chmod(0o755)
     for name in staging.TMUX_LICENSES:
         path = prepared / name
@@ -113,15 +125,53 @@ def ensure_binary():
     # still exercises the directory's closed set of hashed wheel inputs.
     (wheelhouse / "unused-1.0-py3-none-any.whl").write_bytes(b"unused hashed fixture")
     helper = {"git_sha": revision, "git_dirty": False, "architecture": "arm64", "build_profile": "production"}
+    executable = prepared / "bin/safeyolo-vm"
+    executable.write_text(f"#!{sys.executable}\n" + observe + f"print({json.dumps(helper)!r})\n")
+    executable.chmod(0o755)
+    commands = tmp_path / "staging-commands"
+    commands.mkdir()
+    uv = shutil.which("uv")
+    assert uv
+    for name, code in {
+        "codesign": "",
+        "otool": "import sys\nprint(sys.argv[-1]+':\\n\\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)')\n",
+        "uv": f"import sys\nif sys.argv[1] != 'export': os.execv({uv!r}, [{uv!r}, *sys.argv[1:]])\n",
+    }.items():
+        command = commands / name
+        command.write_text(f"#!{sys.executable}\n" + observe + code)
+        command.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{commands}:{os.environ['PATH']}")
     monkeypatch.setattr(staging.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(staging.platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(staging, "helper_identity", lambda *args: helper)
-    monkeypatch.setattr(staging, "verify_mac_tmux", lambda path: subprocess.check_output(
-        [str(path), "-V"], text=True, timeout=5).strip())
-    monkeypatch.setattr(staging, "requirements", lambda *args, **kwargs: "")
     payload = tmp_path / "payload"
     index = staging.package_inputs(checkout, revision, wheel, wheelhouse, prepared, provenance, payload)
     return payload, staging._sha256(index), checkout, revision
+
+
+def test_packaging_and_offline_identity_calls_keep_principals_out(tmp_path, staged_payload, monkeypatch):
+    payload, _, checkout, revision = staged_payload
+    monkeypatch.setenv("GH_TOKEN", "fake-publication-principal")
+    monkeypatch.setenv("HTTPS_PROXY", "http://fixture-mediated-proxy")
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "fixture-ca"))
+    observer = tmp_path / "input-invocations.jsonl"
+    observer.unlink()
+    index = staging.package_inputs(checkout, revision, next((payload / "wheel").glob("*.whl")),
+                                   payload / "wheelhouse", tmp_path / "prepared-build",
+                                   tmp_path / "boot-provenance.json", tmp_path / "repackaged",
+                                   env=staging.staging_environment())
+    directory = tmp_path / "execution"
+    directory.mkdir()
+    env = staging.staging_environment()
+    env.update(SAFEYOLO_CONFIG_DIR=str(directory / "prepared"),
+               SAFEYOLO_COORD_DATA_DIR=str(directory / "prepared/data/coord"))
+    report = staging.prepare_inputs(index.parent, staging._sha256(index), checkout, revision,
+                                    directory, Path(sys.executable), env)
+    assert report["source_revision"] == revision and report["tmux_version"] == "tmux 3.7c"
+    observations = [json.loads(line) for line in observer.read_text().splitlines()]
+    commands = {Path(row["command"]).name for row in observations}
+    assert {"safeyolo-vm", "build-info.py", "safeyolo-tmux", "cli.py", "safeyolo-proxy", "__init__.py", "uv"} <= commands
+    assert all(not row["has_principal"] and row["proxy"] == env["HTTPS_PROXY"]
+               and row["ca"] == env["SSL_CERT_FILE"] for row in observations)
 
 
 def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_path, staged_payload):

@@ -69,8 +69,9 @@ def test_preparation_uses_isolated_helper_install_and_keeps_original_boot_identi
             wheels.mkdir()
             (wheels / "safeyolo-fixture.whl").write_bytes(b"fixture")
 
-    def package_fixture(source, selected, wheel, wheelhouse, prepared, origin_file, payload):
+    def package_fixture(source, selected, wheel, wheelhouse, prepared, origin_file, payload, *, env):
         assert source == checkout and selected == revision
+        assert "GH_TOKEN" not in env and env["HTTPS_PROXY"] == "http://fixture-proxy"
         assert wheel.is_file() and wheelhouse.is_dir()
         assert all((prepared / "share" / name).read_bytes() == (boots / name).read_bytes()
                    for name in build_inputs.BOOT_FILES)

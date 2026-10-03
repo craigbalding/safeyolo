@@ -5,9 +5,11 @@ import hashlib
 import io
 import json
 import os
+import signal
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import pytest
@@ -118,6 +120,113 @@ def test_host_ignores_successful_wrapper_and_independently_observes_teardown(hos
     calls = json.loads(state.read_text())["calls"]
     assert sum(call[0] == "provision" for call in calls) == 1
     assert any(call[:2] == ["virsh", "list"] for call in calls[calls.index(next(c for c in calls if c[0] == "teardown")) + 1:])
+
+
+@pytest.mark.parametrize("cancellation", ["early_exit", None, signal.SIGTERM, signal.SIGHUP])
+def test_late_provision_child_cannot_allocate_after_timeout_or_cancellation(host_harness, tmp_path, monkeypatch,
+                                                                        cancellation, owned_child):
+    pool, state = host_harness
+    release = tmp_path / "release-provision"
+    child_pid = tmp_path / "provision-child.pid"
+    child_code = tmp_path / "delayed-provision.py"
+    child_code.write_text(f"""
+import os, sys, time
+from pathlib import Path
+Path({str(child_pid)!r}).write_text(str(os.getpid()))
+while not Path({str(release)!r}).exists(): time.sleep(0.01)
+os.execv(sys.executable, [sys.executable, {str(tmp_path / 'harness-fixture.py')!r}, 'provision', *sys.argv[1:]])
+""")
+    wrapper = tmp_path / "provision-parent.py"
+    wrapper.write_text(f"""
+import subprocess,sys,time
+from pathlib import Path
+process=subprocess.Popen([sys.executable, {str(child_code)!r}, *sys.argv[1:]])
+while not Path({str(child_pid)!r}).exists(): time.sleep(0.01)
+if {cancellation != 'early_exit'!r}: process.wait()
+""")
+    (kvm_host.JOBS / "provision.sh").write_text(f'exec {sys.executable} {wrapper} "$@"\n')
+    owner = "issue889-" + "a" * 32
+    job_command = kvm_host.command
+
+    def shortened(arguments, *, timeout=60, owner=None):
+        return job_command(arguments, timeout=0.3 if str(kvm_host.JOBS / "provision.sh") in arguments else timeout,
+                           owner=owner)
+
+    if cancellation in (None, "early_exit"):
+        monkeypatch.setattr(kvm_host, "command", shortened)
+        result = kvm_host.run_lane(owner, "b" * 40, "c" * 32, 30)
+        assert result["exit"] == 2 and result["stage"] == "allocation" and result["summary"] is None
+        assert result["cleanup"] == "verified"
+    else:
+        code = f"""
+import signal
+from pathlib import Path
+from tests.blackbox.hardware import kvm_host as k
+k.POOL=Path({str(pool)!r}); k.JOBS=Path({str(kvm_host.JOBS)!r})
+k.preflight=lambda: {{'fixture':True}}
+signal.signal(signal.SIGTERM, k.interrupted)
+signal.signal(signal.SIGHUP, k.interrupted)
+k.run_lane({owner!r}, {'b' * 40!r}, {'c' * 32!r}, 30)
+"""
+        process = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not child_pid.exists():
+                assert time.monotonic() < deadline and process.poll() is None
+                time.sleep(0.01)
+            process.send_signal(cancellation)
+            _output, error = process.communicate(timeout=10)
+            assert process.returncode != 0 and b"KeyboardInterrupt" in error
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+    pid = int(child_pid.read_text())
+    try:
+        assert not process_is_alive(pid), "cleanup was verified while a provisioning descendant remained live"
+        release.touch()
+        assert not (pool / ".issue889-owner.json").exists()
+        assert not (pool / ".guest-lease").exists() and not list(pool.glob("sy-*"))
+        assert not json.loads(state.read_text())["guests"]
+        assert all(call[0] != "provision" for call in json.loads(state.read_text())["calls"])
+        assert owned_child[1].poll() is None, "an unrelated live process must survive job termination"
+    finally:
+        if process_is_alive(pid):
+            os.kill(pid, 9)  # Only the PID started and recorded by this private fixture.
+
+
+def test_job_observation_failure_keeps_cleanup_failed_and_the_journal(host_harness, monkeypatch):
+    pool, _state = host_harness
+    members = kvm_host.job_members
+
+    def unavailable(job):
+        if (pool / ".issue889-owner.json").exists():
+            raise PermissionError("fixture kernel observation denied")
+        return members(job)
+
+    monkeypatch.setattr(kvm_host, "job_members", unavailable)
+    result = kvm_host.run_lane("issue889-" + "a" * 32, "b" * 40, "c" * 32, 30)
+    assert result["exit"] == 2 and result["cleanup"] == "failed"
+    row = json.loads((pool / ".issue889-owner.json").read_text())
+    assert row["job"] and row["owner"] == "issue889-" + "a" * 32
+
+
+def test_stale_empty_pool_cannot_release_a_live_job_or_signal_foreign_owner(host_harness):
+    pool, _state = host_harness
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+    departed = subprocess.Popen([sys.executable, "-c", "pass"])
+    token = process_start_token(departed.pid)
+    departed.wait(timeout=5)
+    row = {"owner": "issue889-" + "a" * 32, "pid": departed.pid, "start_token": token, "guest_name": None,
+           "job": {"pid": process.pid, "start_token": process_start_token(process.pid)}}
+    kvm_host.save_owner(row)
+    try:
+        with pytest.raises(ValueError, match="job is still active"):
+            kvm_host.cleanup(row, stale=True)
+        assert (pool / ".issue889-owner.json").exists() and process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
 
 
 def test_kvm_adapter_keeps_guest_failure_despite_valid_runner_report(host_harness, runner_summary, monkeypatch):
@@ -356,10 +465,12 @@ def test_mac_outer_deadline_stops_real_caller_and_owned_helper(tmp_path, monkeyp
     helper = staging / "payload/bin/safeyolo-vm"
     script.parent.mkdir(parents=True)
     helper.parent.mkdir(parents=True)
-    helper.write_text(f"#!{sys.executable}\nraise SystemExit(0)\n")
+    helper.write_text(f"#!{sys.executable}\nimport json,os\nfrom pathlib import Path\n"
+                      "Path(__file__).with_name('helper-env.json').write_text(json.dumps({'principal': 'GH_TOKEN' in os.environ, "
+                      "'ca': os.environ.get('SSL_CERT_FILE')}))\n")
     helper.chmod(0o755)
     script.write_text(f"#!{sys.executable}\n" + f"""
-import json,subprocess,sys,time
+import json,os,subprocess,sys,time
 from pathlib import Path
 from safeyolo.runtime_identity import process_start_token
 state=Path({str(state)!r}); root=Path({str(run)!r})
@@ -368,6 +479,7 @@ marker.parent.mkdir(parents=True)
 child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)',str(root)])
 marker.write_text(json.dumps({{'pid':child.pid,'start_token':process_start_token(child.pid),'helper_pid':None}}))
 (root/'arguments.json').write_text(json.dumps(sys.argv[1:]))
+(root/'section-env.json').write_text(json.dumps({{'principal':'GH_TOKEN' in os.environ, 'ca':os.environ.get('SSL_CERT_FILE')}}))
 if {caller_timeout!r}: time.sleep(30)
 """)
     script.chmod(0o755)
@@ -377,6 +489,8 @@ if {caller_timeout!r}: time.sleep(30)
         bundle.add(staging / "payload", arcname="payload")
     data = archive.getvalue()
     monkeypatch.setattr(mac_host, "preflight", lambda *_: {"fixture": True})
+    monkeypatch.setenv("GH_TOKEN", "fake-publication-principal")
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "fixture-ca"))
     journal = tmp_path / "host-owner.json"
     result = mac_host.run_lane(owner, run, state, Path(sys.executable), "b" * 40, "c" * 32, "d" * 64,
                                0.4 if caller_timeout else 10, 120, journal,
@@ -386,10 +500,106 @@ if {caller_timeout!r}: time.sleep(30)
     row = json.loads(journal.read_text())
     assert all(not process_is_alive(item["pid"]) for item in row["processes"])
     arguments = json.loads((run / "arguments.json").read_text())
+    for observed in (run / "payload/bin/helper-env.json", run / "section-env.json"):
+        assert json.loads(observed.read_text()) == {"principal": False, "ca": str(tmp_path / "fixture-ca")}
     assert "--section" not in arguments and "--staged-inputs" in arguments and "--run-id" in arguments
     assert arguments[arguments.index("--vz-test-runner") + 1] == "/Users/sy-agent/bin/run-vz-test"
     assert mac_host.release(row)
     assert not state.exists() and not (run / "payload").exists() and not (run / "source").exists()
+
+
+def test_independent_mac_teardown_filters_real_selected_cli_calls(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    prepared = state / "sy-vz-fixture"
+    cli = prepared / "bin/safeyolo"
+    cli.parent.mkdir(parents=True)
+    observed = tmp_path / "teardown.jsonl"
+    cli.write_text(f"#!{sys.executable}\n" + f"""
+import json,os,sys
+from pathlib import Path
+from safeyolo.coord.nats_runtime import _test_instance, _test_ports_from_pidfile
+root=Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+marker=root/'data/coord/nats/nats.pid.json'
+record=json.loads(marker.read_text())
+assert _test_instance()==record['test_instance']
+assert _test_ports_from_pidfile(record)==(46370,46372)
+with Path({str(observed)!r}).open('a') as output:
+    output.write(json.dumps({{'args':sys.argv[1:],'root':os.environ['SAFEYOLO_CONFIG_DIR'],
+                             'principal':'GH_TOKEN' in os.environ,'ca':os.environ.get('SSL_CERT_FILE')}})+'\\n')
+if sys.argv[1:]==['stop']: marker.unlink()
+""")
+    cli.chmod(0o755)
+    for name, agents in (("isolation", ("bbtest", "bbpeer")), ("lifecycle-owner", ("bbowner",))):
+        root = prepared / name
+        for agent in agents:
+            (root / "agents" / agent).mkdir(parents=True)
+        (root / "config.yaml").write_text("fixture owned state")
+        marker = root / "data/coord/nats/nats.pid.json"
+        marker.parent.mkdir(parents=True)
+        token = "a" * 32 if name == "isolation" else "fixture-owner"
+        marker.write_text(json.dumps({"pid": 2147483647, "test_instance": token, "client_port": 46370,
+                                      "monitor_port": 46372, "server_name": f"safeyolo-test-{token}-fixture"}))
+    row = {"run_root": str(tmp_path / "run"), "state_parent": str(state), "created_trees": [str(state)], "processes": []}
+    monkeypatch.setenv("GH_TOKEN", "fake-publication-principal")
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "fixture-ca"))
+    assert mac_host.cleanup(row)
+    calls = [json.loads(line) for line in observed.read_text().splitlines()]
+    assert {tuple(call['args']) for call in calls} == {("agent", "stop", "bbtest"), ("agent", "stop", "bbpeer"),
+                                                    ("agent", "stop", "bbowner"), ("stop",)}
+    assert {Path(call['root']).name for call in calls} == {"isolation", "lifecycle-owner"}
+    assert all(not call['principal'] and call['ca'] == str(tmp_path / "fixture-ca") for call in calls)
+
+
+def test_generated_invalid_nats_cleanup_binding_never_reaches_candidate(tmp_path):
+    root = tmp_path / "state/sy-vz-fixture/isolation"
+    marker = root / "data/coord/nats/nats.pid.json"
+    marker.parent.mkdir(parents=True)
+    cli = root.parent / "bin/safeyolo"
+    cli.parent.mkdir()
+    executed = tmp_path / "foreign-executed"
+    cli.write_text(f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(executed)!r}).touch()\n")
+    cli.chmod(0o755)
+    (root / "config.yaml").touch()
+    row = {"run_root": str(tmp_path / "run"), "state_parent": str(tmp_path / "state"),
+           "created_trees": [str(tmp_path / "state")], "processes": []}
+    original = {"pid": 2147483647, "test_instance": "a" * 32, "client_port": 46370, "monitor_port": 46372,
+                "server_name": "safeyolo-test-" + "a" * 32 + "-fixture"}
+
+    @settings(max_examples=50, deadline=None)
+    @given(field=st.sampled_from(("test_instance", "client_port", "monitor_port", "server_name")),
+           value=st.one_of(st.none(), st.booleans(), st.integers(), st.text(), st.lists(st.integers())))
+    def reject(field, value):
+        if value == original[field] and type(value) is type(original[field]):
+            return
+        if (field == "server_name" and isinstance(value, str)
+                and value.startswith(f"safeyolo-test-{original['test_instance']}-")):
+            return  # Another suffix remains a valid server-name shape.
+        marker.write_text(json.dumps({**original, field: value}))
+        with pytest.raises(ValueError, match="NATS record"):
+            mac_host.cleanup(row)
+        assert marker.exists() and not executed.exists()
+
+    reject()
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink"])
+def test_special_nats_cleanup_record_cannot_block_or_follow_foreign_state(tmp_path, kind):
+    root = tmp_path / "section"
+    marker = root / "data/coord/nats/nats.pid.json"
+    marker.parent.mkdir(parents=True)
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text(json.dumps({"test_instance": "foreign-owner", "client_port": 46370,
+                                   "monitor_port": 46372, "server_name": "safeyolo-test-foreign-owner-fixture"}))
+    if kind == "fifo":
+        os.mkfifo(marker)
+    else:
+        marker.symlink_to(foreign)
+    started = time.monotonic()
+    with pytest.raises((OSError, ValueError)):
+        mac_host.cleanup_environment(root)
+    assert time.monotonic() - started < 1
+    assert json.loads(foreign.read_text())["test_instance"] == "foreign-owner"
+    assert marker.lstat()
 
 
 def test_malformed_transfer_cannot_start_candidate_and_owned_inputs_are_released(tmp_path, monkeypatch):

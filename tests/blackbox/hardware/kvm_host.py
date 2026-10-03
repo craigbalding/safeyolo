@@ -19,6 +19,8 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -38,9 +40,83 @@ POOL = Path("/var/tmp/harness-vms")
 MAX_BYTES = 8 * 1024 * 1024
 
 
-def command(arguments: list[str], *, timeout: int = 60) -> str:
-    """Bound host work and keep diagnostics in private Rundeck output."""
-    return subprocess.run(arguments, capture_output=True, text=True, timeout=timeout, check=True).stdout
+def job_members(job: dict) -> list[int]:
+    """Observe live members of the Linux session created for this host job."""
+    pid, token = job["pid"], job["start_token"]
+    if type(pid) is not int or pid <= 1 or not isinstance(token, str):
+        raise ValueError("invalid recorded KVM job identity")
+    current = process_start_token(pid)
+    if current is not None and current != token:
+        return []  # A reused leader PID proves the original session has gone.
+    if current is None and process_is_alive(pid):
+        raise ValueError("KVM job identity is unavailable")
+    members = []
+    for path in Path("/proc").iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # The inspected process exited during the kernel snapshot.
+        if int(fields[2]) == pid and int(fields[3]) == pid and fields[0] != "Z":
+            members.append(int(path.name))
+    return members
+
+
+def stop_job(job: dict) -> None:
+    """Kill only the owned session and establish inactivity within a deadline."""
+    if job_members(job):
+        try:
+            os.killpg(job["pid"], signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # The last owned session member exited before the signal.
+    deadline = time.monotonic() + 10
+    while job_members(job):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("owned KVM job survived termination")
+        time.sleep(0.05)
+
+
+def require_inactive_job(row: dict) -> None:
+    if row.get("job") is not None and job_members(row["job"]):
+        raise ValueError("previous KVM job is still active")
+
+
+def command(arguments: list[str], *, timeout: int = 60, owner: dict | None = None) -> str:
+    """Own job descendants through timeout/cancellation before resource cleanup."""
+    with tempfile.TemporaryFile(mode="w+", dir=POOL) as output, tempfile.TemporaryFile(mode="w+", dir=POOL) as error:
+        process = subprocess.Popen(arguments, stdout=output, stderr=error, text=True, start_new_session=True)
+        job = {"pid": process.pid, "start_token": process_start_token(process.pid)}
+        try:
+            if owner is not None:
+                owner["job"] = job
+                save_owner(owner)
+            deadline = time.monotonic() + timeout
+            # WNOWAIT keeps the leader unreaped, reserving its PID/session ID
+            # until the group is stopped. Neither a foreign PID nor a new
+            # process group can take that ID between observation and signal.
+            while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(arguments, timeout)
+                time.sleep(0.01)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # The original group is absent; the unreaped PID cannot be reused.
+            try:
+                stop_job(job)
+            finally:
+                process.wait(timeout=10)
+            if owner is not None:
+                owner.pop("job")
+                save_owner(owner)
+        output.seek(0)
+        error.seek(0)
+        stdout, stderr = output.read(), error.read()
+        if process.returncode:
+            raise subprocess.CalledProcessError(process.returncode, arguments, stdout, stderr)
+        return stdout
 
 
 def harness_json(output: str, fields: set[str]) -> dict:
@@ -122,6 +198,7 @@ def cleanup(row: dict, *, stale: bool = False) -> bool:
         raise ValueError("invalid recorded hardware owner")
     if stale:
         require_inactive_owner(row)
+    require_inactive_job(row)
     if name is None:
         current = inventory()
         names = {guest["name"] for guest in current["guests"]}
@@ -141,7 +218,7 @@ def cleanup(row: dict, *, stale: bool = False) -> bool:
         if (name in command(["virsh", "list", "--all", "--name"]).splitlines()
                 and command(["virsh", "domstate", name]).strip() != "shut off"):
             raise ValueError("previous owned KVM resource is still active")
-    command(["bash", str(JOBS / "teardown.sh"), name], timeout=180)
+    command(["bash", str(JOBS / "teardown.sh"), name], timeout=180, owner=row)
     return removed(name)
 
 
@@ -279,7 +356,7 @@ def run_lane(owner: str, revision: str, run_id: str, timeout: int) -> dict:
             allocation = harness_json(command([
                 "bash", str(JOBS / "provision.sh"), "--scenario", owner, "--safeyolo-ref", revision,
                 "--flavor", "full", "--distro", "ubuntu", "--reuse", "--vcpus", "4", "--mem", "10240", "--disk", "90",
-            ], timeout=900), {"guest_name", "guest_ip", "safeyolo_sha"})
+            ], timeout=900, owner=row), {"guest_name", "guest_ip", "safeyolo_sha"})
             if allocation["safeyolo_sha"] != revision:
                 raise ValueError("provisioned source differs from selected commit")
             name = allocation["guest_name"]
@@ -302,7 +379,8 @@ def run_lane(owner: str, revision: str, run_id: str, timeout: int) -> dict:
                       f"--run-id {run_id} --state-parent .. --artifacts ../results\n")
             result["stage"] = "execution"
             executed = harness_json(command(["bash", str(JOBS / "ssh_exec.sh"), ip,
-                                            base64.b64encode(script.encode()).decode(), str(timeout)], timeout=timeout + 90),
+                                            base64.b64encode(script.encode()).decode(), str(timeout)],
+                                            timeout=timeout + 90, owner=row),
                                     {"ip", "exit_code", "stdout_b64", "stderr_b64", "timed_out"})
             result["exit"] = guest_exit(executed, ip)
             result["stage"] = "report"
@@ -365,6 +443,12 @@ def main() -> int:
     else:
         if args.guest_name is None or re.fullmatch(rf"sy-{re.escape(args.owner)}-[0-9]{{1,20}}", args.guest_name) is None:
             parser.error("verify requires this owner's exact guest name")
+        journal = POOL / ".issue889-owner.json"
+        if journal.exists():
+            row = json.loads(journal.read_text())
+            if row["owner"] != args.owner:
+                raise ValueError("KVM journal belongs to a different owner")
+            require_inactive_job(row)
         result = {"owner": args.owner, "guest_name": args.guest_name, "removed": removed(args.guest_name)}
     print("HARDWARE_RESULT=" + json.dumps(result), flush=True)
     return 0

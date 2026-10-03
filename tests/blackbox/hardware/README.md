@@ -6,12 +6,50 @@ acceptance on devstack with physical Apple Silicon Virtualization.framework
 signs and packages the macOS inputs. Bristol verifies transferred inputs and
 executes offline. Both lanes must use one selected full source commit.
 
-`paired.py` selects one full commit, runs both maintained installed lanes,
-retains each attempt before selection, and publishes allowlisted results as
-read-back-verified [#889](https://github.com/craigbalding/safeyolo/issues/889)
-comments. `install_schedule.py` installs and reads back one account cron entry.
-Use a separately pinned, clean trusted checkout for these commands; selected
-candidate code receives neither the control configuration nor its credentials.
+Craig's [3 October scope correction](https://github.com/craigbalding/safeyolo/issues/889#issuecomment-5971434225)
+calls for a small wrapper around the existing harness and suites.
+`run-hardware-lane.sh` checks an explicitly selected full commit in a clean
+checkout and invokes `run-installed.sh`, retaining its exit status and reports.
+The existing operator-owned Rundeck and Bristol routes invoke it in their
+respective prepared environments. It allocates no host or guest and installs
+no schedule. Use the same selected commit for both invocations.
+
+From a separate pinned trusted checkout, with `SELECTED_CHECKOUT` and a new
+`RUN_ARTIFACTS` directory supplied by that lane's existing harness:
+
+```sh
+# Through Rundeck, inside the fresh devstack acceptance guest:
+./tests/blackbox/hardware/run-hardware-lane.sh \
+  "$SELECTED_CHECKOUT" "$SELECTED_SHA" kvm "$RUN_ARTIFACTS/kvm"
+
+# Through Bristol SSH, after verified Tart inputs have been transferred:
+./tests/blackbox/hardware/run-hardware-lane.sh \
+  "$SELECTED_CHECKOUT" "$SELECTED_SHA" vz "$RUN_ARTIFACTS/vz" \
+  --staged-inputs "$STAGED_INPUTS" --staged-sha256 "$STAGED_SHA256" \
+  --python "$STAGED_PYTHON" --state-parent "$STATE_PARENT" \
+  --vz-test-runner /Users/sy-agent/bin/run-vz-test \
+  --vz-test-timeout-seconds "$VZ_TIMEOUT_SECONDS"
+```
+
+The trusted operator selects the full SHA once: refresh `origin/master` and
+resolve it before an overnight pair, or supply an explicitly authorized full
+SHA on demand. Keep selection, control/publication credentials, result
+collection and owned host teardown in the existing harness. The wrapper filters
+the environment before source checks or candidate commands; build/network and
+CA settings remain available, while VZ package installation stays offline.
+The preserved `paired.py`, publication adapters and cron installer describe
+earlier implementation work. They remain held, rather than the deployment
+entry point for this narrower direction. No new framework, reporting system
+or wrapper tests are required.
+
+The corrected filtered runtime environment also applies to the preserved input
+packaging and identity checks, helper preflight and selected-CLI teardown.
+Build commands retain mediated-network and certificate settings; Bristol's
+candidate commands retain the existing offline environment.
+Independent VZ teardown restores each owned section's recorded NATS test
+identity and requires its fixed client/monitor ports 46370/46372. The selected
+CLI retains its existing server-ownership checks; an invalid record stops
+cleanup before running that CLI.
 
 Deployment and complete paired hardware acceptance remain open. The local
 process, filesystem and service-protocol controls do not establish a hardware
@@ -28,6 +66,11 @@ The 3 October 2026 read-only deployment inspection verified Rundeck project
 `scriptInterpreter=/bin/bash`. The response identifies the execution. This
 interface has no fixed job ID. The execution account is `rundeck`, user ID 112.
 Hardware-control and publication credentials stay outside candidate commands.
+The host adapter records each provisioning or execution job's PID/start token
+in its owner journal. It owns a separate process group, stops that group after
+exit, timeout or cancellation, and observes its inactivity before guest cleanup
+or journal release. Linux `/proc` must permit this observation; unavailable
+inspection leaves cleanup failed. A stale journal with a live job is preserved.
 
 The following host commands run through that approved Rundeck invocation as
 `rundeck` on devstack. Before allocation, inspect current inventory, lease
@@ -103,7 +146,7 @@ and permitted `crontab -l` for `rundeck`, with no
 account crontab. It did not verify cron installation rights or install a
 schedule. Private writable harness evidence and Rundeck output retrieval do
 not establish durable discoverable publication. The remaining bindings are
-listed in [Complete the external deployment](#complete-the-external-deployment).
+retained in the [held controller procedure](#preserved-controller-procedure-held).
 
 ## Prepare the macOS payload on Tart
 
@@ -281,7 +324,12 @@ hardware success or durable publication. The controller still needs its own
 attempt result before preflight or source fetch and must publish failures from
 those earlier steps and from the publication operation itself.
 
-## Deploy the paired invocation
+## Preserved controller procedure (held)
+
+The following controller, cron and recovery procedures describe the earlier
+`paired.py` implementation. Craig's scope correction holds that deployment;
+the current entry point is the small lane wrapper and existing harness above.
+These retained procedures do not grant execution or scheduling authority.
 
 Sylab owns operator-side installation, scheduling and Rundeck execution. Relay
 serializes Tart production builds and the physical host. Start this procedure
@@ -390,7 +438,7 @@ section exits, pytest outcomes/skips, unexecuted sections, failure stages,
 trusted host capacity and cleanup. Raw logs, instance directories, keys,
 configuration, vaults and flow/inspector exports are never uploaded.
 
-## Install and observe cron
+## Preserved cron procedure (held)
 
 Use the operator account that owns all four control-host transport bindings.
 Retain its existing proxy and CA route and confirm those bindings work in its
@@ -430,7 +478,7 @@ same-SHA run per lane is needed; wiring both triggers does not require repeating
 the full suites for each trigger. Retain all earlier skips and acceptance limits
 at their observed revisions, including the five unproved VZ isolation assertions.
 
-## Inspect failure and recover this attempt
+## Preserved controller recovery (held)
 
 Each control-host attempt lives in `attempts/<32-character-attempt-id>/`. Inspect
 its `attempt.json` and bounded private logs. KVM retains exactly named raw

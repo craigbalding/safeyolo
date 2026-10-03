@@ -53,10 +53,10 @@ def source_archive(name: str, directory: Path) -> Path:
     return roots[0]
 
 
-def verify_mac_tmux(binary: Path) -> str:
+def verify_mac_tmux(binary: Path, *, env: dict | None = None) -> str:
     """Reject a build-host library dependency before offline transfer."""
-    subprocess.run(["codesign", "--verify", "--strict", str(binary)], check=True, timeout=30)
-    libraries = subprocess.check_output(["otool", "-L", str(binary)], text=True, timeout=30)
+    subprocess.run(["codesign", "--verify", "--strict", str(binary)], env=env, check=True, timeout=30)
+    libraries = subprocess.check_output(["otool", "-L", str(binary)], env=env, text=True, timeout=30)
     lines = libraries.splitlines()
     if len(lines) < 2 or lines[0] != f"{binary}:":
         raise ValueError("private tmux has no complete Mac library observation")
@@ -64,7 +64,7 @@ def verify_mac_tmux(binary: Path) -> str:
         library = line.strip().split(" (", 1)[0]
         if not library.startswith(("/usr/lib/", "/System/Library/")):
             raise ValueError(f"private tmux depends on a non-system Mac library: {library}")
-    version = subprocess.check_output([str(binary), "-V"], text=True, timeout=30).strip()
+    version = subprocess.check_output([str(binary), "-V"], env=env, text=True, timeout=30).strip()
     if re.fullmatch(r"tmux [0-9]+(?:\.[0-9]+)*[a-z]?", version) is None:
         raise ValueError("private tmux has no observed release version")
     return version
@@ -106,7 +106,7 @@ def build_mac_tmux(root: Path) -> Path:
         run(["make", "-j1"], sources["tmux"], build_env=tmux_env)
         built = sources["tmux"] / "tmux"
         run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(built)], sources["tmux"])
-        if verify_mac_tmux(built) != f"tmux {TMUX_VERSION}":
+        if verify_mac_tmux(built, env=env) != f"tmux {TMUX_VERSION}":
             raise ValueError("private tmux build does not report its selected version")
         licenses = root / "share/tmux-licenses"
         licenses.mkdir(parents=True, exist_ok=False)
