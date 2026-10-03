@@ -51,6 +51,10 @@ Python interpreter automatically.
 | macOS | Apple Silicon (M1+), Command Line Tools, Lima, and tmux. For Homebrew, use `brew install lima tmux`. |
 | Linux | x86_64 or arm64. Bootstrap checks build dependencies and configures the gVisor runtime. |
 
+For hardware acceptance, the [deployment path](tests/blackbox/hardware/README.md)
+prepares a private Mac tmux on Tart and transfers it for offline execution.
+Its installed-runtime checks require that private input before public start.
+
 The commands below install the CLI, initialize `~/.safeyolo/`, and build the
 platform's guest artifacts. On Linux, missing build packages cause bootstrap
 to print an installation command and stop. Run the printed command, then rerun

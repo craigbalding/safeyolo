@@ -101,9 +101,9 @@ def _run(
     )
 
 
-def _version(executable: Path, arguments: list[str], label: str) -> str:
+def _version(executable: Path, arguments: list[str], label: str, *, env: dict[str, str] | None = None) -> str:
     """Read one bounded executable version and reject nonzero identity probes."""
-    result = _run([str(executable), *arguments])
+    result = _run([str(executable), *arguments], env=env)
     output = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode != 0 or not output:
         raise SmokeError(f"{label} version check failed (exit {result.returncode})")
@@ -119,14 +119,14 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _git_identity(path: Path) -> dict[str, Any]:
+def _git_identity(path: Path, *, env: dict[str, str] | None = None) -> dict[str, Any]:
     """Capture source revision when the selected artifact belongs to a checkout."""
     for root in (path, *path.parents):
         if not (root / ".git").exists():
             continue
         try:
-            revision = _run(["git", "rev-parse", "HEAD"], cwd=root, timeout=5)
-            dirty = _run(["git", "status", "--porcelain"], cwd=root, timeout=5)
+            revision = _run(["git", "rev-parse", "HEAD"], cwd=root, env=env, timeout=5)
+            dirty = _run(["git", "status", "--porcelain"], cwd=root, env=env, timeout=5)
         except SmokeError:
             return {"root": str(root), "revision": None, "dirty": None}
         return {
@@ -155,17 +155,17 @@ def _interpreter_from_shebang(executable: Path) -> Path | None:
     return Path(os.path.abspath(os.fspath(interpreter))) if interpreter.is_file() else None
 
 
-def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
+def _cli_identity(value: str | os.PathLike[str] | None, *, env: dict[str, str] | None = None) -> dict[str, Any]:
     """Identify the installed CLI and, where possible, its loaded package."""
     executable = _resolve_executable(
         value or os.environ.get("SAFEYOLO_CLI") or "safeyolo", "SafeYolo CLI"
     )
-    version = _version(executable, ["--version"], "SafeYolo CLI")
+    version = _version(executable, ["--version"], "SafeYolo CLI", env=env)
     result: dict[str, Any] = {
         "path": str(executable),
         "sha256": _sha256(executable),
         "version": version,
-        "source": _git_identity(executable.parent),
+        "source": _git_identity(executable.parent, env=env),
     }
     interpreter = _interpreter_from_shebang(executable)
     if interpreter is not None:
@@ -177,7 +177,7 @@ def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
                 "-c",
                 "import safeyolo; print(safeyolo.__file__ or '')",
             ],
-            timeout=5,
+            env=env, timeout=5,
         )
         if package.returncode == 0 and package.stdout.strip():
             package_location = Path(package.stdout.strip()[-OUTPUT_LIMIT:]).expanduser()
@@ -195,29 +195,29 @@ def _cli_identity(value: str | os.PathLike[str] | None) -> dict[str, Any]:
     return result
 
 
-def _installed_rust_binary(cli_path: str | os.PathLike[str]) -> tuple[Path, dict[str, Any]]:
+def _installed_rust_binary(cli_path: str | os.PathLike[str], *, env: dict[str, str] | None = None) -> tuple[Path, dict[str, Any]]:
     """Select the native binary beside the package loaded by the installed CLI."""
-    cli = _cli_identity(cli_path)
+    cli = _cli_identity(cli_path, env=env)
     package_file = Path(cli["package_location"])
     if package_file.name != "__init__.py" or package_file.parent.name != "safeyolo":
         raise SmokeError("installed CLI did not load the safeyolo package")
-    binary, _ = _rust_identity(package_file.parent / "bin" / "safeyolo-proxy")
+    binary, _ = _rust_identity(package_file.parent / "bin" / "safeyolo-proxy", env=env)
     return binary, cli
 
 
-def _rust_identity(value: str | os.PathLike[str] | None) -> tuple[Path, dict[str, Any]]:
+def _rust_identity(value: str | os.PathLike[str] | None, *, env: dict[str, str] | None = None) -> tuple[Path, dict[str, Any]]:
     """Identify the supplied native executable and reject a different program."""
     executable = _resolve_executable(
         value or os.environ.get("SAFEYOLO_RUST_PROXY"), "Rust proxy executable"
     )
-    version = _version(executable, ["--version"], "Rust proxy executable")
+    version = _version(executable, ["--version"], "Rust proxy executable", env=env)
     if version.split(maxsplit=1)[0] != "safeyolo-proxy":
         raise SmokeError(f"Rust proxy executable has unexpected identity: {version[:200]}")
     identity = {
         "path": str(executable),
         "sha256": _sha256(executable),
         "version": version,
-        "source": _git_identity(executable.parent),
+        "source": _git_identity(executable.parent, env=env),
     }
     return executable, identity
 
@@ -779,6 +779,19 @@ def _discover(args: argparse.Namespace, *, require_running: bool = False) -> tup
     report = _base_report(cli, candidate, substrate)
     report["instance"] = {"config_dir": str(config_dir), "mode": args.mode}
     try:
+        if args.install_commit:
+            stamp = _read_json(Path(cli["package_location"]).parent / "_build_identity.json", "installed wheel identity")
+            if (type(stamp.get("schema_version")) is not int or stamp["schema_version"] != 1
+                    or stamp.get("source_revision") != args.install_commit or stamp.get("state") != "known"):
+                raise SmokeError("installed wheel source revision does not match --install-commit")
+            packaged = Path(cli["package_location"]).parent / "bin/safeyolo-proxy"
+            if packaged.resolve() != candidate_path.resolve():
+                raise SmokeError("selected native executable is not the installed wheel's proxy")
+            report["candidate"]["path"] = str(packaged.resolve())
+            report["source_revision"] = stamp["source_revision"]
+            report["build_identity"] = {"source_revision": stamp["source_revision"], "state": "known"}
+        if os.environ.get("SAFEYOLO_BLACKBOX_RUN_ID"):
+            report["run_id"] = os.environ["SAFEYOLO_BLACKBOX_RUN_ID"]
         _require_substrate(substrate)
         native_path = _absolute_path(args.rust_config, cwd)
         native = _native_config(native_path, cwd)
@@ -915,12 +928,12 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         cleanup_errors = []
         if started:
             if __package__:
-                from .installed_sections import owned_processes, surviving_processes
+                from .installed_sections import owned_processes, stop_owned_console, surviving_processes
             else:
-                from installed_sections import owned_processes, surviving_processes
+                from installed_sections import owned_processes, stop_owned_console, surviving_processes
             try:
-                processes = owned_processes(config_dir)
-            except (OSError, ValueError, KeyError) as exc:
+                processes = owned_processes(config_dir, include_console=True)
+            except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
                 cleanup_errors.append(f"owned process inspection failed: {exc}")
                 processes = []
             try:
@@ -929,6 +942,7 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     cleanup_errors.append(f"installed stop exited {result.returncode}")
             except SmokeError as exc:
                 cleanup_errors.append(str(exc))
+            cleanup_errors.extend(stop_owned_console(processes))
             for name in ("proxy-rust.json", "proxy-readiness.json", "proxy.pid"):
                 if (config_dir / "data" / name).exists():
                     cleanup_errors.append(f"installed stop left {name}")

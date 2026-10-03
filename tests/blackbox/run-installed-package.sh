@@ -16,6 +16,7 @@ export SAFEYOLO_LOGS_DIR="$SAFEYOLO_CONFIG_DIR/logs"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_CONFIG_DIR/data/coord"
 export SAFEYOLO_NATS_TEST_INSTANCE="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 export CARGO_BUILD_JOBS=1
+unset SAFEYOLO_TMUX_BIN
 ARTIFACTS="${SAFEYOLO_BLACKBOX_ARTIFACTS_DIR:-$SCRIPT_DIR/artifacts/installed-package}"
 export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --basetemp=$PACKAGE_DIR/p"
 mkdir -p "$ARTIFACTS"
@@ -31,9 +32,12 @@ python3 - "$PACKAGE_DIR/prepared" "$SAFEYOLO_CONFIG_DIR" "$SCRIPT_DIR" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[3])
-from installed_sections import copy_prepared_nats
-copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
+from installed_sections import copy_prepared_runtime
+copy_prepared_runtime(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
+if [ -f "$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux" ]; then
+    export SAFEYOLO_TMUX_BIN="$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux"
+fi
 touch "$SAFEYOLO_CONFIG_DIR/.safeyolo-platform-smoke"
 python3 - "$SAFEYOLO_CONFIG_DIR/config.yaml" <<'PY'
 import sys

@@ -35,6 +35,7 @@ struct DarwinProcessInfo {
 unsafe extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut libc::c_void, size: i32) -> i32;
     fn proc_pidpath(pid: i32, buffer: *mut libc::c_void, size: u32) -> i32;
+    fn proc_listchildpids(pid: i32, buffer: *mut libc::c_void, size: i32) -> i32;
 }
 
 #[cfg(target_os = "macos")]
@@ -86,6 +87,199 @@ fn vm_process_token(name: &str, pid: i32) -> Option<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Some(token),
         Err(_) => None,
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn vz_test_command(
+    helper: &std::path::Path,
+    runner: Option<std::ffi::OsString>,
+    timeout: Option<std::ffi::OsString>,
+) -> io::Result<Command> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (runner, timeout) = match (runner, timeout) {
+        (None, None) => return Ok(Command::new(helper)),
+        (Some(runner), Some(timeout)) => (PathBuf::from(runner), timeout),
+        _ => {
+            return Err(io::Error::other(
+                "VZ test supervision needs a runner and timeout",
+            ));
+        }
+    };
+    let seconds = timeout
+        .to_str()
+        .and_then(|value| {
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                value.parse::<u64>().ok().filter(|seconds| *seconds > 0)
+            } else {
+                None
+            }
+        })
+        .ok_or(io::Error::other(
+            "VZ test timeout must be a positive whole number",
+        ))?;
+    if !runner.is_absolute()
+        || !runner.is_file()
+        || runner.metadata()?.permissions().mode() & 0o111 == 0
+    {
+        return Err(io::Error::other(
+            "VZ test runner must be an absolute executable file",
+        ));
+    }
+    let mut command = Command::new(runner);
+    command
+        .arg("--timeout-seconds")
+        .arg(seconds.to_string())
+        .arg("--")
+        .arg(helper);
+    Ok(command)
+}
+
+#[cfg(target_os = "macos")]
+fn vz_runner_helper(name: &str, runner_pid: i32) -> io::Result<Option<(i32, String)>> {
+    let mut pids = [0i32; 32];
+    let count = unsafe {
+        proc_listchildpids(
+            runner_pid,
+            pids.as_mut_ptr().cast(),
+            std::mem::size_of_val(&pids) as i32,
+        )
+    };
+    if count < 0 || count as usize >= pids.len() {
+        return Err(io::Error::other(
+            "cannot enumerate the VZ test runner's direct children",
+        ));
+    }
+    let mut found = None;
+    for &pid in &pids[..count as usize] {
+        let mut info = std::mem::MaybeUninit::<DarwinProcessInfo>::zeroed();
+        let size = std::mem::size_of::<DarwinProcessInfo>();
+        if unsafe { proc_pidinfo(pid, 3, 0, info.as_mut_ptr().cast(), size as i32) } != size as i32
+        {
+            continue; // A direct child may exit between enumeration and inspection.
+        }
+        let info = unsafe { info.assume_init() };
+        if info.first_fields[4] != runner_pid as u32 || info.first_fields[1] == 5 {
+            continue;
+        }
+        let observed = format!(
+            "darwin:{pid}:{}:{}",
+            info.started_seconds, info.started_microseconds
+        );
+        if vm_process_token(name, pid).as_deref() == Some(&observed) {
+            if found.is_some() {
+                return Err(io::Error::other(
+                    "VZ test runner has multiple matching helper children",
+                ));
+            }
+            found = Some((pid, observed));
+        }
+    }
+    Ok(found)
+}
+
+#[cfg(target_os = "macos")]
+fn vz_receipt_process_alive(receipt: &serde_json::Value, field: &str) -> io::Result<bool> {
+    if field == "helper_pid" && receipt.get(field).is_some_and(serde_json::Value::is_null) {
+        return Ok(false); // A failed launch may not have exposed its helper child.
+    }
+    let pid = receipt
+        .get(field)
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|pid| i32::try_from(pid).ok())
+        .filter(|pid| *pid > 1)
+        .ok_or(io::Error::other("invalid VZ test supervision PID"))?;
+    let token_field = field.replace("pid", "start_token");
+    let recorded = receipt
+        .get(&token_field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|token| !token.is_empty())
+        .ok_or(io::Error::other("invalid VZ test supervision start token"))?;
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    let mut info = std::mem::MaybeUninit::<DarwinProcessInfo>::zeroed();
+    let size = std::mem::size_of::<DarwinProcessInfo>();
+    if unsafe { proc_pidinfo(pid, 3, 0, info.as_mut_ptr().cast(), size as i32) } != size as i32 {
+        if io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            return Ok(false); // The owned process exited after the liveness check.
+        }
+        return Err(io::Error::other(
+            "cannot establish VZ supervision process identity",
+        ));
+    }
+    let info = unsafe { info.assume_init() };
+    if info.first_fields[3] != pid as u32
+        || info.started_seconds == 0
+        || info.started_microseconds >= 1_000_000
+    {
+        return Err(io::Error::other("invalid VZ supervision process identity"));
+    }
+    let observed = format!(
+        "darwin:{pid}:{}:{}",
+        info.started_seconds, info.started_microseconds
+    );
+    Ok(info.first_fields[1] != 5 && observed == recorded)
+}
+
+#[cfg(target_os = "macos")]
+async fn stop_vz_test_runner(directory: &std::path::Path) -> io::Result<()> {
+    let path = directory.join("vm-supervisor.json");
+    let receipt: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    // Validate both identities before any signal.
+    let runner_alive = vz_receipt_process_alive(&receipt, "pid")?;
+    vz_receipt_process_alive(&receipt, "helper_pid")?;
+    if runner_alive {
+        let pid = receipt["pid"]
+            .as_i64()
+            .ok_or(io::Error::other("missing VZ runner PID"))? as i32;
+        if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        if !vz_receipt_process_alive(&receipt, "pid")?
+            && !vz_receipt_process_alive(&receipt, "helper_pid")?
+        {
+            for name in ["vm.pid", "vm.token", "vm-supervisor.json"] {
+                match std::fs::remove_file(directory.join(name)) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Err(io::Error::other(
+        "VZ test runner or its owned helper did not stop",
+    ))
+}
+
+#[cfg(target_os = "macos")]
+async fn reclaim_stopped_vz_test_runner(directory: &std::path::Path) -> io::Result<()> {
+    let path = directory.join("vm-supervisor.json");
+    if path.exists() {
+        let receipt: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        if vz_receipt_process_alive(&receipt, "pid")?
+            || vz_receipt_process_alive(&receipt, "helper_pid")?
+        {
+            return Err(io::Error::other(
+                "the existing VZ test runner or its helper is still active",
+            ));
+        }
+        stop_vz_test_runner(directory).await?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -1051,7 +1245,11 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
             "invalid agent name",
         ));
     }
-    let path = config_dir().join("agents").join(name).join("vm.pid");
+    let directory = config_dir().join("agents").join(name);
+    if directory.join("vm-supervisor.json").exists() {
+        return stop_vz_test_runner(&directory).await;
+    }
+    let path = directory.join("vm.pid");
     let source = match std::fs::read_to_string(&path) {
         Ok(source) => source,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1065,7 +1263,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid VM PID"))?;
     let Some(token) = vm_process_token(name, pid) else {
         if unsafe { libc::kill(pid, 0) } != 0
-            && io::Error::last_os_error().kind() == io::ErrorKind::NotFound
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
         {
             std::fs::remove_file(path)?;
             let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
@@ -1077,7 +1275,7 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     };
     if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
         let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::NotFound {
+        if error.raw_os_error() != Some(libc::ESRCH) {
             return Err(error);
         }
     }
@@ -1110,6 +1308,7 @@ pub(crate) async fn start_sandbox(
     }
     let config = config_dir();
     let directory = config.join("agents").join(name);
+    reclaim_stopped_vz_test_runner(&directory).await?;
     let share = directory.join("config-share");
     let status_dir = directory.join("status");
     let launch_context: serde_json::Value =
@@ -1160,7 +1359,12 @@ pub(crate) async fn start_sandbox(
     let proxy = config
         .join("data/sockets")
         .join(format!("{ip}_{name}/proxy.sock"));
-    let mut command = Command::new(config.join("bin/safeyolo-vm"));
+    let supervised = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER").is_some();
+    let mut command = vz_test_command(
+        &config.join("bin/safeyolo-vm"),
+        std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER"),
+        std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"),
+    )?;
     let mut cmdline = "console=hvc0 root=/dev/vda rw quiet".to_owned();
     if ephemeral {
         cmdline.push_str(" safeyolo.ephemeral_upper=1");
@@ -1242,24 +1446,89 @@ pub(crate) async fn start_sandbox(
         .stdout(serial)
         .stderr(stderr)
         .spawn()?;
-    let pid = child.id().ok_or(io::Error::other("VM helper has no PID"))?;
+    let launch_pid = child.id().ok_or(io::Error::other("VM launch has no PID"))?;
     let _ = std::fs::remove_file(directory.join("vm.token"));
-    std::fs::write(directory.join("vm.pid"), pid.to_string())?;
-    if let Some(token) = vm_process_token(name, pid as i32) {
-        std::fs::write(directory.join("vm.token"), token)?;
-    }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-    while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some() {
-            break;
+    let pid = if supervised {
+        let path = directory.join("vm-supervisor.json");
+        let registration = async {
+            let mut receipt = serde_json::json!({
+                "pid": launch_pid,
+                "start_token": macos_process_token(i64::from(launch_pid))
+                    .ok_or(io::Error::other("cannot observe VZ test runner start identity"))?,
+                "helper_pid": null, "helper_start_token": null,
+            });
+            std::fs::write(&path, serde_json::to_vec(&receipt)?)?;
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+            while tokio::time::Instant::now() < deadline && child.try_wait()?.is_none() {
+                if let Some((pid, token)) = vz_runner_helper(name, launch_pid as i32)? {
+                    receipt["helper_pid"] = pid.into();
+                    receipt["helper_start_token"] = token.into();
+                    std::fs::write(&path, serde_json::to_vec(&receipt)?)?;
+                    return Ok(pid as u32);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(io::Error::other(
+                "VZ test runner did not expose its direct VM helper child",
+            ))
         }
-        if status_dir.join("per-run-started").is_file() {
-            return Ok(());
+        .await;
+        match registration {
+            Ok(pid) => pid,
+            Err(error) => {
+                // Child still owns the launch PID. The host runner owns and
+                // reaps its helper; killing the runner would orphan that child.
+                if child.try_wait()?.is_none()
+                    && unsafe { libc::kill(launch_pid as i32, libc::SIGTERM) } != 0
+                {
+                    let signal_error = io::Error::last_os_error();
+                    if signal_error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(signal_error);
+                    }
+                }
+                tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                    .await
+                    .map_err(|_| {
+                        io::Error::other("VZ runner cleanup could not be established")
+                    })??;
+                if path.exists() {
+                    stop_vz_test_runner(&directory).await?;
+                }
+                return Err(error);
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    } else {
+        let _ = std::fs::remove_file(directory.join("vm-supervisor.json"));
+        launch_pid
+    };
+    let startup = async {
+        std::fs::write(directory.join("vm.pid"), pid.to_string())?;
+        if let Some(token) = vm_process_token(name, pid as i32) {
+            std::fs::write(directory.join("vm.token"), token)?;
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if status_dir.join("per-run-started").is_file() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Err(io::Error::other("VM did not reach per-run startup"))
     }
-    let _ = stop_sandbox(name).await;
-    Err(io::Error::other("VM did not reach per-run startup"))
+    .await;
+    if startup.is_err() {
+        // Surface failed owned cleanup instead of discarding it on startup failure.
+        stop_sandbox(name).await?;
+        if supervised {
+            tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                .await
+                .map_err(|_| io::Error::other("VZ runner cleanup could not be established"))??;
+        }
+    }
+    startup
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1349,4 +1618,130 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod vz_test_runner_tests {
+    use super::vz_test_command;
+    use std::{ffi::OsString, os::unix::fs::PermissionsExt, path::Path};
+
+    #[test]
+    fn vz_test_runner_preserves_direct_helper_and_literal_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = directory.path().join("run test with spaces");
+        std::fs::write(&runner, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let helper = Path::new("/selected inputs/safeyolo-vm");
+        let mut command =
+            vz_test_command(helper, Some(runner.clone().into()), Some("003".into())).unwrap();
+        command.arg("run").arg("--overlay").arg("owned overlay");
+        assert_eq!(command.as_std().get_program(), runner);
+        assert_eq!(
+            command
+                .as_std()
+                .get_args()
+                .map(OsString::from)
+                .collect::<Vec<_>>(),
+            [
+                "--timeout-seconds",
+                "3",
+                "--",
+                "/selected inputs/safeyolo-vm",
+                "run",
+                "--overlay",
+                "owned overlay"
+            ]
+            .map(OsString::from)
+        );
+        let direct = vz_test_command(helper, None, None).unwrap();
+        assert_eq!(direct.as_std().get_program(), helper);
+        assert_eq!(direct.as_std().get_args().count(), 0);
+    }
+
+    #[test]
+    fn vz_test_runner_rejects_incomplete_invalid_or_unavailable_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let runner = directory.path().join("runner");
+        std::fs::write(&runner, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let helper = Path::new("/selected/safeyolo-vm");
+        assert!(vz_test_command(helper, Some(runner.clone().into()), None).is_err());
+        assert!(vz_test_command(helper, None, Some("1".into())).is_err());
+        for value in [
+            "",
+            "0",
+            "-1",
+            "+1",
+            "1.5",
+            " 1",
+            "1 ",
+            "１２",
+            "18446744073709551616",
+        ] {
+            assert!(
+                vz_test_command(helper, Some(runner.clone().into()), Some(value.into())).is_err(),
+                "{value:?}"
+            );
+        }
+        for path in [Path::new("relative"), directory.path()] {
+            assert!(vz_test_command(helper, Some(path.into()), Some("1".into())).is_err());
+        }
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(vz_test_command(helper, Some(runner.into()), Some("1".into())).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn vz_supervision_observes_real_live_stale_and_reused_process_identities() {
+        use super::{macos_process_token, vz_receipt_process_alive};
+
+        let pid = i64::from(std::process::id());
+        let token = macos_process_token(pid).unwrap();
+        let mut receipt = serde_json::json!({"pid": pid, "start_token": token,
+                                            "helper_pid": null, "helper_start_token": null});
+        assert!(vz_receipt_process_alive(&receipt, "pid").unwrap());
+        assert!(!vz_receipt_process_alive(&receipt, "helper_pid").unwrap());
+        receipt["start_token"] = "older-process".into();
+        assert!(!vz_receipt_process_alive(&receipt, "pid").unwrap());
+        receipt["pid"] = true.into();
+        assert!(vz_receipt_process_alive(&receipt, "pid").is_err());
+        let mut exited = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let old_pid = exited.id();
+        exited.wait().unwrap();
+        let absent = serde_json::json!({"pid": old_pid, "start_token": "earlier-start"});
+        assert!(
+            !vz_receipt_process_alive(&absent, "pid").unwrap(),
+            "ESRCH must establish exit"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn vz_supervision_reclaims_only_verified_inactive_receipts() {
+        use super::{macos_process_token, reclaim_stopped_vz_test_runner};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vm-supervisor.json");
+        let pid = i64::from(std::process::id());
+        let live = serde_json::json!({"pid": pid, "start_token": macos_process_token(pid).unwrap(),
+                                     "helper_pid": null, "helper_start_token": null});
+        let original = serde_json::to_vec(&live).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        assert!(
+            reclaim_stopped_vz_test_runner(directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let old = serde_json::json!({"pid": pid, "start_token": "earlier-start",
+                                    "helper_pid": null, "helper_start_token": null});
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        reclaim_stopped_vz_test_runner(directory.path())
+            .await
+            .unwrap();
+        assert!(
+            !path.exists(),
+            "reused foreign PID survived and the stale receipt was removed"
+        );
+    }
 }

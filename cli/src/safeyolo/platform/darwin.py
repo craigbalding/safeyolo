@@ -16,6 +16,7 @@ from pathlib import Path
 from ..config import get_agents_dir, get_data_dir, get_ssh_key_path
 from ..vm import (
     create_agent_rootfs,
+    get_agent_pid_path,
     get_agent_rootfs_path,
     is_vm_running,
     start_vm,
@@ -182,6 +183,9 @@ class DarwinPlatform(AgentPlatform):
             shell_socket_path=shell_socket,
             ephemeral=ephemeral,
         )
+        pid_path = get_agent_pid_path(name)
+        if (pid_path.parent / "vm-supervisor.json").exists():
+            return int(pid_path.read_text())
         return proc.pid
 
     def stop_sandbox(self, name: str) -> None:

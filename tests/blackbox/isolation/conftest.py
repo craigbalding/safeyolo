@@ -14,6 +14,13 @@ from _docstring_lint import validate_items  # noqa: E402
 ISOLATION_SUITE_ROOT = Path(__file__).resolve().parent
 
 
+def pytest_configure(config):
+    """Retain guest outcomes when the local pytest.ini excludes parent hooks."""
+    from pytest_observations import pytest_configure as configure_observations
+
+    configure_observations(config)
+
+
 def pytest_collection_modifyitems(config, items):
     """Reject collection if any test's docstring is missing structure.
 

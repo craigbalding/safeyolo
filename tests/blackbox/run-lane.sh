@@ -166,6 +166,10 @@ PY
 fi
 
 if [ "$PREPARE_ONLY" = true ]; then
+    # Linux uses bootstrap's supported tmux prerequisite. The Mac preparation
+    # supplies a private, relocatable runtime on Tart when the wheel has none.
+    python3 "$SCRIPT_DIR/prepare_tmux.py" --cli "$(command -v safeyolo)" \
+        --config-dir "$SAFEYOLO_CONFIG_DIR"
     # Resolve through the selected wheel. Only this verified executable is
     # copied to section instances; NATS credentials and streams are not shared.
     python3 - "$(command -v safeyolo)" <<'PY'

@@ -1129,7 +1129,11 @@ async fn stop(agent: &Agent) -> Result<Value, Error> {
     let _lock = SetupLock::acquire(&agent.name)?;
     stop_supervisor(&agent.name).await?;
     stop_launcher(agent).await?;
-    if !crate::host_platform::is_sandbox_running(&agent.name).await {
+    // A deadline can reap the helper before public stop. Its owned receipt
+    // still needs the identity-aware platform cleanup path.
+    let vz_cleanup_pending =
+        cfg!(target_os = "macos") && agent_dir(&agent.name).join("vm-supervisor.json").exists();
+    if !crate::host_platform::is_sandbox_running(&agent.name).await && !vz_cleanup_pending {
         return runtime(agent).await;
     }
     crate::host_platform::stop_sandbox(&agent.name).await?;
@@ -1144,6 +1148,119 @@ async fn stop(agent: &Agent) -> Result<Value, Error> {
         json!({"reason":"user_request"}),
     );
     runtime(agent).await
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod vz_stop_tests {
+    use super::operate;
+    use serde_json::json;
+    use std::process::Child;
+
+    struct OwnedProcess(Child);
+
+    impl Drop for OwnedProcess {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+
+    #[tokio::test]
+    async fn public_stop_reclaims_exited_vz_state_and_preserves_owned_failure() {
+        // Give this public-call fixture its own process environment so normal
+        // parallel lib tests cannot observe its private agent configuration.
+        if std::env::var_os("SAFEYOLO_VZ_STOP_TEST_CHILD").is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "host_lifecycle::vz_stop_tests::public_stop_reclaims_exited_vz_state_and_preserves_owned_failure",
+                    "--nocapture",
+                ])
+                .env("SAFEYOLO_VZ_STOP_TEST_CHILD", "1")
+                .env("SAFEYOLO_CONFIG_DIR", directory.path())
+                .env_remove("SAFEYOLO_NATIVE_CONFIG_PATH")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let root = crate::host_platform::config_dir();
+        let agent = root.join("agents/probe");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            root.join("policy.toml"),
+            "[agents.probe]\nagent_id = \"ag-probe\"\n",
+        )
+        .unwrap();
+        let mut helper = OwnedProcess(
+            std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let pid = helper.0.id();
+        let token = crate::host_platform::macos_process_token(i64::from(pid)).unwrap();
+        helper.0.kill().unwrap();
+        helper.0.wait().unwrap();
+        let receipt_path = agent.join("vm-supervisor.json");
+        for (pid_file, helper_pid) in [(true, Some(pid)), (false, Some(pid)), (false, None)] {
+            let receipt = json!({"pid":pid,"start_token":token,
+                                 "helper_pid":helper_pid,"helper_start_token":token});
+            std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+            if pid_file {
+                std::fs::write(agent.join("vm.pid"), pid.to_string()).unwrap();
+            }
+            std::fs::write(agent.join("vm.token"), &token).unwrap();
+            let stopped = operate("stop", Some("ag-probe")).await.unwrap();
+            assert_eq!(stopped["sandbox_state"], "stopped", "{stopped}");
+            assert!(stopped["error"].is_null(), "{stopped}");
+            for name in ["vm.pid", "vm.token", "vm-supervisor.json"] {
+                assert!(!agent.join(name).exists(), "public stop left {name}");
+            }
+        }
+        let mut foreign = OwnedProcess(
+            std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        let foreign_pid = foreign.0.id();
+        let foreign_token =
+            crate::host_platform::macos_process_token(i64::from(foreign_pid)).unwrap();
+        let stale = json!({"pid":foreign_pid,"start_token":"earlier-runner",
+                           "helper_pid":foreign_pid,"helper_start_token":"earlier-helper"});
+        std::fs::write(&receipt_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        std::fs::write(agent.join("vm.pid"), foreign_pid.to_string()).unwrap();
+        let stopped = operate("stop", Some("ag-probe")).await.unwrap();
+        assert_eq!(stopped["sandbox_state"], "stopped", "{stopped}");
+        assert!(foreign.0.try_wait().unwrap().is_none());
+        assert!(!receipt_path.exists());
+
+        // The wrapper is gone but its recorded helper is genuinely live.
+        // A stopped readiness result cannot replace a cleanup error.
+        let orphan = json!({"pid":pid,"start_token":token,
+                            "helper_pid":foreign_pid,"helper_start_token":foreign_token});
+        std::fs::write(&receipt_path, serde_json::to_vec(&orphan).unwrap()).unwrap();
+        let failure = operate("stop", Some("ag-probe")).await.unwrap();
+        assert_eq!(failure["status_code"], 500, "{failure}");
+        assert!(
+            failure["error"]
+                .as_str()
+                .unwrap()
+                .contains("owned helper did not stop"),
+            "{failure}"
+        );
+        assert!(receipt_path.exists());
+        assert!(foreign.0.try_wait().unwrap().is_none());
+    }
 }
 
 async fn stop_supervisor(name: &str) -> Result<(), Error> {
