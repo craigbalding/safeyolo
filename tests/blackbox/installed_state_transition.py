@@ -48,7 +48,7 @@ if __package__:
         _process_start_token,
         _runtime_observation,
     )
-    from .installed_sections import copy_prepared_runtime, owned_processes, surviving_processes
+    from .installed_sections import copy_prepared_runtime, owned_processes, stop_owned_console, surviving_processes
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -58,7 +58,7 @@ else:
         _process_start_token,
         _runtime_observation,
     )
-    from installed_sections import copy_prepared_runtime, owned_processes, surviving_processes
+    from installed_sections import copy_prepared_runtime, owned_processes, stop_owned_console, surviving_processes
 
 BODY = b"owned-r638-response-needle\n"
 PASS = "synthetic-r638-vault-passphrase"
@@ -1271,6 +1271,10 @@ print(json.dumps({'nats':'stopped'}))
             except Exception as exc:
                 print(f"NATS cleanup failed: {type(exc).__name__}: {exc}", flush=True)
                 cleanup_errors.append(str(exc))
+        try:
+            cleanup_errors.extend(stop_owned_console(owned_processes(root, include_console=True)))
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+            cleanup_errors.append(f"console cleanup failed: {exc}")
         for server, thread in zip((origin, oauth, tls_origin), threads, strict=True):
             server.shutdown()
             server.server_close()

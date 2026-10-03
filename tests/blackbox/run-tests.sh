@@ -727,7 +727,7 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from installed_sections import owned_processes
-print(json.dumps(owned_processes(Path(sys.argv[2]))))
+print(json.dumps(owned_processes(Path(sys.argv[2]), include_console=True)))
 PY_SNAPSHOT
 )" || cleanup_failed=true
 
@@ -796,8 +796,9 @@ PY_OWNER
     python3 - "$SCRIPT_DIR" "$owned_snapshot" <<'PY_SURVIVORS' || cleanup_failed=true
 import json, sys
 sys.path.insert(0, sys.argv[1])
-from installed_sections import surviving_processes
-failures = surviving_processes(json.loads(sys.argv[2]))
+from installed_sections import stop_owned_console, surviving_processes
+processes = json.loads(sys.argv[2])
+failures = stop_owned_console(processes) + surviving_processes(processes)
 for error in failures:
     print(error, file=sys.stderr)
 raise SystemExit(bool(failures))

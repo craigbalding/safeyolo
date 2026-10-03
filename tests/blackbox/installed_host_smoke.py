@@ -928,12 +928,12 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         cleanup_errors = []
         if started:
             if __package__:
-                from .installed_sections import owned_processes, surviving_processes
+                from .installed_sections import owned_processes, stop_owned_console, surviving_processes
             else:
-                from installed_sections import owned_processes, surviving_processes
+                from installed_sections import owned_processes, stop_owned_console, surviving_processes
             try:
-                processes = owned_processes(config_dir)
-            except (OSError, ValueError, KeyError) as exc:
+                processes = owned_processes(config_dir, include_console=True)
+            except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
                 cleanup_errors.append(f"owned process inspection failed: {exc}")
                 processes = []
             try:
@@ -942,6 +942,7 @@ def _native_smoke(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     cleanup_errors.append(f"installed stop exited {result.returncode}")
             except SmokeError as exc:
                 cleanup_errors.append(str(exc))
+            cleanup_errors.extend(stop_owned_console(processes))
             for name in ("proxy-rust.json", "proxy-readiness.json", "proxy.pid"):
                 if (config_dir / "data" / name).exists():
                     cleanup_errors.append(f"installed stop left {name}")

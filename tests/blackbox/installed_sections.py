@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import errno
 import json
 import os
 import platform
@@ -21,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import zipfile
 from datetime import UTC, datetime
@@ -63,8 +65,89 @@ def copy_prepared_runtime(source: Path, root: Path) -> None:
         shutil.copy2(tmux, root / "bin/safeyolo-tmux")
 
 
-def owned_processes(root: Path) -> list[dict]:
-    """Remember live processes named by this instance before invoking stop."""
+def console_process(root: Path) -> dict | None:
+    """Observe the instance's private server and diagnostic pane before stop."""
+    if __package__:
+        from .installed_host_smoke import _process_start_token
+    else:
+        from installed_host_smoke import _process_start_token
+    from safeyolo.traffic_session import find_private_tmux
+
+    path = root.resolve() / "data/traffic-tmux.sock"
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISSOCK(mode):
+        raise ValueError("private traffic console path is not a socket")
+    with socket.socket(socket.AF_UNIX) as probe:
+        probe.settimeout(2)
+        try:
+            probe.connect(str(path))
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ECONNREFUSED):
+                return None
+            raise
+    private = root / "bin/safeyolo-tmux"
+    tmux = private if private.is_file() else find_private_tmux()
+    result = subprocess.run(
+        [str(tmux), "-S", str(path), "-f", "/dev/null", "display-message", "-p", "-t", "safeyolo-traffic:0.0",
+         "#{pid}\n#{socket_path}\n#{session_id}\n#{pane_id}\n#{pane_pid}"],
+        capture_output=True, text=True, check=True, timeout=5,
+    )
+    fields = result.stdout.splitlines()
+    if (len(fields) != 5 or fields[1] != str(path) or re.fullmatch(r"\$[0-9]+", fields[2]) is None
+            or re.fullmatch(r"%[0-9]+", fields[3]) is None or not fields[0].isascii() or not fields[0].isdecimal()
+            or not fields[4].isascii() or not fields[4].isdecimal()):
+        raise ValueError("cannot verify private traffic console identity")
+    pid = int(fields[0])
+    token = _process_start_token(pid)
+    if pid <= 1 or int(fields[4]) <= 1 or token is None:
+        raise ValueError("cannot observe private traffic console process identity")
+    return {"pid": pid, "start_token": token,
+            "console": {"tmux": str(tmux), "socket": str(path), "session": fields[2],
+                        "pane": fields[3], "pane_pid": fields[4]}}
+
+
+def stop_owned_console(processes: list[dict]) -> list[str]:
+    """Dispose only of a recorded dead diagnostic pane, then verify inactivity."""
+    if __package__:
+        from .installed_host_smoke import _pid_alive, _process_start_token
+    else:
+        from installed_host_smoke import _pid_alive, _process_start_token
+
+    failures = []
+    for row in processes:
+        if "console" not in row:
+            continue
+        console = row["console"]
+        try:
+            guard = f"#{{==:#{{pid}},{row['pid']}}}"
+            for name, value in (("session_id", console["session"]), ("pane_id", console["pane"]),
+                                ("pane_pid", console["pane_pid"]), ("pane_dead", "1")):
+                guard = f"#{{&&:{guard},#{{==:#{{{name}}},{value}}}}}"
+            deadline = time.monotonic() + 5
+            while _pid_alive(row["pid"]) and time.monotonic() < deadline:
+                if _process_start_token(row["pid"]) != row["start_token"]:
+                    raise ValueError("private traffic console process changed; retained")
+                # The server may not have reaped the stopped pane yet. tmux
+                # evaluates the identity/dead-pane guard and kill together.
+                subprocess.run(
+                    [console["tmux"], "-S", console["socket"], "-f", "/dev/null", "if-shell", "-F",
+                     "-t", console["pane"], guard, f"kill-session -t '{console['session']}'"],
+                    capture_output=True, text=True, check=True, timeout=5,
+                )
+                time.sleep(0.05)
+            failures.extend(surviving_processes([row]))
+            if console_process(Path(console["socket"]).parents[1]) is not None:
+                failures.append("private traffic console is still accepting connections")
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            failures.append(f"private traffic console cleanup: {exc}")
+    return failures
+
+
+def owned_processes(root: Path, *, include_console: bool = False) -> list[dict]:
+    """Remember processes before stop; disposable cleanup also owns the console."""
     if __package__:
         from .installed_host_smoke import _pid_alive, _process_start_token
     else:
@@ -96,6 +179,10 @@ def owned_processes(root: Path) -> list[dict]:
                         if token != recorded:
                             continue  # A reused foreign PID is not this section's process.
                     processes.append({"pid": pid, "start_token": token})
+    if include_console:
+        console = console_process(root)
+        if console is not None:
+            processes.append(console)
     return processes
 
 
@@ -124,8 +211,8 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | 
                SAFEYOLO_SUBNET_BASE="76" if owner else "75")
     failures = []
     try:
-        processes = owned_processes(root)
-    except (OSError, ValueError, KeyError) as exc:
+        processes = owned_processes(root, include_console=True)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
         failures.append(f"owned process inspection: {exc}")
         processes = []
     if (root / "config.yaml").is_file():
@@ -146,6 +233,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | 
                 failures.append(f"proxy stop exited {result.returncode}")
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"proxy stop: {exc}")
+    failures.extend(stop_owned_console(processes))
     for pattern in (
         "agents/*/container.pid", "agents/*/vm.pid", "agents/*/vm-supervisor.json", "data/proxy-rust.json",
         "data/proxy-readiness.json", "data/proxy.pid", "data/sockets/*/proxy.sock",

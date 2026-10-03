@@ -11,6 +11,7 @@ import ssl
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 from contextlib import contextmanager
@@ -1971,7 +1972,9 @@ def test_installed_source_rejects_ambiguous_commit_before_preparation(tmp_path):
 
 
 def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_path):
-    root = tmp_path / "instance"
+    # Darwin's temporary pytest paths can exceed the Unix socket limit.
+    console_directory = tempfile.TemporaryDirectory(prefix="t889-", dir="/tmp")
+    root = Path(console_directory.name) / "instance"
     (root / "data").mkdir(parents=True)
     (root / "config.yaml").write_text("owned fixture")
     cli = tmp_path / "cli"
@@ -1982,15 +1985,46 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
     )
     cli.chmod(0o755)
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    tmux = shutil.which("tmux")
+    socket_path = root / "data/traffic-tmux.sock"
+    base = [tmux, "-S", str(socket_path), "-f", "/dev/null"]
     try:
+        # Where the maintained tmux prerequisite is installed, dispose a dead
+        # console even when another owned process survives. The original
+        # marker-removal control runs on hosts without that prerequisite too.
+        if tmux is not None:
+            subprocess.run([*base, "new-session", "-d", "-s", "safeyolo-traffic", "sleep 30"], check=True)
+            subprocess.run([*base, "set-option", "-t", "safeyolo-traffic", "remain-on-exit", "on"], check=True)
+            console = installed_sections.console_process(root)
+            subprocess.run([*base, "send-keys", "-t", "safeyolo-traffic:0.0", "C-c"], check=True)
         (root / "data/proxy-rust.json").write_text(json.dumps({"pid": process.pid}))
         failures = installed_sections.cleanup_instance(cli, root)
         assert not (root / "data/proxy-rust.json").exists()
         assert any(f"owned process {process.pid} is still live" == error for error in failures)
         assert process.poll() is None
+        if tmux is None:
+            return
+        assert installed_sections.surviving_processes([console]) == []
+        assert installed_sections.console_process(root) is None
+        # A new instance at this socket is not the old snapshot's server.
+        subprocess.run([*base, "new-session", "-d", "-s", "safeyolo-traffic", "sleep 30"], check=True)
+        replacement = installed_sections.console_process(root)
+        assert installed_sections.stop_owned_console([console])
+        assert installed_sections.console_process(root) == replacement
+        assert installed_sections.surviving_processes([replacement])
+        # Removing the private runtime makes observation fail visibly.
+        (root / "bin").mkdir()
+        (root / "bin/safeyolo-tmux").write_text("not executable")
+        (root / "data/proxy-rust.json").write_text(json.dumps({"pid": process.pid}))
+        failures = installed_sections.cleanup_instance(cli, root)
+        assert any("owned process inspection" in error for error in failures)
+        assert installed_sections.surviving_processes([replacement])
     finally:
+        if tmux is not None:
+            subprocess.run([*base, "kill-session", "-t", "safeyolo-traffic"], capture_output=True, check=False)
         process.terminate()
         process.wait(timeout=5)
+        console_directory.cleanup()
 
 
 def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_path, monkeypatch):
