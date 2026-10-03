@@ -1404,6 +1404,72 @@ def test_vz_port_preflight_preserves_a_foreign_live_listener(tmp_path, installed
             accepted.close()
 
 
+def test_vz_sections_forward_deadline_supervision_to_installed_commands(
+    tmp_path, installed_section_commands, monkeypatch
+):
+    repository = installed_section_commands
+    test_bin = repository / ".venv/bin"
+    test_bin.mkdir(parents=True)
+    (test_bin / "python").symlink_to(sys.executable)
+    procedure = repository / "tests/blackbox/installed_state_transition.py"
+    procedure.write_text("""
+import json, os, pathlib, sys
+output = pathlib.Path(sys.argv[sys.argv.index('--output')+1])
+root = pathlib.Path(sys.argv[sys.argv.index('--config-dir')+1])
+root.mkdir()
+output.write_text(json.dumps({name: os.environ.get(name) for name in
+    ('SAFEYOLO_VZ_TEST_RUNNER', 'SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS')}))
+""")
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    runner = tmp_path / "trusted-runner"
+    runner.write_text("#!/bin/sh\nexit 0\n")
+    runner.chmod(0o755)
+    artifacts = tmp_path / "artifacts"
+    assert installed_sections.run_sections(
+        "vz", ("continuity",), repository, "a" * 40, tmp_path / "installed", artifacts,
+        vz_test_runner=(runner, 900),
+    ) == 0
+    report = json.loads((artifacts / "continuity/installed-continuity.json").read_text())
+    assert report == {"SAFEYOLO_VZ_TEST_RUNNER": str(runner), "SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS": "900"}
+
+
+@pytest.mark.parametrize("stale", (False, True))
+def test_section_cleanup_observes_owned_supervisor_and_helper_only(tmp_path, stale):
+    root = tmp_path / "instance"
+    agent = root / "agents/bbtest"
+    agent.mkdir(parents=True)
+    (root / "config.yaml").write_text("owned fixture")
+    cli = tmp_path / "cli"
+    cli.write_text(f"#!{sys.executable}\n" + """
+import os, pathlib
+for path in pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR']).glob('agents/*/vm*'):
+    path.unlink()
+""")
+    cli.chmod(0o755)
+    processes = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]) for _ in range(2)]
+    try:
+        from safeyolo.runtime_identity import process_start_token
+
+        (agent / "vm.pid").write_text(str(processes[1].pid))
+        (agent / "vm-supervisor.json").write_text(json.dumps({
+            "pid": processes[0].pid,
+            "start_token": "older-runner" if stale else process_start_token(processes[0].pid),
+            "helper_pid": processes[1].pid,
+            "helper_start_token": "older-helper" if stale else process_start_token(processes[1].pid),
+        }))
+        failures = installed_sections.cleanup_instance(cli, root)
+        assert not (agent / "vm-supervisor.json").exists()
+        if stale:
+            assert failures == [], "reused foreign PIDs in the receipt and vm.pid are not owned"
+        else:
+            assert all(f"owned process {process.pid} is still live" in failures for process in processes)
+        assert all(process.poll() is None for process in processes)
+    finally:
+        for process in processes:
+            process.terminate()
+            process.wait(timeout=5)
+
+
 @pytest.mark.parametrize("failure,expected,results", [
     ({}, 0, ["passed", "passed"]),
     ({"FAIL_SECTION": "1"}, 1, ["assertion_failure", "passed"]),

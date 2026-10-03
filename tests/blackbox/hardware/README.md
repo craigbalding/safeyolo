@@ -82,12 +82,20 @@ The controller must also supply these values before invoking the runner:
 | `STAGED_PYTHON` | The absolute path of the existing compatible Python interpreter |
 | `STATE_PARENT` | A short, private, disk-backed parent outside the checkout for new section state |
 | `RUN_ARTIFACTS` | A new private result directory for this attempt; retain earlier attempts on retry |
+| `VZ_TIMEOUT_SECONDS` | A positive per-helper deadline selected by the trusted test invocation |
 
-The deployed invocation must preserve direct helper supervision through
+The installed runner accepts the existing host deadline runner and a positive
+per-helper deadline. Both CLI and native lifecycle launches invoke
 `/Users/sy-agent/bin/run-vz-test --timeout-seconds N -- /absolute/path/to/safeyolo-vm run ...`
-with a positive deadline. Wiring that supervision through both CLI and native
-lifecycle launches remains deployment work. Do not run the unattended physical
-lane until that wiring and independent host teardown are established.
+directly. The host runner stops and reaps its own child. The section state records
+the supervisor PID/start token separately in `vm-supervisor.json`; `vm.pid` and
+`vm.token` identify the actual helper. Snapshot signals continue to target the
+helper. Section cleanup checks both recorded processes and retains a failure
+if owned cleanup cannot be established. Independent host teardown remains a
+deployment prerequisite.
+If a recorded runner or helper is still active, a new launch preserves its
+receipt and fails before spawning another process. A stopped receipt can be
+reclaimed; a reused PID with a different start token remains untouched.
 
 Once those prerequisites are established, from the transferred source checkout
 root as Bristol `sy-agent`:
@@ -95,6 +103,8 @@ root as Bristol `sy-agent`:
 ```sh
 ./tests/blackbox/run-installed.sh vz --install-commit "$SELECTED_SHA" \
   --staged-inputs "$STAGED_INPUTS" --staged-sha256 "$STAGED_SHA256" \
+  --vz-test-runner /Users/sy-agent/bin/run-vz-test \
+  --vz-test-timeout-seconds "$VZ_TIMEOUT_SECONDS" \
   --python "$STAGED_PYTHON" --state-parent "$STATE_PARENT" \
   --artifacts "$RUN_ARTIFACTS/vz"
 ```

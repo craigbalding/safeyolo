@@ -64,18 +64,31 @@ def owned_processes(root: Path) -> list[dict]:
         from installed_host_smoke import _pid_alive, _process_start_token
 
     processes = []
-    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
+    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "agents/*/vm-supervisor.json", "data/proxy-rust.json",
                     "data/coord/nats/nats.pid.json"):
         for path in root.glob(pattern):
+            if path.name == "vm.pid" and (path.parent / "vm-supervisor.json").is_file():
+                continue  # The receipt binds the helper PID to its recorded start identity.
             content = path.read_text()
-            pid = json.loads(content)["pid"] if path.suffix == ".json" else int(content.strip())
-            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-                raise ValueError(f"invalid owned process PID in {path}")
-            if _pid_alive(pid):
-                token = _process_start_token(pid)
-                if token is None:
-                    raise ValueError(f"cannot observe owned process start identity: {path}")
-                processes.append({"pid": pid, "start_token": token})
+            receipt = json.loads(content) if path.suffix == ".json" else {"pid": int(content.strip())}
+            pids = [receipt["pid"]]
+            if path.name == "vm-supervisor.json" and receipt.get("helper_pid") is not None:
+                pids.append(receipt["helper_pid"])
+            for pid in pids:
+                if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+                    raise ValueError(f"invalid owned process PID in {path}")
+                if _pid_alive(pid):
+                    token = _process_start_token(pid)
+                    if token is None:
+                        raise ValueError(f"cannot observe owned process start identity: {path}")
+                    if path.name == "vm-supervisor.json":
+                        field = "start_token" if pid == receipt["pid"] else "helper_start_token"
+                        recorded = receipt.get(field)
+                        if not isinstance(recorded, str) or not recorded:
+                            raise ValueError(f"missing VZ supervision start identity: {path}")
+                        if token != recorded:
+                            continue  # A reused foreign PID is not this section's process.
+                    processes.append({"pid": pid, "start_token": token})
     return processes
 
 
@@ -127,7 +140,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"proxy stop: {exc}")
     for pattern in (
-        "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
+        "agents/*/container.pid", "agents/*/vm.pid", "agents/*/vm-supervisor.json", "data/proxy-rust.json",
         "data/proxy-readiness.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
         "data/coord/nats/nats.pid.json", "sinkhole.pid", "native-parent.pid",
     ):
@@ -242,7 +255,7 @@ def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[li
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
                  directory: Path, artifacts: Path, *, staged_inputs: Path | None = None,
                  staged_sha256: str | None = None, python: Path | None = None,
-                 continuity_options: tuple[str, ...] = ()) -> int:
+                 continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     if __package__:
         from .installed_host_smoke import SmokeError
@@ -254,6 +267,11 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR", "SAFEYOLO_VM_HELPER", "PYTHONPATH", "PYTHONHOME",
                  "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR", "SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH"):
         env.pop(name, None)
+    for name in ("SAFEYOLO_VZ_TEST_RUNNER", "SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"):
+        env.pop(name, None)
+    if vz_test_runner is not None:
+        env.update(SAFEYOLO_VZ_TEST_RUNNER=str(vz_test_runner[0]),
+                   SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS=str(vz_test_runner[1]))
     env.update(UV_TOOL_DIR=str(directory / "uv-tools"),
                UV_TOOL_BIN_DIR=str(directory / "bin"),
                SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
@@ -427,6 +445,8 @@ def main() -> int:
     parser.add_argument("--staged-inputs", type=Path, help="Verified Tart-built offline VZ inputs")
     parser.add_argument("--staged-sha256", help="Input index SHA-256 supplied by the trusted caller")
     parser.add_argument("--python", type=Path, help="Existing Python 3.12/3.13 for offline wheel installation")
+    parser.add_argument("--vz-test-runner", type=Path, help="Absolute host runner for direct VZ helper deadline supervision")
+    parser.add_argument("--vz-test-timeout-seconds", type=int, help="Positive deadline for each supervised VZ helper")
     parser.add_argument("--state-parent", type=Path, default=Path.home(), help="Disk-backed parent for new private section state")
     parser.add_argument("--origin-host", help="Continuity fixture authority (VZ default: 127.0.0.2)")
     parser.add_argument("--origin-bind", help="Continuity fixture bind/owned parent (VZ default: 127.0.0.1)")
@@ -439,6 +459,12 @@ def main() -> int:
         parser.error("--staged-inputs and --staged-sha256 must be supplied together")
     if args.staged_inputs is not None and args.lane != "vz":
         parser.error("staged preparation currently supports the VZ lane")
+    if (args.vz_test_runner is None) != (args.vz_test_timeout_seconds is None):
+        parser.error("--vz-test-runner and --vz-test-timeout-seconds must be supplied together")
+    if args.vz_test_runner is not None and (args.lane != "vz" or args.vz_test_timeout_seconds < 1
+            or not args.vz_test_runner.is_absolute() or not args.vz_test_runner.is_file()
+            or not os.access(args.vz_test_runner, os.X_OK)):
+        parser.error("VZ supervision needs an absolute executable runner and positive deadline on the VZ lane")
     checkout = args.install_checkout.resolve()
     revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
     expected = args.install_commit or revision
@@ -462,7 +488,9 @@ def main() -> int:
     return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
                         staged_inputs=args.staged_inputs.resolve() if args.staged_inputs else None,
                         staged_sha256=args.staged_sha256, python=args.python,
-                        continuity_options=tuple(continuity_options))
+                        continuity_options=tuple(continuity_options),
+                        vz_test_runner=(args.vz_test_runner, args.vz_test_timeout_seconds)
+                        if args.vz_test_runner is not None else None)
 
 
 if __name__ == "__main__":
