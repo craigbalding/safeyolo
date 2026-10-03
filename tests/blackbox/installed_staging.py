@@ -85,8 +85,9 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
     selected_source(checkout, revision)
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("VZ inputs must be packaged on the arm64 macOS build host")
-    boot_inputs = json.loads(boot_provenance.read_text())
-    verify_boot_provenance(boot_inputs, {name: _sha256(prepared / "share" / name) for name in BOOT_FILES})
+    boot_inputs = verify_boot_provenance(
+        json.loads(boot_provenance.read_text()), {name: _sha256(prepared / "share" / name) for name in BOOT_FILES},
+    )
     wheel_stamp = wheel_identity(wheel, revision)
     native = checkout / "proxy/target/release/safeyolo-proxy"
     if _sha256(native) != wheel_stamp["native_sha256"]:
@@ -128,15 +129,18 @@ def package_inputs(checkout: Path, revision: str, wheel: Path, wheelhouse: Path,
     return index_path
 
 
-def verify_boot_provenance(provenance: object, hashes: dict) -> None:
-    """Preserve each reused boot file's original source and content identity."""
+def verify_boot_provenance(provenance: object, hashes: dict) -> dict:
+    """Verify and retain only each boot file's original source and hash."""
     if not isinstance(provenance, dict) or set(provenance) != set(BOOT_FILES):
         raise ValueError("boot inputs need provenance for each required file")
+    verified = {}
     for name in BOOT_FILES:
         origin = provenance[name]
         if (not isinstance(origin, dict) or origin.get("sha256") != hashes[name]
                 or re.fullmatch(r"[0-9a-f]{40}", str(origin.get("source_revision"))) is None):
             raise ValueError(f"boot input has missing or mismatched original provenance: {name}")
+        verified[name] = {"source_revision": origin["source_revision"], "sha256": origin["sha256"]}
+    return verified
 
 
 def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision: str) -> dict:
@@ -170,7 +174,9 @@ def verified_inputs(payload: Path, expected_hash: str, checkout: Path, revision:
                 "bin/vsock-term", "nats/nats-server", *(f"share/{name}" for name in BOOT_FILES)}
     if not required.issubset(files):
         raise ValueError("staged inputs are incomplete")
-    verify_boot_provenance(index.get("boot_inputs"), {name: files[f"share/{name}"] for name in BOOT_FILES})
+    index["boot_inputs"] = verify_boot_provenance(
+        index.get("boot_inputs"), {name: files[f"share/{name}"] for name in BOOT_FILES},
+    )
     # uv must not select an extra unverified distribution from the directory.
     actual_wheels = {path.relative_to(payload).as_posix() for path in (payload / "wheelhouse").iterdir()}
     indexed_wheels = {name for name in files if name.startswith("wheelhouse/")}

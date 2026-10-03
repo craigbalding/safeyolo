@@ -62,7 +62,8 @@ attempt result, separately from the transferred payload.
 file's actual content hash). Reused images retain their original provenance;
 the selected candidate does not become their build source. Each file can have
 a different origin. Staging verifies those hashes. The hardware run must
-establish compatibility.
+establish compatibility. Staging and retained preparation use only each file's
+`source_revision` and `sha256`; other source annotations are omitted.
 
 ## Consume the verified payload on Bristol
 

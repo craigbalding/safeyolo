@@ -12,6 +12,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from tests.blackbox import installed_sections
 from tests.blackbox import installed_staging as staging
 
 
@@ -136,6 +137,44 @@ def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_pat
                        check=True)
     assert not (checkout / ".venv").exists(), "offline preparation must not invoke uv sync"
     assert (checkout / "proxy/target/release/safeyolo-proxy").read_bytes() == (payload / "native/safeyolo-proxy").read_bytes()
+
+
+def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_reports(tmp_path, staged_payload):
+    payload, _, checkout, revision = staged_payload
+    provenance_path = tmp_path / "boot-provenance.json"
+    expected = json.loads(provenance_path.read_text())
+    annotated = json.loads(provenance_path.read_text())
+    marker = "fixture-provenance-secret"
+    for name in staging.BOOT_FILES:
+        annotated[name]["operator_private_context"] = {"admin_token": marker, "nested": [{"note": marker}]}
+    provenance_path.write_text(json.dumps(annotated))
+    index_path = staging.package_inputs(
+        checkout, revision, next((payload / "wheel").glob("*.whl")), payload / "wheelhouse",
+        tmp_path / "prepared-build", provenance_path, tmp_path / "repackaged",
+    )
+    packaged = json.loads(index_path.read_text())
+
+    # Also consume a correctly hashed older index carrying annotations: its
+    # preparation report must omit private fields even if its producer did not.
+    transferred = {**packaged, "boot_inputs": annotated}
+    index_path.write_text(json.dumps(transferred))
+    directory = tmp_path / "execution"
+    directory.mkdir()
+    artifacts = tmp_path / "reports"
+    # Exercise real offline preparation and its retained report, without
+    # starting a hardware section in this fixture.
+    result = installed_sections.run_sections(
+        "vz", (), checkout, revision, directory, artifacts,
+        staged_inputs=index_path.parent, staged_sha256=staging._sha256(index_path), python=Path(sys.executable),
+    )
+    report_text = (artifacts / "installed-sections.json").read_text()
+    report = json.loads(report_text)
+    assert result == 0 and report["preparation"]["exit"] == 0
+    assert packaged["boot_inputs"] == expected
+    assert marker not in json.dumps(packaged)
+    assert report["preparation"]["boot_inputs"] == expected
+    assert marker not in report_text
+    assert json.loads(provenance_path.read_text()) == annotated, "source annotations remain available on the build host"
 
 
 @pytest.mark.parametrize("failure", ["wrong-index", "mixed-source", "host", "tampered-wheel", "missing-boot",
