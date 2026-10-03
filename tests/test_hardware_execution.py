@@ -127,6 +127,8 @@ def test_late_provision_child_cannot_allocate_after_timeout_or_cancellation(host
                                                                         cancellation, owned_child):
     pool, state = host_harness
     release = tmp_path / "release-provision"
+    fork_release = tmp_path / "release-fork"
+    parent_pid = tmp_path / "provision-parent.pid"
     child_pid = tmp_path / "provision-child.pid"
     child_code = tmp_path / "delayed-provision.py"
     child_code.write_text(f"""
@@ -140,18 +142,41 @@ os.execv(sys.executable, [sys.executable, {str(tmp_path / 'harness-fixture.py')!
     wrapper = tmp_path / "provision-parent.py"
     wrapper.write_text(f"""
 import subprocess,sys,time
+import os
 from pathlib import Path
+if {cancellation == 'early_exit'!r}:
+    Path({str(parent_pid)!r}).write_text(str(os.getpid()))
+    while not Path({str(fork_release)!r}).exists(): time.sleep(0.01)
 process=subprocess.Popen([sys.executable, {str(child_code)!r}, *sys.argv[1:]])
 while not Path({str(child_pid)!r}).exists(): time.sleep(0.01)
 if {cancellation != 'early_exit'!r}: process.wait()
 """)
-    (kvm_host.JOBS / "provision.sh").write_text(f'set -m\n{sys.executable} {wrapper} "$@" &\nwait "$!"\n')
+    ending = (f'while [ ! -f {parent_pid} ]; do sleep 0.01; done\n'
+              if cancellation == "early_exit" else 'wait "$!"\n')
+    (kvm_host.JOBS / "provision.sh").write_text(f'set -m\n{sys.executable} {wrapper} "$@" &\n{ending}')
     owner = "issue889-" + "a" * 32
     job_command = kvm_host.command
 
     def shortened(arguments, *, timeout=60, owner=None):
         return job_command(arguments, timeout=0.3 if str(kvm_host.JOBS / "provision.sh") in arguments else timeout,
                            owner=owner)
+
+    if cancellation == "early_exit":
+        directory_entries = Path.iterdir
+
+        def fork_after_listing(path):
+            entries = list(directory_entries(path))
+            if path == Path("/proc") and parent_pid.exists() and not fork_release.exists():
+                # Pause only the real reader. The parent forks and exits after
+                # enumeration, leaving its live child out of these entries.
+                fork_release.touch()
+                deadline = time.monotonic() + 5
+                while not child_pid.exists() or process_is_alive(int(parent_pid.read_text())):
+                    assert time.monotonic() < deadline
+                    time.sleep(0.01)
+            return iter(entries)
+
+        monkeypatch.setattr(Path, "iterdir", fork_after_listing)
 
     if cancellation in (None, "early_exit"):
         monkeypatch.setattr(kvm_host, "command", shortened)

@@ -50,17 +50,33 @@ def job_members(job: dict) -> list[int]:
         return []  # A reused leader PID proves the original session has gone.
     if current is None and process_is_alive(pid):
         raise ValueError("KVM job identity is unavailable")
-    members = []
-    for path in Path("/proc").iterdir():
-        if not path.name.isdigit():
-            continue
-        try:
-            fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
-        except (FileNotFoundError, ProcessLookupError):
-            continue  # The inspected process exited during the kernel snapshot.
-        if int(fields[3]) == pid and fields[0] != "Z":
-            members.append(int(path.name))
-    return members
+    previous = None
+    deadline = time.monotonic() + 10
+    while True:
+        members = []
+        identities = {}
+        for path in Path("/proc").iterdir():
+            if not path.name.isdigit():
+                continue
+            identities[path.name] = None  # Retain departures from the listing.
+            try:
+                fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue  # Keep its departure in the identities to reconcile.
+            session, alive = int(fields[3]), fields[0] != "Z"
+            identities[path.name] = (session, fields[19], alive)
+            if session == pid and alive:
+                members.append(int(path.name))
+        if members:
+            return members
+        # A parent may fork and exit after enumeration, hiding its child in
+        # this pass. Reconcile fresh PID/session/start identities, including
+        # departed and zombie entries, before accepting an empty observation.
+        if identities == previous:
+            return []
+        previous = identities
+        if time.monotonic() >= deadline:
+            raise TimeoutError("KVM session inactivity could not be established")
 
 
 def stop_job(job: dict) -> None:

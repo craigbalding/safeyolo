@@ -74,8 +74,11 @@ in another process group within that session. Cleanup signals each verified
 session member through a Linux PID handle, so a reused PID or group number
 cannot redirect the signal. The leader remains unreaped during termination.
 Linux `/proc` and PID handles must permit observation and signaling; a failure
-leaves cleanup failed and preserves the job journal. A stale journal with a
-live job is preserved.
+leaves cleanup failed and preserves the job journal. Before accepting an empty
+session, the reader reconciles fresh process IDs, start times, session IDs and
+live/zombie states. A fork and parent exit during enumeration requires another
+observation. If observations do not settle within the deadline, cleanup fails
+and the journal remains. A stale journal with a live job is preserved.
 
 The following host commands run through that approved Rundeck invocation as
 `rundeck` on devstack. Before allocation, inspect current inventory, lease
