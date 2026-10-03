@@ -309,7 +309,8 @@ class HardwareAttempt:
                 or self.data["finished_at"] is not None):
             raise ValueError("lane needs a selected commit and a new invocation")
         receipt = {"lane": lane, "source_revision": self.data["source_revision"], "run_id": uuid.uuid4().hex,
-                   "started_at": datetime.now(UTC).isoformat(), "result": None, "cleanup": "unverified"}
+                   "started_at": datetime.now(UTC).isoformat(), "result": None, "cleanup": "unverified",
+                   "command_exit": None, "trusted_host": None}
         self.data["lanes"][lane] = receipt
         self.save()
         return receipt
@@ -370,6 +371,23 @@ class HardwareAttempt:
         lanes = {}
         for lane, receipt in self.data["lanes"].items():
             row = {name: receipt[name] for name in ("lane", "source_revision", "run_id", "started_at", "cleanup")}
+            status = receipt.get("command_exit")
+            if status is not None and type(status) is not int:
+                raise ValueError("invalid observed hardware command exit")
+            row["command_exit"] = status
+            host = receipt.get("trusted_host")
+            row["trusted_host"] = None
+            if host is not None:
+                allowed = {}
+                for name in ("kvm_api", "available_memory_bytes", "memory_bytes", "free_disk_bytes", "cpus"):
+                    if name in host:
+                        allowed[name] = integer(host[name])
+                for name in ("system", "machine", "model"):
+                    if name in host:
+                        if not isinstance(host[name], str) or re.fullmatch(r"[A-Za-z0-9_,.-]{1,80}", host[name]) is None:
+                            raise ValueError("invalid trusted host observation")
+                        allowed[name] = host[name]
+                row["trusted_host"] = allowed
             row["result"] = (verified_lane_summary(receipt["result"], receipt)
                              if receipt["result"] is not None else None)
             lanes[lane] = row

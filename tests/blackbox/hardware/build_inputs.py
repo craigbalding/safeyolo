@@ -22,6 +22,7 @@ if __package__:
     from ..installed_host_smoke import _sha256
     from ..installed_staging import BOOT_FILES, package_inputs, selected_source, verify_boot_provenance
 else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from installed_host_smoke import _sha256
     from installed_staging import BOOT_FILES, package_inputs, selected_source, verify_boot_provenance
@@ -69,10 +70,13 @@ def build_payload(checkout: Path, revision: str, boot_inputs: Path, provenance_p
         shutil.copyfile(boot_inputs / name, share / name)
     provenance_file = output / "boot-provenance.json"
     provenance_file.write_text(json.dumps(provenance, indent=2) + "\n")
-    env = os.environ.copy()
-    for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR", "SAFEYOLO_VM_HELPER",
-                 "PYTHONPATH", "PYTHONHOME", "GH_TOKEN", "GITHUB_TOKEN", "RUNDECK_TOKEN", "SAFEYOLO_BUILD_REVISION"):
-        env.pop(name, None)
+    # Test/build commands receive runtime and mediated-network settings, not
+    # the control process's publication, service or SSH-agent authority.
+    env = {name: value for name, value in os.environ.items() if name in {
+        "HOME", "USER", "PATH", "SHELL", "TMPDIR", "LANG", "LC_ALL", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
+        "NO_PROXY", "no_proxy", "UV_CACHE_DIR", "CARGO_HOME", "RUSTUP_HOME",
+    }}
     env.update(UV_TOOL_DIR=str(output / "uv-tools"), UV_TOOL_BIN_DIR=str(output / "bin"),
                SAFEYOLO_CONFIG_DIR=str(prepared), SAFEYOLO_LOGS_DIR=str(prepared / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(prepared / "data/coord"),
@@ -110,6 +114,13 @@ def main() -> int:
                         help="existing compatible build-host Python with pip for locked wheel downloads")
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     args = parser.parse_args()
+    # The mailbox can terminate its command. Preserve the same owned-group
+    # teardown as Ctrl-C rather than leaving a compiler behind on Tart.
+    def interrupted(_signal, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
     index = build_payload(args.checkout.resolve(), args.install_commit, args.boot_inputs.resolve(),
                           args.boot_provenance.resolve(), args.output.resolve(), args.python.resolve(),
                           args.timeout_seconds)

@@ -11,6 +11,7 @@ from scripts.check_blackbox_cadence import (
     WORKFLOW_PATH,
     cadence_table_from_doc,
     contract_problems,
+    scheduled_hardware_from_cron,
     scheduled_lanes_from_workflow,
 )
 
@@ -97,6 +98,23 @@ def test_conditional_upload_is_not_pass_and_fail_evidence(
     assert problems == [
         "scheduled full lanes lack actions/upload-artifact evidence: ['systrap']"
     ]
+
+
+def test_missing_external_deployment_does_not_claim_hardware_scheduling(tmp_path):
+    assert scheduled_hardware_from_cron(tmp_path / "not-deployed.cron") == {}
+
+
+def test_external_readback_entry_derives_both_hardware_lanes(tmp_path):
+    entry = tmp_path / "deployed.cron"
+    entry.write_text("# Host: fixture-control\n# Account: fixture-operator\n"
+                     "17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py overnight --config /private/deployment.json >>/private/cron.log 2>&1\n")
+    assert scheduled_hardware_from_cron(entry) == {"kvm": True, "vz": True}
+    problems = contract_problems(WORKFLOW_PATH, CADENCE_DOCS, entry)
+    assert len(problems) == len(CADENCE_DOCS) and all("implementation ['kvm', 'systrap', 'vz']" in row for row in problems)
+    for bad in ("on-demand", "overnight --authorized-commit refs/pull/905/head", "overnight --section isolation"):
+        entry.write_text(f"17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py {bad} --config /private/deployment.json\n")
+        with pytest.raises(ValueError):
+            scheduled_hardware_from_cron(entry)
 
 
 def test_wrapped_always_expression_publishes_pass_and_fail_evidence(

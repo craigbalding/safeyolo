@@ -6,13 +6,17 @@ acceptance on devstack with physical Apple Silicon Virtualization.framework
 signs and packages the macOS inputs. Bristol verifies transferred inputs and
 executes offline. Both lanes must use one selected full source commit.
 
-This directory documents the staged runner inputs and verified Rundeck
-harness interface. Paired invocation, cron deployment, ownership recovery
-and durable report publication remain implementation and deployment work
-under #889. The approved operator-side routes support that work; a pre-existing
-paired installation is not a prerequisite.
-These runner commands do not establish working scheduling or complete
-[#889](https://github.com/craigbalding/safeyolo/issues/889).
+`paired.py` selects one full commit, runs both maintained installed lanes,
+retains each attempt before selection, and publishes allowlisted results as
+read-back-verified [#889](https://github.com/craigbalding/safeyolo/issues/889)
+comments. `install_schedule.py` installs and reads back one account cron entry.
+Use a separately pinned, clean trusted checkout for these commands; selected
+candidate code receives neither the control configuration nor its credentials.
+
+Deployment and complete paired hardware acceptance remain open. The local
+process, filesystem and service-protocol controls do not establish a hardware
+pass or an installed schedule. The approved operator-side routes support
+deployment; a pre-existing paired installation is not a prerequisite.
 The [blackbox guide](../README.md) owns the maintained section selections and
 the historical hardware observations and limitations.
 
@@ -271,36 +275,183 @@ hardware success or durable publication. The controller still needs its own
 attempt result before preflight or source fetch and must publish failures from
 those earlier steps and from the publication operation itself.
 
-## Complete the external deployment
+## Deploy the paired invocation
 
-The operator-side inspection verified the Rundeck script interface, execution
-account and harness commands in the [KVM harness procedure](#use-the-existing-kvm-harness-through-rundeck).
-The existing foreground Tart client and Bristol `sy-agent` SSH route also
-passed bounded read-only transport checks. Those checks do not establish
-building, signing, transfer, hardware execution or unattended operation.
+Sylab owns operator-side installation, scheduling and Rundeck execution. Relay
+serializes Tart production builds and the physical host. Start this procedure
+only for the reviewed exact controller commit and authorized selected source,
+after Relay confirms those resources are ready. Installing a cron entry does
+not prove either hardware lane.
 
-Implement the paired invocation through those approved operator-side routes.
-Keep KVM execution on devstack through Rundeck, macOS compilation and signing
-on Tart, and offline physical VZ execution on Bristol. Devstack's `rundeck`
-account does not need copied Tart or Bristol private keys. The operator chooses
-ordinary installation paths and supplies or executes the exact installation
-and scheduling commands. The trusted installation may be pinned independently
-outside selected-candidate and private execution trees.
+Use ordinary operator-approved paths outside candidate, input and section-state
+trees. Install the same clean trusted controller revision on the control host,
+devstack, Tart and Bristol. Their locations may differ. The control host must
+already have the approved Rundeck route, foreground Tart mailbox client,
+Bristol SSH binding and authenticated GitHub CLI (`gh`) with permission to
+read source and write/read #889 comments. Devstack's `rundeck` account does not
+need copied Tart or Bristol private keys. Do not install cron on Bristol;
+`sy-agent`'s cron inspection is denied by its existing seatbelt.
 
-Implement exact selection and admission, independent ownership and teardown
-checks, cancellation/lost-SSH recovery, scheduling and durable publication.
-Before stale reclamation, verify both owner inactivity and owned-resource
-inactivity. Current-attempt teardown must still stop the verified owned domain
-after success, failure or cancellation. Use approved services for discoverable
-allowlisted report/diagnostic bundles with run/commit links for every attempt,
-including failures. A new public artifact server is not required. Private
-evidence or log retrieval alone does not establish publication.
+On each installation host, set `CONTROLLER_DIR` to a new approved checkout path
+and `CONTROLLER_SHA` to the independently reviewed full controller commit.
+Run these commands with that host's approved source transport. Use the SSH-stdin
+transfer route for Bristol's checkout when it cannot fetch public source.
 
-After deployment, put the actual cron entries, host/account, timezone, paired
-selected-SHA invocation, on-demand command, result links and recovery commands
-here. Demonstrate the deployed schedule and on-demand wiring and one complete
-successful paired hardware run at the same selected SHA. Keep failed attempts
-and their cleanup outcomes visible. The publication step must select reviewed
-report fields and diagnostics; file extensions do not make private instance
-data safe to publish. Until that deployment and demonstration work, the
-hardware cadence tables remain unscheduled and their drift check remains active.
+```sh
+git clone https://github.com/craigbalding/safeyolo.git "$CONTROLLER_DIR"
+git -C "$CONTROLLER_DIR" checkout --detach "$CONTROLLER_SHA"
+git -C "$CONTROLLER_DIR" status --porcelain
+```
+
+The final command must print nothing. The invocation rechecks the exact HEAD
+and clean state on every host. Use Python 3.12 or 3.13 for the control command
+and both Mac installations. Devstack's host adapter uses `python3` and only
+standard-library dependencies from the trusted checkout.
+
+Copy [deployment.example.json](deployment.example.json) to a private operator
+configuration file. Replace every example with the observed deployment binding.
+Set `CONFIG_FILE` to its absolute path and `CONTROL_PYTHON` to the absolute
+compatible interpreter. Keep the configuration outside all tested trees.
+
+| Binding | Required observation |
+|---|---|
+| `controller_revision` | Same full, reviewed controller commit on every installation |
+| `attempts` | Private disk-backed control-host directory; permanent attempt records, bounded transport logs and publication retries |
+| `rundeck_url`, optional `rundeck_token_file` | Existing approved service URL and existing principal; omit the file if the transport supplies authentication |
+| `rundeck_controller` | Trusted checkout readable by `rundeck` on devstack |
+| `tart_client`, `tart_mailbox` | Existing foreground client and its requests/responses directories on the control host |
+| `tart_controller`, `tart_runs`, `tart_python` | Trusted Tart checkout, existing disk-backed build parent, compatible arm64 Python with pip |
+| `tart_boot_inputs`, `tart_boot_provenance` | Verified original cached boot inputs and their original per-file revisions/hashes |
+| `bristol_ssh_config` | Existing control-host configuration containing the `seatbelt-mac` binding |
+| `bristol_controller`, `bristol_python` | Trusted sy-agent checkout and already installed compatible Python |
+| `bristol_runs`, `bristol_states`, `bristol_journal` | Existing short, private sy-agent parents and a journal outside every tested tree |
+| `lane_timeout_seconds`, `vz_helper_timeout_seconds` | Positive outer lane and direct native-helper deadlines |
+
+Tart needs the maintained build/install prerequisites, signing identity,
+`vsock-term` and boot inputs. Bristol needs uv, compatible offline wheels,
+verified NATS, the existing direct deadline runner and the supported private
+tmux runtime or an independently verified supported host prerequisite. The
+current staging allowlist does not transfer tmux. [#909](https://github.com/craigbalding/safeyolo/issues/909)
+owns that installed-runtime repair; establish its supported path before claiming
+VZ readiness. [#908](https://github.com/craigbalding/safeyolo/issues/908) separately
+owns the Darwin parent-reaping cleanup fixture. Its known fixture failure does
+not establish failed physical cleanup or permit weaker survivor checks.
+
+Before allocation, refresh devstack inventory, lease, running work and capacity.
+The adapter checks usable KVM API 12, four CPUs, 10 GiB available memory and
+90 GiB free pool space. It provisions a unique owner with `--reuse`, checks the
+exact source and domain/disk bindings, and runs in a fresh guest directory.
+The physical adapter checks Darwin arm64 on a Mac model, two CPUs, 8 GiB
+available memory for the maintained two-VM lifecycle scenario, 10 GiB free
+space and all six fixed fixture ports. These are current capability checks,
+not capacity reservations. Preserve foreign active or leased resources.
+
+With `SELECTED_SHA` set to the full commit explicitly authorized by the operator,
+run one paired on-demand attempt from the control host:
+
+```sh
+"$CONTROL_PYTHON" "$CONTROLLER_DIR/tests/blackbox/hardware/paired.py" \
+  on-demand --config "$CONFIG_FILE" --authorized-commit "$SELECTED_SHA"
+```
+
+Overnight selection resolves the repository's current default branch once and
+uses that same selected full SHA in both lanes. It accepts no supplied ref,
+public PR event or external dispatch input:
+
+```sh
+"$CONTROL_PYTHON" "$CONTROLLER_DIR/tests/blackbox/hardware/paired.py" \
+  overnight --config "$CONFIG_FILE"
+```
+
+Both commands print the attempt ID, selected source, index link and result.
+Exit 0 requires complete same-SHA installed summaries, independent owned
+teardown and publication readback. Exits 2 and 130 require inspection of the
+failed attempt; a transport's successful exit does not make a lane pass.
+The initial #889 index precedes source selection. The final linked JSON report
+selects installed source/native/process identities, platform and boot origins,
+section exits, pytest outcomes/skips, unexecuted sections, failure stages,
+trusted host capacity and cleanup. Raw logs, instance directories, keys,
+configuration, vaults and flow/inspector exports are never uploaded.
+
+## Install and observe cron
+
+Use the operator account that owns all four control-host transport bindings.
+Retain its existing proxy and CA route and confirm those bindings work in its
+cron environment. The installer retains the current tool PATH on the one
+command and uses an absolute interpreter. It preserves unrelated entries.
+Set `CRON_RECEIPT` to a private output path outside the trusted checkout.
+
+```sh
+"$CONTROL_PYTHON" "$CONTROLLER_DIR/tests/blackbox/hardware/install_schedule.py" \
+  --config "$CONFIG_FILE" --cron-file "$CRON_RECEIPT" --hour 2 --minute 17
+crontab -l
+```
+
+The default entry runs at 02:17 in the control host's local timezone every day.
+The installer prints and retains the exact read-back entry, hostname, account,
+installation-time timezone and controller revision. Do not infer that the
+actual deployment uses devstack's last observed CEST+0200 or `rundeck` UID 112:
+the 3 October read-only inspection found no `rundeck` crontab and installed
+nothing. The control host may be the existing approved transport host while
+KVM execution remains on devstack through Rundeck.
+
+After observing a scheduled invocation and on-demand wiring, copy the actual
+read-back marked entry into `tests/blackbox/hardware/deployed.cron`, record its
+host/account/timezone and result links here, and update the existing cadence
+tables in the [blackbox guide](../README.md) and
+[security-testing design](../../../docs/security-testing-design.md).
+Run the existing drift check from the repository environment:
+
+```sh
+uv run python scripts/check_blackbox_cadence.py
+```
+
+Until those real transitions, `deployed.cron` is absent and both hardware lanes
+remain unscheduled in the tables. A source command or cron receipt alone does
+not establish the complete automated hardware result. One successful complete
+same-SHA run per lane is needed; wiring both triggers does not require repeating
+the full suites for each trigger. Retain all earlier skips and acceptance limits
+at their observed revisions, including the five unproved VZ isolation assertions.
+
+## Inspect failure and recover this attempt
+
+Each control-host attempt lives in `attempts/<32-character-attempt-id>/`. Inspect
+its `attempt.json` and bounded private logs. KVM retains exactly named raw
+reports under `/var/lib/rundeck/harness/evidence/<owner>/` before guest teardown.
+Bristol retains private `results/` and `execution.log` in this attempt's short
+run directory. Successful cleanup releases owned input copies and overlays;
+private failure reports remain available. Do not treat these private files as
+publication or upload their directories.
+
+Set `ATTEMPT_DIR` to the original private attempt directory. Recover with its
+original trusted controller revision and configuration:
+
+```sh
+"$CONTROL_PYTHON" "$CONTROLLER_DIR/tests/blackbox/hardware/paired.py" \
+  recover --config "$CONFIG_FILE" --attempt "$ATTEMPT_DIR"
+```
+
+Recovery acquires the paired lock, aborts still-pending recorded Rundeck calls,
+checks the original host owner is inactive, then stops only this attempt's
+independently identified owned resources. It never starts another test. It
+retries publication and preserves the original failure stages and reports;
+exit 2 after successful recovery is expected for an originally failed attempt.
+If only publication needs retry, use the original trusted checkout as cwd:
+
+```sh
+"$CONTROL_PYTHON" -m tests.blackbox.hardware.publish_results --attempt "$ATTEMPT_DIR"
+```
+
+Stale automatic reclamation separately requires independently inactive owner
+and resources. Unknown identity or a live foreign owner remains untouched.
+Cleanup of a current failed/cancelled attempt still stops its verified owned
+resources. A lost SSH response triggers a second owner-bound host inspection;
+unknown teardown never passes and prevents additional hardware use.
+
+An interrupted or failed Tart build retains its exact build root and marks
+cleanup unverified. Confirm that recorded mailbox job and its actual owned
+compiler processes have stopped before operator removal; a timeout response
+alone does not authorize deleting a live build. Completed build inputs can be
+released by the original attempt's recovery command after canonical completion.
+A new test retry gets a new attempt ID and directories. It cannot erase the
+original failed index or turn its failure into a pass.

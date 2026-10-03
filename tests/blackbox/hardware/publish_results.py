@@ -97,7 +97,7 @@ def announce_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
         receipt = github.comment(index_body(attempt, [], verified=False))
         attempt.data["publication"]["index"] = receipt
         attempt.save()
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
         attempt.data["publication"]["verified"] = False
         attempt.fail("publication")
         raise
@@ -137,7 +137,7 @@ def managed_attempt(root: Path, controller_revision: str, trigger: str, github: 
         else:
             try:
                 publish_attempt(attempt, github)
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
                 pass  # The pending index/outbox records publication failure; preserve the caller's original exception.
 
 
@@ -176,7 +176,7 @@ def publish_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
         final = github.comment(index_body(attempt, parts, verified=True), publication["index"]["id"])
         publication.update(index=final, verified=True)
         attempt.save()
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
         publication["verified"] = False
         attempt.fail("publication")
         # The initially published index remains a discoverable failure route.
@@ -185,7 +185,7 @@ def publish_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
         if publication["index"] is not None:
             try:
                 github.comment(index_body(attempt, publication["parts"], verified=False), publication["index"]["id"])
-            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
                 pass  # Publication already failed; the pending index/outbox remains and failure propagates below.
         raise
 

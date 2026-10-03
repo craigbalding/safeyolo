@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Keep documented blackbox cadence aligned with scheduled automation.
 
-The workflow is the implementation source of truth. Documentation tables opt
-into this contract with ``blackbox-cadence-contract`` markers and a structured
-``Scheduled`` yes/no column. This checker derives scheduled full lanes from
-``.github/workflows/blackbox.yml`` and rejects documentation which claims a
-hardware nightly that the workflow does not implement.
+Documentation tables opt into this contract with ``blackbox-cadence-contract``
+markers and a structured ``Scheduled`` yes/no column. The checker reads the
+hosted workflow and, after external deployment, its read-back hardware cron
+entry. A source command or pending guide does not declare a hardware schedule.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -18,6 +18,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "blackbox.yml"
+HARDWARE_CRON_PATH = REPO_ROOT / "tests/blackbox/hardware/deployed.cron"
 CADENCE_DOCS = (
     REPO_ROOT / "tests" / "blackbox" / "README.md",
     REPO_ROOT / "docs" / "security-testing-design.md",
@@ -154,13 +155,37 @@ def cadence_table_from_doc(path: Path) -> dict[str, bool]:
     return parsed
 
 
+def scheduled_hardware_from_cron(path: Path = HARDWARE_CRON_PATH) -> dict[str, bool]:
+    """Read the installed paired entry retained by install_schedule.py."""
+    if not path.exists():
+        return {}  # External deployment remains open; documentation must say no.
+    entries = [line.split(maxsplit=5) for line in path.read_text().splitlines()
+               if line.strip() and not line.startswith("#")]
+    if len(entries) != 1 or len(entries[0]) != 6:
+        raise ValueError(f"{path}: expected one installed hardware cron entry")
+    fields, command = entries[0][:5], shlex.split(entries[0][5])
+    if command and command[0].startswith("PATH="):
+        command = command[1:]
+    if fields[2:] != ["*", "*", "*"] or not all(field.isdigit() for field in fields[:2]):
+        raise ValueError(f"{path}: hardware entry must run daily at its stated local time")
+    if not 0 <= int(fields[0]) <= 59 or not 0 <= int(fields[1]) <= 23:
+        raise ValueError(f"{path}: invalid hardware cron minute or hour")
+    program = next((index for index, argument in enumerate(command) if argument.endswith("/hardware/paired.py")), None)
+    if (program != 1 or command[program + 1:program + 3] != ["overnight", "--config"]
+            or len(command) <= program + 3 or "--authorized-commit" in command):
+        raise ValueError(f"{path}: schedule must invoke the trusted paired overnight command with private configuration")
+    return {"kvm": True, "vz": True}
+
+
 def contract_problems(
     workflow_path: Path = WORKFLOW_PATH,
     doc_paths: tuple[Path, ...] = CADENCE_DOCS,
+    hardware_cron_path: Path = HARDWARE_CRON_PATH,
 ) -> list[str]:
     """Return cadence/artifact mismatches without exiting."""
     try:
         scheduled = scheduled_lanes_from_workflow(workflow_path)
+        scheduled.update(scheduled_hardware_from_cron(hardware_cron_path))
     except (OSError, ValueError, yaml.YAMLError) as exc:
         return [str(exc)]
 
