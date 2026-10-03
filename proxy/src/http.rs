@@ -2,7 +2,6 @@ use std::{
     cell::Cell,
     convert::Infallible,
     future::Future,
-    io::BufReader,
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -21,7 +20,10 @@ use hyper::{
     header,
 };
 use hyper_util::rt::TokioIo;
-use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
+use rustls::{
+    ClientConfig, RootCertStore,
+    pki_types::{CertificateDer, ServerName, pem::PemObject},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpStream;
@@ -828,7 +830,7 @@ pub(crate) fn parent_tls(config: &crate::Config) -> Result<Arc<ClientConfig>, Er
         eprintln!("native TLS trust store: {error}");
     }
     if let Some(path) = &config.upstream_ca_file {
-        for cert in rustls_pemfile::certs(&mut BufReader::new(std::fs::File::open(path)?)) {
+        for cert in CertificateDer::pem_reader_iter(std::fs::File::open(path)?) {
             roots.add(cert?)?;
         }
     }

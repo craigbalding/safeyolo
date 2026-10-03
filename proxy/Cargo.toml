@@ -7,7 +7,7 @@ publish = false
 license = "MIT"
 
 [dependencies]
-async-nats = "0.42"
+async-nats = "0.47"
 base64 = "0.23"
 brotli-decompressor = "=5.0.3"
 bzip2 = "=0.6.1"
@@ -32,7 +32,6 @@ regex = "1"
 ring = "0.17"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
-rustls-pemfile = "2"
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }

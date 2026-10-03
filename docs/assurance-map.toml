@@ -24,13 +24,7 @@ handoff = "HTTP/2 flow control and cancellation; local patch in proxy/vendor/h2.
 name = "rustls"
 version = "0.23.45"
 features = ["ring", "std", "tls12"]
-handoff = "Origin and interception TLS verification and handshakes."
-
-[[libraries]]
-name = "rustls-pemfile"
-version = "2.2.0"
-features = []
-handoff = "PEM certificate and private-key item parsing for the existing interception CA."
+handoff = "Origin and interception TLS verification, handshakes and PEM decoding through rustls::pki_types::pem."
 
 [[libraries]]
 name = "x509-parser"
@@ -100,7 +94,7 @@ handoff = "Credential and content pattern inspection; local patch in proxy/vendo
 
 [[libraries]]
 name = "async-nats"
-version = "0.42"
+version = "0.47"
 features = []
 handoff = "Loopback coordination client and JetStream persistence."
 

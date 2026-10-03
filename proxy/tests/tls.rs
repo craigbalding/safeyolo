@@ -4,7 +4,7 @@ use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose}
 use rustls::{
     RootCertStore,
     client::{WebPkiServerVerifier, danger::ServerCertVerifier},
-    pki_types::{ServerName, UnixTime},
+    pki_types::{CertificateRevocationListDer, ServerName, UnixTime},
 };
 use safeyolo_proxy::tls::CertificateAuthority;
 use time::{Duration, OffsetDateTime};
@@ -100,6 +100,72 @@ fn missing_mismatched_or_invalid_ca_never_creates_a_replacement() {
         assert!(CertificateAuthority::load(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
     }
+}
+
+#[test]
+fn combined_ca_pem_preserves_ordering_sections_and_parse_errors() {
+    let now = OffsetDateTime::now_utc();
+    let (pem, key) = ca_pem(now - Duration::days(1), now + Duration::days(365), true);
+    let certificate = pem.strip_prefix(&key.serialize_pem()).unwrap();
+    let original = CertificateAuthority::from_pem(pem.as_bytes()).unwrap();
+    let public_key = "-----BEGIN PUBLIC KEY-----\nAQ==\n-----END PUBLIC KEY-----\n";
+    for combined in [
+        format!("{certificate}{}{public_key}", key.serialize_pem()),
+        format!("ignored text\n{public_key}{pem}{certificate}").replace('\n', "\r\n"),
+    ] {
+        let ca = CertificateAuthority::from_pem(combined.as_bytes()).unwrap();
+        assert_eq!(ca.certificate(), original.certificate());
+        check_leaf(&ca, "example.invalid");
+    }
+    let duplicate = format!("{pem}{}", key.serialize_pem());
+    assert_eq!(
+        CertificateAuthority::from_pem(duplicate.as_bytes())
+            .err()
+            .unwrap()
+            .to_string(),
+        "CA file contains more than one private key"
+    );
+    for malformed in [
+        "-----BEGIN CERTIFICATE-----\nAQ==\n",
+        "-----BEGIN PRIVATE KEY-----\n!\n-----END PRIVATE KEY-----\n",
+        "-----BEGIN PUBLIC KEY-----\n!\n-----END PUBLIC KEY-----\n",
+    ] {
+        for combined in [format!("{malformed}{pem}"), format!("{pem}{malformed}")] {
+            assert!(CertificateAuthority::from_pem(combined.as_bytes()).is_err());
+        }
+    }
+}
+
+#[test]
+fn crl_empty_reason_bit_string_returns_a_parse_error_without_panicking() {
+    // GHSA-82j2-j2ch-gfr8 reaches the CRL parser before signature verification.
+    // The same byte sequence panicked in rustls-webpki 0.102.8.
+    let crl = vec![
+        0x30, 0x65, 0x30, 0x50, 0x02, 0x01, 0x01, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86,
+        0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x30, 0x0c, 0x31, 0x0a, 0x30, 0x08, 0x06, 0x03,
+        0x55, 0x04, 0x03, 0x13, 0x01, 0x41, 0x17, 0x0d, 0x32, 0x30, 0x30, 0x31, 0x30, 0x31, 0x30,
+        0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0x17, 0x0d, 0x32, 0x31, 0x30, 0x31, 0x30, 0x31, 0x30,
+        0x30, 0x30, 0x30, 0x30, 0x30, 0x5a, 0xa0, 0x10, 0x30, 0x0e, 0x30, 0x0c, 0x06, 0x03, 0x55,
+        0x1d, 0x1c, 0x04, 0x05, 0x30, 0x03, 0x83, 0x01, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86,
+        0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00, 0x03, 0x02, 0x00, 0x00,
+    ];
+    let now = OffsetDateTime::now_utc();
+    let (pem, _) = ca_pem(now - Duration::days(1), now + Duration::days(365), true);
+    let ca = CertificateAuthority::from_pem(pem.as_bytes()).unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add(ca.certificate().clone()).unwrap();
+    let error = WebPkiServerVerifier::builder_with_provider(
+        Arc::new(roots),
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )
+    .with_crls([CertificateRevocationListDer::from(crl)])
+    .build()
+    .unwrap_err();
+    assert!(matches!(
+        &error,
+        rustls::client::VerifierBuilderError::InvalidCrl(_)
+    ));
+    assert!(format!("{error:?}").contains("UnsupportedRevocationReasonsPartitioning"));
 }
 
 #[test]
@@ -212,4 +278,54 @@ fn existing_rsa_ca_formats_survive_native_import_and_restart() {
         !absent.exists(),
         "native import must not generate a replacement CA"
     );
+}
+
+#[test]
+fn existing_ec_ca_formats_preserve_import_results_and_file() {
+    let directory = tempfile::tempdir().unwrap();
+    for arguments in [
+        vec![
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-nodes",
+            "-days",
+            "2",
+            "-subj",
+            "/CN=Native EC import fixture",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+            "-addext",
+            "keyUsage=critical,keyCertSign,cRLSign",
+            "-keyout",
+            "key.pem",
+            "-out",
+            "certificate.pem",
+        ],
+        vec!["ec", "-in", "key.pem", "-out", "sec1.key"],
+    ] {
+        let result = Command::new("openssl")
+            .args(arguments)
+            .current_dir(directory.path())
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{:?}", result.stderr);
+    }
+    let mut combined = std::fs::read(directory.path().join("sec1.key")).unwrap();
+    assert!(combined.starts_with(b"-----BEGIN EC PRIVATE KEY-----"));
+    combined.extend(std::fs::read(directory.path().join("certificate.pem")).unwrap());
+    let path = directory.path().join("mitmproxy-ca.pem");
+    std::fs::write(&path, &combined).unwrap();
+    // The existing ring-backed rcgen signer accepts EC PKCS#8, not SEC1.
+    // PEM migration preserves that error and never rewrites the operator file.
+    assert!(CertificateAuthority::load(&path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), combined);
+    let mut combined = std::fs::read(directory.path().join("key.pem")).unwrap();
+    assert!(combined.starts_with(b"-----BEGIN PRIVATE KEY-----"));
+    combined.extend(std::fs::read(directory.path().join("certificate.pem")).unwrap());
+    std::fs::write(&path, combined).unwrap();
+    assert_load_preserves_file(&path);
 }
