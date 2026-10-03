@@ -1111,6 +1111,34 @@ code smells; keep pre-existing findings, minor cleanup, and preferences
 non-blocking. The command supplements the configured lint and static checks;
 it does not replace independent acceptance of the behaviour being changed.
 
+For a Python dependency repair, run the focused dependency controls from a
+Linux repository checkout with Python 3.12 or 3.13 and Bash. Install fish to
+exercise its activation control; the test reports a skip when fish is absent.
+Use the configured proxy and certificate authority for package downloads.
+These commands create the two frozen environments and run the controls:
+
+```sh
+uv sync --frozen --group dev
+uv sync --project tools/acceptance --frozen --only-group static
+uv run --project tools/acceptance --frozen --no-sync python -m unittest discover -s tools/acceptance/tests -p test_acceptance_dependencies.py -v
+uv run --frozen --no-sync python -m unittest discover -s tools/acceptance/tests -p test_hook_dependencies.py -v
+```
+
+Expected result: both test runs pass. The controls exercise JSON Web Token
+(JWT) verification, Semgrep and Model Context Protocol (MCP) authentication,
+HTTPS proxy certificate policy, chunked response parsing, virtualenv
+configuration and shell activation. HTTP fixtures listen on disposable
+loopback ports and close after each test. The seed-wheel test downloads the
+pip version in the acceptance lockfile from the default index, verifies its
+published PyPI digest, and checks rejection after altering the downloaded
+file. The tests remove their temporary files.
+
+These Linux controls do not execute Windows batch activation. Upstream
+virtualenv skips downloaded-wheel digest verification for custom indexes or
+missing PyPI digest metadata. A passing seed-wheel control establishes the
+default-index path with published metadata; it does not establish integrity
+for those skipped paths.
+
 ### Testing Requirements
 
 Before a PR, run quick focused checks of the changed behavior, including useful
