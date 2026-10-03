@@ -136,6 +136,56 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
     return failures
 
 
+def pytest_summary(data: dict) -> dict:
+    """Select observed outcomes without arbitrary nested annotations."""
+    return {name: data[name] for name in (
+        "schema_version", "run_id", "source_revision", "suite", "started_at", "finished_at",
+        "exit", "collected", "deselected", "collection_errors", "omitted_cases",
+    )} | {
+        "counts": {name: data["counts"][name] for name in ("passed", "failed", "skipped", "unexecuted")
+                   if name in data["counts"]},
+        "cases": [{name: case[name] for name in ("test", "case_sha256", "outcome", "phase")}
+                  for case in data["cases"]],
+    }
+
+
+def publication_summary(report: dict) -> dict:
+    """Project the owned runner report; private reports and logs stay private.
+
+    This is an installed-section summary, not an independent host teardown or
+    durable-publication receipt. A controller must also bind the expected run
+    and source identities and require the complete paired hardware results.
+    """
+    preparation = report["preparation"]
+    selected_preparation = {name: preparation[name] for name in (
+        "exit", "input_index_sha256", "source_revision", "wheel_sha256", "native_sha256",
+    ) if name in preparation}
+    if "vm_helper" in preparation:
+        selected_preparation["vm_helper"] = {name: preparation["vm_helper"][name] for name in (
+            "git_sha", "git_dirty", "architecture", "build_profile",
+        )}
+    if "boot_inputs" in preparation:
+        selected_preparation["boot_inputs"] = {
+            name: {field: preparation["boot_inputs"][name][field] for field in ("source_revision", "sha256")}
+            for name in ("Image", "initramfs.cpio.gz", "rootfs-base.ext4")
+        }
+    sections = []
+    for row in report["sections"]:
+        selected = {name: row[name] for name in (
+            "section", "executed", "started_at", "finished_at", "exit", "result", "cleanup",
+        )}
+        selected["cleanup_failure_count"] = len(row["cleanup_failures"])
+        if row["section"] == "isolation":
+            selected["evidence_failure_count"] = len(row["evidence_failures"])
+            selected["pytest"] = [pytest_summary(data) for data in row["pytest"]]
+        sections.append(selected)
+    return {"schema_version": 1, **{name: report[name] for name in (
+        "source_revision", "lane", "run_id", "started_at", "finished_at", "exit",
+        "requested_sections", "unexecuted_sections",
+    )}, "full_section_selection": set(report["requested_sections"]) == set(SECTIONS[report["lane"]]),
+            "preparation": selected_preparation, "sections": sections}
+
+
 def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[list[dict], list[str]]:
     """Require this invocation's retained outcomes, without copying raw output."""
     observations, failures = [], []
@@ -182,11 +232,7 @@ def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[li
             continue
         # Only the outcome schema is carried into the section report. Never
         # copy captures, exception text, parameter values or added JSON fields.
-        observations.append({name: data.get(name) for name in (
-            "schema_version", "run_id", "source_revision", "suite", "started_at", "finished_at",
-            "exit", "collected", "deselected", "collection_errors", "counts", "omitted_cases",
-        )} | {"cases": [{name: case[name] for name in ("test", "case_sha256", "outcome", "phase")}
-                       for case in cases]})
+        observations.append(pytest_summary(data))
         if (not data.get("collected") or data.get("deselected") or data.get("collection_errors")
                 or data.get("omitted_cases") or data.get("counts", {}).get("unexecuted")):
             failures.append(f"{suite}: pytest collection or execution is incomplete")
@@ -215,15 +261,37 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
     run_id = uuid.uuid4().hex
     report = {"source_revision": revision, "lane": lane, "run_id": run_id,
-              "started_at": datetime.now(UTC).isoformat(), "requested_sections": list(sections),
+              "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "exit": None,
+              "requested_sections": list(sections),
               "unexecuted_sections": list(sections), "preparation": {}, "sections": []}
-    artifacts.mkdir(parents=True, exist_ok=True)
     report_path = artifacts / "installed-sections.json"
+    summary_path = artifacts / "installed-summary.json"
 
-    def save():
-        report_path.write_text(json.dumps(report, indent=2) + "\n")
+    def save(exit_code=None):
+        if exit_code is not None:
+            report.update(exit=exit_code, finished_at=datetime.now(UTC).isoformat())
+        try:
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            temporary = summary_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(publication_summary(report), indent=2) + "\n")
+            temporary.replace(summary_path)
+        except OSError as exc:
+            # A missing/unfinished summary must never become a successful run.
+            # Keep exception messages and private paths out of publishable data.
+            print(f"Installed report writing failed ({type(exc).__name__})", file=sys.stderr)
+            return False
+        return True
 
-    save()
+    try:
+        # Preserve earlier attempts, including failures, when a caller retries.
+        artifacts.mkdir(parents=True, exist_ok=True)
+        for path in (report_path, summary_path):
+            path.touch(exist_ok=False)
+    except OSError as exc:
+        print(f"Installed report needs a new writable attempt directory ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    if not save():
+        return 2
     preparation_identity = {}
     try:
         if staged_inputs is not None:
@@ -245,12 +313,13 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             preparation_exit = prepared.returncode
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
         report["preparation"] = {"exit": 2, "error": str(exc), "config_dir": str(source)}
-        save()
+        save(2)
         return 2
     report["preparation"] = {"exit": preparation_exit, "config_dir": str(source), **preparation_identity}
-    save()
+    saved = save(2 if preparation_exit else None)
     if preparation_exit:
         print(f"Product preparation failed (exit {preparation_exit}); no sections ran")
+    if preparation_exit or not saved:
         return 2
     cli = directory / "bin/safeyolo"
     test_bin = directory / "tests/bin" if staged_inputs is not None else REPOSITORY / ".venv/bin"
@@ -339,13 +408,14 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         report["sections"].append(row)
         if executed:
             report["unexecuted_sections"].remove(section)
-        save()
+        saved = save(2 if failures else None)
         if failures:
             print(f"Owned cleanup failed for {section}: {failures}; remaining sections did not run")
+        if failures or not saved:
             return 2
         if section_exit:
             overall = max(overall, 1 if section_exit == 1 else 2)
-    return overall
+    return overall if save(overall) else 2
 
 
 def main() -> int:

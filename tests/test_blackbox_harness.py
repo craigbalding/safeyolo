@@ -1,5 +1,6 @@
 """Regression tests for blackbox harness isolation and backend selection."""
 
+import copy
 import hashlib
 import http.client
 import json
@@ -18,6 +19,8 @@ from urllib.parse import urlsplit
 
 import pytest
 import yaml
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from tests.blackbox import installed_lifecycle as lifecycle
 from tests.blackbox import installed_sections
@@ -1197,6 +1200,118 @@ def test_installed_sections_attribute_preparation_failure_without_starting_secti
     assert report["preparation"]["exit"] == 9
     assert report["sections"] == []
     assert not (directory / "isolation").exists()
+    summary = json.loads((artifacts / "installed-summary.json").read_text())
+    assert summary["exit"] == 2 and summary["finished_at"]
+    assert summary["preparation"] == {"exit": 9}
+    assert summary["unexecuted_sections"] == ["isolation", "access"]
+
+
+@pytest.mark.parametrize("stage", ["preparation", "section"])
+def test_installed_summary_write_failure_stops_before_independent_continuation(
+    tmp_path, installed_section_commands, stage
+):
+    """A real filesystem failure cannot leave a successful or continued run."""
+    directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
+    artifacts.mkdir()
+    if stage == "preparation":
+        # A directory cannot be written as the atomic summary's temporary file.
+        (artifacts / "installed-summary.json.tmp").mkdir()
+    else:
+        command = installed_section_commands / "tests/blackbox/run-tests.sh"
+        command.write_text(command.read_text().replace(
+            "if root.name == 'isolation': sys.exit",
+            "(pathlib.Path(os.environ['SAFEYOLO_BLACKBOX_ARTIFACTS_DIR']).parent / "
+            "'installed-summary.json.tmp').mkdir()\nif root.name == 'isolation': sys.exit",
+        ))
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40, directory, artifacts
+    ) == 2
+    report = json.loads((artifacts / "installed-sections.json").read_text())
+    assert not (directory / "access").exists()
+    if stage == "preparation":
+        assert report["sections"] == []
+        assert not (directory / "prepared").exists()
+    else:
+        assert report["sections"][0]["cleanup"] == "stopped"
+        assert not (directory / "isolation/data/proxy-rust.json").exists()
+        prior_summary = json.loads((artifacts / "installed-summary.json").read_text())
+        assert prior_summary["exit"] is None and prior_summary["finished_at"] is None
+
+
+@pytest.mark.parametrize("private_report_missing", [False, True])
+def test_installed_retry_preserves_the_original_failed_attempt(
+    tmp_path, monkeypatch, installed_section_commands, private_report_missing
+):
+    artifacts = tmp_path / "artifacts"
+    monkeypatch.setenv("FAIL_SECTION", "1")
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
+        tmp_path / "first-attempt", artifacts,
+    ) == 1
+    original = {name: (artifacts / name).read_bytes() for name in (
+        "installed-sections.json", "installed-summary.json",
+    )}
+    if private_report_missing:
+        (artifacts / "installed-sections.json").unlink()
+        del original["installed-sections.json"]
+    monkeypatch.delenv("FAIL_SECTION")
+    retry = tmp_path / "retry"
+    assert installed_sections.run_sections(
+        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40, retry, artifacts,
+    ) == 2
+    assert not retry.exists(), "a colliding retry must not prepare or execute"
+    assert {name: (artifacts / name).read_bytes() for name in original} == original
+
+
+def test_generated_nested_private_annotations_do_not_enter_written_summary(
+    tmp_path, monkeypatch, installed_section_commands
+):
+    """Exercise the real writer with additional fields at every report level."""
+    project = installed_sections.publication_summary
+    values = st.recursive(st.none() | st.booleans() | st.integers() | st.text(max_size=40),
+                          lambda children: st.lists(children, max_size=3)
+                          | st.dictionaries(st.text(max_size=20), children, max_size=3), max_leaves=8)
+    attempt_number = 0
+
+    @settings(max_examples=20, deadline=None)
+    @given(value=values)
+    def omit_private_fields(value):
+        nonlocal attempt_number
+        attempt_number += 1
+        marker = "fixture-publication-secret"
+        annotation = {"admin_token": marker, "nested": value}
+
+        def annotate_before_projection(report):
+            report = copy.deepcopy(report)
+            report["private_instance"] = annotation
+            report["preparation"]["private_instance"] = annotation
+            for row in report["sections"]:
+                row["private_instance"] = annotation
+                for observation in row.get("pytest", []):
+                    observation["raw_inspector_export"] = annotation
+                    observation["counts"]["private_instance"] = annotation
+                    for case in observation["cases"]:
+                        case["captured_output"] = annotation
+            return project(report)
+
+        monkeypatch.setattr(installed_sections, "publication_summary", annotate_before_projection)
+        attempt = tmp_path / str(attempt_number)
+        artifacts = attempt / "artifacts"
+        assert installed_sections.run_sections(
+            "kvm", installed_sections.SECTIONS["kvm"], installed_section_commands, "a" * 40,
+            attempt / "installed", artifacts,
+        ) == 0
+        summary_text = (artifacts / "installed-summary.json").read_text()
+        summary = json.loads(summary_text)
+        private = json.loads((artifacts / "installed-sections.json").read_text())
+        assert marker not in summary_text and str(tmp_path) not in summary_text
+        assert summary["full_section_selection"] is True and summary["unexecuted_sections"] == []
+        assert summary["run_id"] == private["run_id"] and summary["finished_at"]
+        assert all(observation["counts"] == {"passed": 1}
+                   for observation in summary["sections"][0]["pytest"])
+        assert summary["sections"][0]["pytest"][0]["cases"][0]["test"] == "test_fixture.py::test_case"
+
+    omit_private_fields()
 
 
 def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
@@ -1214,6 +1329,10 @@ def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
     assert isolation["cleanup"] == "stopped"
     assert len(isolation["evidence_failures"]) == 6
     assert access["result"] == "passed", "clean failure must retain independent continuation"
+    summary = json.loads((artifacts / "installed-summary.json").read_text())
+    assert summary["exit"] == 2
+    assert summary["sections"][0]["evidence_failure_count"] == 6
+    assert "evidence_failures" not in summary["sections"][0]
 
 
 def test_installed_staged_preparation_failure_retains_every_unexecuted_section(
@@ -1339,6 +1458,14 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
     assert report["source_revision"] == revision
     assert report["preparation"]["exit"] == (9 if "FAIL_PREPARATION" in failure else 0)
     assert [row["result"] for row in report["sections"]] == results
+    summary_text = (artifacts / "installed-summary.json").read_text()
+    summary = json.loads(summary_text)
+    assert summary["run_id"] == report["run_id"] and summary["source_revision"] == revision
+    assert summary["exit"] == expected and summary["finished_at"]
+    assert summary["full_section_selection"] is False
+    assert [row["result"] for row in summary["sections"]] == results
+    assert str(tmp_path) not in summary_text
+    assert "config_dir" not in summary_text and "cleanup_failures" not in summary_text
     for row in report["sections"]:
         root = Path(row["config_dir"])
         if row["result"] == "cleanup_failure":

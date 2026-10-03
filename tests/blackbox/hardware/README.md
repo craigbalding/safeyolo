@@ -81,7 +81,7 @@ The controller must also supply these values before invoking the runner:
 | `STAGED_SHA256` | The input index digest received through the trusted controller path |
 | `STAGED_PYTHON` | The absolute path of the existing compatible Python interpreter |
 | `STATE_PARENT` | A short, private, disk-backed parent outside the checkout for new section state |
-| `RUN_ARTIFACTS` | This attempt's private result directory |
+| `RUN_ARTIFACTS` | A new private result directory for this attempt; retain earlier attempts on retry |
 
 The deployed invocation must preserve direct helper supervision through
 `/Users/sy-agent/bin/run-vz-test --timeout-seconds N -- /absolute/path/to/safeyolo-vm run ...`
@@ -121,6 +121,32 @@ Missing, stale, mismatched or incomplete pytest observations produce an
 remain limitations. A cleanup failure stops continuation. A port preflight
 failure leaves the section explicitly unexecuted and never signals a foreign
 listener.
+
+The runner also writes `installed-summary.json` before product preparation,
+after each section and at completion. This separate summary selects the source
+commit, run ID, timestamps, requested and unexecuted sections, preparation exit
+and verified input identities, section exits and cleanup results, failure counts
+and sanitized pytest observations. It omits instance paths, raw diagnostic
+text, captures, raw flow/inspector exports and arbitrary additional fields.
+Boot entries retain only their original source revision and hash. The private
+report and logs remain available for diagnosis.
+
+An unfinished summary has null `exit` and `finished_at`. A finished partial
+selection has `full_section_selection: false`, even when its commands exit
+zero. Summary writing failure returns exit 2 and stops continuation after owned
+section cleanup. Reusing an artifact directory containing either
+`installed-sections.json` or `installed-summary.json` returns exit 2 before
+preparation and preserves the original reports. Give a retry a new
+`RUN_ARTIFACTS` directory.
+
+The publication adapter must explicitly select `installed-summary.json`; it
+must not upload the artifact directory or select files by extension. Bind its
+run ID and source commit to the trusted attempt, check completion and every
+required section and observation, and preserve reported skips as limitations.
+This summary does not establish independent host allocation/teardown, a paired
+hardware success or durable publication. The controller still needs its own
+attempt result before preflight or source fetch and must publish failures from
+those earlier steps and from the publication operation itself.
 
 ## Complete the external deployment
 

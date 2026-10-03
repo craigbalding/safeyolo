@@ -175,6 +175,13 @@ def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_report
     assert report["preparation"]["boot_inputs"] == expected
     assert marker not in report_text
     assert json.loads(provenance_path.read_text()) == annotated, "source annotations remain available on the build host"
+    summary_text = (artifacts / "installed-summary.json").read_text()
+    summary = json.loads(summary_text)
+    assert summary["preparation"]["boot_inputs"] == expected
+    assert summary["preparation"]["native_sha256"] == report["preparation"]["native_sha256"]
+    assert summary["exit"] == 0 and summary["full_section_selection"] is False
+    assert "cli" not in summary["preparation"] and str(tmp_path) not in summary_text
+    assert marker not in summary_text
 
 
 @pytest.mark.parametrize("failure", ["wrong-index", "mixed-source", "host", "tampered-wheel", "missing-boot",
