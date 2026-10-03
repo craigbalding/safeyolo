@@ -16,14 +16,6 @@ agent = "forge"
 contract = "../agent-roles/issue-owner.md"
 args = ["--model", "gpt-6-sol", "-c", "model_reasoning_effort=max"]
 
-[roles.owner.repair]
-request = "REPAIR"
-from = "coordinator"
-args = ["--model", "gpt-6-sol", "-c", "model_reasoning_effort=high"]
-after_rounds = 2
-max_rounds = 1
-release_on = "REVIEW_READY"
-
 [roles.reviewer]
 agent = "lens"
 contract = "../agent-roles/independent-reviewer.md"
