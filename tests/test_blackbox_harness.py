@@ -1927,8 +1927,9 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
                    cwd=repository, env=env, check=True)
     assert not (repository / ".venv").exists()
     artifacts = tmp_path / "literal artifacts $(unused) ; [space]"
+    lane = "vz" if sys.platform == "darwin" else "systrap"
     result = subprocess.run(
-        [str(scripts / "run-installed.sh"), "systrap", "--section", "isolation",
+        [str(scripts / "run-installed.sh"), lane, "--section", "isolation",
          "--section", "access", "--install-checkout", str(repository),
          "--install-commit", revision, "--artifacts", str(artifacts)],
         cwd=repository, env=env, capture_output=True, text=True, timeout=30, check=False,
@@ -1979,7 +1980,7 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
     monkeypatch.delenv("LC_CTYPE", raising=False)
     # Darwin's temporary pytest paths can exceed the Unix socket limit.
     console_directory = tempfile.TemporaryDirectory(prefix="t889-", dir="/tmp")
-    root = Path(console_directory.name) / "instance space"
+    root = Path(console_directory.name).resolve() / "instance space"
     (root / "data").mkdir(parents=True)
     (root / "config.yaml").write_text("owned fixture")
     cli = tmp_path / "cli"
@@ -1998,6 +1999,9 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
         # console even when another owned process survives. The original
         # marker-removal control runs on hosts without that prerequisite too.
         if tmux is not None:
+            (root / "bin").mkdir()
+            private_tmux = root / "bin/safeyolo-tmux"
+            shutil.copy2(tmux, private_tmux)
             subprocess.run([*base, "new-session", "-d", "-s", "safeyolo-traffic", "sleep 30"], check=True)
             subprocess.run([*base, "set-option", "-t", "safeyolo-traffic", "remain-on-exit", "on"], check=True)
             console = installed_sections.console_process(root)
@@ -2018,8 +2022,8 @@ def test_cleanup_cannot_hide_a_live_owned_process_by_removing_its_pid_file(tmp_p
         assert installed_sections.console_process(root) == replacement
         assert installed_sections.surviving_processes([replacement])
         # Removing the private runtime makes observation fail visibly.
-        (root / "bin").mkdir()
-        (root / "bin/safeyolo-tmux").write_text("not executable")
+        private_tmux.write_text("not executable")
+        private_tmux.chmod(0o644)
         (root / "data/proxy-rust.json").write_text(json.dumps({"pid": process.pid}))
         failures = installed_sections.cleanup_instance(cli, root)
         assert any("owned process inspection" in error for error in failures)
