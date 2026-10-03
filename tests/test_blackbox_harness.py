@@ -509,6 +509,86 @@ def test_selected_runner_classifies_pytest_exit_codes(tmp_path, pytest_exit, exp
     assert result.returncode == expected
 
 
+INSTALLED_PYTEST_SLOTS = (
+    "PROXY", "FIREWALL", "IDENTITY", "ISOLATION", "ROOT_ISOLATION", "LIFECYCLE",
+)
+
+
+@pytest.fixture
+def installed_pytest_runner(tmp_path):
+    """Run the installed suite commands and summary with controlled command exits."""
+    directory = tmp_path / "pytest-runner"
+    (directory / "host").mkdir(parents=True)
+    runner = (Path(__file__).parent / "blackbox/run-tests.sh").read_text()
+    script = directory / "run-tests.sh"
+    script.write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        + r'''
+SCRIPT_DIR="$(dirname "$0")"
+RUN_PROXY=true
+RUN_ISOLATION=true
+AGENT_NAME=bbtest
+VERBOSE=
+PYTEST_FORWARD_ARGS=()
+PYTEST_FORWARD_SHELL=
+
+fixture_suite_exit() {
+    printf '%s\n' "$1" >> "$SCRIPT_DIR/suites.log"
+    local variable="FIXTURE_${1}_EXIT"
+    return "${!variable:-0}"
+}
+
+pytest() {
+    case "$*" in
+        *native/) fixture_suite_exit PROXY ;;
+        *security/) fixture_suite_exit FIREWALL ;;
+        *identity/) fixture_suite_exit IDENTITY ;;
+        *lifecycle/) fixture_suite_exit LIFECYCLE ;;
+        *) return 99 ;;
+    esac
+}
+
+safeyolo() {
+    case "$*" in
+        *--root*) fixture_suite_exit ROOT_ISOLATION ;;
+        *) fixture_suite_exit ISOLATION ;;
+    esac
+}
+'''
+        + runner[runner.index("# --- Phase 2: Run tests ---"):]
+    )
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.parametrize("slot", INSTALLED_PYTEST_SLOTS)
+@pytest.mark.parametrize("suite_exit,expected", [(1, 1), (2, 2), (3, 2), (4, 2), (5, 2), (127, 2)])
+def test_installed_runner_classifies_each_suite_exit(installed_pytest_runner, slot, suite_exit, expected):
+    env = {**os.environ, **{f"FIXTURE_{name}_EXIT": "0" for name in INSTALLED_PYTEST_SLOTS}}
+    env[f"FIXTURE_{slot}_EXIT"] = str(suite_exit)
+    result = subprocess.run(
+        [str(installed_pytest_runner)], env=env, capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert installed_pytest_runner.with_name("suites.log").read_text().splitlines() == list(INSTALLED_PYTEST_SLOTS)
+
+
+@pytest.mark.parametrize("suite_exits,expected", [
+    ((0, 0, 0, 0, 0, 0), 0),
+    ((3, 0, 0, 0, 0, 1), 2),
+    ((1, 0, 0, 0, 0, 3), 2),
+], ids=["all-success", "infrastructure-before-assertion", "infrastructure-after-assertion"])
+def test_installed_runner_failure_precedence(installed_pytest_runner, suite_exits, expected):
+    env = {**os.environ, **{
+        f"FIXTURE_{slot}_EXIT": str(code) for slot, code in zip(INSTALLED_PYTEST_SLOTS, suite_exits, strict=True)
+    }}
+    result = subprocess.run(
+        [str(installed_pytest_runner)], env=env, capture_output=True, text=True, timeout=10, check=False,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert installed_pytest_runner.with_name("suites.log").read_text().splitlines() == list(INSTALLED_PYTEST_SLOTS)
+
+
 def test_selected_runner_classifies_readiness_failure_as_infrastructure(tmp_path, native_binary):
     """A legacy pytest plugin's code-1 readiness report is still infrastructure."""
     fake_pytest = tmp_path / "pytest"
@@ -997,11 +1077,15 @@ def test_installed_sections_do_not_continue_across_unclean_boundary(
     assert not (directory / "access").exists()
 
 
-@pytest.mark.parametrize("leave_process_live,section_exit", [(True, 1), (False, 1), (False, 3)],
-                         ids=["survivor", "clean-assertion-failure", "clean-pytest-internal-error"])
+@pytest.mark.parametrize("leave_process_live,section_exit,aggregate", [
+    (True, 1, False), (False, 1, False), (False, 3, False),
+    (False, 3, True), (True, 3, True),
+], ids=["survivor", "clean-assertion-failure", "clean-pytest-internal-error",
+        "clean-aggregated-pytest-internal-error", "survivor-with-aggregated-infrastructure"])
 @pytest.mark.parametrize("owner", [False, True], ids=["subject", "lifecycle-owner"])
 def test_installed_sections_preserve_inner_cleanup_outcome(
-    tmp_path, monkeypatch, installed_section_commands, leave_process_live, section_exit, owner
+    tmp_path, monkeypatch, installed_section_commands, installed_pytest_runner,
+    leave_process_live, section_exit, aggregate, owner
 ):
     """Run the real inner trap and outer loop when stop removes a PID marker."""
     repository = installed_section_commands
@@ -1050,7 +1134,7 @@ if marker.exists():
         + f"\nowned_root={owned_root}\n"
         + 'mkdir -p "$owned_root/data"\ntouch "$owned_root/config.yaml"\n'
         + "printf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$owned_root/data/proxy-rust.json\"\n"
-        f"exit {section_exit}\n"
+        + ('set +e\n"$FIXTURE_INSTALLED_RUNNER"\nexit $?\n' if aggregate else f"exit {section_exit}\n")
     )
     section.chmod(0o755)
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
@@ -1058,12 +1142,17 @@ if marker.exists():
     monkeypatch.setenv("OWNED_TEST_PID", str(process.pid))
     monkeypatch.setenv("LEAVE_PROCESS_LIVE", "1" if leave_process_live else "0")
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")
+    monkeypatch.setenv("FIXTURE_INSTALLED_RUNNER", str(installed_pytest_runner))
+    for slot in INSTALLED_PYTEST_SLOTS:
+        monkeypatch.setenv(f"FIXTURE_{slot}_EXIT", str(section_exit if slot == "ISOLATION" else 0))
     try:
         result = installed_sections.run_sections(
             "systrap", (first_section, "access"), repository, "a" * 40, directory, artifacts
         )
         report = json.loads((artifacts / "installed-sections.json").read_text())
         first = report["sections"][0]
+        if aggregate:
+            assert installed_pytest_runner.with_name("suites.log").read_text().splitlines() == list(INSTALLED_PYTEST_SLOTS)
         assert not (directory / ("lifecycle-owner" if owner else "isolation") / "data/proxy-rust.json").exists()
         if leave_process_live:
             assert process.poll() is None, "the injected stop must leave the owned lifetime live"

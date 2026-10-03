@@ -1224,10 +1224,20 @@ if [ "$RUN_ISOLATION" = true ]; then
     fi
 fi
 
-if [ "$PROXY_RESULT" != "0" ] || [ "$ISOLATION_RESULT" != "0" ] || [ "$ROOT_ISOLATION_RESULT" != "0" ] || [ "$FIREWALL_RESULT" != "0" ] || [ "${LIFECYCLE_RESULT:-0}" != "0" ] || [ "$IDENTITY_RESULT" != "0" ]; then
+TEST_RESULT=0
+for suite_result in "$PROXY_RESULT" "$FIREWALL_RESULT" "$IDENTITY_RESULT" \
+                    "$ISOLATION_RESULT" "$ROOT_ISOLATION_RESULT" "${LIFECYCLE_RESULT:-0}"; do
+    case "$suite_result" in
+        0) ;;
+        1) TEST_RESULT=1 ;;
+        *) TEST_RESULT=2; break ;;
+    esac
+done
+
+if [ "$TEST_RESULT" != "0" ]; then
     echo ""
     echo "Result: FAILED"
-    exit 1
+    exit "$TEST_RESULT"
 fi
 
 echo ""
