@@ -7,8 +7,10 @@ signs and packages the macOS inputs. Bristol verifies transferred inputs and
 executes offline. Both lanes must use one selected full source commit.
 
 This directory documents the staged runner inputs and verified Rundeck
-harness interface. The paired controller, cron deployment, ownership recovery
-and durable report publication still need their remaining deployment bindings.
+harness interface. Paired invocation, cron deployment, ownership recovery
+and durable report publication remain implementation and deployment work
+under #889. The approved operator-side routes support that work; a pre-existing
+paired installation is not a prerequisite.
 These runner commands do not establish working scheduling or complete
 [#889](https://github.com/craigbalding/safeyolo/issues/889).
 The [blackbox guide](../README.md) owns the maintained section selections and
@@ -50,8 +52,11 @@ existing defined lease owner or any active `sy-*` domain. Its
 `/var/tmp/harness-vms/.guest-lease` survives process exit and power loss.
 Only a lease without a corresponding defined domain self-heals. Preserve
 inactive leased experiments. For a stale automation-owned resource,
-independently verify its recorded owner, domain and disk. Confirm that the
-owner is inactive before reclamation.
+independently verify its recorded owner, domain and disk. Confirm that both
+the owner and the owned domain/resource are inactive before reclamation.
+A controller's exit does not establish that its domain stopped. This stale
+reclamation precondition is separate from teardown of the current owned
+attempt after success, failure or cancellation.
 
 The existing Secure Shell (SSH) transport uses these host scripts with the
 allocated guest's Internet Protocol (IP) address:
@@ -270,14 +275,28 @@ those earlier steps and from the publication operation itself.
 
 The operator-side inspection verified the Rundeck script interface, execution
 account and harness commands in the [KVM harness procedure](#use-the-existing-kvm-harness-through-rundeck).
-The operator-side handoff must still establish the actual
-paired controller path, its independent ownership
-and teardown checks, and its recovery after cancellation or lost SSH.
-It must also establish the cron owner and rights, timezone,
-authorized on-demand admission, Tart staging
-route and permitted durable publication destination and principal.
+The existing foreground Tart client and Bristol `sy-agent` SSH route also
+passed bounded read-only transport checks. Those checks do not establish
+building, signing, transfer, hardware execution or unattended operation.
 
-Once verified, put the actual cron entries, host/account, timezone, paired
+Implement the paired invocation through those approved operator-side routes.
+Keep KVM execution on devstack through Rundeck, macOS compilation and signing
+on Tart, and offline physical VZ execution on Bristol. Devstack's `rundeck`
+account does not need copied Tart or Bristol private keys. The operator chooses
+ordinary installation paths and supplies or executes the exact installation
+and scheduling commands. The trusted installation may be pinned independently
+outside selected-candidate and private execution trees.
+
+Implement exact selection and admission, independent ownership and teardown
+checks, cancellation/lost-SSH recovery, scheduling and durable publication.
+Before stale reclamation, verify both owner inactivity and owned-resource
+inactivity. Current-attempt teardown must still stop the verified owned domain
+after success, failure or cancellation. Use approved services for discoverable
+allowlisted report/diagnostic bundles with run/commit links for every attempt,
+including failures. A new public artifact server is not required. Private
+evidence or log retrieval alone does not establish publication.
+
+After deployment, put the actual cron entries, host/account, timezone, paired
 selected-SHA invocation, on-demand command, result links and recovery commands
 here. Demonstrate the deployed schedule and on-demand wiring and one complete
 successful paired hardware run at the same selected SHA. Keep failed attempts
