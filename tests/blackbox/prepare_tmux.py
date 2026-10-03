@@ -101,7 +101,7 @@ def build_mac_tmux(root: Path) -> Path:
                     "LIBNCURSES_CFLAGS": " ", "LIBNCURSES_LIBS": "-lncurses",
                     "LIBUTF8PROC_CFLAGS": f"-I{sources['utf8proc']}",
                     "LIBUTF8PROC_LIBS": str(sources["utf8proc"] / "libutf8proc.a")}
-        run(["./configure", "--enable-utf8proc", "--disable-utempter", "--disable-systemd"],
+        run(["./configure", "--enable-utf8proc", "--disable-utempter", "--disable-systemd", "--disable-jemalloc"],
             sources["tmux"], build_env=tmux_env)
         run(["make", "-j1"], sources["tmux"], build_env=tmux_env)
         built = sources["tmux"] / "tmux"
