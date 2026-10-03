@@ -6,13 +6,95 @@ acceptance on devstack with physical Apple Silicon Virtualization.framework
 signs and packages the macOS inputs. Bristol verifies transferred inputs and
 executes offline. Both lanes must use one selected full source commit.
 
-This directory currently documents the staged runner inputs. The trusted
-external controller, cron deployment, ownership recovery and durable report
-publication still need the verified Rundeck deployment values. These runner
-commands do not establish working scheduling or complete
+This directory documents the staged runner inputs and verified Rundeck
+harness interface. The paired controller, cron deployment, ownership recovery
+and durable report publication still need their remaining deployment bindings.
+These runner commands do not establish working scheduling or complete
 [#889](https://github.com/craigbalding/safeyolo/issues/889).
 The [blackbox guide](../README.md) owns the maintained section selections and
 the historical hardware observations and limitations.
+
+## Use the existing KVM harness through Rundeck
+
+The 3 October 2026 read-only deployment inspection verified Rundeck project
+`acceptance` on devstack. The approved transport submits a Bash script to
+`POST /api/59/project/acceptance/run/script` with
+`scriptInterpreter=/bin/bash`. The response identifies the execution. This
+interface has no fixed job ID. The execution account is `rundeck`, user ID 112.
+Hardware-control and publication credentials stay outside candidate commands.
+
+The following host commands run through that approved Rundeck invocation as
+`rundeck` on devstack. Before allocation, inspect current inventory, lease
+ownership, defined domains and available capacity. The inspection's earlier
+free-capacity result is not a reservation.
+
+```sh
+bash /var/lib/rundeck/harness/jobs/list_guests.sh
+```
+
+Before provisioning, the trusted caller must supply `ISSUE889_RUN_OWNER`, a
+unique owner for this attempt, and `SELECTED_SHA`, the full selected commit
+already available on origin. Use that same commit for the paired VZ lane.
+Use `--reuse`: the default `--clean` mode removes unrelated inactive unleased
+`sy-*` domains. Allocate a fresh guest for the unique attempt owner while
+preserving those foreign resources.
+
+```sh
+bash /var/lib/rundeck/harness/jobs/provision.sh \
+  --scenario "$ISSUE889_RUN_OWNER" --safeyolo-ref "$SELECTED_SHA" \
+  --flavor full --distro ubuntu --reuse --vcpus 4 --mem 10240 --disk 90
+```
+
+The provisioner holds `/var/tmp/harness-vms/.provision.lock`. It refuses an
+existing defined lease owner or any active `sy-*` domain. Its
+`/var/tmp/harness-vms/.guest-lease` survives process exit and power loss.
+Only a lease without a corresponding defined domain self-heals. Preserve
+inactive leased experiments. For a stale automation-owned resource,
+independently verify its recorded owner, domain and disk. Confirm that the
+owner is inactive before reclamation.
+
+The existing Secure Shell (SSH) transport uses these host scripts with the
+allocated guest's Internet Protocol (IP) address:
+
+| Script under `/var/lib/rundeck/harness/jobs/` | Arguments |
+|---|---|
+| `ssh_exec.sh` | Allocated guest IP, Base64-encoded guest script, timeout in seconds |
+| `ssh_fetch.sh` | Allocated guest IP, exact guest report path, maximum bytes |
+
+Use the allocated guest address from this attempt. Supply a positive execution
+deadline and a bounded report fetch. In the fresh guest, verify usable
+`/dev/kvm` and the [blackbox guide's prerequisites](../README.md) before running
+the lane. From the clean source checkout at `SELECTED_SHA`, with
+`RUN_ARTIFACTS` set to this attempt's new private result
+directory, the guest script invokes:
+
+```sh
+./tests/blackbox/run-installed.sh kvm --install-commit "$SELECTED_SHA" \
+  --artifacts "$RUN_ARTIFACTS/kvm"
+```
+
+The maintained runner prepares the installed product once and executes all
+default KVM sections. Its runtime observations must establish actual KVM
+selection. A guest name, provisioning result or forced platform label does
+not establish KVM-backed isolation.
+
+Before host teardown, independently verify the exact owned guest, domain and
+disk. Invoke `/var/lib/rundeck/harness/jobs/teardown.sh` through Bash with that
+verified exact guest name as its sole argument. Then verify inventory, domain, volume and lease
+state independently. The teardown script suppresses destroy/undefine errors
+and reports success booleans in JavaScript Object Notation (JSON); those
+booleans alone do not establish cleanup. Cancellation or lost guest SSH still
+requires this host-side verification.
+An unestablished cleanup outcome remains a visible failure.
+
+Devstack reported Central European Summer Time (CEST), two hours ahead of
+Coordinated Universal Time (UTC+02:00). The deployed schedule must state its
+timezone explicitly. The read-only inspection found an active cron service
+and permitted `crontab -l` for `rundeck`, with no
+account crontab. It did not verify cron installation rights or install a
+schedule. Private writable harness evidence and Rundeck output retrieval do
+not establish durable discoverable publication. The remaining bindings are
+listed in [Complete the external deployment](#complete-the-external-deployment).
 
 ## Prepare the macOS payload on Tart
 
@@ -186,10 +268,13 @@ those earlier steps and from the publication operation itself.
 
 ## Complete the external deployment
 
-The operator-side Rundeck handoff must establish the existing job ID and
-invocation, execution account, inventory, lease/capacity checks, allocation and
-owned teardown. It must also establish the actual trusted controller path,
-cron owner and rights, timezone, authorized on-demand admission, Tart staging
+The operator-side inspection verified the Rundeck script interface, execution
+account and harness commands in the [KVM harness procedure](#use-the-existing-kvm-harness-through-rundeck).
+The operator-side handoff must still establish the actual
+paired controller path, its independent ownership
+and teardown checks, and its recovery after cancellation or lost SSH.
+It must also establish the cron owner and rights, timezone,
+authorized on-demand admission, Tart staging
 route and permitted durable publication destination and principal.
 
 Once verified, put the actual cron entries, host/account, timezone, paired
