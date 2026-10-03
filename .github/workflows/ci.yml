@@ -22,6 +22,9 @@ jobs:
   test-addons:
     name: Test Addons (Python ${{ matrix.python-version }})${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}
     runs-on: ${{ matrix.os }}
+    # #911 records the supported-host timings and incomplete Mac measurement.
+    # Allow preparation headroom while bounding the whole job separately from tests.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +57,10 @@ jobs:
 
       - name: All retained Python tests overnight
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: uv run --frozen pytest tests/ -v --tb=short --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
+        run: >-
+          uv run --frozen pytest tests/ -v --tb=short
+          --ignore=tests/blackbox/ --ignore=tests/proxy_contracts/
+          --timeout=60 --timeout-method=signal -o faulthandler_timeout=30
 
   test-cli:
     name: Test CLI${{ matrix.os != 'ubuntu-latest' && format(' ({0})', matrix.os) || '' }}

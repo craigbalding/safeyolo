@@ -112,6 +112,7 @@ class Origin(http.server.ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address, *, oauth: bool = False):
+        self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         super().__init__(address, OriginHandler)
         self.oauth = oauth
         self.seen: list[dict] = []
@@ -379,6 +380,10 @@ def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0,
             key_encipherment=False, data_encipherment=False, key_agreement=False,
             key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False),
             critical=True)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()),
+            critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()),
+            critical=False)
         .sign(root_key, hashes.SHA256()))
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     leaf_name = x509.Name([x509.NameAttribute(x509.NameOID.COMMON_NAME, "r638-owned-origin")])
@@ -396,6 +401,10 @@ def https_origin(root: Path, host: str = "127.0.0.2", port: int = 0,
             critical=False)
         .add_extension(x509.SubjectAlternativeName(
             [x509.IPAddress(ipaddress.ip_address(host))]), critical=False)
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()),
+            critical=False)
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()),
+            critical=False)
         .sign(root_key, hashes.SHA256()))
     cert_path = root / "owned-origin-root.pem"
     leaf_path = root / "owned-origin-cert.pem"

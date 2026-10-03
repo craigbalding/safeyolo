@@ -850,16 +850,73 @@ def test_guest_sse_decodes_http_before_reporting_admitted_event(monkeypatch, cli
         assert errors == []
 
 
-@pytest.mark.parametrize("body,message", [(b"data: truncated", "ended before"), (b"x" * 8192, "exceeded")])
+@pytest.mark.parametrize("body,message", [(b"data: truncated", "ended before"), (b"x" * 8192, "exceeded")],
+                         ids=["incomplete", "oversized"])
 def test_guest_sse_rejects_incomplete_or_oversized_events(body, message):
     reader, writer = socket.socketpair()
+    errors = []
+
+    def send():
+        try:
+            writer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + body)
+            writer.shutdown(socket.SHUT_WR)
+        except OSError as exc:
+            errors.append(exc)
+
     with reader, writer:
-        writer.sendall(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + body)
-        writer.shutdown(socket.SHUT_WR)
-        response = http.client.HTTPResponse(reader)
+        reader.settimeout(3)
+        writer.settimeout(3)
+        writer.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+        # macOS's socketpair buffer cannot hold this whole response before a read.
+        # A small buffer also exercises producer backpressure on Linux.
+        sender = threading.Thread(target=send, name="SSE fixture sender")
+        sender.start()
+        try:
+            with http.client.HTTPResponse(reader) as response:
+                response.begin()
+                with pytest.raises(AssertionError, match=message):
+                    guest_workloads._event(response)
+        finally:
+            reader.close()
+            sender.join(timeout=5)
+            assert not sender.is_alive(), "SSE fixture sender did not stop after socket cleanup"
+        assert errors == []
+
+
+def test_retained_python_timeout_reports_blocked_sse_and_cleans_sockets(tmp_path):
+    """The retained job's signal timeout reports the blocked read and runs finally."""
+    cleanup = tmp_path / "cleanup.json"
+    control = tmp_path / "test_blocked_sse.py"
+    control.write_text(f'''import http.client
+import json
+import socket
+from pathlib import Path
+from tests.blackbox.isolation.installed_workloads import _event
+
+def test_blocked_sse_input():
+    reader, writer = socket.socketpair()
+    response = http.client.HTTPResponse(reader)
+    try:
+        writer.sendall(b"HTTP/1.1 200 OK\\r\\nConnection: close\\r\\n\\r\\ndata: unfinished")
         response.begin()
-        with pytest.raises(AssertionError, match=message):
-            guest_workloads._event(response)
+        _event(response)
+    finally:
+        response.close()
+        reader.close()
+        writer.close()
+        Path({str(cleanup)!r}).write_text(json.dumps([reader.fileno(), writer.fileno()]))
+''')
+    environment = {**os.environ, "PYTHONPATH": str(ROOT)}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--noconftest", "-v", "--tb=short",
+         "--timeout=1", "--timeout-method=signal", str(control)],
+        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=10, check=False,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Timeout (>1.0s)" in output, output
+    assert "test_blocked_sse_input" in output and "installed_workloads.py" in output, output
+    assert json.loads(cleanup.read_text()) == [-1, -1]
 
 
 def test_selected_installed_identity_requires_exact_wheel_stamp_and_binary(tmp_path):
@@ -1302,17 +1359,23 @@ def test_continuity_keeps_nats_in_its_state_directory_with_a_valid_instance(tmp_
     assert env["SAFEYOLO_NATS_TEST_INSTANCE"] != continuity.env_for(root.with_name("peer"))["SAFEYOLO_NATS_TEST_INSTANCE"]
 
 
-@pytest.mark.parametrize("host,bind_host", [("127.0.0.1", "127.0.0.1"), ("127.0.0.2", "127.0.0.2"),
-                                          ("127.0.0.2", "127.0.0.1")])
+@pytest.mark.parametrize("host,bind_host", [
+    ("127.0.0.1", "127.0.0.1"),
+    # Use Darwin's configured IPv6 loopback as the second bind address.
+    ("::1", "::1") if sys.platform == "darwin" else ("127.0.0.2", "127.0.0.2"),
+    ("127.0.0.2", "127.0.0.1"),
+])
 def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_path, host, bind_host):
-    with socket.socket() as reserve:
+    family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+    with socket.socket(family) as reserve:
         reserve.bind((bind_host, 0))
         port = reserve.getsockname()[1]
     origin, root_cert = continuity.https_origin(tmp_path, host, port, bind_host)
-    assert origin.server_address == (bind_host, port)
+    assert origin.server_address[:2] == (bind_host, port)
     thread = threading.Thread(target=origin.serve_forever)
     thread.start()
     context = ssl.create_default_context(cafile=root_cert)
+    context.verify_flags |= ssl.VERIFY_X509_STRICT
     try:
         with socket.create_connection((bind_host, port), timeout=3) as raw:
             with context.wrap_socket(raw, server_hostname=host) as secured:
@@ -1328,6 +1391,9 @@ def test_continuity_tls_origin_uses_selected_bind_address_and_certificate(tmp_pa
         with socket.create_connection((bind_host, port), timeout=3) as raw:
             with pytest.raises(ssl.SSLCertVerificationError):
                 context.wrap_socket(raw, server_hostname=wrong_host)
+        with socket.create_connection((bind_host, port), timeout=3) as raw:
+            with pytest.raises(ssl.SSLCertVerificationError):
+                ssl.create_default_context().wrap_socket(raw, server_hostname=host)
         assert [row["path"] for row in origin.seen] == ["/selected-host"]
     finally:
         origin.shutdown()

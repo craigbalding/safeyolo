@@ -61,6 +61,6 @@ def test_writer_matrix_retains_explicit_rollback_and_unresolved_owners() -> None
         "Flow evidence (durable SQLite)",
         "Coordination/collaboration state (external service boundary)",
         "do not resurrect removed access or claim exactly-once across restart",
-        "does not claim that the Python comparator, guest isolation, or a platform lane has passed",
+        "did not claim that the Python comparator, guest isolation, or a platform lane had passed as a full release gate",
     ):
         assert required in text
