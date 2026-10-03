@@ -220,7 +220,7 @@ def _stop_agent_by_name(name: str, *, agent_id: str, on_phase: Callable[[str], N
     # A deadline can reap the helper before public stop. Still consume its
     # identity-bound supervision receipt through the platform cleanup path.
     vz_cleanup_pending = (get_agents_dir() / name / "vm-supervisor.json").exists()
-    if not platform.is_sandbox_running(name) and not vz_cleanup_pending:
+    if not vz_cleanup_pending and not platform.is_sandbox_running(name):
         return _runtime(name, agent_id)
 
     if on_phase:

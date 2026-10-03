@@ -94,7 +94,7 @@ def test_real_deadline_stops_and_reaps_helper(supervised_vm, monkeypatch):
     assert not (supervised_vm / "vm-supervisor.json").exists()
 
 
-@pytest.mark.parametrize("exit_mode", ("deadline", "helper_exit", "missing_helper_pid"))
+@pytest.mark.parametrize("exit_mode", ("deadline", "helper_exit", "missing_helper_pid", "empty_helper_pid"))
 def test_public_stop_reclaims_supervision_after_helper_exit(supervised_vm, monkeypatch, exit_mode):
     from safeyolo import agent_lifecycle, platform
     from safeyolo.platform.darwin import DarwinPlatform
@@ -110,6 +110,8 @@ def test_public_stop_reclaims_supervision_after_helper_exit(supervised_vm, monke
     assert not process_is_alive(helper_pid)
     if exit_mode == "missing_helper_pid":
         (supervised_vm / "vm.pid").unlink()
+    elif exit_mode == "empty_helper_pid":
+        (supervised_vm / "vm.pid").write_text("")
     result = agent_lifecycle.stop_agent_by_name("probe")
     assert result.sandbox_state == "stopped" and result.error is None
     assert not (supervised_vm / "vm-supervisor.json").exists()
