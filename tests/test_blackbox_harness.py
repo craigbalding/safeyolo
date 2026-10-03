@@ -1424,7 +1424,7 @@ def test_installed_sections_treat_missing_pytest_reports_as_evidence_failure(
     monkeypatch.setenv("OMIT_OBSERVATIONS", "1")
     artifacts = tmp_path / "artifacts"
     assert installed_sections.run_sections(
-        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
+        "vz" if sys.platform == "darwin" else "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
         tmp_path / "installed", artifacts,
     ) == 2
     report = json.loads((artifacts / "installed-sections.json").read_text())
@@ -1488,7 +1488,7 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
     monkeypatch.setattr(installed_sections.subprocess, "run", retain_failed_pytest)
     artifacts = tmp_path / "artifacts"
     assert installed_sections.run_sections(
-        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
+        "vz" if sys.platform == "darwin" else "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
         tmp_path / "installed", artifacts,
     ) == (section_exit or 2)
     summary_text = (artifacts / "installed-summary.json").read_text()
