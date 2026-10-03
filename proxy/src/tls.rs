@@ -8,11 +8,13 @@ use std::{io::Cursor, path::Path, sync::Arc};
 use pkcs8::{AlgorithmIdentifierRef, ObjectIdentifier, PrivateKeyInfo, der::Encode};
 use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose};
 use rustls::{
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    pki_types::{
+        CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName,
+        pem::{PemObject, SectionKind},
+    },
     server::{ClientHello, ResolvesServerCert},
     sign::CertifiedKey,
 };
-use rustls_pemfile::Item;
 use time::{Duration, OffsetDateTime};
 
 use crate::Error;
@@ -35,16 +37,17 @@ impl CertificateAuthority {
     pub fn from_pem(pem: &[u8]) -> Result<Self, Error> {
         let mut certificates = Vec::new();
         let mut private_key = None;
-        for item in rustls_pemfile::read_all(&mut Cursor::new(pem)) {
-            let key = match item? {
-                Item::X509Certificate(cert) => {
-                    certificates.push(cert);
+        for item in <(SectionKind, Vec<u8>)>::pem_reader_iter(Cursor::new(pem)) {
+            let (kind, der) = item?;
+            let key = match kind {
+                SectionKind::Certificate => {
+                    certificates.push(CertificateDer::from(der));
                     continue;
                 }
-                Item::Pkcs1Key(key) => PrivateKeyDer::Pkcs1(key),
-                Item::Pkcs8Key(key) => PrivateKeyDer::Pkcs8(key),
-                Item::Sec1Key(key) => PrivateKeyDer::Sec1(key),
-                _ => continue,
+                _ => match PrivateKeyDer::from_pem(kind, der) {
+                    Some(key) => key,
+                    None => continue,
+                },
             };
             if private_key.replace(key).is_some() {
                 return Err("CA file contains more than one private key".into());
