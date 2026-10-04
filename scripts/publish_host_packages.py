@@ -95,7 +95,13 @@ def release(repository: str, tag: str) -> dict | None:
     data = json.loads(result.stdout)
     if result.returncode:
         if data.get("status") == "404":
-            # A first release or an absent commit tag is expected. Other failures propagate.
+            # Tag lookup can omit drafts. List all pages before declaring a tag absent.
+            if tag:
+                pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+                for page in pages:
+                    for candidate in page:
+                        if candidate["tag_name"] == tag:
+                            return candidate
             return None
         raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
     return data
@@ -186,6 +192,8 @@ def stage(repository: str, commit: str, directory: Path) -> None:
     existing = release(repository, tag)
     if existing and not existing["draft"]:
         raise ValueError("refusing to change an already published host package release")
+    if existing and existing["target_commitish"] != commit:
+        raise ValueError("existing host package draft targets a different source commit")
     checksums = directory / "SHA256SUMS"
     checksums.write_text("".join(f"{sha256(paths[name])}  {name}\n" for name in sorted(paths)))
     with tempfile.TemporaryDirectory(prefix="host-release-notes-") as temporary:
@@ -212,6 +220,8 @@ def stage(repository: str, commit: str, directory: Path) -> None:
             gh("release", "edit", tag, "--repo", repository, "--notes-file", str(notes))
     gh("release", "upload", tag, "--repo", repository, "--clobber", *map(str, paths.values()), str(checksums))
     staged = release(repository, tag)
+    if staged is None or staged["target_commitish"] != commit:
+        raise ValueError("uploaded host package release is missing or targets a different source commit")
     if {asset["name"] for asset in staged["assets"]} != ASSETS | {"SHA256SUMS"}:
         raise ValueError("uploaded host package set differs from the complete local set")
     # A prerelease is downloadable but cannot become GitHub's implicit first latest.
