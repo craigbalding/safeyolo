@@ -130,10 +130,31 @@ def test_release_lookup_only_treats_not_found_as_absent(monkeypatch, status):
     response = subprocess.CompletedProcess(["gh"], 1, json.dumps({"status": status}), "API failure")
     monkeypatch.setattr(publisher.subprocess, "run", lambda *args, **kwargs: response)
     if status == "404":
+        monkeypatch.setattr(publisher, "gh", lambda *args: "[[]]")
         assert publisher.release(REPOSITORY, f"host-{COMMIT}") is None
     else:
+        monkeypatch.setattr(publisher, "gh", lambda *args: pytest.fail("failed tag lookup tried release listing"))
         with pytest.raises(subprocess.CalledProcessError):
             publisher.release(REPOSITORY, f"host-{COMMIT}")
+
+
+def test_latest_not_found_does_not_select_a_draft(monkeypatch):
+    response = subprocess.CompletedProcess(["gh"], 1, '{"status":"404"}', "not found")
+    monkeypatch.setattr(publisher.subprocess, "run", lambda *args, **kwargs: response)
+    monkeypatch.setattr(publisher, "gh", lambda *args: pytest.fail("latest lookup tried release listing"))
+    assert publisher.release(REPOSITORY, "") is None
+
+
+def test_unreadable_draft_list_is_not_an_absent_release(monkeypatch):
+    response = subprocess.CompletedProcess(["gh"], 1, '{"status":"404"}', "not found")
+    monkeypatch.setattr(publisher.subprocess, "run", lambda *args, **kwargs: response)
+
+    def failed_list(*args):
+        raise subprocess.CalledProcessError(1, ["gh", *args], stderr="release list unavailable")
+
+    monkeypatch.setattr(publisher, "gh", failed_list)
+    with pytest.raises(subprocess.CalledProcessError, match="non-zero exit"):
+        publisher.release(REPOSITORY, f"host-{COMMIT}")
 
 
 def make_archives(directory: Path, commit: str = COMMIT) -> None:
@@ -152,7 +173,8 @@ def test_a_complete_stage_publishes_downloads_without_promoting_latest(source_ch
     make_archives(tmp_path)
     runs, _ = source_checks
     runs["proxy-rust.yml"][0]["conclusion"] = "failure"
-    staged = {"id": 40, "draft": True, "assets": [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}]}
+    staged = {"id": 40, "draft": True, "target_commitish": COMMIT,
+              "assets": [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}]}
     lookups = iter([None, staged])
     monkeypatch.setattr(publisher, "release", lambda *args: next(lookups))
     calls = []
@@ -173,6 +195,99 @@ def test_a_complete_stage_publishes_downloads_without_promoting_latest(source_ch
     assert "workflow conclusion failure" in notes[0]
     job_url = successful_job("Quick native checks (Ubuntu)")["html_url"]
     assert f"[Quick native checks (Ubuntu)]({job_url}) (attempt 1)" in notes[0]
+
+
+@pytest.mark.parametrize("already_uploaded", [False, True])
+def test_stage_discovers_and_retries_drafts_omitted_by_tag_lookup(tmp_path, monkeypatch, already_uploaded):
+    make_archives(tmp_path)
+    monkeypatch.setattr(publisher, "successful_checks", lambda *args: {})
+    tag = f"host-{COMMIT}"
+    draft = {"id": 40, "tag_name": tag, "draft": True, "target_commitish": COMMIT,
+             "assets": [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}] if already_uploaded else []}
+    visible = already_uploaded
+    calls = []
+
+    def lookup(args, **kwargs):
+        assert args == ["gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"]
+        return subprocess.CompletedProcess(args, 1, '{"status":"404"}', "not found")
+
+    def gh(*args):
+        nonlocal visible
+        calls.append(args)
+        if args[0] == "api" and "--paginate" in args:
+            assert args == ("api", "--paginate", "--slurp", f"repos/{REPOSITORY}/releases?per_page=100")
+            return json.dumps([[{"tag_name": "unrelated", "draft": True}], [draft] if visible else []])
+        if args[:2] == ("release", "create"):
+            assert not visible
+            visible = True
+        elif args[:2] == ("release", "upload"):
+            assert visible
+            draft["assets"] = [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}]
+        return ""
+
+    monkeypatch.setattr(publisher.subprocess, "run", lookup)
+    monkeypatch.setattr(publisher, "gh", gh)
+    publisher.stage(REPOSITORY, COMMIT, tmp_path)
+    release_commands = [call[:2] for call in calls if call[0] == "release"]
+    assert release_commands == [("release", "edit" if already_uploaded else "create"), ("release", "upload")]
+    assert f"repos/{REPOSITORY}/releases/40" in calls[-1]
+    assert "prerelease=true" in calls[-1] and "make_latest=false" in calls[-1]
+    assert (tmp_path / "SHA256SUMS").read_text() == "".join(
+        f"{hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()}  {name}\n" for name in sorted(publisher.ASSETS)
+    )
+
+
+@pytest.mark.parametrize("failure", ["missing", "unreadable", "wrong-source", "incomplete"])
+def test_failed_upload_readback_does_not_publish(tmp_path, monkeypatch, failure):
+    make_archives(tmp_path)
+    monkeypatch.setattr(publisher, "successful_checks", lambda *args: {})
+    calls = []
+    monkeypatch.setattr(publisher, "gh", lambda *args: calls.append(args))
+    lookups = 0
+
+    def release(*args):
+        nonlocal lookups
+        lookups += 1
+        if lookups == 1 or failure == "missing":
+            return None
+        if failure == "unreadable":
+            raise subprocess.CalledProcessError(1, ["gh", "api"], stderr="readback unavailable")
+        return {"draft": True, "target_commitish": "b" * 40 if failure == "wrong-source" else COMMIT,
+                "assets": [] if failure == "incomplete" else [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}]}
+
+    monkeypatch.setattr(publisher, "release", release)
+    error = subprocess.CalledProcessError if failure == "unreadable" else ValueError
+    with pytest.raises(error):
+        publisher.stage(REPOSITORY, COMMIT, tmp_path)
+    assert not any(call[0] == "api" for call in calls)
+
+
+def test_retry_does_not_change_a_draft_for_another_source(tmp_path, monkeypatch):
+    make_archives(tmp_path)
+    monkeypatch.setattr(publisher, "successful_checks", lambda *args: {})
+    monkeypatch.setattr(publisher, "release", lambda *args: {"draft": True, "target_commitish": "b" * 40})
+    monkeypatch.setattr(publisher, "gh", lambda *args: pytest.fail("wrong-source draft was changed"))
+    with pytest.raises(ValueError, match="different source commit"):
+        publisher.stage(REPOSITORY, COMMIT, tmp_path)
+
+
+@pytest.mark.parametrize("tag_status", [200, 404])
+def test_draft_discovery_preserves_published_release_refusal(tmp_path, monkeypatch, tag_status):
+    make_archives(tmp_path)
+    monkeypatch.setattr(publisher, "successful_checks", lambda *args: {})
+    published = {"id": 40, "tag_name": f"host-{COMMIT}", "target_commitish": COMMIT, "draft": False}
+    response = subprocess.CompletedProcess(
+        ["gh"], int(tag_status == 404), json.dumps(published if tag_status == 200 else {"status": "404"}), "",
+    )
+    monkeypatch.setattr(publisher.subprocess, "run", lambda *args, **kwargs: response)
+
+    def gh(*args):
+        assert args == ("api", "--paginate", "--slurp", f"repos/{REPOSITORY}/releases?per_page=100")
+        return json.dumps([[published]])
+
+    monkeypatch.setattr(publisher, "gh", gh)
+    with pytest.raises(ValueError, match="already published"):
+        publisher.stage(REPOSITORY, COMMIT, tmp_path)
 
 
 @pytest.mark.parametrize("failure", ["missing", "extra", "wrong-commit", "failed-check", "published"])
