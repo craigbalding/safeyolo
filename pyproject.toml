@@ -49,6 +49,9 @@ dependencies = [
     "nats-py>=2.15,<3",
     "prompt-toolkit>=3.0,<4",
     "websockets>=16.1,<17",
+    "brotlicffi>=1.2.0.2,<2",
+    "zstandard>=0.25,<1",
+    "pygments>=2.20,<3",
 ]
 
 [project.scripts]
