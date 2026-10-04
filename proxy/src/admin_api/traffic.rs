@@ -8,6 +8,8 @@ use percent_encoding::percent_decode_str;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+const MAX_BODY_PREVIEW_BYTES: usize = 64 * 1024;
+
 // Pagination bounds one JSON response, without limiting retained messages.
 const MESSAGE_PAGE_BYTES: usize = 64 * 1024;
 
@@ -124,13 +126,41 @@ pub(super) async fn respond<B: Body<Data = Bytes>>(
                         ));
                     }
                 };
-                view.body(&id, side)
+                match body_preview_bytes(request.uri().query()) {
+                    Ok(Some(limit)) => view.body_preview(&id, side, limit),
+                    Ok(None) => view.body(&id, side),
+                    Err(()) => {
+                        return Ok(response(
+                            StatusCode::BAD_REQUEST,
+                            json!({"error":"preview_bytes must be between 0 and 65536"}),
+                        ));
+                    }
+                }
             } else {
                 view.detail(&id)
             }
         }
     };
     Ok(optional_response(value))
+}
+
+fn body_preview_bytes(query: Option<&str>) -> Result<Option<usize>, ()> {
+    let mut limit = None;
+    for value in query
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|pair| pair.strip_prefix("preview_bytes="))
+    {
+        if limit.is_some() {
+            return Err(());
+        }
+        let parsed = value.parse::<usize>().map_err(|_| ())?;
+        if parsed > MAX_BODY_PREVIEW_BYTES {
+            return Err(());
+        }
+        limit = Some(parsed);
+    }
+    Ok(limit)
 }
 
 fn export_format(query: Option<&str>) -> Option<ExportFormat> {
