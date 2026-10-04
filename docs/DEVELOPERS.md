@@ -432,9 +432,10 @@ stacked `Content-Encoding` values in reverse order. A preview may stop after
 The view identifies unsupported encodings, malformed streams, and incomplete
 retained previews. It shows readable text recovered before a stream ends or
 fails. Binary and unknown content get a compact media type, retained size,
-safe byte sample, and the `x` export choice for the selected side. Raw exports
-keep the original bytes. The inspector escapes terminal controls, including
-tabs and carriage returns, in displayed traffic.
+safe byte sample, and the `x` export choice for the selected side. Preview
+decoding and formatting do not change retained bytes or existing export output.
+The inspector escapes terminal controls, including tabs and carriage returns,
+in displayed traffic.
 
 All headers are shown when the inspector opens. Press `h` to hide or show only
 `Accept`, `Accept-Encoding`, `Accept-Language`, and `User-Agent`. The setting
