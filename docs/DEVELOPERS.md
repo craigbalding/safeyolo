@@ -404,7 +404,46 @@ Scope and user-filter changes affect all inspectors and do not change forwarding
 policy.
 Detaching leaves the proxy and its retained view running.
 Use Up/Down to select a flow, Tab to change panes, and Page Up/Page Down to
-scroll. `r` and `s` fetch request and response body snapshots. `a` and `t`
+scroll. The selected exchange shows separate HTTP request, HTTP response, and
+SafeYolo metadata sections. The inspector fetches both retained body previews
+when a flow is selected. It fetches a side again when its body facts change.
+Pending, unavailable, empty, truncated, and failed previews have distinct
+messages. Press `r` or `s` to retry the request or response preview.
+Each preview fetch transfers at most 64 KiB of retained bytes. The inspector
+also limits rendered body text to 32,768 characters per side. These limits
+do not change retained bytes or exports. The authenticated body route accepts
+`preview_bytes=0..65536` for a bounded response with `preview_size` and
+`truncated` fields; omitting that parameter keeps the full-body response.
+
+Formatted mode is on when the inspector opens. Press `p` to switch between
+formatted and source modes. The setting persists across selections and
+refreshes. Both modes decode supported content encodings and use the declared
+charset for readable media types. Source mode keeps spaces and line breaks;
+formatted mode indents JSON and newline-delimited JSON and separates URL form
+fields. Already-indented source JSON may look indented in both modes. HTML,
+XML, JavaScript, CSS, event streams, and other text stay readable without
+pressing `p`. The selected body uses syntax colours for common structured
+content. The text remains legible in a monochrome terminal. Colour does not
+change the detail text or exports.
+
+The inspector decodes `identity`, `gzip`, `deflate`, `br`, and `zstd`, including
+stacked `Content-Encoding` values in reverse order. A preview may stop after
+64 KiB of decoded data, 16 encoding stages, or a 32 MiB Zstandard window.
+The view identifies unsupported encodings, malformed streams, and incomplete
+retained previews. It shows readable text recovered before a stream ends or
+fails. Binary and unknown content get a compact media type, retained size,
+safe byte sample, and the `x` export choice for the selected side. Raw exports
+keep the original bytes. The inspector escapes terminal controls, including
+tabs and carriage returns, in displayed traffic.
+
+All headers are shown when the inspector opens. Press `h` to hide or show only
+`Accept`, `Accept-Encoding`, `Accept-Language`, and `User-Agent`. The setting
+persists across selections and refreshes. Each HTTP side lists the hidden
+header names and field counts without hidden values. Showing headers again
+restores their original order, spelling, and duplicates. Content, connection,
+framing, cache, security, and tracing headers remain visible for diagnosis.
+
+`a` and `t`
 change the shared agent and test scope; `c` clears only that scope. `f` edits
 the shared user filter. Enter applies the expression, Escape cancels, and an
 empty expression clears only the user filter. `q` detaches.
