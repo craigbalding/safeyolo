@@ -665,7 +665,7 @@ pub(crate) fn update_policy<T>(
     path: &Path,
     skip_unchanged: bool,
     mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
-    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<T> {
     policy_transaction(
         path,
@@ -677,8 +677,14 @@ pub(crate) fn update_policy<T>(
             let changed = restore_large_toml_integers(&document.to_string(), &context);
             Ok((result, changed))
         },
-        activate,
+        |source, _| activate(source),
     )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum PolicyActivation {
+    Candidate,
+    Rollback,
 }
 
 /// A whole replacement does not need to parse the rejected saved candidate.
@@ -686,7 +692,7 @@ pub(crate) fn update_policy<T>(
 pub(crate) fn replace_policy(
     path: &Path,
     source: &str,
-    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
 ) -> Result<()> {
     policy_transaction(path, false, |_| Ok(((), source.to_owned())), activate)
 }
@@ -695,7 +701,7 @@ fn policy_transaction<T>(
     path: &Path,
     skip_unchanged: bool,
     prepare: impl FnOnce(&str) -> Result<(T, String)>,
-    mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
+    mut activate: impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
 ) -> Result<T> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
         return Err(ApprovalError {
@@ -720,7 +726,7 @@ fn policy_transaction<T>(
         }
         return Err(error.error.into());
     }
-    if let Err(error) = activate(&changed) {
+    if let Err(error) = activate(&changed, PolicyActivation::Candidate) {
         restore_policy(path, &original, &mut activate)?;
         return Err(ApprovalError {
             kind: ErrorKind::Activation,
@@ -735,13 +741,13 @@ fn policy_transaction<T>(
 fn restore_policy(
     path: &Path,
     original: &str,
-    activate: &mut impl FnMut(&str) -> std::result::Result<(), String>,
+    activate: &mut impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
 ) -> Result<()> {
     save_policy(path, original).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to restore original policy: {}", error.error),
     })?;
-    activate(original).map_err(|error| ApprovalError {
+    activate(original, PolicyActivation::Rollback).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to reactivate restored policy: {error}"),
     })

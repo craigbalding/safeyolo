@@ -100,6 +100,9 @@ authenticated Admin API. Exit zero and `status: active` confirm activation.
 Persistence or activation failure returns nonzero. The existing transaction
 restores the previous saved source after a failed activation. The allowed and
 denied controls in the active policy remain effective.
+If the saved policy was already inactive, rollback restores those saved bytes
+and retains the actual pre-apply live generation. The saved/live mismatch
+remains visible until you apply or restore the intended inputs.
 
 When an external edit is invalid or activation cannot complete, show reports
 `saved_differs` or `saved_unreadable`, preserves the active values in `effective`,
@@ -120,6 +123,11 @@ and `global_budget`, produce named validation errors.
 Check resolves named list files relative to the checked policy. Apply records
 those file references as absolute paths so saving the candidate under the
 instance root does not change which list the native process loads.
+Show displays the loaded members in `effective.lists`, their file paths in
+`sources`, and each referenced file's current status in `list_files`. A changed
+or unreadable list produces a saved/live mismatch, including changes that retain
+the original file timestamp. The displayed members remain those used by the
+active compiler until a valid policy reload or apply succeeds.
 
 For example, network enforcement and credential enforcement have separate
 actions. These explicit values retain the default blocking behavior:

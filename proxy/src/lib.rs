@@ -849,27 +849,59 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
         .clone()
         .ok_or("active policy is unavailable")?;
     policy.reload_native_source(source, &path)?;
-    let activate = |saved: &str| {
-        let mut current = state
-            .write()
-            .map_err(|_| "runtime lock is unavailable".to_string())?;
-        let policy = current
-            .policy
-            .as_ref()
-            .ok_or("active policy is unavailable")?;
-        let mut candidate = policy
-            .reload_native_source(saved, &path)
-            .map_err(|error| error.to_string())?;
-        candidate
-            .observe_baseline_files(Some(policy))
-            .map_err(|error| error.to_string())?;
-        let runtime =
-            prepare_policy_runtime(&current, candidate).map_err(|error| error.to_string())?;
-        runtime
-            .configure_declarations()
-            .map_err(|error| error.to_string())?;
-        *current = Arc::new(runtime);
-        Ok(())
+    let activate = {
+        let path = path.clone();
+        let mut locked_runtime = None;
+        let mut before_activation = None;
+        move |saved: &str, activation| {
+            // Acquire after the store/file locks, and retain through rollback.
+            // No runtime writer can interleave with the rejected transaction.
+            if locked_runtime.is_none() {
+                locked_runtime = Some(
+                    state
+                        .write()
+                        .map_err(|_| "runtime lock is unavailable".to_string())?,
+                );
+            }
+            let current = locked_runtime
+                .as_mut()
+                .ok_or("runtime lock is unavailable")?;
+            let runtime = match activation {
+                approvals::PolicyActivation::Candidate => {
+                    before_activation = Some(Arc::clone(current));
+                    let policy = current
+                        .policy
+                        .as_ref()
+                        .ok_or("active policy is unavailable")?;
+                    let mut candidate = policy
+                        .reload_native_source(saved, &path)
+                        .map_err(|error| error.to_string())?;
+                    candidate
+                        .observe_baseline_files(Some(policy))
+                        .map_err(|error| error.to_string())?;
+                    prepare_policy_runtime(current, candidate).map_err(|error| error.to_string())?
+                }
+                approvals::PolicyActivation::Rollback => {
+                    // Restored SAVED bytes may never have been live. Restore
+                    // the exact pre-apply generation instead of compiling them.
+                    let previous = before_activation
+                        .take()
+                        .unwrap_or_else(|| Arc::clone(current));
+                    let mut runtime = previous.as_ref().clone();
+                    if let Some(policy) = runtime.policy.as_mut() {
+                        policy
+                            .observe_restored_native_file()
+                            .map_err(|error| error.to_string())?;
+                    }
+                    runtime
+                }
+            };
+            runtime
+                .configure_declarations()
+                .map_err(|error| error.to_string())?;
+            **current = Arc::new(runtime);
+            Ok(())
+        }
     };
     let store = state
         .read()
@@ -960,15 +992,31 @@ pub(crate) fn native_policy_status(state: &RuntimeState) -> Result<Value, Error>
     let mut result = policy
         .native_view(&path)
         .ok_or("active native policy is unavailable")?;
+    let list_files = policy.native_list_file_status();
+    let lists_match = list_files
+        .values()
+        .all(|status| status["saved_matches_active"] == true);
+    let list_unreadable = list_files
+        .values()
+        .any(|status| status["status"] == "saved_unreadable");
+    if !list_files.is_empty() {
+        result["list_files"] = Value::Object(list_files);
+    }
     match std::fs::read_to_string(&path) {
         Ok(saved) => {
             let saved = zeroize::Zeroizing::new(saved);
-            let matches = policy.native_source_text() == Some(saved.as_str());
+            let matches = policy.native_source_text() == Some(saved.as_str()) && lists_match;
             result["saved_matches_active"] = json!(matches);
-            result["status"] = json!(if matches { "active" } else { "saved_differs" });
+            result["status"] = json!(if list_unreadable {
+                "saved_unreadable"
+            } else if matches {
+                "active"
+            } else {
+                "saved_differs"
+            });
             if !matches {
                 result["repair"] = json!(
-                    "Run policy check on the saved file, then policy apply FILE to activate it, or restore the active policy."
+                    "Run policy check on the saved file and correct its referenced lists, then policy apply FILE to activate the inputs, or restore the active policy and lists."
                 );
             }
         }

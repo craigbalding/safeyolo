@@ -279,6 +279,44 @@ def test_rejected_apply_preserves_allowed_denied_saved_live_and_recovers(tmp_pat
         controls(instance, origin, other)
 
 
+@pytest.mark.parametrize("services", [False, True])
+@pytest.mark.parametrize("saved_egress", ["allow", "deny"])
+def test_failed_activation_retains_live_generation_when_saved_policy_differs(tmp_path, services, saved_egress):
+    with origin_server() as origin, origin_server() as other, native_instance(tmp_path, services=services) as instance:
+        source = scoped_policy(origin.server_address[1])
+        instance.apply(source)
+        active = instance.show()["effective"]
+        pid = instance.process.pid
+        # Select a saved/live mismatch without asking the existing mtime
+        # watcher to activate the external candidate before the failed apply.
+        saved = DENY.replace('egress="deny"', f'egress="{saved_egress}"')
+        metadata = instance.policy.stat()
+        instance.policy.write_text(saved)
+        os.utime(instance.policy, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        assert instance.show()["status"] == "saved_differs"
+        controls(instance, origin, other)
+        failed = instance.apply(DENY + "\n[credential.activation_failure]\nmatch = ['\\uD800']\n", valid=False)
+        assert "activation failed" in failed.stderr
+        assert instance.policy.read_text() == saved
+        controls(instance, origin, other)
+        # The maintained watcher checks every two seconds. Observe through
+        # the existing four-second publication deadline so its next check
+        # cannot silently activate the restored, previously inactive bytes.
+        deadline = time.monotonic() + 4
+        while True:
+            shown = instance.show()
+            assert shown["status"] == "saved_differs" and not shown["saved_matches_active"]
+            assert shown["effective"] == active and "policy apply" in shown["repair"]
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        controls(instance, origin, other)
+        instance.apply(source)
+        assert instance.show()["status"] == "active"
+        assert instance.process.pid == pid and instance.process.poll() is None
+        controls(instance, origin, other)
+
+
 def test_apply_with_service_store_uses_existing_transaction_without_deadlock(tmp_path):
     with origin_server() as origin, origin_server() as other, native_instance(tmp_path, services=True) as instance:
         instance.apply(scoped_policy(origin.server_address[1]))
@@ -318,12 +356,57 @@ def test_apply_keeps_checked_list_file_scope_when_saved_under_another_root(tmp_p
         source = DENY + '\n[lists]\nselected="targets.txt"\n[hosts."$selected"]\negress="allow"\n'
         instance.apply(source)
         shown = instance.show()
-        assert shown["effective"]["lists"]["selected"] == str(tmp_path / "targets.txt")
+        assert shown["effective"]["lists"]["selected"] == ["chosen.example"]
+        assert shown["sources"]["lists.selected"] == str(tmp_path / "targets.txt")
         # The owned parent answers allowed requests; no external DNS or origin
         # is needed to observe the distinct authored host scopes.
         assert request(instance.paths["alice"], "http://chosen.example/chosen")[0] == 200
         assert request(instance.paths["alice"], "http://shadowed.example/shadowed")[0] == 403
         assert origin.accepts == 1
+
+
+def test_show_distinguishes_saved_list_inputs_from_active_compiled_scope(tmp_path):
+    with origin_server() as origin, native_instance(
+        tmp_path, parent_proxy=f"http://127.0.0.1:{origin.server_address[1]}",
+    ) as instance:
+        targets = tmp_path / "targets.txt"
+        targets.write_text("chosen.example\n")
+        source = DENY + '\n[lists]\nselected="targets.txt"\n[hosts."$selected"]\negress="allow"\n'
+        instance.apply(source)
+        saved_policy = instance.policy.read_bytes()
+        pid = instance.process.pid
+        assert request(instance.paths["alice"], "http://chosen.example/chosen")[0] == 200
+        assert request(instance.paths["alice"], "http://replacement.example/denied")[0] == 403
+        metadata = targets.stat()
+        for content, expected_status in (("replacement.example\n", "saved_differs"),
+                                         ("replacement.example:70000\n", "saved_differs"),
+                                         (None, "saved_unreadable")):
+            if content is None:
+                targets.unlink()
+            else:
+                targets.write_text(content)
+                os.utime(targets, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+            checked = instance.cli("policy", "check", str(instance.policy))
+            assert (checked.returncode == 0) == (content == "replacement.example\n"), checked.stderr
+            shown = instance.show()
+            assert shown["status"] == expected_status and not shown["saved_matches_active"]
+            assert shown["effective"]["lists"]["selected"] == ["chosen.example"]
+            assert shown["sources"]["lists.selected"] == str(targets)
+            assert shown["list_files"]["selected"]["status"] == expected_status
+            assert "policy apply" in shown["repair"]
+            assert instance.policy.read_bytes() == saved_policy
+            accepted = origin.accepts
+            assert request(instance.paths["alice"], "http://chosen.example/still-active")[0] == 200
+            assert request(instance.paths["alice"], "http://replacement.example/still-denied")[0] == 403
+            assert origin.accepts == accepted + 1
+        targets.write_text("replacement.example\n")
+        instance.apply(source)
+        shown = instance.show()
+        assert shown["status"] == "active" and shown["saved_matches_active"]
+        assert shown["effective"]["lists"]["selected"] == ["replacement.example"]
+        assert request(instance.paths["alice"], "http://chosen.example/now-denied")[0] == 403
+        assert request(instance.paths["alice"], "http://replacement.example/now-active")[0] == 200
+        assert instance.process.pid == pid and instance.process.poll() is None
 
 
 @pytest.mark.parametrize("old_field", ['[addons.network_guard]\nenabled = false', 'required = ["network_guard"]'])

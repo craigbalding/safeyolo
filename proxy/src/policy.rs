@@ -406,6 +406,7 @@ pub struct Policy {
     baseline: Option<Arc<Baseline>>,
     baseline_path: Option<PathBuf>,
     file_times: Option<watch::PolicyFileTimes>,
+    list_files: IndexMap<String, HostList>,
     gateway: Option<Arc<crate::services::GatewaySnapshot>>,
     rules: Vec<Rule>,
     global_budget: Option<u64>,
@@ -416,6 +417,15 @@ pub struct Policy {
     domains: Vec<Override>,
     clients: Vec<Override>,
     task: Option<TaskPolicy>,
+}
+
+/// The shared list compiler retains the exact inputs and interpreted members
+/// of the published policy. Native show compares these inputs without reload.
+#[derive(Clone)]
+struct HostList {
+    path: PathBuf,
+    source: zeroize::Zeroizing<String>,
+    hosts: Vec<String>,
 }
 
 impl fmt::Debug for Policy {
@@ -769,7 +779,7 @@ impl Policy {
     ) -> Result<Self> {
         let document = &mut parsed.document;
         let timestamps = &mut parsed.timestamps;
-        expand_lists(document, list_base_dir, timestamps)?;
+        let list_files = expand_lists(document, list_base_dir, timestamps)?;
         let host_centric = document.contains_key("hosts");
         if host_centric {
             let global = document.get("global_budget").or_else(|| {
@@ -797,6 +807,7 @@ impl Policy {
             baseline: None,
             baseline_path: None,
             file_times: None,
+            list_files,
             gateway: None,
             rules: Vec::new(),
             global_budget,
@@ -1773,17 +1784,18 @@ fn expand_lists(
     document: &mut Map<String, Value>,
     base_dir: Option<&Path>,
     timestamps: &mut TimestampPaths,
-) -> Result<()> {
+) -> Result<IndexMap<String, HostList>> {
+    let mut loaded = IndexMap::new();
     let Some(lists) = document
         .get("lists")
         .and_then(Value::as_object)
         .filter(|lists| !lists.is_empty())
         .cloned()
     else {
-        return Ok(());
+        return Ok(loaded);
     };
     let Some(hosts) = document.get_mut("hosts").and_then(Value::as_object_mut) else {
-        return Ok(());
+        return Ok(loaded);
     };
     let references: Vec<_> = hosts
         .iter()
@@ -1814,13 +1826,15 @@ fn expand_lists(
                 })?
                 .join(path)
         };
-        let source = std::fs::read_to_string(&path).map_err(|error| PolicyError {
-            kind: ErrorKind::Read,
-            message: format!(
-                "failed to read list {} referenced by ${name}: {error}",
-                path.display()
-            ),
-        })?;
+        let source = zeroize::Zeroizing::new(std::fs::read_to_string(&path).map_err(|error| {
+            PolicyError {
+                kind: ErrorKind::Read,
+                message: format!(
+                    "failed to read list {} referenced by ${name}: {error}",
+                    path.display()
+                ),
+            }
+        })?);
         let config = if config.is_null() {
             Value::Object(Map::new())
         } else {
@@ -1830,6 +1844,7 @@ fn expand_lists(
         hosts.shift_remove(&host);
         let inherited_timestamps = timestamps.projected(&["hosts", &host]);
         timestamps.remove_under(&["hosts", &host]);
+        let mut members = Vec::new();
         for line in source.split([
             '\n', '\r', '\u{b}', '\u{c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2028}',
             '\u{2029}',
@@ -1860,13 +1875,22 @@ fn expand_lists(
             {
                 continue;
             }
+            members.push(entry.to_owned());
             if !hosts.contains_key(entry) {
                 timestamps.extend(inherited_timestamps.copy_under(&[], &["hosts", entry]));
                 hosts.insert(entry.to_owned(), config.clone());
             }
         }
+        loaded.insert(
+            name,
+            HostList {
+                path,
+                source,
+                hosts: members,
+            },
+        );
     }
-    Ok(())
+    Ok(loaded)
 }
 
 // Python str.strip/split also treat the four information separators as space;

@@ -306,6 +306,14 @@ impl Policy {
             serde_json::to_value(&native.controls).expect("validated native controls");
         let mut sources = serde_json::Map::new();
         sources.insert("policy".into(), json!(path));
+        if native.authored.get("lists").is_some() {
+            let mut lists = serde_json::Map::new();
+            for (name, list) in &self.list_files {
+                lists.insert(name.clone(), json!(list.hosts));
+                sources.insert(format!("lists.{name}"), json!(list.path));
+            }
+            effective["lists"] = Value::Object(lists);
+        }
         let controls = effective["controls"]
             .as_object()
             .expect("controls are a table");
@@ -324,6 +332,29 @@ impl Policy {
             }
         }
         Some(json!({"effective":effective, "sources":sources, "permission_count":self.rules.len()}))
+    }
+
+    pub(crate) fn native_list_file_status(&self) -> serde_json::Map<String, Value> {
+        self.list_files
+            .iter()
+            .map(|(name, list)| {
+                let mut status = json!({"source":list.path});
+                match std::fs::read_to_string(&list.path) {
+                    Ok(saved) => {
+                        let saved = Zeroizing::new(saved);
+                        let matches = saved.as_str() == list.source.as_str();
+                        status["saved_matches_active"] = json!(matches);
+                        status["status"] = json!(if matches { "active" } else { "saved_differs" });
+                    }
+                    Err(error) => {
+                        status["saved_matches_active"] = json!(false);
+                        status["status"] = json!("saved_unreadable");
+                        status["saved_error"] = json!(error.to_string());
+                    }
+                }
+                (name.clone(), status)
+            })
+            .collect()
     }
 }
 

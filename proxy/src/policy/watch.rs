@@ -23,6 +23,15 @@ impl PolicyFileTimes {
 }
 
 impl Policy {
+    /// A rejected native apply restored only saved bytes. Acknowledge that
+    /// owned write without replacing the live source, list inputs or controls.
+    pub(crate) fn observe_restored_native_file(&mut self) -> Result<()> {
+        if let (Some(path), Some(times)) = (&self.baseline_path, &mut self.file_times) {
+            times.record_own_expiry_write(modified(path)?);
+        }
+        Ok(())
+    }
+
     /// A watcher performs all three observations before deciding to reload.
     /// A later observation error can preempt an earlier changed flag.
     pub(crate) fn baseline_files_changed(&self) -> Result<bool> {

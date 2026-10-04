@@ -524,7 +524,10 @@ impl Store {
     pub(crate) fn replace_native_policy(
         &self,
         source: &str,
-        activate: impl FnMut(&str) -> std::result::Result<(), String>,
+        activate: impl FnMut(
+            &str,
+            crate::approvals::PolicyActivation,
+        ) -> std::result::Result<(), String>,
     ) -> Result<()> {
         let mut current = self.lock()?;
         let (document, context) = crate::policy::parse_toml_for_edit(source)
