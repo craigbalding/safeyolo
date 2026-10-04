@@ -39,6 +39,10 @@ describe what the view can show. Its microVM patterns are informed by
 
 ### 1. Install on your host
 
+For a host CLI, proxy and macOS VM helper that require no local compiler, use
+the [production or debug host downloads](docs/host-packages.md). Guest images
+and host runtime setup are separate. The source-build path follows below.
+
 Use your normal account on the Mac or Linux machine that will run SafeYolo.
 Install [uv](https://docs.astral.sh/uv/) and select Rust 1.94.0, as recorded in
 [`proxy/rust-toolchain.toml`](proxy/rust-toolchain.toml), before running the

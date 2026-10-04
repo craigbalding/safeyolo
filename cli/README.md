@@ -6,7 +6,10 @@ sandboxes.
 ## Installation
 
 Follow the [main quickstart](../README.md#quick-start) for a first installation.
-The commands in this section run on the host, as your usual user, from the
+The [host downloads](../docs/host-packages.md) install the CLI, native proxy,
+and macOS helper with uv, without Cargo or a local compiler.
+
+For source installation, the commands below run on the host, as your usual user, from the
 SafeYolo checkout root.
 
 `./install.sh` builds the Rust proxy with Cargo, then installs the CLI and
