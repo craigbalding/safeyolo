@@ -248,7 +248,8 @@ if [ -n "$RUNTIME_COMMIT" ]; then
     RUNTIME_COMMIT_ARGS=(--install-commit "$RUNTIME_COMMIT")
 fi
 
-# The physical VZ test account has six assigned localhost TCP ports. All
+# The physical VZ test account has six primary localhost TCP ports and two
+# additional NATS ports for the independent lifecycle owner. All
 # native selections use one HTTP fixture listener for parent, origin, and
 # control requests; the HTTPS fixture selects certificate chains by SNI.
 VZ_FIXED_PORTS=false
@@ -265,6 +266,11 @@ if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ]; then
     # this disposable instance's NATS client and ownership monitor.
     export SAFEYOLO_NATS_TEST_PORTS=46370,46372
     export SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT=46375
+    export SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS=46377,46378
+fi
+if [ "$LIFECYCLE" = true ]; then
+    # The parent retains this identity even if owner preparation fails.
+    export SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE="${SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
 fi
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
 export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
@@ -736,8 +742,9 @@ PY_SNAPSHOT
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from installed_sections import cleanup_instance
-failures = cleanup_instance(Path(sys.argv[2]), Path(sys.argv[3]), owner=True)
+from installed_sections import cleanup_instance, lifecycle_owner_environment
+root = Path(sys.argv[3])
+failures = cleanup_instance(Path(sys.argv[2]), root, owner=True, env=lifecycle_owner_environment(root))
 for error in failures:
     print(error, file=sys.stderr)
 raise SystemExit(bool(failures))

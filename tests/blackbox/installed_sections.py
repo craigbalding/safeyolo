@@ -43,10 +43,11 @@ VZ_CONTINUITY_DEFAULTS = {"origin-host": "127.0.0.2", "origin-bind": "127.0.0.1"
                           "https-port": 46374, "oauth-port": 46375, "admin-port": 46371}
 
 
-def check_vz_ports() -> list[str]:
-    """Check the six allocated IPv4 fixture ports without signalling an owner."""
+def check_vz_ports(*, include_owner: bool = False) -> list[str]:
+    """Check allocated IPv4 fixture ports without signalling an owner."""
     failures = []
-    for port in range(46370, 46376):
+    ports = (*range(46370, 46376), 46377, 46378) if include_owner else range(46370, 46376)
+    for port in ports:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
@@ -56,13 +57,27 @@ def check_vz_ports() -> list[str]:
     return failures
 
 
-def copy_prepared_runtime(source: Path, root: Path) -> None:
+def copy_prepared_runtime(source: Path, root: Path, *, copy_tmux: bool = True) -> None:
     """Reuse prepared executables; credentials, sessions and streams stay private."""
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
     tmux = source / "bin/safeyolo-tmux"
-    if tmux.is_file():
+    if copy_tmux and tmux.is_file():
         (root / "bin").mkdir(parents=True, exist_ok=True)
         shutil.copy2(tmux, root / "bin/safeyolo-tmux")
+
+
+def lifecycle_owner_environment(root: Path, *, env: dict[str, str] | None = None) -> dict[str, str]:
+    """Reuse the owner's identity for preparation and both cleanup callers."""
+    env = (os.environ if env is None else env).copy()
+    env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
+               SAFEYOLO_LOG_PATH=str(root / "logs/safeyolo.jsonl"), SAFEYOLO_SUBNET_BASE="76",
+               SAFEYOLO_COORD_DATA_DIR=str(root / "data/coord"),
+               SAFEYOLO_NATS_TEST_INSTANCE=env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"])
+    env.pop("SAFEYOLO_TMUX_BIN", None)
+    env.pop("SAFEYOLO_NATS_TEST_PORTS", None)
+    if ports := env.get("SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS"):
+        env["SAFEYOLO_NATS_TEST_PORTS"] = ports
+    return env
 
 
 def console_process(root: Path) -> dict | None:
@@ -460,6 +475,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         env.pop(name, None)
     for name in ("SAFEYOLO_VZ_TEST_RUNNER", "SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"):
         env.pop(name, None)
+    env.pop("SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS", None)
     if vz_test_runner is not None:
         env.update(SAFEYOLO_VZ_TEST_RUNNER=str(vz_test_runner[0]),
                    SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS=str(vz_test_runner[1]))
@@ -541,6 +557,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     env["SAFEYOLO_BLACKBOX_RUN_ID"] = run_id
     if lane == "vz":
         env["SAFEYOLO_NATS_TEST_PORTS"] = "46370,46372"
+        env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS"] = "46377,46378"
         continuity_options = tuple(item for name, value in VZ_CONTINUITY_DEFAULTS.items()
                                    for item in (f"--{name}", str(value))) + continuity_options
     if lane == "systrap":
@@ -559,6 +576,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                            SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex,
                            SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR=str(directory / "lifecycle-owner"),
                            SAFEYOLO_LIFECYCLE_SOURCE_CONFIG_DIR=str(source))
+        if section == "lifecycle":
+            section_env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
         section_artifacts.mkdir(parents=True, exist_ok=True)
         args = [str(REPOSITORY / "tests/blackbox/run-tests.sh"), "--expect-platform", lane,
                 "--proxy-impl", "rust"]
@@ -577,7 +596,7 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         error = None
         executed = False
         started_at = datetime.now(UTC).isoformat()
-        port_failures = check_vz_ports() if lane == "vz" else []
+        port_failures = check_vz_ports(include_owner=section == "lifecycle") if lane == "vz" else []
         try:
             if port_failures:
                 error = "; ".join(port_failures)
@@ -592,9 +611,11 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         finally:
             failures = cleanup_instance(cli, instance, env=section_env)
             if section == "lifecycle":
-                failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True, env=section_env)
+                owner_root = directory / "lifecycle-owner"
+                failures += cleanup_instance(cli, owner_root, owner=True,
+                                             env=lifecycle_owner_environment(owner_root, env=section_env))
             if lane == "vz" and not port_failures:
-                failures += check_vz_ports()
+                failures += check_vz_ports(include_owner=section == "lifecycle")
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
             # An inner stop can remove its markers while leaving a process
             # live. A later empty inspection cannot clear that known failure.

@@ -312,10 +312,12 @@ localhost UDS (gVisor) or vsock (VZ) bridge; direct host/control reachability te
 do not open a second authorized egress path.
 
 Linux full/installed lanes use proxy/admin/web ports 8180/9190/8181, HTTP origin
-18080, TLS fixtures 18443–18452 and control 19999. Physical VZ uses only
+18080, TLS fixtures 18443–18452 and control 19999. Physical VZ uses
 46370–46375: Coord client/admin/Coord monitor on 46370/46371/46372, combined
 parent/HTTP/control on 46373, SNI-selected HTTPS variants on 46374, and the
-lifecycle owner admin on 46375. TCP proxy/web listeners are unbound in that VZ
+lifecycle owner admin on 46375. The independent lifecycle owner also needs
+NATS client/monitor ports 46377/46378, with its own test-instance identity and
+Coord data. TCP proxy/web listeners are unbound in that VZ
 configuration. Precheck the actual host ports, refuse occupied fixtures, and
 stop only owned processes with verified identity. A Linux fixture's cleanup
 does not prove that a physical Mac port is free.

@@ -47,7 +47,8 @@ packaging and identity checks, helper preflight and selected-CLI teardown.
 Build commands retain mediated-network and certificate settings; Bristol's
 candidate commands retain the existing offline environment.
 Independent VZ teardown restores each owned section's recorded NATS test
-identity and requires its fixed client/monitor ports 46370/46372. The selected
+identity. Primary NATS uses client/monitor ports 46370/46372; the independent
+lifecycle owner uses 46377/46378. The selected
 CLI retains its existing server-ownership checks; an invalid record stops
 cleanup before running that CLI.
 
@@ -270,9 +271,12 @@ location for the existing installed identity checks. It does not invoke
 
 Sections keep separate writable state and reuse only the prepared binaries and
 boot inputs. VZ sections check ports 46370–46375 before execution and after
-owned cleanup. Continuity uses the existing `127.0.0.2` authority through its
+owned cleanup. The lifecycle section also checks owner NATS ports 46377/46378.
+Before owner preparation can fail, the runner retains the owner's independent
+test-instance identity for both cleanup callers and stages its offline NATS
+binary. Continuity uses the existing `127.0.0.2` authority through its
 owned `127.0.0.1` parent, HTTP port 46373, TLS port 46374, OAuth port 46375 and
-admin port 46371. Each isolated NATS instance uses 46370/46372. Continuity
+admin port 46371. Each primary NATS instance uses 46370/46372. Continuity
 observes host state and does not establish VZ isolation.
 
 Read `installed-sections.json` and the section reports. The isolation section

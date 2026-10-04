@@ -13,7 +13,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tests.blackbox import installed_sections
+from tests.blackbox import installed_lifecycle, installed_sections
 from tests.blackbox import installed_staging as staging
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -174,7 +174,7 @@ def test_packaging_and_offline_identity_calls_keep_principals_out(tmp_path, stag
                and row["ca"] == env["SSL_CERT_FILE"] for row in observations)
 
 
-def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_path, staged_payload):
+def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_path, staged_payload, monkeypatch):
     payload, digest, checkout, revision = staged_payload
     (checkout / "proxy/target/release/safeyolo-proxy").unlink()
     # An unindexed transfer residue must not become a runtime input merely
@@ -209,6 +209,33 @@ def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_pat
                        check=True)
     assert not (checkout / ".venv").exists(), "offline preparation must not invoke uv sync"
     assert (checkout / "proxy/target/release/safeyolo-proxy").read_bytes() == (payload / "native/safeyolo-proxy").read_bytes()
+
+    owner = directory / "lifecycle-owner"
+    primary_env = dict(env, SAFEYOLO_NATS_TEST_INSTANCE="primary-instance", SAFEYOLO_NATS_TEST_PORTS="46370,46372",
+                       SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE="owner-instance",
+                       SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS="46377,46378")
+    owner_env = installed_sections.lifecycle_owner_environment(owner, env=primary_env)
+
+    def failed_prepare(command, *, env, **_kwargs):
+        # The installed consumer must find the pinned runtime before even a
+        # failed first CLI call. No package index or source import is available.
+        subprocess.run([str(directory / "cli/bin/python"), "-I", "-c",
+                        "from safeyolo.coord.nats_runtime import ensure_binary; ensure_binary()"],
+                       env=env, check=True)
+        assert env["SAFEYOLO_NATS_TEST_INSTANCE"] == "owner-instance"
+        assert env["SAFEYOLO_NATS_TEST_PORTS"] == "46377,46378"
+        assert env["SAFEYOLO_COORD_DATA_DIR"] == str(owner / "data/coord")
+        assert command[1:] == ["init", "--no-interactive"]
+        raise OSError("injected owner preparation failure")
+
+    monkeypatch.setattr(installed_lifecycle, "checked", failed_prepare)
+    with pytest.raises(OSError, match="injected owner preparation failure"):
+        installed_lifecycle.prepare_owner(str(directory / "bin/safeyolo"), owner, source, {}, "unused",
+                                          tmp_path / "owner-runtime.json", env=owner_env)
+    assert owner_env == installed_sections.lifecycle_owner_environment(owner, env=primary_env)
+    assert (owner / "data/coord/nats/bin/fixture-version/nats-server").read_bytes() == (payload / "nats/nats-server").read_bytes()
+    assert not (owner / "bin").exists(), "owner preparation reuses its later bootstrapped bin symlink"
+    assert primary_env["SAFEYOLO_NATS_TEST_INSTANCE"] == "primary-instance"
 
 
 def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_reports(tmp_path, staged_payload):

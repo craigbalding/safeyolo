@@ -1186,6 +1186,12 @@ import json, os, pathlib, signal, sys, time
 sys.path.insert(0, {str(ROOT)!r})
 from tests.blackbox.installed_host_smoke import _pid_alive
 root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])
+if root.name == 'lifecycle-owner':
+    identity = json.loads((root / 'expected-nats-identity.json').read_text())
+    assert os.environ['SAFEYOLO_NATS_TEST_INSTANCE'] == identity['owner'] != identity['primary']
+    assert os.environ.get('SAFEYOLO_NATS_TEST_PORTS') == identity['ports']
+    assert os.environ['SAFEYOLO_COORD_DATA_DIR'] == str(root / 'data/coord')
+    assert os.environ['SAFEYOLO_LOG_PATH'] == str(root / 'logs/safeyolo.jsonl')
 marker = root / 'data/proxy-rust.json'
 if marker.exists():
     pid = json.loads(marker.read_text())['pid']
@@ -1224,6 +1230,13 @@ if marker.exists():
         + runner[trap_start:trap_end]
         + f"\nowned_root={owned_root}\n"
         + 'mkdir -p "$owned_root/data"\ntouch "$owned_root/config.yaml"\n'
+        + ("python3 - \"$owned_root\" <<'PY_IDENTITY'\n"
+           "import json, os, pathlib, sys\n"
+           "(pathlib.Path(sys.argv[1]) / 'expected-nats-identity.json').write_text(json.dumps({\n"
+           "    'owner': os.environ['SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE'],\n"
+           "    'primary': os.environ['SAFEYOLO_NATS_TEST_INSTANCE'],\n"
+           "    'ports': os.environ.get('SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS')}))\n"
+           "PY_IDENTITY\n" if owner else "")
         + "printf '{\"pid\":%s}\\n' \"$OWNED_TEST_PID\" > \"$owned_root/data/proxy-rust.json\"\n"
         + ('set +e\n"$FIXTURE_INSTALLED_RUNNER"\nexit $?\n' if aggregate else f"exit {section_exit}\n")
     )
@@ -1233,6 +1246,7 @@ if marker.exists():
     monkeypatch.setenv("OWNED_TEST_PID", str(process.pid))
     monkeypatch.setenv("LEAVE_PROCESS_LIVE", "1" if leave_process_live else "0")
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")
+    monkeypatch.setenv("SAFEYOLO_NATS_TEST_PORTS", "46370,46372")
     monkeypatch.setenv("FIXTURE_INSTALLED_RUNNER", str(installed_pytest_runner))
     for slot in INSTALLED_PYTEST_SLOTS:
         monkeypatch.setenv(f"FIXTURE_{slot}_EXIT", str(section_exit if slot == "ISOLATION" else 0))
@@ -1251,7 +1265,8 @@ if marker.exists():
     reaper.start()
     try:
         result = installed_sections.run_sections(
-            "systrap", (first_section, "access"), repository, "a" * 40, directory, artifacts
+            "vz" if sys.platform == "darwin" else "systrap",
+            (first_section, "access"), repository, "a" * 40, directory, artifacts
         )
         report = json.loads((artifacts / "installed-sections.json").read_text())
         first = report["sections"][0]
@@ -1734,7 +1749,7 @@ def test_vz_runtime_projection_uses_darwin_identity_in_a_controlled_host_context
     """A Linux fixture substitutes host discovery; this does not boot a VZ guest."""
     monkeypatch.setattr(installed_sections.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(installed_sections.platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda **_kwargs: [])
     artifacts = tmp_path / "artifacts"
     assert installed_sections.run_sections(
         "vz", ("access", "lifecycle"), installed_section_commands, "a" * 40, tmp_path / "installed", artifacts,
@@ -1811,7 +1826,7 @@ root.mkdir()
 output.write_text(json.dumps({'args': sys.argv[1:], 'nats_ports': os.environ['SAFEYOLO_NATS_TEST_PORTS']}))
 """)
     # This is an invocation control on Linux, not a physical Mac port witness.
-    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda **_kwargs: [])
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     assert installed_sections.run_sections(
         "vz", ("continuity",), repository, "a" * 40, directory, artifacts,
@@ -1859,7 +1874,7 @@ root.mkdir()
 output.write_text(json.dumps({name: os.environ.get(name) for name in
     ('SAFEYOLO_VZ_TEST_RUNNER', 'SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS')}))
 """)
-    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda: [])
+    monkeypatch.setattr(installed_sections, "check_vz_ports", lambda **_kwargs: [])
     runner = tmp_path / "trusted-runner"
     runner.write_text("#!/bin/sh\nexit 0\n")
     runner.chmod(0o755)

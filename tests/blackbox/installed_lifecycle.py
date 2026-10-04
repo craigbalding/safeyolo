@@ -27,13 +27,29 @@ import yaml
 
 if __package__:
     from .host.sinkhole_client import SinkholeClient
-    from .installed_host_smoke import _agent_map, _pid_alive, _probe_agent_health, _process_start_token, _sha256
+    from .installed_host_smoke import (
+        _agent_map,
+        _interpreter_from_shebang,
+        _pid_alive,
+        _probe_agent_health,
+        _process_start_token,
+        _sha256,
+    )
     from .installed_ingress import installed_identity, runsc_identity
+    from .installed_sections import copy_prepared_runtime, lifecycle_owner_environment
     from .installed_workloads import control
 else:
     from host.sinkhole_client import SinkholeClient
-    from installed_host_smoke import _agent_map, _pid_alive, _probe_agent_health, _process_start_token, _sha256
+    from installed_host_smoke import (
+        _agent_map,
+        _interpreter_from_shebang,
+        _pid_alive,
+        _probe_agent_health,
+        _process_start_token,
+        _sha256,
+    )
     from installed_ingress import installed_identity, runsc_identity
+    from installed_sections import copy_prepared_runtime, lifecycle_owner_environment
     from installed_workloads import control
 
 PEER = "bbpeer"
@@ -187,16 +203,13 @@ def start_guest(cli: str, config_dir: Path, agent: str) -> Path:
 
 
 def prepare_owner(
-    cli: str, config_dir: Path, source_dir: Path, native: dict, binary: str, output: Path
-) -> tuple[dict, dict[str, str], Path]:
+    cli: str, config_dir: Path, source_dir: Path, native: dict, binary: str, output: Path,
+    *, env: dict[str, str],
+) -> tuple[dict, Path]:
     """Keep one separate installed proxy and guest live across the subject's stops."""
-    env = os.environ.copy()
-    env["SAFEYOLO_CONFIG_DIR"] = str(config_dir)
-    env["SAFEYOLO_LOGS_DIR"] = str(config_dir / "logs")
-    env["SAFEYOLO_LOG_PATH"] = str(config_dir / "logs/safeyolo.jsonl")
-    env["SAFEYOLO_SUBNET_BASE"] = "76"
-    env["SAFEYOLO_COORD_DATA_DIR"] = str(config_dir / "data/coord")
-    env["SAFEYOLO_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
+    # Stage NATS before any CLI call can need it. The bootstrapped bin below
+    # is a symlink, so reuse its tmux rather than copying onto the same file.
+    copy_prepared_runtime(source_dir, config_dir, copy_tmux=False)
     checked([cli, "init", "--no-interactive"], env=env)
     for name in ("share", "bin"):
         source = source_dir / name
@@ -207,7 +220,7 @@ def prepare_owner(
     config_path = config_dir / "config.yaml"
     config = yaml.safe_load(config_path.read_text())
     config["proxy"]["backend"] = "rust"
-    config["proxy"]["admin_port"] = int(os.environ.get("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "0"))
+    config["proxy"]["admin_port"] = int(env.get("SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT", "0"))
     config["proxy"]["upstream_proxy"] = native["parent_proxy"]
     config["proxy"]["upstream_ca_cert"] = native["upstream_ca_file"]
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
@@ -217,6 +230,11 @@ def prepare_owner(
         [cli, "agent", "add", "bbowner", str(Path(__file__).resolve().parents[2]), "--no-run"], timeout=120, env=env
     )
     checked([cli, "start", "--no-wait"], env=env)
+    interpreter = _interpreter_from_shebang(Path(cli))
+    assert interpreter is not None, "owner needs the installed CLI interpreter"
+    checked([str(interpreter), "-I", "-c",
+             "from safeyolo.coord.nats_runtime import is_healthy; "
+             "assert is_healthy(), 'owner NATS is not independently healthy'"], env=env)
     checked([cli, "agent", "run", "bbowner", "--sandbox-only"], timeout=120, env=env)
     checked(
         [
@@ -253,7 +271,7 @@ def prepare_owner(
     report["policy_sha256"] = _sha256(config_dir / "policy.toml")
     listener = next(row for row in _agent_map(config_dir) if row["agent_id"] == "bbowner")
     assert _probe_agent_health(listener, config_dir)["status"] == 200
-    return report, env, Path(listener["path"])
+    return report, Path(listener["path"])
 
 
 def owner_controls(
@@ -387,14 +405,15 @@ def main() -> None:
     source_dir = Path(os.environ["SAFEYOLO_LIFECYCLE_SOURCE_CONFIG_DIR"]).resolve()
     peer_added = False
     active: subprocess.Popen[str] | None = None
-    owner_env: dict[str, str] | None = None
+    owner_env = lifecycle_owner_environment(owner_dir)
     owner_listener: Path | None = None
     release = config_dir / "agents" / args.agent / "config-share" / "p4-passthrough-go"
     try:
         sinkhole.wait_for_receiver_ready(timeout=10)
         sinkhole.clear_requests()
-        owner, owner_env, owner_listener = prepare_owner(
-            cli, owner_dir, source_dir, native, binary, args.output.with_name("lifecycle-owner-runtime.json")
+        owner, owner_listener = prepare_owner(
+            cli, owner_dir, source_dir, native, binary, args.output.with_name("lifecycle-owner-runtime.json"),
+            env=owner_env,
         )
         owner_checks = [owner_controls(cli, owner_dir, owner_listener, owner, owner_env, marker, sinkhole)]
         checked([cli, "agent", "add", PEER, str(Path(__file__).resolve().parents[2]), "--no-run"])
