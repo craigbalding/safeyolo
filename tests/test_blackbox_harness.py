@@ -1132,7 +1132,8 @@ def test_installed_sections_reuse_preparation_and_separate_live_state(
     monkeypatch.setenv("FAIL_SECTION", str(failure))
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     result = installed_sections.run_sections(
-        "systrap", ("isolation", "access"), installed_section_commands, "a" * 40, directory, artifacts
+        "vz" if sys.platform == "darwin" else "systrap",
+        ("isolation", "access"), installed_section_commands, "a" * 40, directory, artifacts
     )
     assert result == expected
     report = json.loads((artifacts / "installed-sections.json").read_text())
