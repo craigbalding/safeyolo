@@ -29,8 +29,9 @@ Works with Claude Code, OpenAI Codex, and other coding agents.
   scoped observations and test context, subject to capture and retention limits.
   Agents can inspect their policy and block reasons to resolve problems.
 
-SafeYolo is **pre-v1** and currently installed from source. The installer builds
-and packages the Rust proxy. The first Rust release provides read-only traffic
+SafeYolo is **pre-v1**. Published host packages include the command-line
+interface (CLI) and Rust proxy.
+The first Rust release provides read-only traffic
 inspection and selected exports; [traffic scope and capture limits](docs/DEVELOPERS.md#live-traffic-inspection)
 describe what the view can show. Its microVM patterns are informed by
 [Shuru](https://github.com/superhq-ai/shuru/).
@@ -39,46 +40,100 @@ describe what the view can show. Its microVM patterns are informed by
 
 ### 1. Install on your host
 
-For a host CLI, proxy and macOS VM helper that require no local compiler, use
-the [production or debug host downloads](docs/host-packages.md). Guest images
-and host runtime setup are separate. The source-build path follows below.
-
 Use your normal account on the Mac or Linux machine that will run SafeYolo.
-Install [uv](https://docs.astral.sh/uv/) and select Rust 1.94.0, as recorded in
-[`proxy/rust-toolchain.toml`](proxy/rust-toolchain.toml), before running the
-installer. `cargo` must be on your `PATH`. uv's tool directory, normally
-`~/.local/bin`, must also be on your `PATH`. The installer selects a supported
-Python interpreter automatically.
+Open the [latest successful release](https://github.com/craigbalding/safeyolo/releases/latest).
+Choose the **production** archive for your host. Current packages have these
+compatibility requirements; each archive's `manifest.json` records its minimum,
+which the installer checks before installation:
 
-| Host | Requirements |
+| Host | Archive | Compatibility |
+| --- | --- | --- |
+| Apple Silicon macOS | `safeyolo-darwin-arm64-production.tar.gz` | macOS 14.0 or newer |
+| x86_64 Linux | `safeyolo-linux-amd64-production.tar.gz` | GNU libc (glibc) 2.39 or newer |
+| arm64 Linux | `safeyolo-linux-arm64-production.tar.gz` | glibc 2.39 or newer |
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first.
+The package installer requires uv and uses it to select or download Python
+3.12 or 3.13 and install dependencies. Cargo, Swift and a local C compiler are
+not needed to install the host package.
+
+Put uv's tool directory, normally `~/.local/bin`, on your `PATH` before
+installation. This command updates your shell configuration; open a new
+terminal after running it:
+
+```sh
+uv tool update-shell
+```
+
+Download the archive and `SHA256SUMS` from **the same release** into a new
+directory. In a host terminal, change to that directory. Run only the commands
+for your platform below. Run the checksum command first: it must print your
+archive's filename followed by `: OK`. If the command fails or does not print
+that result, stop. Do not extract or install the archive.
+
+Installation replaces any existing uv `safeyolo` tool environment. On macOS,
+it also installs the helper and guest terminal utility in `~/.safeyolo/bin/`.
+
+**Apple Silicon macOS** — verify:
+
+```sh
+grep ' safeyolo-darwin-arm64-production.tar.gz$' SHA256SUMS | shasum -a 256 --check -
+```
+
+After the checksum reports `OK`, extract and install:
+
+```sh
+tar -xzf safeyolo-darwin-arm64-production.tar.gz
+./safeyolo-darwin-arm64-production/install.sh
+```
+
+**x86_64 Linux** — verify:
+
+```sh
+grep ' safeyolo-linux-amd64-production.tar.gz$' SHA256SUMS | sha256sum --check -
+```
+
+After the checksum reports `OK`, extract and install:
+
+```sh
+tar -xzf safeyolo-linux-amd64-production.tar.gz
+./safeyolo-linux-amd64-production/install.sh
+```
+
+**arm64 Linux** — verify:
+
+```sh
+grep ' safeyolo-linux-arm64-production.tar.gz$' SHA256SUMS | sha256sum --check -
+```
+
+After the checksum reports `OK`, extract and install:
+
+```sh
+tar -xzf safeyolo-linux-arm64-production.tar.gz
+./safeyolo-linux-arm64-production/install.sh
+```
+
+If the installer fails, stop and resolve its reported error. After a successful
+installation, confirm that the CLI loads:
+
+```sh
+safeyolo --help
+```
+
+Expected result: SafeYolo's command help appears. For debug profiles, upgrades
+and package identity, see the [host package reference](docs/host-packages.md).
+
+**Before adding an agent**, complete [guest and host runtime setup](cli/README.md#bootstrap-and-individual-phases).
+Host packages do not include guest images or configure the sandbox runtime.
+Guest builds currently need a source checkout and these platform prerequisites:
+
+| Host | Guest/runtime setup prerequisites |
 | --- | --- |
-| macOS | Apple Silicon (M1+), Command Line Tools, Lima, and tmux. For Homebrew, use `brew install lima tmux`. |
-| Linux | x86_64 or arm64. Bootstrap checks build dependencies and configures the gVisor runtime. |
+| macOS | Command Line Tools, Lima, and tmux. For Homebrew, use `brew install lima tmux`. The host package already installs the VM helper. |
+| Linux | Bootstrap checks guest build dependencies and configures gVisor. If packages are missing, it prints an installation command and stops. |
 
-The commands below install the CLI, initialize `~/.safeyolo/`, and build the
-platform's guest artifacts. On Linux, missing build packages cause bootstrap
-to print an installation command and stop. Run the printed command, then rerun
-`safeyolo bootstrap`. Runtime setup explains any privileged changes before
-using `sudo`, which may prompt for your password. Run bootstrap from the source
-checkout because the guest build script remains there. When running the installed
-CLI elsewhere, pass that checkout with `--source-checkout` to `safeyolo bootstrap`
-or `safeyolo build`.
-
-```sh
-git clone https://github.com/craigbalding/safeyolo.git
-cd safeyolo
-./install.sh
-safeyolo bootstrap
-```
-
-**On macOS**, also build and install the Swift VM helper from this checkout:
-
-```sh
-make -C vm install
-```
-
-For other package managers, individual installation phases, and recovery, see
-[installation details](cli/README.md#installation).
+**Source installation is an alternative.** For contributor builds and their
+compiler requirements, see [source installation](cli/README.md#installation).
 For an explicit return to the selected prior Python package, see
 [package rollback](cli/README.md#return-to-the-prior-python-package).
 
