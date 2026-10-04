@@ -1,10 +1,11 @@
 # Hardware blackbox deployment
 
-The hardware path pairs fresh Linux Kernel-based Virtual Machine (KVM)
-acceptance on devstack with physical Apple Silicon Virtualization.framework
-(VZ) acceptance through Bristol's `sy-agent` account. Tart builds,
-signs and packages the macOS inputs. Bristol verifies transferred inputs and
-executes offline. Both lanes must use one selected full source commit.
+Run fresh Linux Kernel-based Virtual Machine (KVM) acceptance on devstack and
+physical Apple Silicon Virtualization.framework (VZ) acceptance through
+Bristol's `sy-agent` account independently. Tart builds, signs and packages
+the macOS inputs. Bristol verifies transferred inputs and executes offline.
+Each lane selects and records its own full source commit. Before release,
+both lanes must pass at the exact release commit.
 
 Craig's [3 October scope correction](https://github.com/craigbalding/safeyolo/issues/889#issuecomment-5971434225)
 calls for a small wrapper around the existing harness and suites.
@@ -12,7 +13,11 @@ calls for a small wrapper around the existing harness and suites.
 checkout and invokes `run-installed.sh`, retaining its exit status and reports.
 The existing operator-owned Rundeck and Bristol routes invoke it in their
 respective prepared environments. It allocates no host or guest and installs
-no schedule. Use the same selected commit for both invocations.
+no schedule. Craig's [4 October independent-script correction](https://github.com/craigbalding/safeyolo/issues/889)
+requires two independent scripts and independently installed cron entries.
+Those complete deployment scripts and their publication/email bindings remain
+unfinished. The prepared-environment commands below are on-demand suite
+invocations, not the complete scheduled path.
 
 From a separate pinned trusted checkout, with `SELECTED_CHECKOUT` and a new
 `RUN_ARTIFACTS` directory supplied by that lane's existing harness:
@@ -31,16 +36,25 @@ From a separate pinned trusted checkout, with `SELECTED_CHECKOUT` and a new
   --vz-test-timeout-seconds "$VZ_TIMEOUT_SECONDS"
 ```
 
-The trusted operator selects the full SHA once: refresh `origin/master` and
-resolve it before an overnight pair, or supply an explicitly authorized full
-SHA on demand. Keep selection, control/publication credentials, result
-collection and owned host teardown in the existing harness. The wrapper filters
+Each lane's trusted caller refreshes `origin/master` and resolves its full SHA
+before an overnight run, or supplies an explicitly authorized full SHA on
+demand. Neither lane waits for or triggers the other. Keep selection,
+control/publication credentials, result collection and owned host teardown in
+the existing harness. The wrapper filters
 the environment before source checks or candidate commands; build/network and
 CA settings remain available, while VZ package installation stays offline.
 The preserved `paired.py`, publication adapters and cron installer describe
 earlier implementation work. They remain held, rather than the deployment
-entry point for this narrower direction. No new framework, reporting system
-or wrapper tests are required.
+entry point for this narrower direction.
+
+The maintained wrapper and section runner do not supply a host-wide
+cancellation or lost-SSH teardown command. The section runner cleans up after
+its section subprocess returns. An external `SIGTERM` can instead terminate
+the section runner while its child remains live and its summary remains
+unfinished. The direct VZ deadline runner owns one VM helper, not the entire
+installed suite. Resolve that outer ownership/teardown operation through the
+existing host harness before treating either cron command as ready. Retain an
+unverified cleanup as a failure; an SSH or cron exit does not establish it.
 
 The corrected filtered runtime environment also applies to the preserved input
 packaging and identity checks, helper preflight and selected-CLI teardown.
@@ -52,7 +66,7 @@ lifecycle owner uses 46377/46378. The selected
 CLI retains its existing server-ownership checks; an invalid record stops
 cleanup before running that CLI.
 
-Deployment and complete paired hardware acceptance remain open. The local
+Deployment and complete hardware acceptance remain open. The local
 process, filesystem and service-protocol controls do not establish a hardware
 pass or an installed schedule. The approved operator-side routes support
 deployment; a pre-existing paired installation is not a prerequisite.
@@ -67,19 +81,9 @@ The 3 October 2026 read-only deployment inspection verified Rundeck project
 `scriptInterpreter=/bin/bash`. The response identifies the execution. This
 interface has no fixed job ID. The execution account is `rundeck`, user ID 112.
 Hardware-control and publication credentials stay outside candidate commands.
-The host adapter records each provisioning or execution job's PID/start token
-in its owner journal. It owns a separate process group, stops that group after
-exit, timeout or cancellation, and observes every live member of the job's
-session before guest cleanup or journal release. Job control can put a child
-in another process group within that session. Cleanup signals each verified
-session member through a Linux PID handle, so a reused PID or group number
-cannot redirect the signal. The leader remains unreaped during termination.
-Linux `/proc` and PID handles must permit observation and signaling; a failure
-leaves cleanup failed and preserves the job journal. Before accepting an empty
-session, the reader reconciles fresh process IDs, start times, session IDs and
-live/zombie states. A fork and parent exit during enumeration requires another
-observation. If observations do not settle within the deadline, cleanup fails
-and the journal remains. A stale journal with a live job is preserved.
+The process manager in the held `kvm_host.py` is not part of this execution
+path. Its preserved procedures below do not establish ownership for the
+independent shell deployment.
 
 The following host commands run through that approved Rundeck invocation as
 `rundeck` on devstack. Before allocation, inspect current inventory, lease
@@ -92,7 +96,8 @@ bash /var/lib/rundeck/harness/jobs/list_guests.sh
 
 Before provisioning, the trusted caller must supply `ISSUE889_RUN_OWNER`, a
 unique owner for this attempt, and `SELECTED_SHA`, the full selected commit
-already available on origin. Use that same commit for the paired VZ lane.
+already available on origin. Release acceptance also requires VZ at that
+exact commit.
 Use `--reuse`: the default `--clean` mode removes unrelated inactive unleased
 `sy-*` domains. Allocate a fresh guest for the unique attempt owner while
 preserving those foreign resources.
@@ -223,7 +228,19 @@ through the approved SSH-stdin route. Run the source checkout at the same
 `SELECTED_SHA`. The `sy-agent` account must already have uv and the compatible
 Python interpreter; dependency installation is offline.
 
-The controller must also supply these values before invoking the runner:
+Preserve the configured inherited `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and
+`NODE_EXTRA_CA_CERTS` values. A confined Bristol native attempt failed because
+its environment lacked usable CA trust; the offline payload was not the
+failure. The operator's retry at `3d9992e0` passed after supplying the existing
+public certifi bundle, with SHA-256
+`4f3975ff30abbf35443b486064ae8bcb41dff707ffdf576c76d292fb458aa0a9`,
+through `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`. For either absent setting,
+supply the readable bundle from the verified offline installation explicitly
+through the trusted SSH invocation. Do not overwrite an inherited trust
+setting.
+That observation proves the native prerequisite, not a guest or full suite.
+
+The trusted caller must also supply these values before invoking the runner:
 
 | Input | Meaning |
 |---|---|
@@ -343,6 +360,23 @@ The following controller, cron and recovery procedures describe the earlier
 the current entry point is the small lane wrapper and existing harness above.
 These retained procedures do not grant execution or scheduling authority.
 
+The held `kvm_host.py` records each provisioning or execution job's process
+identifier (PID) and start token in its owner journal. It owns a separate
+process group, stops that group after exit, timeout or cancellation, and
+observes every live member of the job's session before guest cleanup or
+journal release. Job control can put a child in another process group within
+that session. Cleanup signals each verified session member through a Linux
+PID handle, so a reused PID or group number cannot redirect the signal. The
+leader remains unreaped during termination. Linux `/proc` and PID handles
+must permit observation and signaling; a failure leaves cleanup failed and
+preserves the job journal. Before accepting an empty session, the reader
+reconciles fresh process IDs, start times, session IDs and live/zombie states.
+A fork and parent exit during enumeration requires another observation. If
+observations do not settle within the deadline, cleanup fails and the journal
+remains. A stale journal with a live job is preserved. These implementation
+details do not remove the controller hold or supply that command to the
+independent scripts.
+
 Sylab owns operator-side installation, scheduling and Rundeck execution. Relay
 serializes Tart production builds and the physical host. Start this procedure
 only for the reviewed exact controller commit and authorized selected source,
@@ -355,8 +389,10 @@ devstack, Tart and Bristol. Their locations may differ. The control host must
 already have the approved Rundeck route, foreground Tart mailbox client,
 Bristol SSH binding and authenticated GitHub CLI (`gh`) with permission to
 read source and write/read #889 comments. Devstack's `rundeck` account does not
-need copied Tart or Bristol private keys. Do not install cron on Bristol;
-`sy-agent`'s cron inspection is denied by its existing seatbelt.
+need copied Tart or Bristol private keys. The earlier `sy-agent` cron
+inspection was denied by its seatbelt. That observation does not determine
+where Craig can install an independent VZ entry under an authorized scheduler
+account. The paired installer below remains held.
 
 On each installation host, set `CONTROLLER_DIR` to a new approved checkout path
 and `CONTROLLER_SHA` to the independently reviewed full controller commit.
