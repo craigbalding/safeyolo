@@ -86,6 +86,12 @@ impl Audit {
                 event.details = mutation.details.clone().into();
                 vec![event]
             }
+            Self::PolicyActivated => vec![Event::new(
+                "admin.policy_applied",
+                Kind::Admin,
+                Severity::Medium,
+                "Policy activated",
+            )],
             Self::PlumbMutation(mutation) => {
                 let severity = match mutation.event {
                     "plumb.approved" | "plumb.denied" => Severity::Medium,

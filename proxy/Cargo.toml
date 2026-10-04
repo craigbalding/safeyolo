@@ -58,6 +58,10 @@ toml = { version = "1.1", features = ["preserve_order"] }
 name = "safeyolo-proxy"
 path = "src/main.rs"
 
+[[bin]]
+name = "safeyolo"
+path = "src/bin/safeyolo.rs"
+
 [patch.crates-io]
 fancy-regex = { path = "vendor/fancy-regex" }
 hyper = { path = "vendor/hyper" }

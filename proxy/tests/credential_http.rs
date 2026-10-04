@@ -90,6 +90,7 @@ fn config(
     let token = directory.path().join("admin-token");
     std::fs::write(token, b"credential-http-admin").unwrap();
     Config {
+        native_product: false,
         listeners: vec![
             AgentListener {
                 agent_id: "alice".into(),

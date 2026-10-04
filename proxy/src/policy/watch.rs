@@ -17,7 +17,7 @@ pub(crate) struct PolicyFileTimes {
 }
 
 impl PolicyFileTimes {
-    pub(super) fn record_own_expiry_write(&mut self, baseline: f64) {
+    pub(crate) fn record_own_expiry_write(&mut self, baseline: f64) {
         self.baseline = baseline;
     }
 }
@@ -33,9 +33,11 @@ impl Policy {
         if exists(path)? && modified(path)? > previous.baseline {
             changed = true;
         }
-        let addons = path.with_file_name("addons.yaml");
-        if exists(&addons)? && modified(&addons)? > previous.addons {
-            changed = true;
+        if self.native_controls().is_none() {
+            let addons = path.with_file_name("addons.yaml");
+            if exists(&addons)? && modified(&addons)? > previous.addons {
+                changed = true;
+            }
         }
         let lists = lists_max_mtime(path)?;
         Ok(changed || lists > previous.lists)
@@ -47,6 +49,21 @@ impl Policy {
         path: &Path,
         previous: Option<&Policy>,
     ) -> Result<PolicyFileTimes> {
+        Self::capture_baseline_files_for(path, previous, false)
+    }
+
+    pub(crate) fn capture_native_baseline_files(
+        path: &Path,
+        previous: Option<&Policy>,
+    ) -> Result<PolicyFileTimes> {
+        Self::capture_baseline_files_for(path, previous, true)
+    }
+
+    fn capture_baseline_files_for(
+        path: &Path,
+        previous: Option<&Policy>,
+        native: bool,
+    ) -> Result<PolicyFileTimes> {
         let prior = previous
             .filter(|previous| previous.baseline_path.as_deref() == Some(path))
             .and_then(|previous| previous.file_times)
@@ -54,7 +71,7 @@ impl Policy {
         let baseline = modified(path)?;
         let addons_path = path.with_file_name("addons.yaml");
         // Source retains an earlier addon watermark if the sibling is absent.
-        let addons = if exists(&addons_path)? {
+        let addons = if !native && exists(&addons_path)? {
             modified(&addons_path)?
         } else {
             prior.addons
@@ -77,7 +94,11 @@ impl Policy {
         let Some(path) = &self.baseline_path else {
             return Ok(());
         };
-        self.file_times = Some(Self::capture_baseline_files(path, previous)?);
+        self.file_times = Some(Self::capture_baseline_files_for(
+            path,
+            previous,
+            self.native_controls().is_some(),
+        )?);
         Ok(())
     }
 }

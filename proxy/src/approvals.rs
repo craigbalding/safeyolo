@@ -665,6 +665,36 @@ pub(crate) fn update_policy<T>(
     path: &Path,
     skip_unchanged: bool,
     mutate: impl FnOnce(&mut DocumentMut, &mut LargeIntegerContext) -> Result<T>,
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<T> {
+    policy_transaction(
+        path,
+        skip_unchanged,
+        |original| {
+            let (mut document, mut context) = crate::policy::parse_toml_for_edit(original)
+                .map_err(|error| invalid(error.to_string()))?;
+            let result = mutate(&mut document, &mut context)?;
+            let changed = restore_large_toml_integers(&document.to_string(), &context);
+            Ok((result, changed))
+        },
+        activate,
+    )
+}
+
+/// A whole replacement does not need to parse the rejected saved candidate.
+/// Keep its bytes for rollback, and use the same durable transaction as edits.
+pub(crate) fn replace_policy(
+    path: &Path,
+    source: &str,
+    activate: impl FnMut(&str) -> std::result::Result<(), String>,
+) -> Result<()> {
+    policy_transaction(path, false, |_| Ok(((), source.to_owned())), activate)
+}
+
+fn policy_transaction<T>(
+    path: &Path,
+    skip_unchanged: bool,
+    prepare: impl FnOnce(&str) -> Result<(T, String)>,
     mut activate: impl FnMut(&str) -> std::result::Result<(), String>,
 ) -> Result<T> {
     if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
@@ -680,10 +710,7 @@ pub(crate) fn update_policy<T>(
     std::fs::create_dir_all(parent)?;
     let lock = lock_policy(path)?;
     let original = std::fs::read_to_string(path)?;
-    let (mut document, mut context) = crate::policy::parse_toml_for_edit(&original)
-        .map_err(|error| invalid(error.to_string()))?;
-    let result = mutate(&mut document, &mut context)?;
-    let changed = restore_large_toml_integers(&document.to_string(), &context);
+    let (result, changed) = prepare(&original)?;
     if skip_unchanged && changed == original {
         return Ok(result);
     }

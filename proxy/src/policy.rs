@@ -28,8 +28,9 @@ use serde_json::{Map, Value};
 mod baseline;
 mod budgets;
 pub(crate) mod circuit_settings;
-mod expiry;
+pub(crate) mod expiry;
 mod model_json;
+pub mod native;
 mod sensor_config;
 mod source;
 mod stats;
@@ -401,6 +402,7 @@ struct Override {
 /// One proxy permission representation and one atomic GCRA state map.
 #[derive(Clone)]
 pub struct Policy {
+    native: Option<native::Snapshot>,
     baseline: Option<Arc<Baseline>>,
     baseline_path: Option<PathBuf>,
     file_times: Option<watch::PolicyFileTimes>,
@@ -791,6 +793,7 @@ impl Policy {
             .map(|value| positive_integer(value, "global network budget"))
             .transpose()?;
         let mut policy = Self {
+            native: None,
             baseline: None,
             baseline_path: None,
             file_times: None,

@@ -150,6 +150,7 @@ capabilities:
 
 fn config(root: &Path) -> Config {
     Config {
+        native_product: false,
         listeners: vec![
             AgentListener {
                 agent_id: "alice".into(),

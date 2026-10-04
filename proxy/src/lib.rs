@@ -45,6 +45,9 @@ pub mod inspection;
 pub mod memory_monitor;
 mod memory_runtime;
 pub mod metrics;
+pub mod native_config;
+#[cfg(test)]
+mod native_config_tests;
 pub mod network_guard;
 pub mod oauth;
 mod operator_stats;
@@ -402,7 +405,7 @@ impl Runtime {
     }
 
     fn load(
-        config: Config,
+        mut config: Config,
         default_via: &str,
         previous: Option<&Runtime>,
         admin_address: Option<std::net::SocketAddr>,
@@ -450,7 +453,12 @@ impl Runtime {
                 .policy_file
                 .as_ref()
                 .map(|path| {
-                    policy_runtime::load(
+                    let load = if config.native_product {
+                        policy_runtime::load_native
+                    } else {
+                        policy_runtime::load
+                    };
+                    load(
                         path,
                         registry,
                         previous.and_then(|runtime| runtime.policy.as_ref()),
@@ -458,6 +466,9 @@ impl Runtime {
                     )
                 })
                 .transpose()?;
+            if let Some(controls) = policy.as_ref().and_then(policy::Policy::native_controls) {
+                controls.configure(&mut config);
+            }
             // The registry is process-owned across Runtime reloads. Reapply
             // its selected task only after the new baseline has compiled;
             // failure rejects the candidate and retains the prior snapshot.
@@ -502,6 +513,7 @@ impl Runtime {
                 .map(|runtime| runtime.credential_activation.clone())
                 .unwrap_or_default();
             let operator_modes = previous
+                .filter(|_| !config.native_product)
                 .map(|runtime| runtime.operator_modes.clone())
                 .unwrap_or_else(|| Arc::new(OperatorModes::from_config(&config)));
             if let Some(vault) = vault.as_ref() {
@@ -777,6 +789,198 @@ impl Runtime {
         events.write_all(&bytes)?;
         Ok(())
     }
+}
+
+/// Prepare one policy generation without changing the active request view.
+fn prepare_policy_runtime(previous: &Runtime, policy: policy::Policy) -> Result<Runtime, Error> {
+    let previous_guard = previous
+        .credential_guard
+        .as_ref()
+        .ok_or("native credential guard is unavailable")?;
+    let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
+    let gateway_grants = if let Some(store) = previous.gateway_grants.as_ref() {
+        let store = store.clone();
+        if policy.native_controls().is_none() {
+            store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
+        }
+        Some(store)
+    } else {
+        None
+    };
+    let mut config = previous.config.clone();
+    let mut scanner = previous.scanner.clone();
+    let mut operator_modes = previous.operator_modes.clone();
+    if let Some(controls) = policy.native_controls() {
+        controls.configure(&mut config);
+        operator_modes = Arc::new(OperatorModes::from_config(&config));
+        scanner = inspection::Scanner::default();
+        let document = policy::parse_toml_document(
+            policy
+                .native_source_text()
+                .ok_or("active policy source is unavailable")?,
+        )?;
+        scanner.load_policy_config(&document)?;
+    }
+    Ok(Runtime {
+        policy: Some(policy),
+        credential_guard: Some(credential_guard),
+        gateway_grants,
+        config,
+        operator_modes,
+        scanner,
+        ..previous.clone()
+    })
+}
+
+/// Reuse the durable transaction and its rollback callback. The file lock is
+/// acquired before the runtime lock, as in expiry and service mutations.
+pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<Value, Error> {
+    let path = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .config
+        .policy_file
+        .clone()
+        .ok_or("policy path is unavailable")?;
+    let policy = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .policy
+        .clone()
+        .ok_or("active policy is unavailable")?;
+    policy.reload_native_source(source, &path)?;
+    let activate = |saved: &str| {
+        let mut current = state
+            .write()
+            .map_err(|_| "runtime lock is unavailable".to_string())?;
+        let policy = current
+            .policy
+            .as_ref()
+            .ok_or("active policy is unavailable")?;
+        let mut candidate = policy
+            .reload_native_source(saved, &path)
+            .map_err(|error| error.to_string())?;
+        candidate
+            .observe_baseline_files(Some(policy))
+            .map_err(|error| error.to_string())?;
+        let runtime =
+            prepare_policy_runtime(&current, candidate).map_err(|error| error.to_string())?;
+        runtime
+            .configure_declarations()
+            .map_err(|error| error.to_string())?;
+        *current = Arc::new(runtime);
+        Ok(())
+    };
+    let store = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .gateway_grants
+        .clone();
+    if let Some(store) = store {
+        store.replace_native_policy(source, activate)?;
+    } else {
+        approvals::replace_policy(&path, source, activate)?;
+    }
+    let current = state.read().map_err(|_| "runtime lock is unavailable")?;
+    let mut result = current
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.native_view(&path))
+        .ok_or("active native policy is unavailable")?;
+    result["status"] = json!("active");
+    Ok(result)
+}
+
+/// A baseline or catalog change uses the same preparation and publication
+/// boundary as an Admin API apply, under the latest generation and counters.
+fn reload_native_policy(
+    state: &RuntimeState,
+    registry: Option<Arc<services::Registry>>,
+) -> Result<bool, Error> {
+    let path = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .config
+        .policy_file
+        .clone()
+        .ok_or("policy path is unavailable")?;
+    let store = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .gateway_grants
+        .clone();
+    let activate = |_source: &str| -> Result<bool, Error> {
+        let mut current = state.write().map_err(|_| "runtime lock is unavailable")?;
+        let Some(previous) = current.policy.as_ref() else {
+            return Ok(false);
+        };
+        if registry.is_none() && !previous.baseline_files_changed()? {
+            return Ok(false);
+        }
+        let candidate = policy_runtime::load_native_locked(
+            &path,
+            registry
+                .clone()
+                .or_else(|| previous.gateway().and_then(|gateway| gateway.registry())),
+            Some(previous),
+            &current.audit,
+        )?;
+        let runtime = prepare_policy_runtime(&current, candidate)?;
+        runtime.configure_declarations()?;
+        *current = Arc::new(runtime);
+        Ok(true)
+    };
+    if let Some(store) = store {
+        let mut changed = false;
+        store.reload_native_policy(|source| {
+            changed = activate(source).map_err(|error| error.to_string())?;
+            Ok(())
+        })?;
+        Ok(changed)
+    } else {
+        let _lock = approvals::lock_policy(&path)?;
+        activate("")
+    }
+}
+
+pub(crate) fn native_policy_status(state: &RuntimeState) -> Result<Value, Error> {
+    let path = state
+        .read()
+        .map_err(|_| "runtime lock is unavailable")?
+        .config
+        .policy_file
+        .clone()
+        .ok_or("policy path is unavailable")?;
+    let _lock = approvals::lock_policy(&path)?;
+    let current = state.read().map_err(|_| "runtime lock is unavailable")?;
+    let policy = current
+        .policy
+        .as_ref()
+        .ok_or("active policy is unavailable")?;
+    let mut result = policy
+        .native_view(&path)
+        .ok_or("active native policy is unavailable")?;
+    match std::fs::read_to_string(&path) {
+        Ok(saved) => {
+            let saved = zeroize::Zeroizing::new(saved);
+            let matches = policy.native_source_text() == Some(saved.as_str());
+            result["saved_matches_active"] = json!(matches);
+            result["status"] = json!(if matches { "active" } else { "saved_differs" });
+            if !matches {
+                result["repair"] = json!(
+                    "Run policy check on the saved file, then policy apply FILE to activate it, or restore the active policy."
+                );
+            }
+        }
+        Err(error) => {
+            result["saved_matches_active"] = json!(false);
+            result["status"] = json!("saved_unreadable");
+            result["saved_error"] = json!(error.to_string());
+            result["repair"] =
+                json!("Restore access to the saved policy, then run policy apply FILE.");
+        }
+    }
+    Ok(result)
 }
 
 /// Compile and publish an already registered task at the explicit activation
@@ -1587,6 +1791,9 @@ impl Proxy {
                     // when a later policy compile rejects the candidate.
                     let registry =
                         load_service_catalog(config, &previous.audit, &mut self.service_files)?;
+                    if config.native_product {
+                        return reload_native_policy(&self.runtime, registry);
+                    }
                     let policy = policy_runtime::load(
                         config
                             .policy_file
@@ -1633,6 +1840,9 @@ impl Proxy {
             if !policy.baseline_files_changed()? {
                 return Ok(false);
             }
+            if previous.config.native_product {
+                return reload_native_policy(&self.runtime, None);
+            }
             let candidate = policy_runtime::load(
                 previous
                     .config
@@ -1655,28 +1865,10 @@ impl Proxy {
     }
 
     fn publish_policy(&self, previous: &Runtime, policy: policy::Policy) -> Result<(), Error> {
-        let previous_guard = previous
-            .credential_guard
-            .as_ref()
-            .ok_or("native credential guard is unavailable")?;
-        let (credential_guard, _) = previous_guard.prepare_policy(&policy)?;
-        let gateway_grants = if let Some(store) = previous.gateway_grants.as_ref() {
-            let store = store.clone();
-            store.reload(time::OffsetDateTime::now_utc(), |_| Ok(()))?;
-            Some(store)
-        } else {
-            None
-        };
         // The candidate observed the policy file when it was compiled. Keep
         // that watermark: an admin authorization can commit while the grant
         // store reloads, and the next watcher check must see that later write.
-        let runtime = Arc::new(Runtime {
-            policy: Some(policy),
-            credential_guard: Some(credential_guard),
-            gateway_grants,
-            credential_key_empty: previous.credential_key_empty,
-            ..previous.clone()
-        });
+        let runtime = Arc::new(prepare_policy_runtime(previous, policy)?);
         {
             let mut current = self
                 .runtime

@@ -11,6 +11,53 @@ use crate::{
     services::Registry,
 };
 
+pub(crate) fn load_native(
+    path: &Path,
+    registry: Option<Arc<Registry>>,
+    previous: Option<&Policy>,
+    writer: &Writer,
+) -> Result<Policy, Error> {
+    let _lock = crate::approvals::lock_policy(path)?;
+    load_native_locked(path, registry, previous, writer)
+}
+
+pub(crate) fn load_native_locked(
+    path: &Path,
+    registry: Option<Arc<Registry>>,
+    previous: Option<&Policy>,
+    writer: &Writer,
+) -> Result<Policy, Error> {
+    let mut observed = Policy::capture_native_baseline_files(path, previous)?;
+    let source = zeroize::Zeroizing::new(std::fs::read_to_string(path)?);
+    let now = policy::current_time_ms();
+    let mut candidate = Policy::native_source(&source, path, registry, now)?;
+    let document = policy::parse_toml_document(&source)?;
+    let expired = policy::expired_host_entries(&document, now)?;
+    if !expired.is_empty() {
+        let replacement_time =
+            policy::expiry::persist_expired_hosts_locked(path, &expired, Some(&source))?;
+        if let Some(time) = replacement_time {
+            observed.record_own_expiry_write(time);
+        }
+        candidate.set_native_source(std::fs::read_to_string(path)?);
+    }
+    if let Some(previous) = previous {
+        candidate.retain_runtime_state(previous);
+    }
+    candidate.adopt_baseline_files(observed);
+    if writer
+        .emit(native_event("ops.policy_loaded", "Policy loaded"))
+        .is_err()
+    {
+        evidence_failure("accepted");
+    }
+    Ok(candidate)
+}
+
+pub(crate) fn native_event(event: &str, summary: &str) -> Event {
+    Event::new(event, Kind::Ops, Severity::Medium, summary)
+}
+
 pub(crate) fn load(
     path: &Path,
     registry: Option<Arc<Registry>>,
