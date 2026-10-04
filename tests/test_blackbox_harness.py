@@ -1840,6 +1840,8 @@ output.write_text(json.dumps({'args': sys.argv[1:], 'nats_ports': os.environ['SA
 
 def test_vz_port_preflight_preserves_a_foreign_live_listener(tmp_path, installed_section_commands):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as foreign:
+        # Closed fixture connections must not hold the port for later controls.
+        foreign.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         foreign.bind(("127.0.0.1", 46373))
         foreign.listen()
         directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
