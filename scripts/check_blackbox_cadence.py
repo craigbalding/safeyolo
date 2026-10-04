@@ -3,14 +3,13 @@
 
 Documentation tables opt into this contract with ``blackbox-cadence-contract``
 markers and a structured ``Scheduled`` yes/no column. The checker reads the
-hosted workflow and, after external deployment, its read-back hardware cron
-entry. A source command or pending guide does not declare a hardware schedule.
+hosted workflow. Independent hardware deployment remains unfinished; a retained
+paired cron entry cannot declare either hardware lane scheduled.
 """
 
 from __future__ import annotations
 
 import re
-import shlex
 import sys
 from pathlib import Path
 
@@ -156,25 +155,10 @@ def cadence_table_from_doc(path: Path) -> dict[str, bool]:
 
 
 def scheduled_hardware_from_cron(path: Path = HARDWARE_CRON_PATH) -> dict[str, bool]:
-    """Read the installed paired entry retained by install_schedule.py."""
+    """Reject readback from the removed paired deployment."""
     if not path.exists():
         return {}  # External deployment remains open; documentation must say no.
-    entries = [line.split(maxsplit=5) for line in path.read_text().splitlines()
-               if line.strip() and not line.startswith("#")]
-    if len(entries) != 1 or len(entries[0]) != 6:
-        raise ValueError(f"{path}: expected one installed hardware cron entry")
-    fields, command = entries[0][:5], shlex.split(entries[0][5])
-    if command and command[0].startswith("PATH="):
-        command = command[1:]
-    if fields[2:] != ["*", "*", "*"] or not all(field.isdigit() for field in fields[:2]):
-        raise ValueError(f"{path}: hardware entry must run daily at its stated local time")
-    if not 0 <= int(fields[0]) <= 59 or not 0 <= int(fields[1]) <= 23:
-        raise ValueError(f"{path}: invalid hardware cron minute or hour")
-    program = next((index for index, argument in enumerate(command) if argument.endswith("/hardware/paired.py")), None)
-    if (program != 1 or command[program + 1:program + 3] != ["overnight", "--config"]
-            or len(command) <= program + 3 or "--authorized-commit" in command):
-        raise ValueError(f"{path}: schedule must invoke the trusted paired overnight command with private configuration")
-    return {"kvm": True, "vz": True}
+    raise ValueError(f"{path}: paired deployment was removed; independent hardware scheduling remains unverified")
 
 
 def contract_problems(

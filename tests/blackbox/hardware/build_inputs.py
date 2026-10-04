@@ -1,6 +1,5 @@
 """Build and package selected offline VZ inputs on the approved Tart host.
 
-This producer is part of the paired hardware implementation in progress.
 The trusted caller owns admission, its attempt result, Tart allocation and
 publication. No physical VZ execution or hardware acceptance occurs here.
 """

@@ -20,8 +20,10 @@ if __name__ == "__main__":
     # own CLI environment. Reuse only its stdlib process-identity helper in
     # this parent; no PYTHONPATH is forwarded to candidate subprocesses.
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
-
-from .attempt_results import HardwareAttempt
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tests.blackbox.hardware.attempt_results import HardwareAttempt
+else:
+    from .attempt_results import HardwareAttempt
 
 REPOSITORY = "craigbalding/safeyolo"
 ISSUE = 889

@@ -104,13 +104,14 @@ def test_missing_external_deployment_does_not_claim_hardware_scheduling(tmp_path
     assert scheduled_hardware_from_cron(tmp_path / "not-deployed.cron") == {}
 
 
-def test_external_readback_entry_derives_both_hardware_lanes(tmp_path):
+def test_removed_paired_readback_cannot_claim_hardware_scheduling(tmp_path):
     entry = tmp_path / "deployed.cron"
     entry.write_text("# Host: fixture-control\n# Account: fixture-operator\n"
                      "17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py overnight --config /private/deployment.json >>/private/cron.log 2>&1\n")
-    assert scheduled_hardware_from_cron(entry) == {"kvm": True, "vz": True}
+    with pytest.raises(ValueError, match="paired deployment was removed"):
+        scheduled_hardware_from_cron(entry)
     problems = contract_problems(WORKFLOW_PATH, CADENCE_DOCS, entry)
-    assert len(problems) == len(CADENCE_DOCS) and all("implementation ['kvm', 'systrap', 'vz']" in row for row in problems)
+    assert len(problems) == 1 and "independent hardware scheduling remains unverified" in problems[0]
     for bad in ("on-demand", "overnight --authorized-commit refs/pull/905/head", "overnight --section isolation"):
         entry.write_text(f"17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py {bad} --config /private/deployment.json\n")
         with pytest.raises(ValueError):

@@ -1,4 +1,4 @@
-"""Approved service calls for the trusted paired hardware invocation.
+"""Approved service calls for trusted hardware invocations.
 
 Rundeck's documented API returns invocation identities and output, not product
 acceptance. The existing Tart client owns its mailbox. Bristol uses the

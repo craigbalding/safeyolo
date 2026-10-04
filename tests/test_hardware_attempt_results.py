@@ -314,7 +314,10 @@ def test_replay_command_publishes_failure_without_rerunning_or_replacing_attempt
     assert published["run_id"] == attempt.data["run_id"]
     assert published["publication_verified"] is True and published["attempt_passed"] is False
     original_comments = json.loads(store.read_text())["comments"]
-    again = subprocess.run(command, capture_output=True, text=True, timeout=10, check=False)
+    # The trusted outbox must also replay from a standalone script outside
+    # the checkout, without depending on repository imports from the cwd.
+    direct = [sys.executable, "-I", "-B", publish_results.__file__, "--attempt", str(attempt.directory)]
+    again = subprocess.run(direct, cwd=tmp_path, capture_output=True, text=True, timeout=10, check=False)
     assert again.returncode == 0, again.stderr
     assert json.loads(store.read_text())["comments"] == original_comments
     restored = attempt_results.HardwareAttempt.restore(attempt.directory)
