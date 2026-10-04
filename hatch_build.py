@@ -6,11 +6,26 @@ import json
 import os
 import re
 import subprocess
+import sysconfig
+import tomllib
 from pathlib import Path
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 _IMMUTABLE_REVISION = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def package_version() -> str:
+    """Keep the milestone base; identify download variants automatically."""
+    root = Path(__file__).resolve().parent
+    base = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["hatch"]["version"]["base-version"]
+    profile = os.environ.get("SAFEYOLO_BUILD_PROFILE")
+    if profile is None:
+        return base
+    revision = os.environ.get("SAFEYOLO_BUILD_REVISION", "").lower()
+    if profile not in {"production", "debug"} or not _IMMUTABLE_REVISION.fullmatch(revision):
+        raise ValueError("download version requires a full source commit and production/debug profile")
+    return f"{base}.dev0+g{revision}.{profile}"
 
 
 class CustomBuildHook(BuildHookInterface):
@@ -114,14 +129,31 @@ class CustomBuildHook(BuildHookInterface):
         self._generated = generated
         build_data["force_include"][str(generated)] = "safeyolo/_build_identity.json"
 
+        self.include_native_proxy(project_root, build_data)
+
+    def include_native_proxy(self, project_root: Path, build_data: dict) -> None:
         # The installer builds the native proxy before invoking uv. Include
         # that exact release artifact in wheel installs so the native default
         # does not depend on the source checkout or an inherited environment
         # variable. A source checkout can use its selected development binary;
         # install.sh builds the release artifact before invoking this hook.
-        native_binary = project_root / "proxy" / "target" / "release" / "safeyolo-proxy"
+        selected_binary = os.environ.get("SAFEYOLO_NATIVE_BINARY")
+        native_binary = (
+            Path(selected_binary).resolve() if selected_binary
+            else project_root / "proxy" / "target" / "release" / "safeyolo-proxy"
+        )
+        if selected_binary and not native_binary.is_file():
+            raise ValueError(f"SAFEYOLO_NATIVE_BINARY is not a file: {native_binary}")
         if native_binary.is_file():
             build_data["force_include"][str(native_binary)] = "safeyolo/bin/safeyolo-proxy"
+            platform_tag = os.environ.get("SAFEYOLO_NATIVE_PLATFORM_TAG") or sysconfig.get_platform().replace("-", "_").replace(".", "_")
+            if not re.fullmatch(r"[a-zA-Z0-9_]+", platform_tag):
+                raise ValueError("SAFEYOLO_NATIVE_PLATFORM_TAG must be a wheel platform tag")
+            build_data["pure_python"] = False
+            build_data["tag"] = f"py3-none-{platform_tag}"
+        native_metadata = os.environ.get("SAFEYOLO_NATIVE_BUILD_METADATA")
+        if native_metadata:
+            build_data["force_include"][str(Path(native_metadata).resolve())] = "safeyolo/_native_build.json"
 
     def finalize(
         self,

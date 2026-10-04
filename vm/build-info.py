@@ -41,10 +41,10 @@ def source_revision() -> tuple[str, bool | None]:
 
 def generate(profile: str, output: Path) -> None:
     revision, dirty = source_revision()
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     metadata = {
         "schema_version": 1,
-        "version": project["version"],
+        "version": project["tool"]["hatch"]["version"]["base-version"],
         "git_sha": revision,
         "git_dirty": dirty,
         "build_profile": profile,
