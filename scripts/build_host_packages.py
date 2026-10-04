@@ -215,7 +215,21 @@ def runtime_compatibility(paths: dict) -> tuple[str, dict]:
         return tag, {"libc": "glibc", "minimum_glibc": minimum}
     versions = []
     for binary in paths.values():
-        versions.extend(re.findall(r"^\s+(?:minos|version) (\d+\.\d+(?:\.\d+)?)", output("otool", "-l", str(binary)), re.MULTILINE))
+        binary_versions = []
+        command = ""
+        for line in output("otool", "-l", str(binary)).splitlines():
+            fields = line.strip().split(maxsplit=1)
+            if len(fields) != 2:
+                continue
+            name, value = fields
+            if name == "cmd":
+                command = value
+            elif (command, name) in {("LC_BUILD_VERSION", "minos"), ("LC_VERSION_MIN_MACOSX", "version")}:
+                if re.fullmatch(r"\d+\.\d+(?:\.\d+)?", value):
+                    binary_versions.append(value)
+        if not binary_versions:
+            raise ValueError(f"macOS deployment minimum is missing from {binary}")
+        versions.extend(binary_versions)
     minimum = max(versions, key=lambda version: tuple(map(int, version.split("."))))
     major, minor, *_ = minimum.split(".")
     return f"macosx_{major}_{minor}_arm64", {"minimum_macos": minimum}

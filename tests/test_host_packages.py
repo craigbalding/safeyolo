@@ -117,24 +117,29 @@ def test_runtime_verification_rejects_test_and_script_outputs(tmp_path):
         builder.verify_proxy(binary, "debug")
 
 
-def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(tmp_path):
-    binary = tmp_path / "selected-proxy"
-    binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
-    binary.chmod(0o755)
-    native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
-    metadata = tmp_path / "native.json"
-    metadata.write_text(json.dumps(native))
+@pytest.fixture
+def compiler_canaries(tmp_path, monkeypatch):
     tools = tmp_path / "compiler-canaries"
     tools.mkdir()
     for command in ("cargo", "rustc", "swift"):
         canary = tools / command
         canary.write_text("#!/bin/sh\nexit 99\n")
         canary.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tools}:{os.environ['PATH']}")
+
+
+def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(tmp_path, compiler_canaries):
+    binary = tmp_path / "selected-proxy"
+    binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
+    binary.chmod(0o755)
+    native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
+    metadata = tmp_path / "native.json"
+    metadata.write_text(json.dumps(native))
     tag = "linux_aarch64" if native["platform"] == "linux-arm64" else "linux_x86_64"
     destination = tmp_path / "dist"
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(destination)], cwd=builder.ROOT, check=True,
-        env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "SAFEYOLO_BUILD_REVISION": REVISION,
+        env={**os.environ, "SAFEYOLO_BUILD_REVISION": REVISION,
              "SAFEYOLO_NATIVE_BINARY": str(binary), "SAFEYOLO_NATIVE_BUILD_METADATA": str(metadata),
              "SAFEYOLO_BUILD_PROFILE": "debug",
              "SAFEYOLO_NATIVE_PLATFORM_TAG": tag},
@@ -216,19 +221,150 @@ def test_consumer_checks_actual_glibc_requirement(consumer_package, monkeypatch)
         consumer.verify(directory)
 
 
-def test_macos_deployment_requirement_does_not_use_dylib_current_versions(monkeypatch):
-    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
-    monkeypatch.setattr(builder, "output", lambda *args, **kwargs: """
-        cmd LC_BUILD_VERSION
-      minos 14.0
-        sdk 26.0
-        cmd LC_LOAD_DYLIB
-    current version 1345.100.2
+def macos_load_commands(minimum: str, command: str = "LC_BUILD_VERSION") -> str:
+    # Fields and layout follow Apple's otool/ofile_print.c deployment and version printers.
+    deployment = f"""
+      cmd LC_BUILD_VERSION
+  cmdsize 32
+ platform 1
+    minos {minimum}
+      sdk 26.0
+   ntools 1
+     tool 3
+  version 1267.0
+""" if command == "LC_BUILD_VERSION" else f"""
+      cmd LC_VERSION_MIN_MACOSX
+  cmdsize 16
+  version {minimum}
+      sdk 26.0
+"""
+    return f"""test-runtime:
+Load command 0
+      cmd LC_SOURCE_VERSION
+  cmdsize 16
+  version 2048.1.2.3.4
+Load command 1
+{deployment}
+Load command 2
+          cmd LC_LOAD_DYLIB
+      cmdsize 56
+         name /usr/lib/libSystem.B.dylib (offset 24)
+   time stamp 2 Thu Jan  1 00:00:02 1970
+      current version 1345.100.2
 compatibility version 1.0.0
-""")
+Load command 3
+      cmd LC_SOURCE_VERSION
+  cmdsize 16
+  version 4096.0
+"""
+
+
+@pytest.mark.parametrize("command", ["LC_BUILD_VERSION", "LC_VERSION_MIN_MACOSX"])
+@pytest.mark.parametrize("minimum", ["11.0", "14.0", "15.2.1", "26.0"])
+def test_macos_deployment_requirement_ignores_unrelated_versions(monkeypatch, command, minimum):
+    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
+    monkeypatch.setattr(builder, "output", lambda *args, **kwargs: macos_load_commands(minimum, command))
+    major, minor, *_ = minimum.split(".")
     assert builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")}) == (
-        "macosx_14_0_arm64", {"minimum_macos": "14.0"},
+        f"macosx_{major}_{minor}_arm64", {"minimum_macos": minimum},
     )
+
+
+@pytest.mark.parametrize("proxy_minimum,helper_minimum", [("11.0", "14.0"), ("14.0", "11.0"), ("15.2", "15.2.1")])
+def test_macos_package_uses_the_highest_component_requirement(monkeypatch, proxy_minimum, helper_minimum):
+    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
+    outputs = {
+        "proxy": macos_load_commands(proxy_minimum),
+        "helper": macos_load_commands(helper_minimum, "LC_VERSION_MIN_MACOSX"),
+    }
+    monkeypatch.setattr(builder, "output", lambda *args: outputs[args[-1]])
+    _, compatibility = builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")})
+    expected = "15.2.1" if proxy_minimum == "15.2" else "14.0"
+    assert compatibility == {"minimum_macos": expected}
+    monkeypatch.setattr(consumer.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: (expected, ("", "", ""), "arm64"))
+    consumer.verify_compatibility(compatibility)
+    older = "15.2" if expected == "15.2.1" else "13.6"
+    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: (older, ("", "", ""), "arm64"))
+    with pytest.raises(ValueError, match=f"requires macOS {expected}"):
+        consumer.verify_compatibility(compatibility)
+
+
+@pytest.mark.parametrize("missing_component", ["proxy", "helper"])
+def test_macos_package_requires_each_component_deployment_minimum(monkeypatch, missing_component):
+    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
+    unrelated = """Load command 0
+      cmd LC_SOURCE_VERSION
+  cmdsize 16
+  version 1267.0
+Load command 1
+      cmd LC_VERSION_MIN_IPHONEOS
+  cmdsize 16
+  version 18.0
+      sdk 26.0
+"""
+    monkeypatch.setattr(builder, "output", lambda *args: unrelated if args[-1] == missing_component else macos_load_commands("14.0"))
+    with pytest.raises(ValueError, match=f"deployment minimum is missing from {missing_component}"):
+        builder.runtime_compatibility({"proxy": Path("proxy"), "helper": Path("helper")})
+
+
+@pytest.mark.parametrize("profile", ["production", "debug"])
+def test_macos_package_wheel_and_manifest_share_the_actual_minimum(tmp_path, monkeypatch, compiler_canaries, profile):
+    proxy = tmp_path / "safeyolo-proxy"
+    proxy.write_bytes(b"selected proxy bytes")
+    proxy.chmod(0o755)
+    helper = tmp_path / "safeyolo-vm"
+    helper.write_bytes(b"selected helper bytes")
+    symbols = tmp_path / "safeyolo-vm.dSYM"
+    symbols.mkdir()
+    (symbols / "symbols").write_bytes(b"debug symbols")
+    helper_profile = "production" if profile == "production" else "development"
+    helper_identity = {"git_sha": REVISION, "build_profile": helper_profile}
+    (tmp_path / "safeyolo-vm.build-info.json").write_text(json.dumps(helper_identity))
+    guest = tmp_path / "guest"
+    guest.mkdir()
+    (guest / "vsock-term").write_bytes(b"guest terminal bytes")
+    (guest / "build.json").write_text(json.dumps({"commit": REVISION, "sha256": consumer.sha256(guest / "vsock-term")}))
+    native = {
+        "commit": REVISION, "platform": "darwin-arm64", "profile": profile,
+        "proxy": {"sha256": consumer.sha256(proxy), "settings": {"profile": "release" if profile == "production" else "dev"}},
+        "helper": {"sha256": consumer.sha256(helper), "profile": helper_profile, "identity": helper_identity},
+    }
+    monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
+    monkeypatch.setattr(consumer, "host_platform", lambda: "darwin-arm64")
+    monkeypatch.setattr(consumer.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: ("15.2.1", ("", "", ""), "arm64"))
+    real_output = builder.output
+
+    def output(*args, **kwargs):
+        if args[:2] == ("otool", "-l"):
+            return macos_load_commands("14.0") if args[-1] == str(proxy) else macos_load_commands("15.2.1", "LC_VERSION_MIN_MACOSX")
+        return real_output(*args, **kwargs)
+
+    monkeypatch.setattr(builder, "output", output)
+    # Linux cannot execute/sign Mac runtimes; packaging, wheel inspection and compatibility checks remain real.
+    real_check_output = consumer.subprocess.check_output
+
+    def check_output(args, **kwargs):
+        if len(args) == 2 and Path(args[0]).name == "safeyolo-proxy" and args[1] == "--version":
+            return f"safeyolo-proxy test commit={REVISION} profile={profile}\n"
+        return real_check_output(args, **kwargs)
+
+    monkeypatch.setattr(consumer.subprocess, "check_output", check_output)
+    monkeypatch.setattr(consumer, "verify_helper", lambda *args: None)
+    directory = tmp_path / f"package-{profile}"
+    archive = builder.package(profile, {"proxy": proxy, "helper": helper}, native, directory, guest)
+    assert archive.is_file()
+    manifest = consumer.verify(directory)
+    assert manifest["native"] == native
+    assert manifest["compatibility"] == {"minimum_macos": "15.2.1"}
+    assert manifest["wheel"].endswith("-py3-none-macosx_15_2_arm64.whl")
+    with zipfile.ZipFile(directory / manifest["wheel"]) as wheel:
+        wheel_metadata, = [name for name in wheel.namelist() if name.endswith(".dist-info/WHEEL")]
+        assert b"Tag: py3-none-macosx_15_2_arm64" in wheel.read(wheel_metadata)
+    monkeypatch.setattr(consumer.platform, "mac_ver", lambda: ("15.2", ("", "", ""), "arm64"))
+    with pytest.raises(ValueError, match="requires macOS 15.2.1"):
+        consumer.verify(directory)
 
 
 def test_cli_version_uses_installed_commit_and_profile(monkeypatch):
