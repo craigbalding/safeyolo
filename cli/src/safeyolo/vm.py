@@ -475,22 +475,59 @@ def _host_target_arch() -> str:
 
 
 def _guest_src_dir() -> Path:
-    """Return the repo's guest/ directory.
+    """Return the source checkout's guest/ directory.
 
     cli/src/safeyolo/vm.py → parents[3] is the repo root.
     """
     return Path(__file__).resolve().parents[3] / "guest"
 
 
+def _native_guest_src_dir() -> Path:
+    """Require checkout or wheel guest files before replacing a Linux rootfs."""
+    module = Path(__file__).resolve()
+    checkout_guest = _guest_src_dir()
+    if module == checkout_guest.parent / "cli" / "src" / "safeyolo" / "vm.py":
+        guest_src = checkout_guest
+    else:
+        guest_src = module.parent / "guest"
+    if not guest_src.is_dir():
+        raise VMError(
+            f"guest/ directory not found at {guest_src}. "
+            "SafeYolo must be run from a repo checkout or installed image."
+        )
+    for relative in (
+        "install-guest-common.sh",
+        "rootfs/safeyolo-guest-init",
+        "rootfs/safeyolo-sudo",
+    ):
+        file = guest_src / relative
+        if not file.is_file() or not os.access(file, os.R_OK):
+            raise VMError(f"Required guest support file not readable at {file}")
+    return guest_src
+
+
 def _guest_sudo_source() -> Path:
     """Return the sudo shim from the wheel or editable source checkout."""
-    bundled = Path(__file__).parent / "safeyolo-sudo"
+    bundled = Path(__file__).parent / "guest" / "rootfs" / "safeyolo-sudo"
     if bundled.is_file():
         return bundled
     source = _guest_src_dir() / "rootfs" / "safeyolo-sudo"
     if source.is_file():
         return source
     raise VMError("SafeYolo guest sudo helper is missing from the package and source checkout")
+
+
+def _clear_rootfs_script_outputs(out_path: Path, cache_paths_file: Path) -> None:
+    """Clear the previous rootfs output and cache declarations before a rebuild."""
+    if out_path.exists():
+        if out_path.is_dir():
+            shutil.rmtree(out_path, ignore_errors=True)
+        else:
+            out_path.unlink()
+
+    # Remove the previous build's cache declarations. If the script leaves
+    # this file absent, the new build declares no persistent cache paths.
+    cache_paths_file.unlink(missing_ok=True)
 
 
 def build_custom_rootfs(name: str, script_path: Path) -> Path:
@@ -513,12 +550,17 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
     """
     agent_dir = get_agents_dir() / name
     agent_dir.mkdir(parents=True, exist_ok=True)
+    cache_paths_file = agent_dir / "cache-paths.txt"
 
     system = platform.system()
     if system == "Darwin":
         out_path = agent_dir / "rootfs.ext4"
         out_key = "SAFEYOLO_ROOTFS_OUT_EXT4"
         out_is_dir = False
+        _clear_rootfs_script_outputs(out_path, cache_paths_file)
+        _run_rootfs_script_lima(
+            name, script_path, out_key, out_path, cache_paths_file,
+        )
     elif system == "Linux":
         # Linux runtime consumes a directory tree as OCI root.path.
         # Custom rootfs-scripts write the unpacked tree here; umoci
@@ -526,34 +568,14 @@ def build_custom_rootfs(name: str, script_path: Path) -> Path:
         out_path = agent_dir / "rootfs"
         out_key = "SAFEYOLO_ROOTFS_OUT_TREE"
         out_is_dir = True
+        # Check support before clearing an existing rootfs or cache-paths file.
+        guest_src = _native_guest_src_dir()
+        _clear_rootfs_script_outputs(out_path, cache_paths_file)
+        _run_rootfs_script_native(
+            name, script_path, out_path, cache_paths_file, guest_src,
+        )
     else:
         raise VMError(f"Unsupported platform for --rootfs-script: {system}")
-
-    # Start with a clean output slot so a failed rebuild doesn't leave
-    # a stale image around that a later agent-run picks up.
-    if out_path.exists():
-        if out_path.is_dir():
-            shutil.rmtree(out_path, ignore_errors=True)
-        else:
-            out_path.unlink()
-
-    # Cache-paths output: the script may write a list of absolute
-    # in-rootfs paths (one per line) that SafeYolo bind-mounts to
-    # persistent per-agent dirs at sandbox start. Pre-create an empty
-    # file so the script's `[ -n "$VAR" ]` guard sees the variable and
-    # writes unconditionally if it wants to; a missing file afterwards
-    # means the script chose not to declare any caches.
-    cache_paths_file = agent_dir / "cache-paths.txt"
-    cache_paths_file.unlink(missing_ok=True)
-
-    if system == "Linux":
-        _run_rootfs_script_native(
-            name, script_path, out_key, out_path, cache_paths_file,
-        )
-    else:
-        _run_rootfs_script_lima(
-            name, script_path, out_key, out_path, cache_paths_file,
-        )
 
     if not out_path.exists():
         raise VMError(
@@ -683,17 +705,10 @@ def clone_custom_rootfs(source_name: str, target_name: str) -> Path:
 
 
 def _run_rootfs_script_native(
-    name: str, script_path: Path, out_key: str, out_path: Path,
-    cache_paths_file: Path,
+    name: str, script_path: Path, out_path: Path,
+    cache_paths_file: Path, guest_src: Path,
 ) -> None:
     """Run a private staged copy of the rootfs-script on the Linux host."""
-    guest_src = _guest_src_dir()
-    if not guest_src.is_dir():
-        raise VMError(
-            f"guest/ directory not found at {guest_src}. "
-            f"SafeYolo must be run from a repo checkout or installed image."
-        )
-
     work_dir = Path(tempfile.mkdtemp(prefix="safeyolo-rootfs-"))
     try:
         # Do not exec the checkout inode directly. A live editor or a writable
@@ -708,7 +723,7 @@ def _run_rootfs_script_native(
         env = {
             **os.environ,
             "SAFEYOLO_AGENT_NAME": name,
-            out_key: str(out_path),
+            "SAFEYOLO_ROOTFS_OUT_TREE": str(out_path),
             "SAFEYOLO_ROOTFS_OUT_CACHE_PATHS": str(cache_paths_file),
             "SAFEYOLO_ROOTFS_WORK_DIR": str(work_dir),
             "SAFEYOLO_GUEST_SRC_DIR": str(guest_src),
