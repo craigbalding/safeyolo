@@ -5,8 +5,12 @@ sandboxes.
 
 ## Installation
 
-Follow the [main quickstart](../README.md#quick-start) for a first installation.
-The commands in this section run on the host, as your usual user, from the
+Follow the [main quickstart](../README.md#1-install-on-your-host) to install a
+published host package with uv. The package includes the CLI, native proxy,
+and macOS helper, without Cargo or a local compiler. Guest and host runtime
+setup follows in [bootstrap and individual phases](#bootstrap-and-individual-phases).
+
+For source installation, the commands below run on the host, as your usual user, from the
 SafeYolo checkout root.
 
 `./install.sh` builds the Rust proxy with Cargo, then installs the CLI and
@@ -29,7 +33,21 @@ Its installed-runtime checks require that private input before public start.
 
 ### Bootstrap and individual phases
 
-`safeyolo bootstrap` initializes configuration and builds missing guest artifacts.
+Run setup on the host, as your usual user. Guest builds need a source checkout,
+including when the CLI was installed from a host package. If you do not already
+have a checkout, run these commands from the directory where you want to keep it:
+
+```sh
+git clone https://github.com/craigbalding/safeyolo.git
+cd safeyolo
+```
+
+Run the following commands from that checkout root. When running the installed
+CLI elsewhere, pass the checkout path with `--source-checkout` to
+`safeyolo bootstrap` or `safeyolo build`.
+
+`safeyolo bootstrap` initializes configuration under `~/.safeyolo/` and builds
+missing guest artifacts under `~/.safeyolo/share/`.
 On Linux, it also runs host setup when runtime prerequisites are missing.
 The command skips phases whose required state is already present.
 
@@ -39,19 +57,24 @@ bootstrap. Runtime setup can install gVisor, user-namespace tools, and ACL tools
 using apt, dnf, apk, or pacman as appropriate. It explains its privileged changes
 before invoking `sudo`, which may prompt for your password.
 
-To inspect or retry an individual phase, use these commands:
+```sh
+safeyolo bootstrap
+```
+
+**Optional:** To inspect or retry an individual phase, use the commands below.
+`init` writes configuration under `~/.safeyolo/`, including policy, addon settings,
+and tokens. `build` installs guest artifacts under `~/.safeyolo/share/`: an
+unpacked rootfs tree on Linux, or a kernel, initramfs, and ext4 image on macOS.
+See the [guest build reference](../guest/README.md) for rebuild controls.
 
 ```sh
 safeyolo init
 safeyolo build
 ```
 
-`init` writes configuration under `~/.safeyolo/`, including policy, addon settings,
-and tokens. `build` installs guest artifacts under `~/.safeyolo/share/`: an
-unpacked rootfs tree on Linux, or a kernel, initramfs, and ext4 image on macOS.
-See the [guest build reference](../guest/README.md) for rebuild controls.
-
-On macOS, build and install the Swift VM helper after the guest build:
+For **source installs on macOS**, build and install the Swift VM helper after
+the guest build. Skip this step when you installed a host package; that package
+already includes the helper:
 
 ```sh
 make -C vm install

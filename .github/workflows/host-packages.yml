@@ -1,0 +1,246 @@
+name: Postmerge host packages
+
+on:
+  workflow_run:
+    workflows: [CI, Native proxy contracts, CodeQL]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+  actions: read
+
+# Several check completions can trigger the same commit. A completed release
+# makes the next serialized selection skip compilation.
+concurrency:
+  group: host-packages-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  select:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      ready: ${{ steps.select.outputs.ready }}
+      native_run: ${{ steps.select.outputs.native_run }}
+      native_attempt: ${{ steps.select.outputs.native_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PACKAGE_COMMIT }}
+          persist-credentials: false
+      - name: Select successful checks for this master commit
+        id: select
+        run: python3 scripts/publish_host_packages.py select --commit "$PACKAGE_COMMIT"
+
+  guest-terminal:
+    needs: select
+    if: needs.select.outputs.ready == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PACKAGE_COMMIT }}
+          persist-credentials: false
+      - name: Build the existing guest terminal utility once
+        run: |
+          test "$(git rev-parse HEAD)" = "$PACKAGE_COMMIT"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends gcc-aarch64-linux-gnu
+          make -C vm guest-tools
+          mkdir -p "$RUNNER_TEMP/vsock"
+          cp vm/.build/release/vsock-term "$RUNNER_TEMP/vsock/vsock-term"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'vsock'
+          binary = root / 'vsock-term'
+          (root / 'build.json').write_text(json.dumps({
+              'commit': os.environ['PACKAGE_COMMIT'], 'target': 'aarch64-linux-gnu',
+              'compiler': subprocess.check_output(['aarch64-linux-gnu-gcc', '--version'], text=True).splitlines()[0],
+              'flags': ['-static', '-O2', '-lutil'],
+              'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+          }) + '\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: host-guest-terminal
+          path: ${{ runner.temp }}/vsock
+          retention-days: 7
+          if-no-files-found: error
+
+  build:
+    needs: [select, guest-terminal]
+    if: needs.select.outputs.ready == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-latest
+          - platform: linux-amd64
+            os: ubuntu-24.04
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "1"
+      # These disposable hosted builders do not share the factory's 20 GiB reserve.
+      SAFEYOLO_CARGO_RESERVE_GIB: "2"
+      SAFEYOLO_BUILD_REVISION: ${{ github.event.workflow_run.head_sha }}
+      SAFEYOLO_BUILD_DIRTY: "no"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PACKAGE_COMMIT }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Select the pinned Rust and supported Python
+        run: |
+          cd proxy
+          rustup show active-toolchain
+          uv python install 3.12
+      - name: Download usable same-commit CI debug runtimes
+        env:
+          NATIVE_RUN: ${{ needs.select.outputs.native_run }}
+          NATIVE_ATTEMPT: ${{ needs.select.outputs.native_attempt }}
+          HOST_PLATFORM: ${{ matrix.platform }}
+        run: >-
+          uv run --no-project --python 3.12 python scripts/publish_host_packages.py
+          download-debug --commit "$PACKAGE_COMMIT" --native-run "$NATIVE_RUN"
+          --native-attempt "$NATIVE_ATTEMPT"
+          --platform "$HOST_PLATFORM" --directory "$RUNNER_TEMP/debug-input"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: matrix.platform == 'darwin-arm64'
+        with:
+          name: host-guest-terminal
+          path: ${{ runner.temp }}/vsock-input
+      - name: Build each missing runtime once and package the built bytes
+        run: >-
+          uv run --no-project --python 3.12 python scripts/build_host_packages.py build
+          --debug-directory "$RUNNER_TEMP/debug-input" --vsock-directory "$RUNNER_TEMP/vsock-input"
+          --output "$RUNNER_TEMP/packages"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: host-packages-${{ matrix.platform }}
+          path: ${{ runner.temp }}/packages/*.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PACKAGE_COMMIT }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: host-packages-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/packages
+      - name: Publish a complete download set without latest promotion
+        run: >-
+          python3 scripts/publish_host_packages.py stage --commit "$PACKAGE_COMMIT"
+          --directory "$RUNNER_TEMP/packages"
+
+  consume:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            os: macos-latest
+          - platform: linux-amd64
+            os: ubuntu-24.04
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      # No source checkout or build toolchain is needed by these consumers.
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.9.24"
+          prune-cache: true
+      - name: Download, verify and execute both installed host profiles
+        env:
+          HOST_PLATFORM: ${{ matrix.platform }}
+        run: |
+          cd "$RUNNER_TEMP"
+          gh release download "host-$PACKAGE_COMMIT" --repo "$GITHUB_REPOSITORY" \
+            --pattern "safeyolo-$HOST_PLATFORM-*.tar.gz" --pattern SHA256SUMS
+          grep "safeyolo-$HOST_PLATFORM-" SHA256SUMS > selected-sums
+          if [ "$RUNNER_OS" = macOS ]; then
+            shasum -a 256 --check selected-sums
+          else
+            sha256sum --check selected-sums
+          fi
+          for profile in production debug; do
+            tar -xzf "safeyolo-$HOST_PLATFORM-$profile.tar.gz"
+          done
+          # Only installation commands remain on PATH; compiler invocation fails.
+          mkdir consumer-path
+          for command in bash dirname mkdir install uv; do
+            ln -s "$(command -v "$command")" "consumer-path/$command"
+          done
+          if [ "$RUNNER_OS" = macOS ]; then
+            for command in codesign ditto; do
+              ln -s "$(command -v "$command")" "consumer-path/$command"
+            done
+          fi
+          export PATH="$RUNNER_TEMP/consumer-path"
+          for profile in production debug; do
+            export UV_TOOL_DIR="$RUNNER_TEMP/tools-$profile"
+            export UV_TOOL_BIN_DIR="$RUNNER_TEMP/bin-$profile"
+            export PACKAGE_PROFILE="$profile"
+            ./safeyolo-$HOST_PLATFORM-$profile/install.sh
+            "$UV_TOOL_BIN_DIR/safeyolo" --help
+            "$UV_TOOL_BIN_DIR/safeyolo" --version
+            "$UV_TOOL_DIR/safeyolo/bin/python" -I - <<'PY'
+          import hashlib, importlib.resources, json, os, subprocess
+          package = importlib.resources.files('safeyolo')
+          native = json.loads((package / '_native_build.json').read_text())
+          assert native['commit'] == os.environ['PACKAGE_COMMIT']
+          assert native['platform'] == os.environ['HOST_PLATFORM']
+          assert native['profile'] == os.environ['PACKAGE_PROFILE']
+          binary = package / 'bin/safeyolo-proxy'
+          assert hashlib.sha256(binary.read_bytes()).hexdigest() == native['proxy']['sha256']
+          version = subprocess.check_output([str(binary), '--version'], text=True)
+          assert f"commit={native['commit']} profile={native['profile']}" in version
+          print(version.strip())
+          print('Installed native identity:', native['commit'], native['platform'], native['profile'])
+          PY
+          done
+
+  promote:
+    needs: consume
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    # Concurrency is deliberately global only for the short latest comparison/write.
+    concurrency:
+      group: host-package-latest-promotion
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.PACKAGE_COMMIT }}
+          persist-credentials: false
+      - name: Promote latest only after every downloaded consumer passes
+        run: python3 scripts/publish_host_packages.py promote --commit "$PACKAGE_COMMIT"

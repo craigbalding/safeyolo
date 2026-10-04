@@ -43,7 +43,17 @@ app = typer.Typer(
 
 def version_callback(value: bool):
     if value:
-        console.print(f"safeyolo version {__version__}")
+        from .runtime_identity import load_stamped_build_identity
+
+        build = load_stamped_build_identity()
+        profile = (build.build_identifier or "unknown").rsplit("-", 1)[-1]
+        if profile not in {"production", "debug"}:
+            profile = "unknown"
+        console.print(
+            f"safeyolo version {build.package_version or __version__} "
+            f"commit={build.source_revision or 'unknown'} profile={profile}",
+            soft_wrap=True, markup=False,
+        )
         raise typer.Exit()
 
 
