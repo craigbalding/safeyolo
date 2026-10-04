@@ -9,6 +9,7 @@ import json
 import subprocess
 import tarfile
 import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -192,17 +193,36 @@ def test_a_complete_stage_publishes_downloads_without_promoting_latest(source_ch
     assert "draft=false" in calls[-1] and "make_latest=false" in calls[-1]
     assert "prerelease=true" in calls[-1]
     assert not any("make_latest=true" in call for call in calls)
+    assert f"master commit `{COMMIT}`" in notes[0]
     assert "workflow conclusion failure" in notes[0]
     job_url = successful_job("Quick native checks (Ubuntu)")["html_url"]
     assert f"[Quick native checks (Ubuntu)]({job_url}) (attempt 1)" in notes[0]
 
 
 @pytest.mark.parametrize("already_uploaded", [False, True])
-def test_stage_discovers_and_retries_drafts_omitted_by_tag_lookup(tmp_path, monkeypatch, already_uploaded):
-    make_archives(tmp_path)
+@pytest.mark.parametrize("publication_time,commit,expected_title", [
+    ("2026-10-04T12:00:00+00:00", "13525e298e75b08128355a26ed26f2340a9afdf8",
+     "SafeYolo — master build, 4 Oct 2026 (13525e2)"),
+    ("2026-12-31T23:30:00-02:00", "b" * 40,
+     "SafeYolo — master build, 1 Jan 2027 (bbbbbbb)"),
+    ("2028-03-01T00:30:00+01:00", "0123456789abcdef" * 2 + "01234567",
+     "SafeYolo — master build, 29 Feb 2028 (0123456)"),
+])
+def test_stage_discovers_and_retries_drafts_omitted_by_tag_lookup(
+    tmp_path, monkeypatch, already_uploaded, publication_time, commit, expected_title,
+):
+    class PublicationTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is UTC
+            return datetime.fromisoformat(publication_time).astimezone(tz)
+
+    monkeypatch.setattr(publisher, "datetime", PublicationTime)
+    make_archives(tmp_path, commit)
     monkeypatch.setattr(publisher, "successful_checks", lambda *args: {})
-    tag = f"host-{COMMIT}"
-    draft = {"id": 40, "tag_name": tag, "draft": True, "target_commitish": COMMIT,
+    tag = f"host-{commit}"
+    draft = {"id": 40, "tag_name": tag, "draft": True, "target_commitish": commit,
+             "name": "Previous draft title",
              "assets": [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}] if already_uploaded else []}
     visible = already_uploaded
     calls = []
@@ -219,19 +239,24 @@ def test_stage_discovers_and_retries_drafts_omitted_by_tag_lookup(tmp_path, monk
             return json.dumps([[{"tag_name": "unrelated", "draft": True}], [draft] if visible else []])
         if args[:2] == ("release", "create"):
             assert not visible
+            assert args[args.index("--target") + 1] == commit
             visible = True
         elif args[:2] == ("release", "upload"):
             assert visible
             draft["assets"] = [{"name": name} for name in publisher.ASSETS | {"SHA256SUMS"}]
+        if args[:2] in {("release", "create"), ("release", "edit")}:
+            draft["name"] = args[args.index("--title") + 1]
         return ""
 
     monkeypatch.setattr(publisher.subprocess, "run", lookup)
     monkeypatch.setattr(publisher, "gh", gh)
-    publisher.stage(REPOSITORY, COMMIT, tmp_path)
+    publisher.stage(REPOSITORY, commit, tmp_path)
     release_commands = [call[:2] for call in calls if call[0] == "release"]
     assert release_commands == [("release", "edit" if already_uploaded else "create"), ("release", "upload")]
     assert f"repos/{REPOSITORY}/releases/40" in calls[-1]
     assert "prerelease=true" in calls[-1] and "make_latest=false" in calls[-1]
+    assert publisher.release(REPOSITORY, tag)["name"] == expected_title
+    assert draft["tag_name"] == tag and draft["target_commitish"] == commit
     assert (tmp_path / "SHA256SUMS").read_text() == "".join(
         f"{hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()}  {name}\n" for name in sorted(publisher.ASSETS)
     )

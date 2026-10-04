@@ -11,7 +11,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 try:
@@ -196,6 +196,9 @@ def stage(repository: str, commit: str, directory: Path) -> None:
         raise ValueError("existing host package draft targets a different source commit")
     checksums = directory / "SHA256SUMS"
     checksums.write_text("".join(f"{sha256(paths[name])}  {name}\n" for name in sorted(paths)))
+    published_at = datetime.now(UTC)
+    month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[published_at.month - 1]
+    title = f"SafeYolo — master build, {published_at.day} {month} {published_at.year} ({commit[:7]})"
     with tempfile.TemporaryDirectory(prefix="host-release-notes-") as temporary:
         notes = Path(temporary) / "notes.md"
         notes.write_text(
@@ -215,9 +218,9 @@ def stage(repository: str, commit: str, directory: Path) -> None:
         )
         if existing is None:
             gh("release", "create", tag, "--repo", repository, "--target", commit, "--draft", "--latest=false",
-               "--title", f"Host packages {commit[:12]}", "--notes-file", str(notes))
+               "--title", title, "--notes-file", str(notes))
         else:
-            gh("release", "edit", tag, "--repo", repository, "--notes-file", str(notes))
+            gh("release", "edit", tag, "--repo", repository, "--title", title, "--notes-file", str(notes))
     gh("release", "upload", tag, "--repo", repository, "--clobber", *map(str, paths.values()), str(checksums))
     staged = release(repository, tag)
     if staged is None or staged["target_commitish"] != commit:
