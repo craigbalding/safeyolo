@@ -4,8 +4,10 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -238,7 +240,7 @@ def test_offline_preparation_installs_once_and_preserves_boot_provenance(tmp_pat
     assert primary_env["SAFEYOLO_NATS_TEST_INSTANCE"] == "primary-instance"
 
 
-def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_reports(tmp_path, staged_payload):
+def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_reports(tmp_path, staged_payload, monkeypatch):
     payload, _, checkout, revision = staged_payload
     provenance_path = tmp_path / "boot-provenance.json"
     expected = json.loads(provenance_path.read_text())
@@ -256,6 +258,11 @@ def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_report
     # Also consume a correctly hashed older index carrying annotations: its
     # preparation report must omit private fields even if its producer did not.
     transferred = {**packaged, "boot_inputs": annotated}
+    index_path.write_text(json.dumps(transferred))
+    # Packaging uses controlled Mac command fixtures. The new offline child
+    # observes its actual host rather than inheriting the parent's Python patch.
+    transferred["host"] = {"system": "Darwin" if sys.platform == "darwin" else "Linux",
+                           "machine": os.uname().machine}
     index_path.write_text(json.dumps(transferred))
     directory = tmp_path / "execution"
     directory.mkdir()
@@ -281,6 +288,73 @@ def test_boot_provenance_annotations_do_not_reach_transfer_or_preparation_report
     assert summary["exit"] == 0 and summary["full_section_selection"] is False
     assert "cli" not in summary["preparation"] and str(tmp_path) not in summary_text
     assert marker not in summary_text
+
+
+def test_offline_preparation_cancellation_stops_the_real_installer_child(tmp_path, staged_payload):
+    """Cancel the maintained offline consumer while its benign uv child is live."""
+    from safeyolo.runtime_identity import process_is_alive
+
+    payload, _, checkout, revision = staged_payload
+    index = payload / staging.INDEX_NAME
+    data = json.loads(index.read_text())
+    data["host"] = {"system": "Darwin" if sys.platform == "darwin" else "Linux", "machine": os.uname().machine}
+    index.write_text(json.dumps(data))
+    heartbeat, identities, reaped = (tmp_path / name for name in ("heartbeat", "children.json", "reaped"))
+    uv = tmp_path / "staging-commands/uv"
+    uv.write_text(f"#!{sys.executable}\n" + f'''
+import json, os, pathlib, signal, subprocess, sys, time
+if sys.argv[1] == 'export': raise SystemExit(0)
+child = subprocess.Popen([sys.executable, '-I', '-c',
+    "import pathlib,time\\np=pathlib.Path({str(heartbeat)!r})\\n"
+    "while True: p.write_text(str(time.monotonic())); time.sleep(0.03)"])
+pathlib.Path({str(identities)!r}).write_text(json.dumps({{'uv': os.getpid(), 'child': child.pid}}))
+def interrupted(_signum, _frame):
+    child.wait(timeout=5)
+    pathlib.Path({str(reaped)!r}).write_text(str(child.returncode))
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, interrupted)
+while True: time.sleep(0.05)
+''')
+    directory, artifacts = tmp_path / "execution", tmp_path / "reports"
+    code = f'''
+import sys
+from pathlib import Path
+sys.path[:0] = [{str(ROOT)!r}, {str(ROOT / 'cli/src')!r}]
+from tests.blackbox.installed_sections import run_sections
+raise SystemExit(run_sections('vz', ('access', 'lifecycle'), Path({str(checkout)!r}), {revision!r},
+    Path({str(directory)!r}), Path({str(artifacts)!r}), staged_inputs=Path({str(payload)!r}),
+    staged_sha256={staging._sha256(index)!r}, python=Path({sys.executable!r})))
+'''
+    with (tmp_path / "runner.log").open("w") as output:
+        runner = subprocess.Popen([sys.executable, "-I", "-c", code], env=staging.staging_environment(),
+                                  stdout=output, stderr=output)
+        try:
+            deadline = time.monotonic() + 10
+            while not heartbeat.exists() and runner.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.025)
+            assert heartbeat.exists(), (tmp_path / "runner.log").read_text()
+            children = json.loads(identities.read_text())
+            runner.send_signal(signal.SIGINT)
+            time.sleep(0.1)
+            runner.send_signal(signal.SIGHUP)  # Cleanup must retain the first reason.
+            assert runner.wait(timeout=20) == 130
+            assert reaped.exists()
+            assert all(not process_is_alive(pid) for pid in children.values())
+            summary_text = (artifacts / "installed-summary.json").read_text()
+            summary = json.loads(summary_text)
+            assert summary["exit"] == 130 and summary["cancellation"] == "SIGINT"
+            assert summary["finished_at"] and summary["cleanup"] == "stopped"
+            assert summary["preparation"]["exit"] == 130 and summary["preparation"]["cleanup"] == "stopped"
+            assert summary["sections"] == [] and summary["unexecuted_sections"] == ["access", "lifecycle"]
+            assert str(tmp_path) not in summary_text
+        finally:
+            if runner.poll() is None:
+                runner.terminate()
+                runner.wait(timeout=15)
+            if identities.exists():
+                for pid in json.loads(identities.read_text()).values():
+                    if process_is_alive(pid):
+                        os.kill(pid, signal.SIGKILL)
 
 
 @pytest.mark.parametrize("failure", ["wrong-index", "mixed-source", "host", "tampered-wheel", "missing-boot",

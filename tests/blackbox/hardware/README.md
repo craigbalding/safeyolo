@@ -47,14 +47,23 @@ The preserved `paired.py`, publication adapters and cron installer describe
 earlier implementation work. They remain held, rather than the deployment
 entry point for this narrower direction.
 
-The maintained wrapper and section runner do not supply a host-wide
-cancellation or lost-SSH teardown command. The section runner cleans up after
-its section subprocess returns. An external `SIGTERM` can instead terminate
-the section runner while its child remains live and its summary remains
-unfinished. The direct VZ deadline runner owns one VM helper, not the entire
-installed suite. Resolve that outer ownership/teardown operation through the
-existing host harness before treating either cron command as ready. Retain an
-unverified cleanup as a failure; an SSH or cron exit does not establish it.
+If the maintained runner receives `SIGHUP`, `SIGINT` or `SIGTERM`, it stops
+and reaps its launched preparation or section child before ownership-checked
+instance cleanup. Offline preparation uses the same child lifetime. Cleanup
+also checks product and helper identities retained before stopping the child.
+The runner saves a nonzero `installed-summary.json` with the cancellation
+signal, cleanup outcome and unexecuted remaining sections. A cleanup failure
+keeps exit 2; established cleanup keeps exit 128 plus the signal number. No
+later section starts after cancellation. The direct VZ deadline runner still
+owns each VM helper.
+
+If a remote observer connection is lost, treat the attempt's state as unknown.
+Reconcile the retained local reports and owned processes through the existing
+host harness. The observer's loss does not cancel a healthy independently
+scheduled local attempt. `SIGKILL` or host death cannot execute runner cleanup.
+An SSH or cron exit alone does not establish owned host teardown. Deployed
+scheduling, publication, email delivery and independent hardware teardown
+remain open before either cron command is ready.
 
 The corrected filtered runtime environment also applies to the preserved input
 packaging and identity checks, helper preflight and selected-CLI teardown.

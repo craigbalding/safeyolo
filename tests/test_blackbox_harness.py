@@ -6,6 +6,7 @@ import http.client
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import stat
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -1460,7 +1462,7 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
     tmp_path, monkeypatch, installed_section_commands, section_exit
 ):
     """Retain real guest pytest failures through local config and section precedence."""
-    run = installed_sections.subprocess.run
+    run = installed_sections.InstalledCancellation.run
     blackbox = tmp_path / "guest-workspace/tests/blackbox"
     isolation = blackbox / "isolation"
     isolation.mkdir(parents=True)
@@ -1480,8 +1482,8 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
 ''')
     monkeypatch.setenv("FAIL_SECTION", str(section_exit))
 
-    def retain_failed_pytest(command, **options):
-        result = run(command, **options)
+    def retain_failed_pytest(self, command, **options):
+        result = run(self, command, **options)
         if Path(command[0]).name == "run-tests.sh" and Path(options["env"]["SAFEYOLO_TEST_CONFIG_DIR"]).name == "isolation":
             env = {key: value for key, value in options["env"].items()
                    if key not in ("PYTHONPATH", "SAFEYOLO_BLACKBOX_OBSERVATIONS_DIR")}
@@ -1493,7 +1495,7 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
                 output = tmp_path / "guest-home" / f"bb-{pytest_suite}.json"
                 env.update(SAFEYOLO_BLACKBOX_PYTEST_SUITE=pytest_suite,
                            SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=str(output))
-                pytest_result = run(
+                pytest_result = subprocess.run(
                     [sys.executable, "-m", "pytest", "-q", suite.name],
                     cwd=isolation, env=env, capture_output=True, text=True, timeout=30, check=False,
                 )
@@ -1501,7 +1503,7 @@ def test_real_pytest_failure_cannot_be_cleared_by_a_successful_section(
                 shutil.copy2(output, retained)
         return result
 
-    monkeypatch.setattr(installed_sections.subprocess, "run", retain_failed_pytest)
+    monkeypatch.setattr(installed_sections.InstalledCancellation, "run", retain_failed_pytest)
     artifacts = tmp_path / "artifacts"
     assert installed_sections.run_sections(
         "vz" if sys.platform == "darwin" else "systrap", ("isolation", "access"), installed_section_commands, "a" * 40,
@@ -1525,7 +1527,7 @@ def test_generated_pytest_results_are_consistent_with_successful_sections(
     tmp_path, monkeypatch, installed_section_commands
 ):
     """Retain failed and skipped outcomes through actual section reports."""
-    run = installed_sections.subprocess.run
+    run = installed_sections.InstalledCancellation.run
     attempt_number = 0
 
     @settings(max_examples=30, deadline=None)
@@ -1539,8 +1541,8 @@ def test_generated_pytest_results_are_consistent_with_successful_sections(
         nonlocal attempt_number
         attempt_number += 1
 
-        def alter_pytest_result(command, **options):
-            result = run(command, **options)
+        def alter_pytest_result(self, command, **options):
+            result = run(self, command, **options)
             if Path(command[0]).name == "run-tests.sh" and Path(options["env"]["SAFEYOLO_TEST_CONFIG_DIR"]).name == "isolation":
                 path = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / f"pytest-{suite}.json"
                 data = json.loads(path.read_text())
@@ -1549,7 +1551,7 @@ def test_generated_pytest_results_are_consistent_with_successful_sections(
                 path.write_text(json.dumps(data))
             return result
 
-        monkeypatch.setattr(installed_sections.subprocess, "run", alter_pytest_result)
+        monkeypatch.setattr(installed_sections.InstalledCancellation, "run", alter_pytest_result)
         attempt = tmp_path / str(attempt_number)
         artifacts = attempt / "artifacts"
         failed = exit_code != 0 or outcome == "failed"
@@ -1578,11 +1580,11 @@ def test_generated_pytest_results_are_consistent_with_successful_sections(
 def test_installed_runtime_evidence_failure_is_saved_without_hiding_clean_continuation(
     tmp_path, monkeypatch, installed_section_commands, failure
 ):
-    run = installed_sections.subprocess.run
+    run = installed_sections.InstalledCancellation.run
     marker = "fixture-runtime-private-secret"
 
-    def alter_saved_observation(command, **options):
-        result = run(command, **options)
+    def alter_saved_observation(self, command, **options):
+        result = run(self, command, **options)
         if Path(command[0]).name != "run-tests.sh" or "--access" not in command:
             return result
         artifacts = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"])
@@ -1640,7 +1642,7 @@ def test_installed_runtime_evidence_failure_is_saved_without_hiding_clean_contin
         path.write_text(json.dumps(data))
         return result
 
-    monkeypatch.setattr(installed_sections.subprocess, "run", alter_saved_observation)
+    monkeypatch.setattr(installed_sections.InstalledCancellation, "run", alter_saved_observation)
     artifacts = tmp_path / "artifacts"
     assert installed_sections.run_sections(
         "systrap", ("access", "workloads"), installed_section_commands, "a" * 40,
@@ -1660,7 +1662,7 @@ def test_installed_runtime_evidence_failure_is_saved_without_hiding_clean_contin
 
 
 def test_generated_runtime_annotations_do_not_enter_installed_publication(tmp_path, monkeypatch, installed_section_commands):
-    run = installed_sections.subprocess.run
+    run = installed_sections.InstalledCancellation.run
     values = st.recursive(st.none() | st.booleans() | st.integers() | st.text(max_size=30),
                           lambda children: st.lists(children, max_size=3)
                           | st.dictionaries(st.text(max_size=20), children, max_size=3), max_leaves=8)
@@ -1673,8 +1675,8 @@ def test_generated_runtime_annotations_do_not_enter_installed_publication(tmp_pa
         attempts += 1
         marker = "fixture-runtime-private-secret"
 
-        def annotate_report(command, **options):
-            result = run(command, **options)
+        def annotate_report(self, command, **options):
+            result = run(self, command, **options)
             if Path(command[0]).name == "run-tests.sh":
                 path = Path(options["env"]["SAFEYOLO_BLACKBOX_ARTIFACTS_DIR"]) / "installed-rust-runtime.json"
                 data = json.loads(path.read_text())
@@ -1684,7 +1686,7 @@ def test_generated_runtime_annotations_do_not_enter_installed_publication(tmp_pa
                 path.write_text(json.dumps(data))
             return result
 
-        monkeypatch.setattr(installed_sections.subprocess, "run", annotate_report)
+        monkeypatch.setattr(installed_sections.InstalledCancellation, "run", annotate_report)
         attempt = tmp_path / str(attempts)
         artifacts = attempt / "artifacts"
         assert installed_sections.run_sections(
@@ -1793,12 +1795,7 @@ def test_installed_attached_invocation_receives_selected_source_before_guest_tes
 def test_installed_staged_preparation_failure_retains_every_unexecuted_section(
     tmp_path, monkeypatch, installed_section_commands
 ):
-    from tests.blackbox import installed_staging
-
-    def reject(*args):
-        raise ValueError("input index does not match trusted digest")
-
-    monkeypatch.setattr(installed_staging, "prepare_inputs", reject)
+    monkeypatch.setattr(installed_sections, "REPOSITORY", ROOT)
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     assert installed_sections.run_sections(
         "vz", installed_sections.SECTIONS["vz"], installed_section_commands, "a" * 40,
@@ -1925,6 +1922,26 @@ for path in pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR']).glob('agents/*/vm*')
             process.wait(timeout=5)
 
 
+def test_section_cleanup_keeps_a_retained_identity_after_the_child_removes_its_record(tmp_path):
+    """A removed marker cannot hide a still-live process captured before cancellation."""
+    root = tmp_path / "instance"
+    (root / "data").mkdir(parents=True)
+    process = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(30)"])
+    try:
+        marker = root / "data/proxy-rust.json"
+        marker.write_text(json.dumps({"pid": process.pid}))
+        retained = installed_sections.owned_processes(root)
+        marker.unlink()  # A child trap removed the record without stopping the process.
+        assert installed_sections.cleanup_instance(tmp_path / "unused-cli", root,
+                                                   retained_processes=retained) == [
+            f"owned process {process.pid} is still live"
+        ]
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
 @pytest.mark.parametrize("failure,expected,results", [
     ({}, 0, ["passed", "passed"]),
     ({"FAIL_SECTION": "1"}, 1, ["assertion_failure", "passed"]),
@@ -2001,6 +2018,131 @@ def test_installed_sections_start_and_clean_up_without_an_installed_python_packa
         if row["section"] == "access":
             selected = json.loads((root / "selection.json").read_text())
             assert selected[-2:] == ["--install-commit", revision]
+
+
+@pytest.mark.parametrize("stage,signum,cleanup_failure", [
+    ("preparation", signal.SIGHUP, False),
+    ("preparation", signal.SIGINT, False),
+    ("lifecycle", signal.SIGTERM, False),
+    ("lifecycle", signal.SIGTERM, True),
+])
+def test_installed_cancellation_stops_owned_children_and_retains_the_attempt(
+    tmp_path, installed_section_commands, stage, signum, cleanup_failure
+):
+    """Cancel the filtered standalone runner; observe children and cleanup separately."""
+    from safeyolo.runtime_identity import process_is_alive, process_start_token
+
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    for name in ("run-installed.sh", "installed_sections.py", "installed_host_smoke.py", "assert-platform.py"):
+        shutil.copy2(ROOT / "tests/blackbox" / name, scripts / name)
+    (scripts / "hardware").mkdir()
+    wrapper = scripts / "hardware/run-hardware-lane.sh"
+    shutil.copy2(ROOT / "tests/blackbox/hardware/run-hardware-lane.sh", wrapper)
+    package = repository / "cli/src/safeyolo"
+    package.mkdir(parents=True)
+    for name in ("__init__.py", "runtime_identity.py"):
+        shutil.copy2(ROOT / "cli/src/safeyolo" / name, package / name)
+    heartbeat = tmp_path / "heartbeat"
+    child_identity = tmp_path / "child.json"
+    reaped = tmp_path / "child-reaped"
+    waiting = f'''
+import signal, subprocess, time
+child = subprocess.Popen([sys.executable, '-I', '-c',
+    "import pathlib,time\\np = pathlib.Path({str(heartbeat)!r})\\n"
+    "while True: p.write_text(str(time.monotonic())); time.sleep(0.03)"])
+pathlib.Path({str(child_identity)!r}).write_text(json.dumps({{'pid': child.pid, 'parent': os.getpid()}}))
+def interrupted(_signum, _frame):
+    child.wait(timeout=5)
+    pathlib.Path({str(reaped)!r}).write_text(str(child.returncode))
+    raise SystemExit(3 if {cleanup_failure!r} else 0)
+signal.signal(signal.SIGTERM, interrupted)
+while True: time.sleep(0.05)
+'''
+    command = scripts / ("run-lane.sh" if stage == "preparation" else "run-tests.sh")
+    command.write_text(command.read_text() + "\nimport json\n" + waiting)
+    if stage == "lifecycle":
+        # Bind the independent owner to its separate Coord/NATS identity. The
+        # stop spy below refuses cleanup with the subject's identity.
+        command.write_text(command.read_text().replace("\nimport json\n" + waiting, '''
+owner = pathlib.Path(os.environ['SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR'])
+owner.mkdir()
+(owner / 'config.yaml').write_text('owned owner configuration')
+(owner / 'nats-instance').write_text(os.environ['SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE'])
+''' + "\nimport json\n" + waiting))
+    prepare = scripts / "run-lane.sh"
+    stop_spy = '''
+if root.name == 'lifecycle-owner':
+    assert os.environ['SAFEYOLO_NATS_TEST_INSTANCE'] == (root / 'nats-instance').read_text()
+    assert os.environ['SAFEYOLO_COORD_DATA_DIR'] == str(root / 'data/coord')
+(root / 'cleanup-observed').write_text('owned stop')
+'''
+    prepare.write_text(prepare.read_text().replace(
+        "root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])\\n",
+        "root = pathlib.Path(os.environ['SAFEYOLO_CONFIG_DIR'])\\n" + stop_spy.replace("\n", "\\n"),
+    ))
+    # The fixture is a clean selected source; no installed package can mask the
+    # stdlib-only parent imports. The real wrapper drops the supplied principal.
+    for command_args in (["git", "init", "-q"], ["git", "add", "."],
+                         ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+                          "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Cancellation fixture"]):
+        subprocess.run(command_args, cwd=repository, check=True)
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    clean_python = tmp_path / "clean-python"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(clean_python)], check=True)
+    env = dict(os.environ, PATH=f"{clean_python / 'bin'}:/usr/bin:/bin", LANG="C", LC_ALL="C",
+               GH_TOKEN="fixture-private-principal", PYTHONPATH="/unusable-source")
+    artifacts = tmp_path / "artifacts"
+    foreign = subprocess.Popen([sys.executable, "-I", "-c", "import time; time.sleep(30)"], start_new_session=True)
+    with (tmp_path / "runner.log").open("w") as output:
+        runner = subprocess.Popen([str(wrapper), str(repository), revision, "vz", str(artifacts),
+                                   "--section", "lifecycle", "--section", "access",
+                                   "--state-parent", str(tmp_path)],
+                                  env=env, stdout=output, stderr=output)
+        try:
+            deadline = time.monotonic() + 10
+            while not heartbeat.exists() and runner.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.025)
+            assert heartbeat.exists(), (tmp_path / "runner.log").read_text()
+            children = json.loads(child_identity.read_text())
+            child_token = process_start_token(children["parent"])
+            runner.send_signal(signum)
+            assert runner.wait(timeout=20) == (2 if cleanup_failure else 128 + signum)
+            assert not process_is_alive(children["pid"]) and not process_is_alive(children["parent"])
+            assert reaped.exists(), "the owned section/preparation reaped its heartbeat child"
+            assert foreign.poll() is None, "cancellation must preserve an unrelated process"
+            summary_text = (artifacts / "installed-summary.json").read_text()
+            summary = json.loads(summary_text)
+            private = json.loads((artifacts / "installed-sections.json").read_text())
+            assert private["cancelled_child"]["identity"] == {"pid": children["parent"], "start_token": child_token}
+            assert private["cancelled_child"]["reaped"] is True
+            assert "cancelled_child" not in summary and "retained_processes" not in summary
+            assert summary["cancellation"] == signal.Signals(signum).name
+            assert summary["finished_at"] and summary["exit"] != 0
+            assert summary["cleanup"] == ("failed" if cleanup_failure else "stopped")
+            assert summary["unexecuted_sections"] == (["lifecycle", "access"] if stage == "preparation" else ["access"])
+            assert str(tmp_path) not in summary_text and "fixture-private-principal" not in summary_text
+            if stage == "lifecycle":
+                row = summary["sections"][0]
+                assert row["result"] == ("cleanup_failure" if cleanup_failure else "cancelled")
+                directory = Path(private["sections"][0]["config_dir"]).parent
+                assert (directory / "lifecycle-owner/cleanup-observed").exists()
+                assert not (directory / "access").exists()
+                assert summary["cleanup_failure_count"] == int(cleanup_failure)
+            else:
+                assert not summary["sections"]
+                assert summary["preparation"]["cleanup"] == "stopped"
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+                runner.wait(timeout=5)
+            foreign.terminate()
+            foreign.wait(timeout=5)
+            if child_identity.exists():
+                children = json.loads(child_identity.read_text())
+                for pid in (children["pid"], children["parent"]):
+                    if process_is_alive(pid):
+                        os.kill(pid, signal.SIGKILL)
 
 
 def test_installed_source_rejects_ambiguous_commit_before_preparation(tmp_path):

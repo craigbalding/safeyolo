@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -41,6 +42,97 @@ INNER_CLEANUP_FAILURE_EXIT = 3
 PYTEST_SUITES = ("native", "security", "identity", "isolation", "root-isolation", "lifecycle")
 VZ_CONTINUITY_DEFAULTS = {"origin-host": "127.0.0.2", "origin-bind": "127.0.0.1", "http-port": 46373,
                           "https-port": 46374, "oauth-port": 46375, "admin-port": 46371}
+
+
+class InstalledCancellation:
+    """Retain a launched child until normal cancellation and owned cleanup finish."""
+
+    def __init__(self):
+        if __package__:
+            from .installed_host_smoke import _process_start_token
+        else:
+            from installed_host_smoke import _process_start_token
+        self.process_start_token = _process_start_token
+        self.signum = None
+        self.processes = {}
+        self.failures = []
+        self.previous_handlers = {}
+        self.started = False
+        self.child_exit = None
+        self.child_reaped = True
+        self.child_identity = None
+
+    def __enter__(self):
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            self.previous_handlers[signum] = signal.signal(signum, self.cancel)
+        return self
+
+    def __exit__(self, *_exception):
+        for signum, handler in self.previous_handlers.items():
+            signal.signal(signum, handler)
+
+    def cancel(self, signum, _frame):
+        # Record only: raising here could lose a child between Popen and assignment,
+        # or interrupt cleanup. Repeated signals must not restart that cleanup.
+        if self.signum is None:
+            self.signum = signum
+
+    def run(self, args, *, roots=(), **options):
+        """Run preparation or a section in its own group, retaining its Popen handle."""
+        self.started = False
+        self.child_exit = None
+        self.child_identity = None
+        if self.signum is not None:
+            return subprocess.CompletedProcess(args, 128 + self.signum)
+        options.pop("check", None)  # These callers classify the returned status.
+        process = subprocess.Popen(args, start_new_session=True, **options)
+        self.child_identity = {"pid": process.pid, "start_token": self.process_start_token(process.pid)}
+        self.started = True
+        while self.signum is None:
+            try:
+                self.child_exit = process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                continue
+            if self.signum is not None:
+                # wait already reaped this naturally exiting child. Do not
+                # signal a group whose leader identity is no longer pinned.
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    pass  # No member of the launched group remains.
+                except OSError as exc:
+                    self.failures.append(f"cancelled child group inspection: {exc}")
+                else:
+                    self.failures.append("cancelled child exited before its group cleanup could be verified")
+            return subprocess.CompletedProcess(args, self.child_exit)
+        self.stop(process, roots)
+        return subprocess.CompletedProcess(args, 128 + self.signum)
+
+    def stop(self, process, roots):
+        """Stop the unreaped child group before cleanup can remove ownership records."""
+        # Remember detached product/helper identities before a child trap can
+        # remove their records. Existing instance cleanup must check these too.
+        for root in roots:
+            try:
+                self.processes[root] = owned_processes(root, include_console=True)
+            except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+                self.failures.append(f"cancelled owned process inspection: {exc}")
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, signum)
+            except ProcessLookupError:
+                break  # The entire owned group exited before the next signal.
+            except OSError as exc:
+                self.failures.append(f"cancelled child group stop: {exc}")
+            if signum == signal.SIGTERM:
+                # Keep the direct child unreaped during this grace period. Its
+                # PID pins our group identity even if the leader exits first.
+                time.sleep(1)
+        try:
+            self.child_exit = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.child_reaped = False
+            self.failures.append("cancelled child could not be reaped")
 
 
 def check_vz_ports(*, include_owner: bool = False) -> list[str]:
@@ -225,7 +317,8 @@ def surviving_processes(processes: list[dict]) -> list[str]:
     return failures
 
 
-def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | None = None) -> list[str]:
+def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | None = None,
+                     retained_processes: list[dict] | tuple = ()) -> list[str]:
     """Stop only this section's agents/proxy and report surviving owned state."""
     env = (os.environ if env is None else env).copy()
     env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
@@ -237,6 +330,7 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | 
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
         failures.append(f"owned process inspection: {exc}")
         processes = []
+    processes = [*retained_processes, *processes]
     if (root / "config.yaml").is_file():
         agents = ("bbowner",) if owner else ("bbtest", "bbpeer")
         for agent in agents:
@@ -369,8 +463,10 @@ def publication_summary(report: dict) -> dict:
     preparation = report["preparation"]
     selected_preparation = {name: preparation[name] for name in (
         "exit", "input_index_sha256", "source_revision", "wheel_sha256", "native_sha256",
-        "tmux_sha256", "tmux_version",
+        "tmux_sha256", "tmux_version", "cleanup",
     ) if name in preparation}
+    if "cleanup_failures" in preparation:
+        selected_preparation["cleanup_failure_count"] = len(preparation["cleanup_failures"])
     if "vm_helper" in preparation:
         selected_preparation["vm_helper"] = {name: preparation["vm_helper"][name] for name in (
             "git_sha", "git_dirty", "architecture", "build_profile",
@@ -396,7 +492,9 @@ def publication_summary(report: dict) -> dict:
         "source_revision", "lane", "run_id", "started_at", "finished_at", "exit",
         "requested_sections", "unexecuted_sections",
     )}, "full_section_selection": set(report["requested_sections"]) == set(SECTIONS[report["lane"]]),
-            "preparation": selected_preparation, "sections": sections}
+            "preparation": selected_preparation, "sections": sections,
+            **({"cancellation": report["cancellation"], "cleanup": report["cleanup"],
+                "cleanup_failure_count": len(report["cleanup_failures"])} if "cancellation" in report else {})}
 
 
 def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[list[dict], list[str]]:
@@ -460,6 +558,20 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                  staged_sha256: str | None = None, python: Path | None = None,
                  continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None,
                  run_id: str | None = None) -> int:
+    """Own normal cancellation across preparation, sections and final cleanup."""
+    with InstalledCancellation() as cancellation:
+        return _run_sections(lane, sections, checkout, revision, directory, artifacts,
+                             cancellation=cancellation, staged_inputs=staged_inputs,
+                             staged_sha256=staged_sha256, python=python,
+                             continuity_options=continuity_options, vz_test_runner=vz_test_runner,
+                             run_id=run_id)
+
+
+def _run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
+                  directory: Path, artifacts: Path, *, cancellation: InstalledCancellation,
+                  staged_inputs: Path | None, staged_sha256: str | None, python: Path | None,
+                  continuity_options: tuple[str, ...], vz_test_runner: tuple[Path, int] | None,
+                  run_id: str | None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
     if __package__:
         from .installed_host_smoke import SmokeError, _sha256
@@ -518,37 +630,77 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     if not save():
         return 2
     preparation_identity = {}
+    cli = directory / "bin/safeyolo"
+
+    def cleanup_instance_after_child(root, cleanup_env, *, owner=False):
+        if not cancellation.child_reaped:
+            return ["instance cleanup not started while the cancelled child remains unreaped"]
+        return cleanup_instance(cli, root, owner=owner, env=cleanup_env,
+                                retained_processes=cancellation.processes.get(root, ()))
+
+    def save_cancellation(failures):
+        failures = [*failures, *cleanup_instance_after_child(source, env)]
+        if not report["sections"]:
+            report["preparation"].update(cleanup="failed" if failures else "stopped", cleanup_failures=failures)
+        report.update(cancellation=signal.Signals(cancellation.signum).name,
+                      cleanup="failed" if failures else "stopped", cleanup_failures=failures,
+                      cancelled_child={"identity": cancellation.child_identity,
+                                       "exit": cancellation.child_exit, "reaped": cancellation.child_reaped},
+                      retained_processes={str(root): processes for root, processes in cancellation.processes.items()})
+        status = 2 if failures else 128 + cancellation.signum
+        return status if save(status) else 2
+
     try:
         if staged_inputs is not None:
             # Keep ordinary clean-host bootstrap independent of this optional
             # offline path and its wheel/signing validation.
-            if __package__:
-                from .installed_staging import prepare_inputs
-            else:
-                from installed_staging import prepare_inputs
-            preparation_identity = prepare_inputs(staged_inputs, staged_sha256 or "", checkout, revision,
-                                                  directory, python or Path(sys.executable), env)
-            preparation_exit = 0
+            # A separate child covers every offline verifier/installer subprocess
+            # with the same owned lifetime as ordinary preparation and sections.
+            identity_path = directory / "preparation-identity.json"
+            code = """
+import json, os, subprocess, sys, zipfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from installed_staging import SmokeError, prepare_inputs
+try:
+    identity = prepare_inputs(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), sys.argv[5],
+                              Path(sys.argv[6]), Path(sys.argv[7]), os.environ.copy())
+except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
+    print(f"Offline product preparation failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+Path(sys.argv[8]).write_text(json.dumps(identity))
+"""
+            prepared = cancellation.run(
+                [sys.executable, "-I", "-c", code, str(REPOSITORY / "tests/blackbox"),
+                 str(staged_inputs), staged_sha256 or "", str(checkout), revision,
+                 str(directory), str(python or Path(sys.executable)), str(identity_path)],
+                cwd=REPOSITORY, env=env, roots=(source,), check=False,
+            )
+            preparation_exit = prepared.returncode
+            if not preparation_exit:
+                preparation_identity = json.loads(identity_path.read_text())
         else:
-            prepared = subprocess.run(
+            prepared = cancellation.run(
                 [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
                  "--install-checkout", str(checkout), "--prepare-only"],
-                cwd=REPOSITORY, env=env, check=False,
+                cwd=REPOSITORY, env=env, roots=(source,), check=False,
             )
             preparation_exit = prepared.returncode
         if not preparation_exit:
             preparation_identity["native_sha256"] = _sha256(checkout / "proxy/target/release/safeyolo-proxy")
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
-        report["preparation"] = {"exit": 2, "error": str(exc), "config_dir": str(source)}
-        save(2)
-        return 2
-    report["preparation"] = {"exit": preparation_exit, "config_dir": str(source), **preparation_identity}
+        preparation_exit = 2
+        preparation_identity = {"error": str(exc)}
+    report["preparation"] = {"exit": preparation_exit, "config_dir": str(source),
+                             "coord_data_dir": env["SAFEYOLO_COORD_DATA_DIR"],
+                             "nats_test_instance": env["SAFEYOLO_NATS_TEST_INSTANCE"], **preparation_identity}
+    if cancellation.signum is not None:
+        return save_cancellation(cancellation.failures)
     saved = save(2 if preparation_exit else None)
     if preparation_exit:
         print(f"Product preparation failed (exit {preparation_exit}); no sections ran")
     if preparation_exit or not saved:
         return 2
-    cli = directory / "bin/safeyolo"
     test_bin = directory / "tests/bin" if staged_inputs is not None else REPOSITORY / ".venv/bin"
     env["PATH"] = os.pathsep.join((str(directory / "bin"), str(test_bin), env["PATH"]))
     env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
@@ -566,6 +718,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         env.pop("SAFEYOLO_RUNSC_PLATFORM", None)
     overall = 0
     for section in sections:
+        if cancellation.signum is not None:
+            return save_cancellation(cancellation.failures)
         instance = directory / section
         section_artifacts = artifacts / section
         section_env = dict(env, SAFEYOLO_TEST_CONFIG_DIR=str(instance), SAFEYOLO_TEST_AGENT="bbtest",
@@ -602,20 +756,23 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
                 error = "; ".join(port_failures)
                 section_exit = 2
             else:
-                result = subprocess.run(args, cwd=REPOSITORY, env=section_env, check=False)
-                executed = True
+                roots = (instance, directory / "lifecycle-owner") if section == "lifecycle" else (instance,)
+                result = cancellation.run(args, cwd=REPOSITORY, env=section_env, roots=roots, check=False)
+                executed = cancellation.started
                 section_exit = result.returncode
         except (OSError, subprocess.SubprocessError) as exc:
             error = str(exc)
             section_exit = 2
         finally:
-            failures = cleanup_instance(cli, instance, env=section_env)
+            failures = cleanup_instance_after_child(instance, section_env)
             if section == "lifecycle":
                 owner_root = directory / "lifecycle-owner"
-                failures += cleanup_instance(cli, owner_root, owner=True,
-                                             env=lifecycle_owner_environment(owner_root, env=section_env))
+                failures += cleanup_instance_after_child(owner_root, lifecycle_owner_environment(owner_root, env=section_env), owner=True)
             if lane == "vz" and not port_failures:
                 failures += check_vz_ports(include_owner=section == "lifecycle")
+        failures += cancellation.failures
+        if cancellation.signum is not None and section != "continuity" and cancellation.child_exit == INNER_CLEANUP_FAILURE_EXIT:
+            failures.append("section runner reported an owned cleanup failure during cancellation")
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
             # An inner stop can remove its markers while leaving a process
             # live. A later empty inspection cannot clear that known failure.
@@ -634,15 +791,21 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             installed_runtime, runtime_failures = installed_runtime_observation(section_artifacts, report, started_at, finished_at)
             evidence_failures += runtime_failures
         row = {"section": section, "config_dir": str(instance), "prepared_config_dir": str(source),
+               "coord_data_dir": section_env["SAFEYOLO_COORD_DATA_DIR"],
+               "nats_test_instance": section_env["SAFEYOLO_NATS_TEST_INSTANCE"],
                "executed": executed,
                "started_at": started_at, "finished_at": finished_at,
                "exit": section_exit, "result": "cleanup_failure" if failures else
                "passed" if section_exit == 0 else
+               "cancelled" if cancellation.signum is not None else
                "assertion_failure" if section_exit == 1 else "preparation_failure",
                "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures,
                "installed_runtime": installed_runtime, "evidence_failures": evidence_failures}
         if section == "isolation":
             row["pytest"] = observations
+        if section == "lifecycle":
+            row["lifecycle_owner"] = {"config_dir": section_env["SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR"],
+                                      "nats_test_instance": section_env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"]}
         if evidence_failures and section_exit == 0 and not failures:
             row.update(exit=2, result="evidence_failure")
             section_exit = 2
@@ -651,6 +814,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         report["sections"].append(row)
         if executed:
             report["unexecuted_sections"].remove(section)
+        if cancellation.signum is not None:
+            return save_cancellation(failures)
         saved = save(2 if failures else None)
         if failures:
             print(f"Owned cleanup failed for {section}: {failures}; remaining sections did not run")
@@ -658,6 +823,8 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
             return 2
         if section_exit:
             overall = max(overall, 1 if section_exit == 1 else 2)
+    if cancellation.signum is not None:
+        return save_cancellation(cancellation.failures)
     return overall if save(overall) else 2
 
 
