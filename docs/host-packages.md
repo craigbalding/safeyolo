@@ -82,15 +82,23 @@ no manual version bump or numbered milestone release occurs per merge.
 macOS helper identity is also read from the signed executable. Existing
 blackbox reports retain their selected source commit.
 
-Publication waits for successful master push runs of `CI`, `Native proxy
-contracts` and `CodeQL` for the same source commit. Existing conditional
-premerge compilation and required merge checks continue independently.
+Publication waits for the current master push's successful latest `Test CLI`,
+`Lint`, `Test Addons (Python 3.12)`, CodeQL `Analyze`, and `Quick native checks
+(Ubuntu)` jobs for the same source commit. An unrelated optional job failure
+does not block publication. Release notes retain the actual workflow conclusions
+and link the successful jobs. Existing conditional premerge compilation and
+required merge checks continue independently.
 Source is available through `git pull` as soon as the commit reaches master.
 
 Master CI saves runtime binaries from its maintained output paths when its
 existing conditional checks produced them. Postmerge builders reuse a debug
 component only when its source, platform, compiler/settings and saved checksums
-match. Missing or incompatible components receive one fallback build.
+match. The selected attempt's platform producer must succeed, including its
+runtime save and upload steps. A rerun of an optional failed job can retain a
+successful producer from an earlier attempt. Builders download the immutable
+artifact ID and verify GitHub's ZIP checksum. An artifact from a different
+producer attempt cannot stand in for that producer's output. Missing or
+incompatible components receive one fallback build.
 Production components build once. The guest terminal utility builds once for
 the two macOS profiles. Wheel/archive creation copies those bytes and does not
 compile again.
