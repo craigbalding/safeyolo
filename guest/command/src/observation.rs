@@ -1,6 +1,6 @@
 use crate::{Error, Paths, generation, live_token, read_json, write_json};
 use serde_json::json;
-use std::{fs, os::unix::process::CommandExt, process::Command};
+use std::{ffi::OsString, fs, os::unix::process::CommandExt, path::Path, process::Command};
 
 pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
     let current = generation(paths)?;
@@ -55,7 +55,7 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
     Ok(0)
 }
 
-pub(super) fn exec(paths: &Paths, arguments: &[String]) -> Result<i32, Error> {
+pub(super) fn exec(paths: &Paths, arguments: &[OsString]) -> Result<i32, Error> {
     let pid = std::process::id() as i32;
     let record = paths.records.join(format!("{pid}.json"));
     write_json(
@@ -72,7 +72,7 @@ pub(super) fn exec(paths: &Paths, arguments: &[String]) -> Result<i32, Error> {
     fs::remove_file(record)?;
     Err(format!(
         "cannot execute configured command {}: {error}",
-        arguments[0]
+        Path::new(&arguments[0]).display()
     )
     .into())
 }

@@ -50,6 +50,26 @@ fn state(paths: &Paths) -> Result<Value, Error> {
     Ok(value)
 }
 
+fn command_identity(value: &Value) -> Result<Option<(i32, &str)>, Error> {
+    if value["command_pid"].is_null()
+        && value["command_start_token"].is_null()
+        && value["state"] != "running"
+    {
+        return Ok(None);
+    }
+    Ok(Some((
+        value["command_pid"]
+            .as_i64()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 0)
+            .ok_or("saved command PID is missing or invalid; termination is unverified")?,
+        value["command_start_token"]
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or("saved command identity is missing or invalid; termination is unverified")?,
+    )))
+}
+
 fn save(paths: &Paths, value: &mut Value) -> Result<(), Error> {
     let current = state(paths)?;
     if current["command"] != value["command"]
@@ -317,24 +337,7 @@ pub(super) fn run(paths: &Paths) -> Result<i32, Error> {
             "command supervisor belongs to another run; publish fresh command state".into(),
         );
     }
-    let saved_command = if value["command_pid"].is_null()
-        && value["command_start_token"].is_null()
-        && value["state"] != "running"
-    {
-        None
-    } else {
-        Some((
-            value["command_pid"]
-                .as_i64()
-                .and_then(|pid| i32::try_from(pid).ok())
-                .filter(|pid| *pid > 0)
-                .ok_or("saved command PID is missing or invalid; termination is unverified")?,
-            value["command_start_token"]
-                .as_str()
-                .filter(|token| !token.is_empty())
-                .ok_or("saved command identity is missing; termination is unverified")?,
-        ))
-    };
+    let saved_command = command_identity(&value)?;
     if matches!(
         value["state"].as_str(),
         Some("stopped" | "failed" | "exited")
@@ -437,6 +440,16 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
     if value["generation"].as_str() != Some(&generation(paths)?) {
         return Err("command supervisor belongs to another run; command state is unknown".into());
     }
+    let saved_command = command_identity(&value)?;
+    if matches!(
+        value["state"].as_str(),
+        Some("stopped" | "failed" | "exited")
+    ) && saved_command.is_some()
+    {
+        return Err(
+            "terminal command state retains a process identity; termination is unverified".into(),
+        );
+    }
     if matches!(value["state"].as_str(), Some("running" | "restarting")) {
         let pid = value["supervisor_pid"]
             .as_i64()
@@ -453,22 +466,13 @@ pub(super) fn check(paths: &Paths) -> Result<i32, Error> {
         }
     }
     if value["state"] == "running" {
-        let pid = value["command_pid"]
-            .as_i64()
-            .and_then(|pid| i32::try_from(pid).ok())
-            .unwrap_or(0);
-        let token = value["command_start_token"]
-            .as_str()
-            .filter(|token| !token.is_empty())
-            .ok_or("guest command identity is missing; command state is unknown")?;
-        if pid <= 0 || live_token(pid)?.as_deref() != Some(token) {
+        let (pid, token) = saved_command.ok_or("guest command identity is missing")?;
+        if live_token(pid)?.as_deref() != Some(token) {
             return Err(
                 "guest command identity is stale or missing; command state is unknown".into(),
             );
         }
-    } else if let Some(pid) = value["command_pid"]
-        .as_i64()
-        .and_then(|pid| i32::try_from(pid).ok())
+    } else if let Some((pid, _)) = saved_command
         && group_live(pid)?
     {
         return Err("guest command group remains occupied; command state is unknown".into());

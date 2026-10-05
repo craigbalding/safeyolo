@@ -54,12 +54,20 @@ def published(guest):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         if guest["state"].exists():
-            return json.loads(guest["state"].read_text())
+            state = json.loads(guest["state"].read_text())
+            if state["command"].startswith("exec /safeyolo/safeyolo-guest probe "):
+                return state
         time.sleep(0.01)
     raise AssertionError("host did not publish the recovery command")
 
 
-def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest):
+@pytest.mark.parametrize("prior_terminal", [None, "stopped", "failed", "exited"])
+def test_recipe_collects_real_probe_and_matching_guest_acknowledgement(staged_guest, prior_terminal):
+    if prior_terminal:
+        write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec prior",
+                                         "state": prior_terminal, "command_pid": None, "command_start_token": None})
+        staged_guest["stop"].write_text("prior stop fence")
+        (staged_guest["share"] / "command-supervisor-enabled").touch()
     with socket.socket() as listener, ThreadPoolExecutor(max_workers=1) as pool:
         listener.bind(("127.0.0.1", 0))
         listener.listen()
@@ -100,6 +108,40 @@ def test_recipe_refuses_occupied_supervisor_even_with_stop_fence(staged_guest, f
     assert staged_guest["state"].read_bytes() == original
     assert enabled.exists()
     assert staged_guest["stop"].exists() is fenced
+
+
+@pytest.mark.parametrize("terminal", ["stopped", "failed", "exited"])
+@pytest.mark.parametrize(("pid", "token"), [
+    (None, "retained-start-token"),
+    (os.getpid(), None),
+    (os.getpid(), "retained-start-token"),
+    (0, "retained-start-token"),
+    (-1, "retained-start-token"),
+    (2**31, "retained-start-token"),
+    (2**64 - 1, "retained-start-token"),
+    (1.5, "retained-start-token"),
+    (True, "retained-start-token"),
+    ("123", "retained-start-token"),
+    ([], "retained-start-token"),
+    ({}, "retained-start-token"),
+    (None, ""),
+    (None, 123),
+    (None, True),
+    (None, []),
+    (None, {}),
+])
+def test_recipe_preserves_unverified_terminal_identity_and_markers(staged_guest, terminal, pid, token):
+    write_json(staged_guest["state"], {"schema_version": 1, "name": "demo", "command": "exec existing",
+                                     "state": terminal, "command_pid": pid, "command_start_token": token})
+    enabled = staged_guest["share"] / "command-supervisor-enabled"
+    enabled.write_text("existing enabled marker")
+    staged_guest["stop"].write_text("existing stop fence")
+    original = staged_guest["state"].read_bytes()
+    response = recover(staged_guest, timeout=0.2)
+    assert response.returncode != 0 and "occupied or unverified" in response.stderr
+    assert staged_guest["state"].read_bytes() == original
+    assert enabled.read_text() == "existing enabled marker"
+    assert staged_guest["stop"].read_text() == "existing stop fence"
 
 
 def test_recipe_timeout_fences_its_command_without_claiming_termination(staged_guest):

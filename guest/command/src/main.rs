@@ -6,6 +6,7 @@ mod supervision;
 
 use serde_json::Value;
 use std::{
+    ffi::OsString,
     fs,
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
@@ -112,23 +113,23 @@ fn run() -> Result<i32, Error> {
             .unwrap_or_else(|| "/home/agent/.safeyolo-command-supervisor.stop".into()),
         workspace: "/workspace".into(),
     };
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<OsString> = std::env::args_os().skip(1).collect();
     while args.first().is_some_and(|arg| {
         matches!(
-            arg.as_str(),
-            "--context" | "--records" | "--state" | "--stop" | "--workspace"
+            arg.to_str(),
+            Some("--context" | "--records" | "--state" | "--stop" | "--workspace")
         )
     }) {
         if args.len() < 2 {
             return Err("path option requires a value".into());
         }
         let value = PathBuf::from(args.remove(1));
-        match args.remove(0).as_str() {
-            "--context" => paths.context = value,
-            "--records" => paths.records = value,
-            "--state" => paths.state = value,
-            "--stop" => paths.stop = value,
-            "--workspace" => paths.workspace = value,
+        match args.remove(0).to_str() {
+            Some("--context") => paths.context = value,
+            Some("--records") => paths.records = value,
+            Some("--state") => paths.state = value,
+            Some("--stop") => paths.stop = value,
+            Some("--workspace") => paths.workspace = value,
             _ => unreachable!(),
         }
     }
@@ -156,10 +157,18 @@ fn run() -> Result<i32, Error> {
         [supervise, check] if supervise == "supervise" && check == "check" => {
             supervision::check(&paths)
         }
-        [probe, id] if probe == "probe" => probe::run(&paths, id, 22),
-        [probe, id, option, port] if probe == "probe" && option == "--ssh-port" => {
-            probe::run(&paths, id, port.parse()?)
-        }
+        [probe, id] if probe == "probe" => probe::run(
+            &paths,
+            id.to_str().ok_or("probe ID must be hexadecimal text")?,
+            22,
+        ),
+        [probe, id, option, port] if probe == "probe" && option == "--ssh-port" => probe::run(
+            &paths,
+            id.to_str().ok_or("probe ID must be hexadecimal text")?,
+            port.to_str()
+                .ok_or("SSH port must be numeric text")?
+                .parse()?,
+        ),
         _ => Err("usage: safeyolo-guest --help".into()),
     }
 }

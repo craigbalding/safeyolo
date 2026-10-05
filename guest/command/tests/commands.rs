@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     fs,
+    os::unix::{ffi::OsStringExt, fs::PermissionsExt, process::CommandExt},
     path::PathBuf,
     process::{Child, Command, Output},
     thread,
@@ -87,7 +89,13 @@ struct Supervisor(Child, PathBuf);
 impl Supervisor {
     fn start(guest: &Guest) -> Self {
         Self(
-            guest.command().arg("supervise").spawn().unwrap(),
+            // Keep fixture stop/continue signals out of Cargo's process group.
+            guest
+                .command()
+                .arg("supervise")
+                .process_group(0)
+                .spawn()
+                .unwrap(),
             guest.stop.clone(),
         )
     }
@@ -270,6 +278,112 @@ fn missing_process_identity_preserves_state_and_does_not_launch() {
 }
 
 #[test]
+fn terminal_command_identity_must_be_empty_before_check_or_launch() {
+    let guest = Guest::new();
+    let invalid_fields = [
+        json!(0),
+        json!(-1),
+        json!(i64::from(i32::MAX) + 1),
+        json!(u64::MAX),
+        json!(1.5),
+        json!(true),
+        json!(""),
+        json!("123"),
+        json!([]),
+        json!({}),
+    ];
+    let mut retained = vec![
+        (Value::Null, json!("retained-start-token")),
+        (json!(std::process::id()), Value::Null),
+        (json!(std::process::id()), json!("retained-start-token")),
+    ];
+    for value in invalid_fields {
+        retained.push((value.clone(), json!("retained-start-token")));
+        retained.push((Value::Null, value.clone()));
+        retained.push((json!(std::process::id()), value));
+    }
+    for label in ["stopped", "failed", "exited"] {
+        for (pid, token) in &retained {
+            guest.publish("touch unexpected-launch");
+            let mut state = guest.read();
+            state["state"] = json!(label);
+            state["command_pid"] = pid.clone();
+            state["command_start_token"] = token.clone();
+            let original = serde_json::to_vec(&state).unwrap();
+            fs::write(&guest.state, &original).unwrap();
+            for arguments in [&["supervise", "check"][..], &["supervise"][..]] {
+                let rejected = guest.command().args(arguments).output().unwrap();
+                assert!(!rejected.status.success(), "accepted {state}");
+                assert!(rejected.stdout.is_empty());
+                assert!(String::from_utf8_lossy(&rejected.stderr).contains("unverified"));
+                assert_eq!(fs::read(&guest.state).unwrap(), original);
+                assert!(!guest.stop.exists());
+                assert!(!guest.directory.path().join("unexpected-launch").exists());
+            }
+        }
+        guest.publish("touch unexpected-launch");
+        let mut clean = guest.read();
+        clean["state"] = json!(label);
+        clean["command_pid"] = Value::Null;
+        clean["command_start_token"] = Value::Null;
+        fs::write(&guest.state, clean.to_string()).unwrap();
+        assert_eq!(
+            success(
+                guest
+                    .command()
+                    .args(["supervise", "check"])
+                    .output()
+                    .unwrap()
+            ),
+            clean
+        );
+        assert!(guest.command().arg("supervise").status().unwrap().success());
+        assert_eq!(guest.read(), clean);
+    }
+}
+
+#[test]
+fn partial_terminal_identity_does_not_hide_the_live_managed_command() {
+    let guest = Guest::new();
+    guest.publish("exec /bin/sleep 60");
+    let mut supervisor = Supervisor::start(&guest);
+    let running = guest.wait(|state| state["state"] == "running");
+    let supervisor_pid = supervisor.0.id() as i32;
+    assert_eq!(unsafe { libc::kill(supervisor_pid, libc::SIGSTOP) }, 0);
+    struct Resume(i32);
+    impl Drop for Resume {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0, libc::SIGCONT) };
+        }
+    }
+    let resume = Resume(supervisor_pid);
+    for label in ["stopped", "failed", "exited"] {
+        let mut partial = running.clone();
+        partial["state"] = json!(label);
+        partial["command_pid"] = Value::Null;
+        let original = serde_json::to_vec(&partial).unwrap();
+        fs::write(&guest.state, &original).unwrap();
+        let rejected = guest
+            .command()
+            .args(["supervise", "check"])
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert_eq!(fs::read(&guest.state).unwrap(), original);
+        assert!(supervisor.0.try_wait().unwrap().is_none());
+        let pid = running["command_pid"].as_i64().unwrap();
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+        assert_ne!(
+            stat.rsplit_once(')').unwrap().1.split_whitespace().next(),
+            Some("Z")
+        );
+    }
+    fs::write(&guest.state, running.to_string()).unwrap();
+    drop(resume);
+    supervisor.stop();
+}
+
+#[test]
 fn failed_observation_and_another_run_do_not_claim_running() {
     let guest = Guest::new();
     fs::create_dir(&guest.records).unwrap();
@@ -314,4 +428,76 @@ fn observed_exec_keeps_argv_and_cleans_a_failed_exec_record() {
     let checked = guest.command().args(["observe", "check"]).output().unwrap();
     assert!(checked.status.success());
     assert_eq!(checked.stdout, b"stopped\n");
+}
+
+#[test]
+fn observed_exec_preserves_non_utf8_paths_arguments_and_script_fallback() {
+    let mut guest = Guest::new();
+    let argument = OsString::from_vec(vec![0x80]);
+    let output = guest
+        .command()
+        .args(["observe", "exec", "--", "/bin/printf", "%s"])
+        .arg(&argument)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, [0x80]);
+    guest.records = guest
+        .directory
+        .path()
+        .join(OsString::from_vec(b"records-\xff".to_vec()));
+    let executable = guest
+        .directory
+        .path()
+        .join(OsString::from_vec(b"printf-\xff".to_vec()));
+    std::os::unix::fs::symlink("/bin/printf", &executable).unwrap();
+    let output = guest
+        .command()
+        .args(["observe", "exec", "--"])
+        .arg(&executable)
+        .arg("%s")
+        .arg(&argument)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, [0x80]);
+
+    fs::remove_file(&executable).unwrap();
+    fs::write(&executable, b"printf '%s' \"$1\"\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = guest
+        .command()
+        .args(["observe", "exec", "--"])
+        .arg(&executable)
+        .arg(&argument)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, [0x80]);
+
+    fs::remove_file(&executable).unwrap();
+    let missing = guest
+        .command()
+        .args(["observe", "exec", "--"])
+        .arg(&executable)
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(2));
+    let checked = guest.command().args(["observe", "check"]).output().unwrap();
+    assert!(checked.status.success());
+    assert_eq!(checked.stdout, b"stopped\n");
+    let invalid_id = guest.command().arg("probe").arg(argument).output().unwrap();
+    assert_eq!(invalid_id.status.code(), Some(2));
 }

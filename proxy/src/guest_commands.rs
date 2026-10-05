@@ -202,6 +202,7 @@ pub fn publish(
             previous["state"].as_str(),
             Some("stopped" | "failed" | "exited")
         ) || !previous["command_pid"].is_null()
+            || !previous["command_start_token"].is_null()
         {
             return Err(
                 "command supervisor is occupied or unverified; active work was left intact".into(),
