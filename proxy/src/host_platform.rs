@@ -1348,6 +1348,74 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The installed helper remains the direct child of an optional host-owned
+/// deadline runner. This opt-in is supplied by the physical VZ test account,
+/// never by an Admin request or guest configuration.
+#[cfg(any(target_os = "macos", test))]
+fn vz_helper_command(
+    helper: &std::path::Path,
+    runner: Option<&std::ffi::OsStr>,
+    timeout: Option<&std::ffi::OsStr>,
+) -> io::Result<Command> {
+    match (runner, timeout) {
+        (None, None) => Ok(Command::new(helper)),
+        (Some(runner), Some(timeout)) => {
+            let timeout = timeout
+                .to_str()
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.bytes().all(|byte| byte.is_ascii_digit())
+                        && value.parse::<u64>().is_ok_and(|seconds| seconds > 0)
+                })
+                .ok_or(io::Error::other(
+                    "VZ test supervision needs a positive whole-number timeout",
+                ))?;
+            let runner = std::path::Path::new(runner);
+            if !runner.is_absolute()
+                || !runner.is_file()
+                || runner.metadata()?.permissions().mode() & 0o111 == 0
+            {
+                return Err(io::Error::other(
+                    "VZ test runner must be an absolute executable file",
+                ));
+            }
+            let mut command = Command::new(runner);
+            command
+                .args(["--timeout-seconds", timeout, "--"])
+                .arg(helper);
+            Ok(command)
+        }
+        _ => Err(io::Error::other(
+            "VZ test supervision needs both a runner and a timeout",
+        )),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+async fn stop_vz_launch_owner(child: &mut tokio::process::Child) -> io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    // Tokio owns this unreaped child, including a runner whose helper failed
+    // before publishing control. TERM lets the runner clean up its child.
+    if let Some(pid) = child.id() {
+        if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .map_err(|_| {
+                io::Error::other(
+                    "VZ launch owner did not finish cleanup; preserve the disposable instance",
+                )
+            })??;
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) async fn start_sandbox(
     name: &str,
@@ -1413,7 +1481,13 @@ pub(crate) async fn start_sandbox(
     let proxy = config
         .join("data/sockets")
         .join(format!("{ip}_{name}/proxy.sock"));
-    let mut command = Command::new(config.join("bin/safeyolo-vm"));
+    let runner = std::env::var_os("SAFEYOLO_VZ_TEST_RUNNER");
+    let runner_timeout = std::env::var_os("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS");
+    let mut command = vz_helper_command(
+        &config.join("bin/safeyolo-vm"),
+        runner.as_deref(),
+        runner_timeout.as_deref(),
+    )?;
     let mut cmdline = "console=hvc0 root=/dev/vda rw quiet".to_owned();
     if ephemeral {
         cmdline.push_str(" safeyolo.ephemeral_upper=1");
@@ -1495,34 +1569,51 @@ pub(crate) async fn start_sandbox(
         .stdout(serial)
         .stderr(stderr)
         .spawn()?;
-    let pid = child.id().ok_or(io::Error::other("VM helper has no PID"))?;
-    let _ = std::fs::remove_file(directory.join("vm.token"));
-    std::fs::write(directory.join("vm.pid"), pid.to_string())?;
-    if let Some(token) = vm_process_token(name, pid as i32) {
-        std::fs::write(directory.join("vm.token"), token)?;
-    }
-    crate::host_runs::remember_process(name, "backend", pid).map_err(io::Error::other)?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-    while tokio::time::Instant::now() < deadline {
-        if child.try_wait()?.is_some() {
-            break;
+    let started = async {
+        let mut identity = None;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        while tokio::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                break;
+            }
+            if identity.is_none() && control.exists() {
+                // The peer PID and installed executable/control arguments are
+                // verified by control(). The runner PID is not a VM handle.
+                if let Ok(observed) =
+                    crate::host_runs::control(name, serde_json::json!({"operation":"status"})).await
+                    && observed["agent"] == name
+                    && let Some(pid) = observed["pid"]
+                        .as_i64()
+                        .and_then(|pid| u32::try_from(pid).ok())
+                    && let Some(token) = vm_process_token(name, pid as i32)
+                {
+                    std::fs::write(directory.join("vm.pid"), pid.to_string())?;
+                    std::fs::write(directory.join("vm.token"), token)?;
+                    crate::host_runs::remember_process(name, "backend", pid)
+                        .map_err(io::Error::other)?;
+                    let mut run = crate::host_runs::read(name)
+                        .map_err(io::Error::other)?
+                        .ok_or(io::Error::other("sandbox record is missing"))?;
+                    run["helper_instance"] = observed["instance"].clone();
+                    crate::host_runs::save(name, &run).map_err(io::Error::other)?;
+                    identity = Some(observed);
+                }
+            }
+            if identity.is_some() && status_dir.join("per-run-started").is_file() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        if status_dir.join("per-run-started").is_file() {
-            let identity =
-                crate::host_runs::control(name, serde_json::json!({"operation":"status"}))
-                    .await
-                    .map_err(io::Error::other)?;
-            let mut run = crate::host_runs::read(name)
-                .map_err(io::Error::other)?
-                .ok_or(io::Error::other("sandbox record is missing"))?;
-            run["helper_instance"] = identity["instance"].clone();
-            crate::host_runs::save(name, &run).map_err(io::Error::other)?;
-            return Ok(());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        Err(io::Error::other("VM did not reach per-run startup"))
     }
-    let _ = stop_sandbox(name).await;
-    Err(io::Error::other("VM did not reach per-run startup"))
+    .await;
+    if started.is_err() {
+        // Stop the independently verified helper when available. Also stop
+        // the owned launch process if identity persistence itself failed.
+        let _ = stop_sandbox(name).await;
+        stop_vz_launch_owner(&mut child).await?;
+    }
+    started
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1701,4 +1792,85 @@ pub(crate) fn update_agent_map(name: &str, ip: Option<&str>) -> io::Result<()> {
     )?
     .sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn vz_test_runner_receives_the_installed_helper_directly() {
+        let helper = std::path::Path::new("/owned/bin/safeyolo-vm");
+        let direct = vz_helper_command(helper, None, None).unwrap();
+        assert_eq!(direct.as_std().get_program(), helper);
+        assert_eq!(direct.as_std().get_args().count(), 0);
+        let temporary = tempfile::tempdir().unwrap();
+        let runner = temporary.path().join("run-vz-test");
+        std::fs::write(&runner, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut supervised =
+            vz_helper_command(helper, Some(runner.as_os_str()), Some(OsStr::new("900"))).unwrap();
+        supervised
+            .arg("run")
+            .arg("--control-socket")
+            .arg("/owned/data/vm-control/probe.sock");
+        assert_eq!(supervised.as_std().get_program(), runner);
+        assert_eq!(
+            supervised.as_std().get_args().collect::<Vec<_>>(),
+            vec![
+                "--timeout-seconds",
+                "900",
+                "--",
+                "/owned/bin/safeyolo-vm",
+                "run",
+                "--control-socket",
+                "/owned/data/vm-control/probe.sock"
+            ]
+        );
+        for timeout in [
+            None,
+            Some(OsStr::new("0")),
+            Some(OsStr::new("-1")),
+            Some(OsStr::new("1.5")),
+        ] {
+            assert!(vz_helper_command(helper, Some(runner.as_os_str()), timeout).is_err());
+        }
+        assert!(vz_helper_command(helper, None, Some(OsStr::new("900"))).is_err());
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            vz_helper_command(helper, Some(runner.as_os_str()), Some(OsStr::new("900"))).is_err()
+        );
+        assert!(
+            vz_helper_command(
+                helper,
+                Some(OsStr::new("run-vz-test")),
+                Some(OsStr::new("900"))
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_vz_start_allows_the_owned_runner_to_finish_cleanup() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("cleaned");
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap 'printf cleaned > \"$1\"; exit 0' TERM; printf ready; while :; do sleep 0.02; done", "runner"])
+            .arg(&marker)
+            .stdout(std::process::Stdio::piped())
+            .spawn().unwrap();
+        let mut ready = [0; 5];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            child.stdout.as_mut().unwrap().read_exact(&mut ready),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(&ready, b"ready");
+        stop_vz_launch_owner(&mut child).await.unwrap();
+        assert_eq!(std::fs::read(marker).unwrap(), b"cleaned");
+        assert!(child.try_wait().unwrap().is_some());
+    }
 }
