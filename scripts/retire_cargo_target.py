@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from pathlib import Path
 
 
 def sha256(path: Path) -> str:
@@ -97,6 +99,8 @@ def environment_references_target(
 
 
 def active_owner(target: Path) -> int | None:
+    if sys.platform == "darwin":
+        return darwin_active_owner(target)
     self_pid = os.getpid()
     for proc in Path("/proc").iterdir():
         if not proc.name.isdecimal():
@@ -142,6 +146,69 @@ def active_owner(target: Path) -> int | None:
     return None
 
 
+def darwin_process_arguments(pid: int) -> tuple[list[str], list[str]]:
+    """Read NUL-delimited argv/environment without printing process secrets."""
+    # Apple's KERN_PROCARGS2 returns argc, executable, padding, argv, then env.
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t()
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0):
+        raise OSError(ctypes.get_errno(), "cannot inspect process", pid)
+    buffer = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0):
+        raise OSError(ctypes.get_errno(), "cannot inspect process", pid)
+    data = buffer.raw[:size.value]
+    argc = int.from_bytes(data[:4], sys.byteorder, signed=True)
+    offset = data.index(b"\0", 4) + 1
+    while offset < len(data) and data[offset] == 0:
+        offset += 1
+    argv = []
+    for _ in range(argc):
+        end = data.index(b"\0", offset)
+        argv.append(os.fsdecode(data[offset:end]))
+        offset = end + 1
+    environment = [os.fsdecode(entry) for entry in data[offset:].split(b"\0") if entry]
+    return argv, environment
+
+
+def darwin_active_owner(target: Path) -> int | None:
+    """Use Mac process facilities for the same argv/env/cwd/FD protections."""
+    listing = subprocess.run(["lsof", "-F", "pfn0"], capture_output=True, check=False)
+    if listing.returncode not in (0, 1):
+        raise SystemExit("cannot inspect Mac process file references; target retained")
+    directories: dict[int, Path] = {}
+    pid, descriptor = None, None
+    for field in listing.stdout.split(b"\0"):
+        field = field.lstrip(b"\n")
+        if field.startswith(b"p"):
+            pid, descriptor = int(field[1:]), None
+        elif field.startswith(b"f"):
+            descriptor = field[1:]
+        elif field.startswith(b"n") and pid is not None:
+            path = Path(os.fsdecode(field[1:])).resolve()
+            if descriptor == b"cwd":
+                directories[pid] = path
+            if path_is_within(path, target):
+                return pid
+    processes = subprocess.check_output(["ps", "-axo", "pid="], text=True)
+    for pid in map(int, processes.split()):
+        if pid == os.getpid():
+            continue
+        try:
+            argv, environment = darwin_process_arguments(pid)
+        except OSError as exc:
+            # Like /proc, vanished and inaccessible foreign processes are absent.
+            if exc.errno in (errno.ESRCH, errno.EINVAL, errno.EPERM, errno.EACCES):
+                continue
+            raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
+        cwd = directories.get(pid)
+        if argv_references_target(argv, cwd, target) or environment_references_target(
+            environment, cwd, target
+        ):
+            return pid
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", required=True, type=Path)
@@ -180,7 +247,7 @@ def main() -> int:
         lockfile = root / "Cargo.lock"
     event = {
         "event": "cargo_target_retired",
-        "at": datetime.now(timezone.utc).isoformat(),
+        "at": datetime.now(UTC).isoformat(),
         "target": str(target),
         "candidate_commit": commit,
         "acceptance_receipt": str(receipt),

@@ -23,7 +23,7 @@ def _commit() -> str:
 
 
 def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, str]:
-    target = tmp_path / "target-623-parser"
+    target = tmp_path / "target-623 parser"
     debug = target / "debug"
     debug.mkdir(parents=True)
     binary = debug / "candidate-proxy"
@@ -114,6 +114,7 @@ def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
     environment.pop("CARGO_TARGET_DIR", None)
     environment["PWD"] = "/"
     options: dict[str, object] = {"env": environment, "cwd": "/"}
+    arguments = [sys.executable, "-c", "import time; time.sleep(60)"]
     if owner_kind == "env":
         environment["CARGO_TARGET_DIR"] = str(target)
     elif owner_kind == "relative-env":
@@ -125,13 +126,22 @@ def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
         environment["CARGO_TARGET_DIR"] = str(other)
     elif owner_kind == "cwd":
         options["cwd"] = target
+    elif owner_kind in ("argv", "relative-argv", "equals-argv"):
+        value = str(target)
+        if owner_kind == "relative-argv":
+            value = target.name
+            options["cwd"] = target.parent
+        arguments.extend(
+            [f"--target-dir={value}"] if owner_kind == "equals-argv"
+            else ["--target-dir", value]
+        )
     else:
         held = target / "held-open"
         held.write_bytes(b"held")
         descriptor = os.open(held, os.O_RDONLY)
         options["pass_fds"] = (descriptor,)
     owner = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        arguments,
         **options,
     )
     if owner_kind == "open-fd":
@@ -139,7 +149,9 @@ def _start_owner(target: Path, owner_kind: str) -> subprocess.Popen[bytes]:
     return owner
 
 
-@pytest.mark.parametrize("owner_kind", ["env", "relative-env", "cwd", "open-fd"])
+@pytest.mark.parametrize("owner_kind", [
+    "env", "relative-env", "cwd", "open-fd", "argv", "relative-argv", "equals-argv",
+])
 def test_external_target_refuses_live_owner_from_env_cwd_or_fd(
     tmp_path: Path, owner_kind: str
 ) -> None:

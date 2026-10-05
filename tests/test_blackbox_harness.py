@@ -1196,6 +1196,10 @@ if marker.exists():
     section.chmod(0o755)
     directory, artifacts = tmp_path / "installed", tmp_path / "artifacts"
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    # This fixture owns the child. Reap it while the inner stop command waits,
+    # rather than leaving a Darwin zombie until run_sections returns.
+    reaper = threading.Thread(target=process.wait)
+    reaper.start()
     monkeypatch.setenv("OWNED_TEST_PID", str(process.pid))
     monkeypatch.setenv("LEAVE_PROCESS_LIVE", "1" if leave_process_live else "0")
     monkeypatch.setenv("PATH", f"{Path(sys.executable).parent}:{os.environ['PATH']}")
@@ -1230,6 +1234,8 @@ if marker.exists():
         if process.poll() is None:
             process.terminate()
         process.wait(timeout=5)
+        reaper.join(timeout=5)
+        assert not reaper.is_alive()
 
 
 def test_installed_sections_attribute_preparation_failure_without_starting_section(
