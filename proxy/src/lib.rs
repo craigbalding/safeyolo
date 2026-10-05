@@ -30,8 +30,11 @@ mod flow_writer;
 pub mod grants;
 pub mod guest_commands;
 mod host_agents;
+mod host_boot;
+pub mod host_commands;
 mod host_events;
 mod host_lifecycle;
+mod host_runs;
 
 /// Run one host-owned coding-agent launch in a native terminal wrapper.
 pub async fn run_host_agent_entrypoint(name: &str, launch_id: &str) -> Result<i32, Error> {

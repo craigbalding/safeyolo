@@ -279,6 +279,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     config.native_product = true;
     config.native_settings = Some(settings);
     config.native_config_dir = Some(root.canonicalize()?);
+    config.native_config_path = Some(path.canonicalize()?);
     config.validate()?;
     Ok(config)
 }
@@ -300,13 +301,7 @@ fn resolve_path(value: &mut Value, root: &Path, field: &str) -> Result<(), Error
 /// Missing configuration uses built-in launcher defaults; malformed input is
 /// an error. No config.yaml or generated document is a fallback source.
 pub(crate) fn host_settings() -> Result<Settings, Error> {
-    let path = std::env::var_os("SAFEYOLO_NATIVE_CONFIG_PATH")
-        .map(PathBuf::from)
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "toml")
-        })
-        .unwrap_or_else(|| crate::host_platform::config_dir().join("config.toml"));
+    let path = crate::host_platform::config_path();
     match std::fs::metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
         Err(error) => Err(error.into()),
@@ -319,6 +314,56 @@ pub(crate) fn host_settings() -> Result<Settings, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_consumers_keep_the_exact_toml_source_and_distinct_instance_roots() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        for (root, selected) in [(a.path(), "tmux-pane"), (b.path(), "supervisor")] {
+            std::fs::write(
+                root.join("config.toml"),
+                "[agent_launcher]\ndefault='tmux-window'\n",
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("selected.toml"),
+                format!("[agent_launcher]\ndefault='{selected}'\n"),
+            )
+            .unwrap();
+        }
+        let check = |root: PathBuf, expected: &'static str| async move {
+            let path = read(&root.join("selected.toml"))
+                .unwrap()
+                .native_config_path
+                .unwrap();
+            crate::host_platform::in_config(path.clone(), async {
+                tokio::task::yield_now().await;
+                assert_eq!(
+                    crate::host_platform::config_dir(),
+                    root.canonicalize().unwrap()
+                );
+                assert_eq!(crate::host_platform::config_path(), path);
+                assert_eq!(
+                    host_settings().unwrap().agent_launcher.default.as_deref(),
+                    Some(expected)
+                );
+            })
+            .await;
+        };
+        tokio::join!(
+            check(a.path().to_owned(), "tmux-pane"),
+            check(b.path().to_owned(), "supervisor")
+        );
+        std::fs::write(
+            a.path().join("selected.toml"),
+            "[agent_launcher]\ndefault=17\n",
+        )
+        .unwrap();
+        crate::host_platform::in_config(a.path().join("selected.toml"), async {
+            assert!(host_settings().is_err());
+        })
+        .await;
+    }
 
     #[test]
     fn native_installation_root_comes_only_from_the_configuration_path() {

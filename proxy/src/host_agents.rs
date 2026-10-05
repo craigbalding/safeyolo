@@ -13,7 +13,7 @@ use toml_edit::{DocumentMut, Item, value};
 
 use crate::Error;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 pub(crate) struct Agent {
     pub(crate) name: String,
     pub(crate) id: String,
@@ -24,6 +24,7 @@ pub(crate) struct Agent {
     pub(crate) rootfs_overlay: Option<String>,
     pub(crate) user_default_args: Vec<String>,
     pub(crate) mounts: Vec<String>,
+    pub(crate) dangerously_allow_unowned: bool,
 }
 
 impl Agent {
@@ -31,6 +32,29 @@ impl Agent {
         let table = item
             .as_table_like()
             .ok_or("agent metadata must be a TOML table")?;
+        for key in [
+            "agent_id",
+            "folder",
+            "launcher",
+            "host_script",
+            "rootfs_overlay",
+        ] {
+            if table.get(key).is_some_and(|item| item.as_str().is_none()) {
+                return Err(format!("agent {key} must be a string").into());
+            }
+        }
+        if table
+            .get("memory_mb")
+            .is_some_and(|item| item.as_integer().is_none_or(|value| value <= 0))
+        {
+            return Err("agent memory_mb must be a positive integer".into());
+        }
+        if table
+            .get("dangerously_allow_unowned")
+            .is_some_and(|item| item.as_bool().is_none())
+        {
+            return Err("dangerously_allow_unowned must be a Boolean".into());
+        }
         let string = |key| table.get(key).and_then(Item::as_str).map(str::to_owned);
         let integer = |key| table.get(key).and_then(Item::as_integer);
         let strings = |key| -> Result<Vec<String>, Error> {
@@ -60,6 +84,10 @@ impl Agent {
             rootfs_overlay: string("rootfs_overlay"),
             user_default_args: strings("user_default_args")?,
             mounts: strings("mounts")?,
+            dangerously_allow_unowned: table
+                .get("dangerously_allow_unowned")
+                .and_then(Item::as_bool)
+                .unwrap_or(false),
         })
     }
 }
@@ -115,39 +143,108 @@ fn save_document(path: &Path, document: &DocumentMut) -> Result<(), Error> {
     Ok(())
 }
 
-/// Mint missing IDs with the same policy lock as the Python CLI, then return
-/// the configured agents in stable name order.
-pub(crate) fn list() -> Result<Vec<Agent>, Error> {
+/// Local operator configuration only. Executables and arguments are never
+/// accepted by the remote lifecycle API.
+pub(crate) fn configure(
+    name: &str,
+    options: &[(String, String)],
+    create: bool,
+) -> Result<Agent, Error> {
+    if !crate::host_platform::valid_agent_name(name) {
+        return Err("invalid agent name".into());
+    }
     let _lock = PolicyLock::exclusive()?;
     let path = policy_path();
     let mut document = read_document(&path)?;
-    let names: Vec<String> = document
+    let exists = document
         .get("agents")
         .and_then(Item::as_table_like)
-        .map(|agents| agents.iter().map(|(name, _)| name.to_owned()).collect())
+        .is_some_and(|agents| agents.contains_key(name));
+    if create == exists {
+        return Err(if create {
+            "agent already exists"
+        } else {
+            "agent not found"
+        }
+        .into());
+    }
+    if !exists {
+        document["agents"][name]["agent_id"] =
+            value(format!("ag-{}", uuid::Uuid::new_v4().simple()));
+    }
+    for (key, text) in options {
+        document["agents"][name][key.as_str()] = match key.as_str() {
+            "folder" => value(
+                crate::host_boot::workspace(
+                    Path::new(text),
+                    options
+                        .iter()
+                        .any(|(key, value)| key == "dangerously_allow_unowned" && value == "true")
+                        || document["agents"][name]
+                            .get("dangerously_allow_unowned")
+                            .and_then(Item::as_bool)
+                            == Some(true),
+                )?
+                .to_string_lossy()
+                .as_ref(),
+            ),
+            "memory_mb" => {
+                let memory: i64 = text.parse()?;
+                if memory <= 0 {
+                    return Err("agent memory_mb must be positive".into());
+                }
+                value(memory)
+            }
+            "dangerously_allow_unowned" => value(text.parse::<bool>()?),
+            "mounts" => {
+                crate::host_boot::mount(text)?;
+                let mut array = document["agents"][name]
+                    .get("mounts")
+                    .and_then(Item::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                array.push(text.as_str());
+                value(array)
+            }
+            "user_default_args" => {
+                let args: Vec<String> = serde_json::from_str(text)?;
+                let mut array = toml_edit::Array::new();
+                for arg in args {
+                    array.push(arg);
+                }
+                value(array)
+            }
+            "launcher" | "host_script" | "rootfs_overlay" => value(text.as_str()),
+            _ => return Err(format!("unsupported agent setting: {key}").into()),
+        };
+    }
+    let agent = Agent::from_item(name.into(), &document["agents"][name])?;
+    crate::host_boot::validate(&agent)?;
+    // Validate the complete policy before atomic publication, so rejected
+    // configuration leaves the saved document and running policy intact.
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("policy has no parent")?)?;
+    temporary.write_all(document.to_string().as_bytes())?;
+    crate::policy::Policy::from_native_path(temporary.path())?;
+    save_document(&path, &document)?;
+    Ok(agent)
+}
+
+/// Read the atomic native policy snapshot. Fresh agent creation owns ID
+/// assignment; status does not migrate or rewrite configuration.
+pub(crate) fn list() -> Result<Vec<Agent>, Error> {
+    let document = read_document(&policy_path())?;
+    let mut agents = document
+        .get("agents")
+        .and_then(Item::as_table_like)
+        .map(|table| {
+            table
+                .iter()
+                .map(|(name, item)| Agent::from_item(name.into(), item))
+                .collect::<Result<Vec<_>, Error>>()
+        })
+        .transpose()?
         .unwrap_or_default();
-    let mut changed = false;
-    for name in &names {
-        let item = &mut document["agents"][name.as_str()];
-        if item.as_table_like().is_none() {
-            return Err(format!("agent {name} metadata must be a TOML table").into());
-        }
-        if item
-            .get("agent_id")
-            .and_then(Item::as_str)
-            .is_none_or(str::is_empty)
-        {
-            item["agent_id"] = value(format!("ag-{}", uuid::Uuid::new_v4().simple()));
-            changed = true;
-        }
-    }
-    if changed {
-        save_document(&path, &document)?;
-    }
-    let mut agents = names
-        .into_iter()
-        .map(|name| Agent::from_item(name.clone(), &document["agents"][name.as_str()]))
-        .collect::<Result<Vec<_>, _>>()?;
     agents.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(agents)
 }

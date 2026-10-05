@@ -49,7 +49,13 @@ async fn main() -> Result<(), Error> {
             Config::read(&config_path)
         }
     };
-    let mut proxy = Proxy::start(read_config()?).await?;
+    let mut config = read_config()?;
+    safeyolo_proxy::host_commands::prepare_proxy(&mut config).await?;
+    let native_root = config.native_config_dir.clone();
+    let mut proxy = Proxy::start(config).await?;
+    if let Some(root) = native_root {
+        safeyolo_proxy::host_commands::record_proxy(&root)?;
+    }
     loop {
         tokio::select! {
             _ = terminate.recv() => break,

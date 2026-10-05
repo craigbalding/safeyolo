@@ -526,6 +526,8 @@ struct CommandCentreMenu: View {
                     Menu {
                         Text("Agent: \(agent.agentState)")
                         Text("Sandbox: \(agent.sandboxState)")
+                        Text("Control: \(agent.controlState ?? "unknown")")
+                        Text("Terminal: \(agent.terminalState ?? "unknown")")
                         Text("Configured harness: \(agent.harnessLabel)")
                         if client.pendingTerminalIDs.contains(agent.agentID) {
                             Text("Waiting for agent terminal…")
@@ -533,7 +535,7 @@ struct CommandCentreMenu: View {
                         if let launcher = agent.launcher {
                             Text("Launcher: \(launcher.script ?? launcher.kind) (\(launcher.source))")
                         }
-                        let failures = ([agent.error].compactMap { $0 }.filter { !$0.isEmpty }
+                        let failures = ([agent.error, agent.runtimeError, agent.nextAction].compactMap { $0 }.filter { !$0.isEmpty }
                             + (agent.hookErrors ?? []).map { "\($0.hook) failed (\($0.exitCode)): \($0.detail)" })
                             .joined(separator: "\n\n")
                         Button("Error details…") { errorPresenter.show(failures) }
@@ -555,7 +557,7 @@ struct CommandCentreMenu: View {
                         if agent.attachable {
                             Button("Open Agent Terminal") { openTerminal(agent) }
                         } else if agent.managed && !agent.canStart {
-                            Text("Headless agent: use Coord output or agent diag")
+                            Text("Headless agent: use Coord output or agent diagnostics")
                         }
                         if agent.sandboxReady || !agent.canStart {
                             Button("Stop Agent and Sandbox") { setRunning(agent, running: false, client: client) }

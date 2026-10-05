@@ -12,6 +12,7 @@ use crate::Error;
 #[derive(Clone)]
 pub(crate) struct Host {
     root: PathBuf,
+    config_path: Option<PathBuf>,
     user: Option<String>,
     instance_file: PathBuf,
     events_port: Option<u16>,
@@ -52,10 +53,7 @@ impl Host {
             return Self::from_env();
         };
         let centre = &settings.command_centre;
-        if !centre.enabled {
-            return Ok(None);
-        }
-        if centre.events_port == 0 {
+        if centre.enabled && centre.events_port == 0 {
             return Err("command_centre.events_port must be nonzero".into());
         }
         let tailnet = match centre.share.as_str() {
@@ -81,11 +79,11 @@ impl Host {
                 .clone()
                 .ok_or("native configuration directory is missing")?,
             user: std::env::var("USER").ok(),
+            config_path: config.native_config_path.clone(),
             instance_file: config.data_dir().join("instance_id"),
-            events_port: Some(centre.events_port),
+            events_port: centre.enabled.then_some(centre.events_port),
             tailnet,
         };
-        host.instance_id()?;
         Ok(Some(host))
     }
 
@@ -123,6 +121,7 @@ impl Host {
         }
         Ok(Some(Self {
             root: crate::host_platform::config_dir(),
+            config_path: std::env::var_os("SAFEYOLO_NATIVE_CONFIG_PATH").map(PathBuf::from),
             user,
             instance_file,
             events_port,
@@ -170,7 +169,18 @@ impl Host {
         operation: &str,
         agent_id: Option<&str>,
     ) -> Result<Value, Error> {
-        crate::host_lifecycle::operate(operation, agent_id).await
+        if let Some(path) = &self.config_path {
+            return crate::host_platform::in_config(
+                path.clone(),
+                crate::host_lifecycle::operate(operation, agent_id),
+            )
+            .await;
+        }
+        crate::host_platform::in_instance(
+            self.root.clone(),
+            crate::host_lifecycle::operate(operation, agent_id),
+        )
+        .await
     }
 }
 

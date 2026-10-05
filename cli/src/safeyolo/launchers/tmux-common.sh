@@ -20,8 +20,8 @@ case "${1:-}" in
         # this installation. Pass this launch's fixed context explicitly.
         command=(env "SAFEYOLO_CONFIG_DIR=$SAFEYOLO_CONFIG_DIR"
             "SAFEYOLO_LOGS_DIR=$SAFEYOLO_LOGS_DIR"
-            "$SAFEYOLO_PYTHON" -m safeyolo.cli agent shell "$SAFEYOLO_AGENT_NAME"
-            --agent-command --launch-id "$SAFEYOLO_LAUNCH_ID")
+            "$SAFEYOLO_EXECUTABLE" --root "$SAFEYOLO_CONFIG_DIR" agent entrypoint
+            "$SAFEYOLO_AGENT_NAME" "$SAFEYOLO_LAUNCH_ID")
         if ! tmux has-session -t "=$session" 2>/dev/null; then
             # Another agent may create the shared session concurrently.
             target=$(tmux new-session -d -P -F "$format" -s "$session" \
@@ -37,9 +37,7 @@ case "${1:-}" in
         fi
         # Record both handles from creation, not by querying the pane later.
         # A very short command can already have exited by this point.
-        "$SAFEYOLO_PYTHON" -c 'import json, sys
-socket, pane = sys.argv[1].rsplit("\n", 1)
-print(json.dumps({"tmux_socket": socket, "pane_id": pane}))' "$target"
+        "$SAFEYOLO_EXECUTABLE" --root "$SAFEYOLO_CONFIG_DIR" agent launcher-target "$target"
         ;;
     attach|status)
         [ -n "$pane" ] || { echo "No recorded agent pane" >&2; exit 1; }

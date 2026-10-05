@@ -35,10 +35,6 @@ fn supervisor_path(name: &str) -> PathBuf {
 struct SetupLock(File);
 
 impl SetupLock {
-    fn acquire(name: &str) -> Result<Self, Error> {
-        Self::acquire_in(&agent_dir(name), None)
-    }
-
     fn acquire_in(
         directory: &std::path::Path,
         deadline: Option<std::time::Instant>,
@@ -239,6 +235,7 @@ fn write_json(path: &std::path::Path, value: &Value) -> Result<(), Error> {
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
+    File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -356,6 +353,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         )?;
         return Err("The sandbox is not ready".into());
     }
+    run_hook(name, &record, "pre_launch").await;
     let mut child = crate::host_platform::spawn_guest_command(name, &command).await?;
     let child_pid = i64::from(child.id().ok_or("guest transport has no PID")?);
     if let Err(error) = update_launch(
@@ -370,6 +368,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         let _ = child.kill().await;
         return Err(error);
     }
+    run_hook(name, &record, "post_launch").await;
     let status = match child.wait().await {
         Ok(status) => status,
         Err(error) => {
@@ -387,7 +386,202 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
             ("exit_reason".to_owned(), "command exited".into()),
         ]),
     )?;
+    if let Some(record) = read_json(&launch_path(name))? {
+        run_hook(name, &record, "on_exit").await;
+    }
     Ok(code)
+}
+
+async fn run_hook(name: &str, record: &Value, action: &str) {
+    let Some(script) = record.pointer("/launcher/script").and_then(Value::as_str) else {
+        return;
+    };
+    let result = async {
+        let path = std::path::Path::new(script).canonicalize()?;
+        validate_host_script(&path)?;
+        let status = script_command(&path, action, record).status().await?;
+        if !status.success() {
+            return Err(format!("{action} hook failed: {status}").into());
+        }
+        Ok::<(), Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        let current = read_json(&launch_path(name))
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| record.clone());
+        let mut errors = current
+            .get("hook_errors")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        if let Some(errors) = errors.as_array_mut() {
+            errors.push(json!({"hook":action,"detail":error.to_string(),"exit_code":1}));
+        }
+        if let Some(id) = record["launch_id"].as_str() {
+            let _ = update_launch(
+                name,
+                id,
+                &serde_json::Map::from_iter([("hook_errors".into(), errors)]),
+            );
+        }
+    }
+}
+
+/// A recorded live pane must still carry this launch's identity. Never select
+/// a new launcher or create a replacement from an attach command.
+pub(crate) async fn attach(agent: &Agent) -> Result<i32, Error> {
+    let record = read_json(&launch_path(&agent.name))?
+        .ok_or("no recorded coding-agent terminal; use agent start")?;
+    if record["agent_id"] != agent.id {
+        return Err("terminal belongs to another agent".into());
+    }
+    if !matches!(
+        record["state"].as_str(),
+        Some("starting" | "launching" | "running" | "unknown")
+    ) {
+        return Err("coding-agent terminal is absent; attach did not launch an agent".into());
+    }
+    match record.pointer("/launcher/kind").and_then(Value::as_str) {
+        Some("tmux-window" | "tmux-pane") => attach_pane(&record).await,
+        Some("script" | "manager") => {
+            let path = std::path::Path::new(
+                record
+                    .pointer("/launcher/script")
+                    .and_then(Value::as_str)
+                    .ok_or("launcher path missing")?,
+            )
+            .canonicalize()?;
+            validate_host_script(&path)?;
+            Ok(script_command(&path, "attach", &record)
+                .status()
+                .await?
+                .code()
+                .unwrap_or(1))
+        }
+        _ => Err("this launch has no attachable host terminal; use agent shell".into()),
+    }
+}
+
+async fn terminal_live(record: &Value) -> bool {
+    let Some(socket) = record["tmux_socket"].as_str() else {
+        return false;
+    };
+    let Some(pane) = record["pane_id"].as_str() else {
+        return false;
+    };
+    let Some(id) = record["launch_id"].as_str() else {
+        return false;
+    };
+    let output = tokio::process::Command::new("tmux")
+        .args([
+            "-S",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{@safeyolo_launch_id}:#{pane_dead}",
+        ])
+        .output()
+        .await;
+    output.is_ok_and(|output| {
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim() == format!("{id}:0")
+    })
+}
+
+async fn attach_pane(record: &Value) -> Result<i32, Error> {
+    let socket = record["tmux_socket"]
+        .as_str()
+        .ok_or("recorded tmux socket is absent")?;
+    let pane = record["pane_id"]
+        .as_str()
+        .ok_or("recorded tmux pane is absent")?;
+    let id = record["launch_id"]
+        .as_str()
+        .ok_or("recorded launch ID is absent")?;
+    let observed = tokio::process::Command::new("tmux")
+        .args([
+            "-S",
+            socket,
+            "show-options",
+            "-pqv",
+            "-t",
+            pane,
+            "@safeyolo_launch_id",
+        ])
+        .output()
+        .await?;
+    if !observed.status.success() || String::from_utf8(observed.stdout)?.trim() != id {
+        return Err("recorded terminal is absent or belongs to another launch; attach did not launch an agent".into());
+    }
+    let dead = tokio::process::Command::new("tmux")
+        .args([
+            "-S",
+            socket,
+            "display-message",
+            "-p",
+            "-t",
+            pane,
+            "#{pane_dead}",
+        ])
+        .output()
+        .await?;
+    if !dead.status.success() || String::from_utf8(dead.stdout)?.trim() != "0" {
+        return Err("recorded terminal has exited; attach did not launch an agent".into());
+    }
+    let current = std::env::var("TMUX").unwrap_or_default();
+    let own_socket = current
+        .rsplit_once(',')
+        .and_then(|(value, _)| value.rsplit_once(','))
+        .map(|(socket, _)| socket);
+    let mut command = tokio::process::Command::new("tmux");
+    command.args(["-S", socket]);
+    if own_socket == Some(socket) {
+        command.args(["switch-client", "-t", pane]);
+    } else {
+        command
+            .env_remove("TMUX")
+            .args(["attach-session", "-t", pane]);
+    }
+    Ok(command.status().await?.code().unwrap_or(1))
+}
+
+pub(crate) async fn persistent_shell(agent: &Agent, command: &str) -> Result<i32, Error> {
+    if !crate::host_platform::is_sandbox_running(&agent.name).await {
+        return Err("sandbox exec control is unavailable; run agent diagnostics".into());
+    }
+    let root = crate::host_platform::config_dir();
+    let session = format!(
+        "sy-shell-{}-{}",
+        std::fs::read_to_string(root.join("data/instance_id"))?.trim(),
+        agent.id
+    );
+    let existing = tokio::process::Command::new("tmux")
+        .args(["has-session", "-t", &format!("={session}")])
+        .output()
+        .await?;
+    if !existing.status.success() {
+        let result = tokio::process::Command::new("tmux")
+            .args(["new-session", "-d", "-s", &session])
+            .arg(root.join("bin/safeyolo"))
+            .arg("--root")
+            .arg(&root)
+            .args(["agent", "shell", "--", &agent.name, "-c", command])
+            .status()
+            .await?;
+        if !result.success() {
+            return Err("could not open the persistent independent shell".into());
+        }
+    }
+    Ok(tokio::process::Command::new("tmux")
+        .env_remove("TMUX")
+        .args(["attach-session", "-t", &format!("={session}")])
+        .status()
+        .await?
+        .code()
+        .unwrap_or(1))
 }
 
 fn read_json(path: &std::path::Path) -> Result<Option<Value>, Error> {
@@ -407,14 +601,11 @@ fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
                 .default
         }
     };
-    let (mut value, source) = match configured {
+    let (value, source) = match configured {
         Some(value) if agent.launcher.is_some() => (value, "agent"),
         Some(value) => (value, "host default"),
-        None => ("interactive".to_owned(), "built-in"),
+        None => ("tmux-window".to_owned(), "built-in"),
     };
-    if value == "interactive" {
-        value = "tmux-window".to_owned();
-    }
     let kind = if value.starts_with("manager:") {
         "manager"
     } else if value.starts_with('/') {
@@ -423,10 +614,13 @@ fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
         value.as_str()
     };
     let script = match kind {
-        "tmux-window" | "tmux-pane" => std::env::var_os("SAFEYOLO_CLI_ASSETS_DIR")
-            .map(PathBuf::from)
-            .map(|directory| directory.join("launchers").join(format!("{kind}.sh")))
-            .map(|path| path.to_string_lossy().into_owned()),
+        "tmux-window" | "tmux-pane" => Some(
+            crate::host_platform::config_dir()
+                .join("assets/launchers")
+                .join(format!("{kind}.sh"))
+                .to_string_lossy()
+                .into_owned(),
+        ),
         "manager" => Some(value.trim_start_matches("manager:").to_owned()),
         "script" => Some(value.clone()),
         _ => None,
@@ -449,7 +643,7 @@ fn harness(agent: &Agent) -> Option<&'static str> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_token(pid: i64) -> Option<String> {
+pub(crate) fn process_token(pid: i64) -> Option<String> {
     if pid <= 0 {
         return None;
     }
@@ -463,7 +657,7 @@ fn process_token(pid: i64) -> Option<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_token(pid: i64) -> Option<String> {
+pub(crate) fn process_token(pid: i64) -> Option<String> {
     crate::host_platform::macos_process_token(pid)
 }
 
@@ -491,7 +685,8 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
 }
 
 async fn runtime(agent: &Agent) -> Result<Value, Error> {
-    let ready = crate::host_platform::is_sandbox_running(&agent.name).await;
+    let sandbox = crate::host_runs::observe(&agent.name).await;
+    let ready = sandbox["exec"] == true;
     let mut launcher = selected_launcher(agent)?;
     let mut state = "stopped".to_owned();
     let mut attachable = false;
@@ -584,9 +779,44 @@ async fn runtime(agent: &Agent) -> Result<Value, Error> {
                 && launcher.get("kind").and_then(Value::as_str) != Some("interactive");
         }
     }
+    if ready {
+        match crate::host_platform::coding_agent_observation(&agent.name).await {
+            Ok(observed) if observed == "running" => {
+                if launch_id.is_null() {
+                    state = "manual".into();
+                    attachable = false;
+                } else if state == "unknown" {
+                    state = "observed".into();
+                }
+            }
+            Ok(_) if state == "running" => {
+                state = "unknown".into();
+                error = "host transport is live but no configured coding agent was detected".into();
+            }
+            Err(observation_error) => {
+                state = "unknown".into();
+                error = observation_error.to_string().into();
+            }
+            _ => {}
+        }
+    } else if sandbox["runtime_state"] != "stopped" {
+        state = "unknown".into();
+    }
+    if let Some(record) = read_json(&launch_path(&agent.name))? {
+        if matches!(
+            record.pointer("/launcher/kind").and_then(Value::as_str),
+            Some("tmux-window" | "tmux-pane")
+        ) {
+            attachable = terminal_live(&record).await;
+        }
+    }
     Ok(json!({
         "agent_id":agent.id,"name":agent.name,
-        "sandbox_state":if ready { "ready" } else { "stopped" },
+        "sandbox_state":sandbox["runtime_state"],"runtime_state":sandbox["runtime_state"],
+        "control_state":sandbox["control_state"],"run_id":sandbox["run_id"],
+        "runtime_error":sandbox["error"],"next_action":sandbox["next_action"],
+        "exec":sandbox["exec"],"port_forward":sandbox["port_forward"],
+        "terminal_state":if attachable {"running"} else {"absent"},
         "agent_state":state,"launcher":launcher,"attachable":attachable,
         "launch_id":launch_id,"exit_code":exit_code,"error":error,
         "hook_errors":hook_errors,"harness":harness(agent)
@@ -598,7 +828,10 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
     if operation == "list" && agent_id.is_none() {
         let mut observed = Vec::with_capacity(agents.len());
         for agent in &agents {
-            observed.push(runtime(agent).await?);
+            observed.push(match runtime(agent).await {
+                Ok(value) => value,
+                Err(error) => json!({"agent_id":agent.id,"name":agent.name,"runtime_state":"unknown","control_state":"unknown","agent_state":"unknown","error":error.to_string()}),
+            });
         }
         return Ok(json!({"agents":observed}));
     }
@@ -609,7 +842,10 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
         return Ok(json!({"error":"Agent not found","status_code":404}));
     };
     let result = match operation {
-        "start" | "start-interactive" => start(&agent, operation == "start-interactive").await,
+        "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
+            start(&agent, operation).await
+        }
+        "status" => runtime(&agent).await,
         "stop" => stop(&agent).await,
         _ => Ok(json!({"error":"invalid host operation","status_code":400})),
     };
@@ -621,30 +857,52 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
     }
 }
 
-async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
-    let _lock = SetupLock::acquire(&agent.name)?;
+async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
+    let interactive = operation == "start-interactive";
+    let foreground = operation == "start-foreground";
+    let lock_name = agent.name.clone();
+    let lock_root = agent_dir(&agent.name);
+    let _lock = tokio::task::spawn_blocking(move || {
+        let _ = lock_name;
+        SetupLock::acquire_in(&lock_root, None)
+    })
+    .await??;
     let observed = runtime(agent).await?;
     let state = observed
         .get("agent_state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    if matches!(state, "starting" | "launching" | "running" | "managed") {
+        return Ok(observed);
+    }
     if !matches!(state, "stopped" | "exited" | "failed") {
         return Ok(json!({"error":format!("Agent cannot start while {state}"),"status_code":409}));
     }
-    let folder = agent
-        .folder
-        .as_deref()
-        .ok_or("agent workspace is not configured")?;
-    let workspace = std::path::Path::new(folder).canonicalize()?;
-    let metadata = workspace.metadata()?;
-    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } {
-        return Err("agent workspace is missing or is not owned by the operator".into());
+    if !matches!(
+        observed["runtime_state"].as_str(),
+        Some("running" | "stopped")
+    ) {
+        return Err(
+            "sandbox runtime is degraded or unknown; inspect agent diagnostics before starting"
+                .into(),
+        );
     }
+    crate::host_boot::validate(agent)?;
+    let workspace = crate::host_boot::workspace(
+        std::path::Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
+        agent.dangerously_allow_unowned,
+    )?;
     stop_supervisor(&agent.name).await?;
     if !crate::host_platform::is_sandbox_running(&agent.name).await {
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
+        let run_id = uuid::Uuid::new_v4().simple().to_string();
+        crate::host_boot::stage(agent, &ip, &run_id).await?;
+        crate::host_runs::save(
+            &agent.name,
+            &json!({"name":agent.name,"agent_id":agent.id,"run_id":run_id,"ip":ip,"state":"starting"}),
+        )?;
         crate::host_platform::update_agent_map(&agent.name, Some(&ip))?;
         if let Err(error) = sync_agent_listeners().await {
             let _ = crate::host_platform::update_agent_map(&agent.name, None);
@@ -668,16 +926,20 @@ async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
             return Err(error.into());
         }
     }
+    if operation == "sandbox-start" {
+        return runtime(agent).await;
+    }
     let mut launcher = selected_launcher(agent)?;
+    if foreground {
+        launcher = json!({"kind":"foreground","source":"caller terminal"});
+    }
     if interactive {
         launcher = json!({"kind":"tmux-window","source":"requested"});
-        if let Some(path) = std::env::var_os("SAFEYOLO_CLI_ASSETS_DIR") {
-            launcher["script"] = PathBuf::from(path)
-                .join("launchers/tmux-window.sh")
-                .to_string_lossy()
-                .into_owned()
-                .into();
-        }
+        launcher["script"] = crate::host_platform::config_dir()
+            .join("assets/launchers/tmux-window.sh")
+            .to_string_lossy()
+            .into_owned()
+            .into();
     }
     let debug_command = interactive && agent.launcher.as_deref() == Some("supervisor");
     let command = configured_guest_command(agent, debug_command)?;
@@ -687,7 +949,7 @@ async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
     let session = tmux_session()?;
     let record = json!({
         "name":agent.name,"agent_id":agent.id,"launch_id":launch_id,
-        "launcher":launcher,"workspace":workspace,"mode":"background",
+        "launcher":launcher,"workspace":workspace,"mode":if foreground {"foreground"} else {"background"},
         "command":command,"state":"starting","tmux_session":session,
         "started_at":timestamp,"requester_pid":std::process::id(),
         "requester_token":process_token(std::process::id() as i64)
@@ -695,6 +957,9 @@ async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
     {
         let _launch_lock = LaunchLock::acquire(&agent.name)?;
         write_json(&launch_path(&agent.name), &record)?;
+    }
+    if foreground {
+        return Ok(record);
     }
     let result = invoke_launcher(agent, &record).await;
     if let Err(error) = result {
@@ -745,9 +1010,12 @@ fn configured_guest_command(agent: &Agent, interactive: bool) -> Result<String, 
         return Err("The managed agent has no separate interactive entrypoint".into());
     }
     if args.is_empty() {
-        Ok("exec /bin/bash -l".to_owned())
+        Ok("exec /safeyolo/safeyolo-guest observe exec -- /bin/bash -l".to_owned())
     } else {
-        Ok(args.join(" "))
+        Ok(format!(
+            "exec /safeyolo/safeyolo-guest observe exec -- {}",
+            args.join(" ")
+        ))
     }
 }
 
@@ -763,16 +1031,19 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn tmux_session() -> Result<String, Error> {
-    Ok(crate::native_config::host_settings()?
+    let session = crate::native_config::host_settings()?
         .agent_launcher
-        .tmux_session)
+        .tmux_session;
+    let instance =
+        std::fs::read_to_string(crate::host_platform::config_dir().join("data/instance_id"))?;
+    Ok(format!("{session}-{}", instance.trim()))
 }
 
-async fn sync_agent_listeners() -> Result<(), Error> {
-    let Some(path) = std::env::var_os("SAFEYOLO_NATIVE_CONFIG_PATH").map(PathBuf::from) else {
-        // Direct embedded Proxy callers own their own configuration reload.
+pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
+    let path = crate::host_platform::config_path();
+    if !path.is_file() {
         return Ok(());
-    };
+    }
     if !path.is_absolute() {
         return Err("native proxy config path must be absolute".into());
     }
@@ -780,9 +1051,7 @@ async fn sync_agent_listeners() -> Result<(), Error> {
     let _lock = crate::host_platform::lock_host_state(
         &crate::host_platform::config_dir().join("data/native-listeners.lock"),
     )?;
-    let cwd = std::env::var_os("SAFEYOLO_NATIVE_WORKING_DIRECTORY")
-        .map(PathBuf::from)
-        .ok_or("native proxy working directory is missing")?;
+    let cwd = crate::host_platform::config_dir();
     let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
     let native = path
@@ -875,7 +1144,18 @@ async fn sync_agent_listeners() -> Result<(), Error> {
         .as_file()
         .set_permissions(std::fs::Permissions::from_mode(mode))?;
     temporary.persist(path)?;
-    if unsafe { libc::kill(libc::getpid(), libc::SIGHUP) } != 0 {
+    // Stop and independent recovery can update the projection while the
+    // proxy is unavailable. Startup reconstructs listeners from current runs.
+    if !crate::host_commands::proxy_live() {
+        return Ok(());
+    }
+    let proxy = read_json(&cwd.join("data/proxy-process.json"))?
+        .ok_or("proxy process identity is missing; run safeyolo start")?;
+    if !process_matches(&proxy, "pid", "token") {
+        return Err("proxy process identity is stale; run safeyolo start".into());
+    }
+    let pid = i32::try_from(proxy["pid"].as_i64().ok_or("proxy PID is missing")?)?;
+    if unsafe { libc::kill(pid, libc::SIGHUP) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
     let readiness = config
@@ -1008,6 +1288,7 @@ async fn tmux_session_with_current_env(
         None
     };
     let created = tokio::process::Command::new("tmux")
+        .env("SAFEYOLO_CONFIG_DIR", crate::host_platform::config_dir())
         .args([
             "new-session",
             "-d",
@@ -1052,7 +1333,7 @@ async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Er
         .ok_or("launch ID missing")?;
     let binary = std::env::var_os("SAFEYOLO_NATIVE_PROXY_BINARY")
         .map(PathBuf::from)
-        .unwrap_or(std::env::current_exe()?);
+        .unwrap_or(crate::host_platform::config_dir().join("bin/safeyolo-proxy"));
     let arguments = [
         "--host-agent-entrypoint".to_owned(),
         agent.name.clone(),
@@ -1124,7 +1405,7 @@ async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Er
     Ok(())
 }
 
-fn validate_host_script(path: &std::path::Path) -> Result<(), Error> {
+pub(crate) fn validate_host_script(path: &std::path::Path) -> Result<(), Error> {
     if !path.is_file() || path.metadata()?.permissions().mode() & 0o111 == 0 {
         return Err("Host launcher is missing or not executable".into());
     }
@@ -1209,15 +1490,14 @@ fn script_command(path: &std::path::Path, action: &str, record: &Value) -> tokio
                 .unwrap_or_default(),
         )
         .env("SAFEYOLO_AGENT_EXIT_REASON", field("exit_reason"));
-    if let Some(python) = std::env::var_os("SAFEYOLO_CLI_PYTHON") {
-        command.env("SAFEYOLO_PYTHON", python);
-    }
-    if let Some(assets) = std::env::var_os("SAFEYOLO_CLI_ASSETS_DIR") {
-        command.env(
-            "SAFEYOLO_LAUNCHER_PRESETS",
-            PathBuf::from(assets).join("launchers"),
-        );
-    }
+    command.env(
+        "SAFEYOLO_EXECUTABLE",
+        crate::host_platform::config_dir().join("bin/safeyolo"),
+    );
+    command.env(
+        "SAFEYOLO_LAUNCHER_PRESETS",
+        crate::host_platform::config_dir().join("assets/launchers"),
+    );
     command
 }
 
@@ -1259,14 +1539,20 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
 }
 
 async fn stop(agent: &Agent) -> Result<Value, Error> {
-    let _lock = SetupLock::acquire(&agent.name)?;
+    let directory = agent_dir(&agent.name);
+    let _lock =
+        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??;
     stop_supervisor(&agent.name).await?;
     stop_launcher(agent).await?;
-    if !crate::host_platform::is_sandbox_running(&agent.name).await {
-        return runtime(agent).await;
+    let observed = crate::host_runs::observe(&agent.name).await;
+    if observed["runtime_state"] != "stopped" {
+        crate::host_platform::stop_sandbox(&agent.name).await?;
     }
-    crate::host_platform::stop_sandbox(&agent.name).await?;
     crate::host_platform::update_agent_map(&agent.name, None)?;
+    if let Some(mut run) = crate::host_runs::read(&agent.name)? {
+        run["state"] = "stopped".into();
+        crate::host_runs::save(&agent.name, &run)?;
+    }
     sync_agent_listeners().await?;
     crate::host_events::write(
         &agent.name,

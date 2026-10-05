@@ -33,6 +33,7 @@ fn initialize(root: &Path) -> Result<(), Error> {
     }
     std::fs::create_dir_all(root.join("data"))?;
     std::fs::create_dir_all(root.join("logs"))?;
+    std::fs::create_dir_all(root.join("certs"))?;
     let write_new = |name: &str, source: &str| -> Result<(), Error> {
         let mut file = std::fs::OpenOptions::new()
             .create_new(true)
@@ -67,9 +68,15 @@ fn initialize(root: &Path) -> Result<(), Error> {
         "data/instance_id",
         &format!("sy-{}\n", uuid::Uuid::new_v4().simple()),
     )?;
+    let (private, public) = safeyolo_proxy::tls::CertificateAuthority::create()?;
+    write_new("certs/mitmproxy-ca.pem", &private)?;
+    write_new("certs/mitmproxy-ca-cert.pem", &public)?;
     write_new(
         "config.toml",
-        include_str!("../../config/native/config.toml"),
+        &format!(
+            "{}\ntls_ca_file = \"certs/mitmproxy-ca.pem\"\nagent_map_file = \"data/agent_map.json\"\n",
+            include_str!("../../config/native/config.toml")
+        ),
     )?;
     println!("Initialized native instance: {}", root.display());
     Ok(())
@@ -284,9 +291,19 @@ async fn run() -> Result<(), Error> {
             })
     };
     let config = root.join("config.toml");
+    if safeyolo_proxy::host_commands::handles(&arguments) {
+        let code = safeyolo_proxy::host_commands::run(root, &arguments).await?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
     match arguments.as_slice() {
         [command] if command == "init" => initialize(&root),
         [help] if matches!(help.as_str(), "--help" | "help") => {
+            println!(
+                "safeyolo [--root ROOT] start|stop|status|doctor\nsafeyolo [--root ROOT] agent --help\nstart and stop control the proxy. Agent runtimes have separate start and stop commands. status and doctor inspect each runtime and control dimension without changing state."
+            );
             println!(
                 "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
             );

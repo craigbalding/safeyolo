@@ -59,6 +59,11 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
     let name: String
     let sandboxState: String
     let agentState: String
+    var controlState: String? = nil
+    var terminalState: String? = nil
+    var runtimeError: String? = nil
+    var nextAction: String? = nil
+    var exec: Bool? = nil
     let launcher: Launcher?
     let attachable: Bool
     let error: String?
@@ -71,14 +76,22 @@ struct AgentInfo: Decodable, Equatable, Hashable, Identifiable {
         case name
         case sandboxState = "sandbox_state"
         case agentState = "agent_state"
+        case controlState = "control_state"
+        case terminalState = "terminal_state"
+        case runtimeError = "runtime_error"
+        case nextAction = "next_action"
+        case exec
         case launcher, attachable, error, harness
         case hookErrors = "hook_errors"
         case exitCode = "exit_code"
     }
 
     var id: String { agentID }
-    var sandboxReady: Bool { sandboxState == "ready" }
-    var canStart: Bool { ["stopped", "exited", "failed"].contains(agentState) }
+    var sandboxReady: Bool { exec == true }
+    var canStart: Bool {
+        ["running", "stopped"].contains(sandboxState)
+            && ["stopped", "exited", "failed"].contains(agentState)
+    }
     var managed: Bool { ["supervisor", "manager"].contains(launcher?.kind ?? "") }
     var harnessLabel: String {
         switch harness {

@@ -36,6 +36,7 @@ fn config(root: &Path) -> Config {
         native_product: false,
         native_settings: None,
         native_config_dir: None,
+        native_config_path: None,
         listeners: vec![AgentListener {
             agent_id: "alice".into(),
             socket_path: root.join("alice.sock"),

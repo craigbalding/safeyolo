@@ -96,6 +96,9 @@ pub struct Config {
     /// executable path or an Admin API mutation.
     #[serde(skip)]
     pub native_config_dir: Option<PathBuf>,
+    /// Exact TOML source used by native host settings and listener updates.
+    #[serde(skip)]
+    pub native_config_path: Option<PathBuf>,
     /// Set only by the fresh TOML loader. Compiled JSON remains internal to
     /// existing launchers until their native command owners replace them.
     #[serde(default)]
