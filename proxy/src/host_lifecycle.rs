@@ -1796,6 +1796,8 @@ async fn cleanup(agent: &Agent) -> Result<Value, Error> {
     if crate::host_runs::observe(&agent.name).await["runtime_state"] != "stopped" {
         return Err("backend is not proven stopped; its state was preserved".into());
     }
+    #[cfg(target_os = "macos")]
+    crate::host_platform::remove_stopped_vz_sockets(&agent.name)?;
     if let Some(record) = read_json(&launch_path(&agent.name))?
         && process_matches(&record, "runner_pid", "runner_token")
     {

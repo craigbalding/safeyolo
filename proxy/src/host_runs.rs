@@ -54,6 +54,22 @@ fn process_matches(name: &str, run: &Value, key: &str) -> bool {
         })
 }
 
+#[cfg(target_os = "macos")]
+fn saved_vz_helper_is_dead(run: &Value) -> bool {
+    let Some(pid) = run["backend_pid"]
+        .as_i64()
+        .and_then(|pid| i32::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+        .filter(|_| run["backend_token"].as_str().is_some())
+    else {
+        return false;
+    };
+    // A failed identity lookup can mean denied inspection. Only ESRCH proves
+    // absence; a live unrelated PID or an inspection error stays unknown.
+    (unsafe { libc::kill(pid, 0) }) != 0
+        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
 pub(crate) async fn control(name: &str, mut request: Value) -> Result<Value, Error> {
     if !crate::host_platform::valid_agent_name(name) {
         return Err("invalid agent name".into());
@@ -248,6 +264,10 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                         json!({"runtime_state":"degraded","control_state":"unavailable","run_id":run.unwrap()["run_id"],"exec":false,"port_forward":false,"error":error.to_string()}),
                     );
                 }
+                Err(error)
+                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        error.kind() == std::io::ErrorKind::ConnectionRefused
+                    }) && run.is_some_and(saved_vz_helper_is_dead) => {}
                 Err(error) => return Err(error),
             }
         }

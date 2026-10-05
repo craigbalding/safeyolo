@@ -17,7 +17,10 @@ use std::time::Duration;
 use std::{io, path::PathBuf};
 #[cfg(target_os = "macos")]
 use std::{
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{FileTypeExt, PermissionsExt},
+    },
     pin::Pin,
     task::{Context, Poll},
 };
@@ -1338,6 +1341,15 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
     }
     if vm_process_token(name, pid).as_deref() == Some(&token) {
         unsafe { libc::kill(pid, libc::SIGKILL) };
+        for _ in 0..50 {
+            if vm_process_token(name, pid).as_deref() != Some(&token) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if vm_process_token(name, pid).as_deref() == Some(&token) {
+            return Err(io::Error::other("owned VZ helper did not stop"));
+        }
     }
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -1345,6 +1357,41 @@ pub(crate) async fn stop_sandbox(name: &str) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     let _ = std::fs::remove_file(config_dir().join("agents").join(name).join("vm.token"));
+    remove_stopped_vz_sockets(name)?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn remove_stopped_vz_sockets(name: &str) -> io::Result<()> {
+    let paths = ["data/vm-control", "data/shell-sockets"]
+        .map(|directory| config_dir().join(directory).join(format!("{name}.sock")));
+    // Called under the lifecycle lock after backend absence is established.
+    // A stale pathname alone must not confer authority over another listener.
+    for path in &paths {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.file_type().is_socket() => {
+                return Err(io::Error::other("VZ socket path is not a socket"));
+            }
+            Ok(_) => match std::os::unix::net::UnixStream::connect(path) {
+                Ok(_) => return Err(io::Error::other("VZ socket still has a live listener")),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                    ) => {}
+                Err(error) => return Err(error),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     Ok(())
 }
 

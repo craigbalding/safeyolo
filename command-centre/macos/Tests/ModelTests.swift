@@ -606,11 +606,11 @@ struct ModelTests {
             .appendingPathComponent("safeyolo-command-centre-model-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(
-            at: root.appendingPathComponent("data/coord"),
+            at: root.appendingPathComponent("data"),
             withIntermediateDirectories: true
         )
         try Data("sy-model-test\n".utf8).write(
-            to: root.appendingPathComponent("data/coord/instance_id")
+            to: root.appendingPathComponent("data/instance_id")
         )
         try Data("fixture-token\n".utf8).write(
             to: root.appendingPathComponent("data/admin_token")
@@ -619,6 +619,7 @@ struct ModelTests {
         let store = MemoryCredentialStore()
         let loader = LocalCredentialLoader(configDirectory: root, keychain: store)
         let imported = try loader.load()
+        precondition(imported.instanceID == "sy-model-test")
         precondition(imported.source == .file)
         precondition(store.values["sy-model-test"] == imported.token)
 

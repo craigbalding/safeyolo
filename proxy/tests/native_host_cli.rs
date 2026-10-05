@@ -40,6 +40,64 @@ fn initialize(root: &Path) {
     .unwrap();
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid() {
+    use std::os::unix::net::UnixListener;
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let directory = root.join("agents/marker");
+    fs::create_dir_all(&directory).unwrap();
+    fs::create_dir_all(root.join("data/vm-control")).unwrap();
+    let socket = root.join("data/vm-control/marker.sock");
+    drop(UnixListener::bind(&socket).unwrap());
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    fs::write(
+        directory.join("runtime.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "run_id":"0123456789abcdef0123456789abcdef",
+            "backend_pid":child.id(), "backend_token":"unrelated-fixture"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let live = value(cli(&root, &["agent", "status", "marker"]));
+    let stop = cli(&root, &["agent", "stop", "marker"]);
+    let survived = child.try_wait().unwrap().is_none();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(live["runtime_state"], "unknown");
+    assert!(!stop.status.success());
+    assert!(survived, "an unrelated live PID was signalled");
+    assert!(socket.exists());
+    let dead = value(cli(&root, &["agent", "status", "marker"]));
+    assert_eq!(dead["runtime_state"], "stopped");
+    fs::create_dir_all(root.join("data/shell-sockets")).unwrap();
+    let shell_path = root.join("data/shell-sockets/marker.sock");
+    let listener = UnixListener::bind(&shell_path).unwrap();
+    assert!(!cli(&root, &["agent", "cleanup", "marker"]).status.success());
+    assert!(socket.exists());
+    assert!(directory.join("runtime.json").exists());
+    drop(listener);
+    let cleaned = value(cli(&root, &["agent", "cleanup", "marker"]));
+    assert_eq!(cleaned["runtime_state"], "stopped");
+    assert!(!socket.exists());
+    assert!(!shell_path.exists());
+    assert!(!directory.join("runtime.json").exists());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
