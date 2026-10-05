@@ -7,41 +7,31 @@ operator's existing SSH binding. None of their credentials reach candidates.
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from urllib import request
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
-from .attempt_results import HardwareAttempt, hexadecimal, integer, read_json
-from .publish_results import GitHubResults
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tests.blackbox.hardware.attempt_results import HardwareAttempt, integer, read_json
+    from tests.blackbox.hardware.publish_results import GitHubResults
+else:
+    from .attempt_results import HardwareAttempt, integer, read_json
+    from .publish_results import GitHubResults
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def select_source(attempt: HardwareAttempt, github: GitHubResults, authorized_commit: str | None = None) -> str:
     """Only overnight default-branch selection or an operator's exact SHA."""
-    if authorized_commit is None:
-        if attempt.data["trigger"] != "overnight":
-            raise ValueError("on-demand selection requires an authorized full commit")
-        repository = github.api("")
-        branch = repository["default_branch"]
-        if not isinstance(branch, str) or not branch:
-            raise ValueError("default branch is unavailable")
-        selected = github.api(f"commits/{quote(branch, safe='')}")["sha"]
-    else:
-        if attempt.data["trigger"] != "on-demand":
-            raise ValueError("an overnight run must select the default branch")
-        hexadecimal(authorized_commit, 40)
-        # Confirm this exact authorized object exists on origin. No PR/ref
-        # discovery or public dispatch can choose persistent-hardware code.
-        selected = github.api(f"commits/{authorized_commit}")["sha"]
-        if selected != authorized_commit:
-            raise ValueError("origin returned a different authorized commit")
-    attempt.select(hexadecimal(selected, 40))
-    return selected
+    return github.select_source(attempt, authorized_commit)
 
 
 class Rundeck:
@@ -173,3 +163,29 @@ def bristol_command(config: Path, command: str, stdin, private_output, timeout: 
                             stdin=stdin, stdout=private_output, stderr=private_output, timeout=timeout, check=False)
     # Lost SSH/timeout always leaves independent host cleanup outstanding.
     return result.returncode
+
+
+def main() -> int:
+    """Submit one existing Rundeck script and retain its canonical invocation."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("--rundeck-url", required=True)
+    parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--script", type=Path, required=True)
+    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--timeout-seconds", type=int, default=10800)
+    args = parser.parse_args()
+    client = Rundeck(args.rundeck_url, args.token_file)
+    execution = client.submit(args.script.read_text())
+    # Keep the invocation even if this observer dies or the wait times out.
+    # Neither condition authorizes aborting the independently running host job.
+    with args.receipt.open("x") as stream:
+        json.dump({"execution_id": execution}, stream)
+    state = client.wait(execution, args.timeout_seconds)
+    client.output(execution, args.output)
+    print(json.dumps(state))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

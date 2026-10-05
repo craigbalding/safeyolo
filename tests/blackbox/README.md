@@ -32,7 +32,7 @@ On a fresh KVM-capable acceptance guest:
 ```
 
 For the constrained Bristol account, prepare inputs on Tart and use the
-[offline hardware path](hardware/README.md#consume-the-verified-payload-on-bristol).
+[offline hardware path](hardware/INPUTS.md#offline-execution-on-bristol).
 The following command builds on a disposable physical Apple Silicon host with
 the build prerequisites:
 
@@ -115,7 +115,8 @@ not a routine PR gate; discovering regression the next morning is accepted.
 
 The approved overnight scope includes systrap, KVM-backed gVisor and physical
 Apple Silicon VZ. Current GitHub automation schedules systrap and hosted
-package/component checks. Hardware scheduling/publication remains
+package/component checks. The [independent hardware scripts](hardware/README.md) supply cron entries;
+installation and publication remain
 [#889](https://github.com/craigbalding/safeyolo/issues/889); this restructuring
 supplies its maintained runners without claiming that automation is complete.
 
@@ -123,8 +124,8 @@ supplies its maintained runners without claiming that automation is complete.
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
 |---|---|---|---|---|---|
 | `systrap` | GitHub-hosted Ubuntu | Installed isolation, workloads, access and lifecycle | yes | Overnight and trusted manual dispatch | Sanitized GitHub Actions artifacts, including failures |
-| `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
-| `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
+| `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Independent cron deployment unverified (#889) | Harness/operator exact-candidate result and cleanup |
+| `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Independent cron deployment unverified (#889) | Harness/operator exact-candidate result and cleanup |
 <!-- blackbox-cadence-contract:end -->
 
 Hosted macOS cannot supply physical VZ evidence, and hosted KVM availability is

@@ -108,12 +108,27 @@ def test_removed_paired_readback_cannot_claim_hardware_scheduling(tmp_path):
     entry = tmp_path / "deployed.cron"
     entry.write_text("# Host: fixture-control\n# Account: fixture-operator\n"
                      "17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py overnight --config /private/deployment.json >>/private/cron.log 2>&1\n")
-    with pytest.raises(ValueError, match="paired deployment was removed"):
+    with pytest.raises(ValueError, match="independent overnight shell command"):
         scheduled_hardware_from_cron(entry)
     problems = contract_problems(WORKFLOW_PATH, CADENCE_DOCS, entry)
-    assert len(problems) == 1 and "independent hardware scheduling remains unverified" in problems[0]
+    assert len(problems) == 1 and "independent overnight shell command" in problems[0]
     for bad in ("on-demand", "overnight --authorized-commit refs/pull/905/head", "overnight --section isolation"):
         entry.write_text(f"17 2 * * * /usr/bin/python3 /trusted/tests/blackbox/hardware/paired.py {bad} --config /private/deployment.json\n")
+        with pytest.raises(ValueError):
+            scheduled_hardware_from_cron(entry)
+
+
+def test_independent_installed_readbacks_require_their_actual_hosts_and_email(tmp_path):
+    entry = tmp_path / "deployed.cron"
+    text = ("MAILTO=operator@example.invalid\n# Host: devstack\n# Account: rundeck\n"
+            "17 3 * * * /bin/bash /usr/local/lib/safeyolo-hardware/tests/blackbox/hardware/run-kvm.sh overnight >> /private/kvm.log 2>&1 || /usr/bin/mail -s 'KVM failed' $MAILTO < /private/kvm.log\n"
+            "# Host: bristol\n# Account: operator\n"
+            "43 3 * * * /bin/bash /usr/local/lib/safeyolo-hardware/tests/blackbox/hardware/run-vz.sh overnight >> /private/vz.log 2>&1 || /usr/bin/mail -s 'VZ failed' $MAILTO < /private/vz.log\n")
+    entry.write_text(text)
+    assert scheduled_hardware_from_cron(entry) == {"kvm": True, "vz": True}
+    for changed in (text.replace("bristol", "devstack"), text.replace("overnight", "on-demand", 1),
+                    text.replace("|| /usr/bin/mail", "; /usr/bin/mail", 1), text.replace("overnight >>", "overnight --section isolation >>", 1)):
+        entry.write_text(changed)
         with pytest.raises(ValueError):
             scheduled_hardware_from_cron(entry)
 

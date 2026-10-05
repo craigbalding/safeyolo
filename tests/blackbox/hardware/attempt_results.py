@@ -1,4 +1,4 @@
-"""Trusted attempt records and bounded readers for paired hardware results.
+"""Trusted attempt records and bounded readers for hardware results.
 
 Keep this installation outside candidate execution trees. Candidate reports
 are input, never allocation, cleanup or publication authority.
@@ -237,10 +237,12 @@ def verified_lane_summary(data: dict, expected: dict) -> dict:
 class HardwareAttempt:
     """Save an attempt before selection/preflight; keep retries in new trees."""
 
-    def __init__(self, root: Path, controller_revision: str, trigger: str):
+    def __init__(self, root: Path, controller_revision: str, trigger: str, *, lane: str | None = None):
         hexadecimal(controller_revision, 40)
         if trigger not in {"overnight", "on-demand"}:
             raise ValueError("unknown hardware trigger")
+        if lane not in {None, "kvm", "vz"}:
+            raise ValueError("unknown hardware lane")
         run_id = uuid.uuid4().hex
         self.directory = root / run_id
         self.directory.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -248,6 +250,8 @@ class HardwareAttempt:
                      "controller_revision": controller_revision, "trigger": trigger,
                      "source_revision": None, "started_at": datetime.now(UTC).isoformat(), "finished_at": None,
                      "failures": [], "lanes": {}, "publication": {"verified": False, "index": None, "parts": []}}
+        if lane is not None:
+            self.data["required_lanes"] = [lane]
         self.save()
 
     @classmethod
@@ -262,6 +266,9 @@ class HardwareAttempt:
             raise ValueError("invalid trusted attempt identity")
         if data["source_revision"] is not None:
             hexadecimal(data["source_revision"], 40)
+        required = data.get("required_lanes", ["kvm", "vz"])
+        if required not in (["kvm"], ["vz"], ["kvm", "vz"]):
+            raise ValueError("invalid required hardware lanes")
         started = timestamp(data["started_at"])
         if data["finished_at"] is not None and timestamp(data["finished_at"]) < started:
             raise ValueError("invalid trusted attempt interval")
@@ -269,10 +276,12 @@ class HardwareAttempt:
             if failure["stage"] not in FAILURE_STAGES or failure["lane"] not in {None, "kvm", "vz"}:
                 raise ValueError("invalid trusted failure stage")
         for lane, row in data["lanes"].items():
-            if (lane not in {"kvm", "vz"} or row["lane"] != lane or row["source_revision"] != data["source_revision"]
+            if (lane not in required or row["lane"] != lane or row["source_revision"] != data["source_revision"]
                     or row["cleanup"] not in {"unverified", "failed", "verified"} or timestamp(row["started_at"]) < started):
                 raise ValueError("invalid trusted lane attribution")
             hexadecimal(row["run_id"], 32)
+            if "input_index_sha256" in row:
+                hexadecimal(row["input_index_sha256"], 64)
             if row["result"] is not None:
                 row["result"] = verified_lane_summary(row["result"], row)
         publication = data["publication"]
@@ -310,7 +319,8 @@ class HardwareAttempt:
         self.save()
 
     def start_lane(self, lane: str) -> dict:
-        if (lane not in {"kvm", "vz"} or lane in self.data["lanes"] or self.data["source_revision"] is None
+        if (lane not in self.data.get("required_lanes", ["kvm", "vz"])
+                or lane in self.data["lanes"] or self.data["source_revision"] is None
                 or self.data["finished_at"] is not None):
             raise ValueError("lane needs a selected commit and a new invocation")
         receipt = {"lane": lane, "source_revision": self.data["source_revision"], "run_id": uuid.uuid4().hex,
@@ -348,6 +358,10 @@ class HardwareAttempt:
         receipt = self.data["lanes"][lane]
         try:
             receipt["result"] = lane_result(summary, receipt)
+            if ("input_index_sha256" in receipt
+                    and receipt["result"]["preparation"].get("input_index_sha256") != receipt["input_index_sha256"]):
+                receipt["result"] = None
+                raise ValueError("reported staging identity differs from the trusted transfer")
         except (OSError, ValueError, KeyError, TypeError, RecursionError):
             # The named report is untrusted input. Publish the failure stage,
             # never its raw contents, exception text or private instance path.
@@ -359,7 +373,7 @@ class HardwareAttempt:
 
     def execution_succeeded(self) -> bool:
         return (self.data["finished_at"] is not None and not self.data["failures"]
-                and set(self.data["lanes"]) == {"kvm", "vz"}
+                and set(self.data["lanes"]) == set(self.data.get("required_lanes", ["kvm", "vz"]))
                 and all(row["cleanup"] == "verified" and row["result"] is not None
                         and row["result"]["complete_success"] for row in self.data["lanes"].values()))
 
@@ -380,6 +394,8 @@ class HardwareAttempt:
             if status is not None and type(status) is not int:
                 raise ValueError("invalid observed hardware command exit")
             row["command_exit"] = status
+            if "input_index_sha256" in receipt:
+                row["input_index_sha256"] = hexadecimal(receipt["input_index_sha256"], 64)
             host = receipt.get("trusted_host")
             row["trusted_host"] = None
             if host is not None:
@@ -399,5 +415,6 @@ class HardwareAttempt:
         return {name: self.data[name] for name in (
             "schema_version", "run_id", "owner", "controller_revision", "trigger", "source_revision", "started_at",
             "finished_at",
-        )} | {"execution_succeeded": self.execution_succeeded(), "lanes": lanes,
+        )} | {"required_lanes": self.data.get("required_lanes", ["kvm", "vz"]),
+             "execution_succeeded": self.execution_succeeded(), "lanes": lanes,
              "failures": [{name: row[name] for name in ("stage", "lane")} for row in self.data["failures"]]}

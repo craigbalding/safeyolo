@@ -3,13 +3,14 @@
 
 Documentation tables opt into this contract with ``blackbox-cadence-contract``
 markers and a structured ``Scheduled`` yes/no column. The checker reads the
-hosted workflow. Independent hardware deployment remains unfinished; a retained
-paired cron entry cannot declare either hardware lane scheduled.
+hosted workflow and optional operator-verified readback of independent hardware
+cron entries. README examples do not establish deployment.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -155,10 +156,39 @@ def cadence_table_from_doc(path: Path) -> dict[str, bool]:
 
 
 def scheduled_hardware_from_cron(path: Path = HARDWARE_CRON_PATH) -> dict[str, bool]:
-    """Reject readback from the removed paired deployment."""
+    """Read installed host/account entries; never treat source examples as proof."""
     if not path.exists():
         return {}  # External deployment remains open; documentation must say no.
-    raise ValueError(f"{path}: paired deployment was removed; independent hardware scheduling remains unverified")
+    host = account = None
+    scheduled = {}
+    for line in path.read_text().splitlines():
+        if line.startswith("# Host:"):
+            host, account = line.split(":", 1)[1].strip(), None
+        elif line.startswith("# Account:"):
+            account = line.split(":", 1)[1].strip()
+        elif re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", line):
+            continue  # Ordinary crontab environment declarations are not jobs.
+        elif line.strip() and not line.startswith("#"):
+            fields = line.split(None, 5)
+            if len(fields) != 6 or fields[2:5] != ["*", "*", "*"]:
+                raise ValueError(f"{path}: hardware entry must identify a daily cron command")
+            minute, hour = fields[:2]
+            if not minute.isdigit() or not hour.isdigit() or not (0 <= int(minute) < 60 and 0 <= int(hour) < 24):
+                raise ValueError(f"{path}: hardware cron time is invalid")
+            command = shlex.split(fields[5])
+            if len(command) < 7 or command[0] != "/bin/bash" or command[2] != "overnight":
+                raise ValueError(f"{path}: expected an independent overnight shell command with failure email")
+            name = Path(command[1]).name
+            lane = {"run-kvm.sh": "kvm", "run-vz.sh": "vz"}.get(name)
+            if (lane is None or command[3] not in {">>", "||"} or "||" not in command
+                    or command[command.index("||") + 1:command.index("||") + 2] != ["/usr/bin/mail"]):
+                raise ValueError(f"{path}: expected an independent overnight shell command with failure email")
+            if not account or host != {"kvm": "devstack", "vz": "bristol"}[lane] or lane in scheduled:
+                raise ValueError(f"{path}: hardware entry has missing, wrong or duplicate host/account identity")
+            scheduled[lane] = True
+    if not scheduled:
+        raise ValueError(f"{path}: no independent hardware cron entries")
+    return scheduled
 
 
 def contract_problems(

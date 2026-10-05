@@ -14,6 +14,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 if __name__ == "__main__":
     # The trusted installation can replay publication before installing its
@@ -21,9 +22,9 @@ if __name__ == "__main__":
     # this parent; no PYTHONPATH is forwarded to candidate subprocesses.
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tests.blackbox.hardware.attempt_results import HardwareAttempt
+    from tests.blackbox.hardware.attempt_results import FAILURE_STAGES, HardwareAttempt, hexadecimal
 else:
-    from .attempt_results import HardwareAttempt
+    from .attempt_results import FAILURE_STAGES, HardwareAttempt, hexadecimal
 
 REPOSITORY = "craigbalding/safeyolo"
 ISSUE = 889
@@ -45,6 +46,25 @@ class GitHubResults:
         if not isinstance(data, dict):
             raise ValueError("GitHub returned an invalid comment")
         return data
+
+    def select_source(self, attempt: HardwareAttempt, authorized_commit: str | None = None) -> str:
+        """Resolve the default branch, or the operator's explicitly selected SHA."""
+        if authorized_commit is None:
+            if attempt.data["trigger"] != "overnight":
+                raise ValueError("on-demand selection requires an authorized full commit")
+            branch = self.api("")["default_branch"]
+            if not isinstance(branch, str) or not branch:
+                raise ValueError("default branch is unavailable")
+            selected = self.api(f"commits/{quote(branch, safe='')}")["sha"]
+        else:
+            if attempt.data["trigger"] != "on-demand":
+                raise ValueError("an overnight run must select the default branch")
+            hexadecimal(authorized_commit, 40)
+            selected = self.api(f"commits/{authorized_commit}")["sha"]
+            if selected != authorized_commit:
+                raise ValueError("origin returned a different authorized commit")
+        attempt.select(hexadecimal(selected, 40))
+        return selected
 
     def verify_index(self, body: str, comment_id: int) -> None:
         previous = self.api(f"issues/comments/{comment_id}")
@@ -76,16 +96,17 @@ def index_body(attempt: HardwareAttempt, parts: list[dict], *, verified: bool) -
     data = attempt.data
     selected = data["source_revision"]
     source = f"[{selected}](https://github.com/{REPOSITORY}/commit/{selected})" if selected else "not selected"
-    state = ("complete paired execution" if attempt.execution_succeeded() else "failed or incomplete execution")
+    lanes = ", ".join(data.get("required_lanes", ["kvm", "vz"]))
+    state = (f"complete {lanes} execution" if attempt.execution_succeeded() else "failed or incomplete execution")
     if data["finished_at"] is None:
         state = "attempt in progress"
     publication = "read-back verified" if verified else "pending or failed; this attempt cannot pass"
-    failures = ", ".join(f"{row['stage']} ({row['lane'] or 'paired'})" for row in data["failures"]) or "none recorded"
+    failures = ", ".join(f"{row['stage']} ({row['lane'] or 'attempt'})" for row in data["failures"]) or "none recorded"
     limitations = sum((row.get("result") or {}).get("skipped_assertions", 0) for row in data["lanes"].values())
     links = "\n".join(f"- [Report part {number}]({row['url']})" for number, row in enumerate(parts, 1))
     return (f"Hardware attempt `{data['run_id']}` — {data['trigger']}\n\n"
             f"Selected source: {source}. Trusted installation: `{data['controller_revision']}`.\n\n"
-            f"Execution: {state}. Publication: {publication}. Failures: {failures}. "
+            f"Required lanes for this attempt: {lanes}. Execution: {state}. Publication: {publication}. Failures: {failures}. "
             f"Skipped assertions: {limitations}; skipped assertions remain unproved.\n\n"
             f"Owner: `{data['owner']}`. Started: {data['started_at']}. Finished: {data['finished_at'] or 'pending'}.\n\n"
             f"{links}\n\n"
@@ -107,18 +128,77 @@ def announce_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--attempt", type=Path, required=True,
+    parser.add_argument("--attempt", type=Path,
                         help="existing trusted attempt directory outside candidate execution trees")
+    parser.add_argument("--begin", choices=("kvm", "vz"))
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--trigger", choices=("overnight", "on-demand"))
+    parser.add_argument("--authorized-commit")
+    parser.add_argument("--finish", action="store_true")
+    parser.add_argument("--summary", type=Path)
+    parser.add_argument("--command-exit", type=int)
+    parser.add_argument("--cleanup", choices=("verified", "failed", "unverified"), default="unverified")
+    parser.add_argument("--failure-stage", choices=sorted(FAILURE_STAGES))
+    parser.add_argument("--input-index-sha256")
     args = parser.parse_args()
+    github = GitHubResults()
     try:
+        if args.begin:
+            if args.attempt is not None or args.root is None or args.trigger is None or args.finish:
+                parser.error("--begin needs --root and --trigger, without --attempt or --finish")
+            begin_lane(args.root.resolve(), args.begin, args.trigger, args.authorized_commit, github)
+            return 0
+        if args.attempt is None:
+            parser.error("--attempt is required for publication or --finish")
         attempt = HardwareAttempt.restore(args.attempt.resolve())
-        publish_attempt(attempt, GitHubResults())
+        if args.finish:
+            if len(attempt.data.get("required_lanes", [])) != 1 or args.command_exit is None or args.command_exit < 0:
+                parser.error("--finish needs a single-lane attempt and a nonnegative --command-exit")
+            finish_lane(attempt, args)
+        publish_attempt(attempt, github)
     except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as exc:
         print(f"Hardware publication remains unverified ({type(exc).__name__})", file=sys.stderr)
         return 2
     print(json.dumps({"run_id": attempt.data["run_id"], "index": attempt.data["publication"]["index"]["url"],
                       "publication_verified": True, "attempt_passed": attempt.passed()}))
-    return 0
+    return 2 if args.finish and not attempt.passed() else 0
+
+
+def begin_lane(root: Path, lane: str, trigger: str, authorized_commit: str | None, github: GitHubResults) -> None:
+    """Save and announce an independent attempt before admitting candidate code."""
+    checkout = Path(__file__).resolve().parents[3]
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    attempt = HardwareAttempt(root, revision, trigger, lane=lane)
+    print(str(attempt.directory), flush=True)
+    try:
+        announce_attempt(attempt, github)
+        with attempt.phase("selection"):
+            github.select_source(attempt, authorized_commit)
+        attempt.start_lane(lane)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+        attempt.finish()
+        publish_attempt(attempt, github)
+        raise
+
+
+def finish_lane(attempt: HardwareAttempt, args: argparse.Namespace) -> None:
+    """Retain actual command/cleanup outcomes before sanitized publication."""
+    lane = attempt.data["required_lanes"][0]
+    receipt = attempt.data["lanes"][lane]
+    receipt.update(command_exit=args.command_exit, cleanup=args.cleanup)
+    if args.input_index_sha256 is not None:
+        receipt["input_index_sha256"] = hexadecimal(args.input_index_sha256, 64)
+    if args.failure_stage:
+        attempt.fail(args.failure_stage, lane=lane)
+    if args.command_exit:
+        attempt.fail("execution", lane=lane)
+    if args.cleanup != "verified":
+        attempt.fail("cleanup", lane=lane)
+    if args.summary is not None:
+        attempt.retain_lane(lane, args.summary)
+    else:
+        attempt.fail("report", lane=lane)
+    attempt.finish()
 
 
 @contextmanager
