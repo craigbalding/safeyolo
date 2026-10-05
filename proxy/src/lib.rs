@@ -36,11 +36,6 @@ mod host_events;
 mod host_lifecycle;
 mod host_runs;
 
-/// Run one host-owned coding-agent launch in a native terminal wrapper.
-pub async fn run_host_agent_entrypoint(name: &str, launch_id: &str) -> Result<i32, Error> {
-    host_lifecycle::run_entrypoint(name, launch_id).await
-}
-
 /// Run the bounded PID-1/shared-home diagnostic without guest SSH.
 pub fn recover_guest_probe(
     root: &std::path::Path,
@@ -58,6 +53,7 @@ pub mod inspection;
 pub mod memory_monitor;
 mod memory_runtime;
 pub mod metrics;
+pub mod native_client;
 pub mod native_config;
 #[cfg(test)]
 mod native_config_tests;
@@ -649,7 +645,13 @@ impl Runtime {
                     ))
                 })
                 .unwrap_or_else(|| {
-                    Arc::new(agent_api::CoordClient::new(config.policy_file.clone()))
+                    Arc::new(agent_api::CoordClient::new(
+                        config.policy_file.clone(),
+                        config
+                            .native_config_dir
+                            .as_ref()
+                            .map(|_| config.data_dir().join("coord")),
+                    ))
                 });
             let flow_recorder = match previous {
                 Some(runtime) => runtime.flow_recorder.clone(),

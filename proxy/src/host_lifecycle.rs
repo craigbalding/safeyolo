@@ -18,7 +18,6 @@ use serde_json::{Value, json};
 use crate::{Error, host_agents::Agent};
 
 static LISTENER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-static TMUX_LAUNCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn agent_dir(name: &str) -> PathBuf {
     crate::host_platform::config_dir().join("agents").join(name)
@@ -32,29 +31,27 @@ fn supervisor_path(name: &str) -> PathBuf {
     agent_dir(name).join("home/.safeyolo-command-supervisor.json")
 }
 
-struct SetupLock(File);
+pub(crate) struct SetupLock(File);
 
 impl SetupLock {
-    fn acquire_in(
+    pub(crate) fn acquire_in(
         directory: &std::path::Path,
         deadline: Option<std::time::Instant>,
     ) -> Result<Self, Error> {
-        let home = directory.join("home");
-        std::fs::create_dir_all(&home)?;
-        let directory = home.join(".safeyolo");
-        if !directory.exists() {
-            std::fs::create_dir(&directory)?;
-        }
+        // Agent home is writable by the guest UID. Keeping this host lock
+        // there lets the guest unlink it and make concurrent host callers
+        // lock different inodes while the first sandbox is still starting.
+        std::fs::create_dir_all(directory)?;
         let opened = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-            .open(&directory)?;
+            .open(directory)?;
         let metadata = opened.metadata()?;
         if !metadata.file_type().is_dir()
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o022 != 0
         {
-            return Err("unsafe host setup directory for agent".into());
+            return Err("unsafe host state directory for agent".into());
         }
         let name = std::ffi::CString::new("host-setup.lock")?;
         let descriptor = unsafe {
@@ -256,7 +253,7 @@ fn update_launch(
     ) && changes
         .get("state")
         .and_then(Value::as_str)
-        .is_some_and(|state| !matches!(state, "exited" | "stopped"))
+        .is_some_and(|state| !matches!(state, "finishing" | "exited" | "stopped"))
     {
         return Err("The coding-agent launch is stopping".into());
     }
@@ -273,14 +270,22 @@ fn update_launch(
     write_json(&path, &record)
 }
 
-/// Hidden native proxy entrypoint used by its own host tmux launch. The stable
+/// Native terminal entrypoint used by the shipped host launchers. The stable
 /// launch ID and host-owned record fence the guest command to one run.
 pub(crate) async fn run_entrypoint(name: &str, launch_id: &str) -> Result<i32, Error> {
     if !crate::host_platform::valid_agent_name(name) || !launch_id.starts_with("launch-") {
         return Err("invalid host agent entrypoint".into());
     }
     let result = run_entrypoint_inner(name, launch_id).await;
-    if let Err(error) = &result {
+    if let Err(error) = &result
+        && read_json(&launch_path(name))
+            .ok()
+            .flatten()
+            .is_some_and(|record| {
+                record["runner_pid"].as_u64() == Some(u64::from(std::process::id()))
+                    && process_matches(&record, "runner_pid", "runner_token")
+            })
+    {
         let _ = update_launch(
             name,
             launch_id,
@@ -294,27 +299,32 @@ pub(crate) async fn run_entrypoint(name: &str, launch_id: &str) -> Result<i32, E
 }
 
 async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error> {
-    let record = read_json(&launch_path(name))?.ok_or("No matching coding-agent launch")?;
-    if record.get("launch_id").and_then(Value::as_str) != Some(launch_id)
-        || !matches!(
-            record.get("state").and_then(Value::as_str),
-            Some("starting" | "unknown")
-        )
-    {
-        return Err("No matching stopped coding-agent launch is ready".into());
-    }
+    // Claim the launch in the same lock as the state check. A second
+    // entrypoint must neither spawn a second command nor rewrite its result.
+    let record = {
+        let _lock = LaunchLock::acquire(name)?;
+        let mut record = read_json(&launch_path(name))?.ok_or("No matching coding-agent launch")?;
+        if record["launch_id"] != launch_id
+            || !matches!(record["state"].as_str(), Some("starting" | "unknown"))
+        {
+            return Err("No matching unclaimed coding-agent launch is ready".into());
+        }
+        record["state"] = "launching".into();
+        record["runner_pid"] = std::process::id().into();
+        record["runner_token"] = process_token(i64::from(std::process::id())).into();
+        write_json(&launch_path(name), &record)?;
+        record
+    };
     let command = record
         .get("command")
         .and_then(Value::as_str)
         .ok_or("agent launch command is missing")?
         .to_owned();
-    let pid = std::process::id() as i64;
     let mut changes = serde_json::Map::new();
-    changes.insert("state".into(), "launching".into());
-    changes.insert("runner_pid".into(), pid.into());
-    changes.insert("runner_token".into(), process_token(pid).into());
     if let Ok(pane) = std::env::var("TMUX_PANE") {
         let output = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(crate::host_platform::config_dir().join("data/tmux.sock"))
             .args(["display-message", "-p", "-t", &pane, "#{socket_path}"])
             .output()
             .await?;
@@ -342,7 +352,7 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         changes.insert("tmux_socket".into(), socket.into());
     }
     update_launch(name, launch_id, &changes)?;
-    if !crate::host_platform::is_sandbox_running(name).await {
+    if !crate::host_platform::guest_exec_available(name).await {
         update_launch(
             name,
             launch_id,
@@ -353,35 +363,55 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
         )?;
         return Err("The sandbox is not ready".into());
     }
-    run_hook(name, &record, "pre_launch").await;
+    if !run_hook(name, &record, "pre_launch").await {
+        return Err("pre-launch hook failed; the coding-agent command was not started".into());
+    }
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut child = crate::host_platform::spawn_guest_command(name, &command).await?;
     let child_pid = i64::from(child.id().ok_or("guest transport has no PID")?);
+    let child_token = process_token(child_pid);
     if let Err(error) = update_launch(
         name,
         launch_id,
         &serde_json::Map::from_iter([
             ("state".to_owned(), "running".into()),
             ("pid".to_owned(), child_pid.into()),
-            ("process_token".to_owned(), process_token(child_pid).into()),
+            ("process_token".to_owned(), child_token.clone().into()),
         ]),
     ) {
         let _ = child.kill().await;
         return Err(error);
     }
     run_hook(name, &record, "post_launch").await;
-    let status = match child.wait().await {
-        Ok(status) => status,
-        Err(error) => {
-            let _ = child.kill().await;
-            return Err(error.into());
+    // Remain alive to record actual completion and run the exit hook when a
+    // caller closes or interrupts its terminal. The transport owns delivery
+    // of these signals to the guest command.
+    let status = loop {
+        let signal = tokio::select! {
+            result = child.wait() => break result?,
+            _ = interrupt.recv() => libc::SIGINT,
+            _ = terminate.recv() => libc::SIGTERM,
+            _ = hangup.recv() => libc::SIGHUP,
+        };
+        if let Some(token) = &child_token
+            && process_token(child_pid).as_deref() == Some(token.as_str())
+        {
+            unsafe {
+                libc::kill(child_pid as i32, signal);
+            }
         }
     };
-    let code = status.code().unwrap_or(1);
+    use std::os::unix::process::ExitStatusExt;
+    let code = status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1));
     update_launch(
         name,
         launch_id,
         &serde_json::Map::from_iter([
-            ("state".to_owned(), "exited".into()),
+            ("state".to_owned(), "finishing".into()),
             ("exit_code".to_owned(), code.into()),
             ("exit_reason".to_owned(), "command exited".into()),
         ]),
@@ -389,17 +419,24 @@ async fn run_entrypoint_inner(name: &str, launch_id: &str) -> Result<i32, Error>
     if let Some(record) = read_json(&launch_path(name))? {
         run_hook(name, &record, "on_exit").await;
     }
+    update_launch(
+        name,
+        launch_id,
+        &serde_json::Map::from_iter([("state".to_owned(), "exited".into())]),
+    )?;
     Ok(code)
 }
 
-async fn run_hook(name: &str, record: &Value, action: &str) {
+async fn run_hook(name: &str, record: &Value, action: &str) -> bool {
     let Some(script) = record.pointer("/launcher/script").and_then(Value::as_str) else {
-        return;
+        return true;
     };
+    let mut exit_code = 1;
     let result = async {
         let path = std::path::Path::new(script).canonicalize()?;
         validate_host_script(&path)?;
         let status = script_command(&path, action, record).status().await?;
+        exit_code = status.code().unwrap_or(1);
         if !status.success() {
             return Err(format!("{action} hook failed: {status}").into());
         }
@@ -416,7 +453,7 @@ async fn run_hook(name: &str, record: &Value, action: &str) {
             .cloned()
             .unwrap_or_else(|| json!([]));
         if let Some(errors) = errors.as_array_mut() {
-            errors.push(json!({"hook":action,"detail":error.to_string(),"exit_code":1}));
+            errors.push(json!({"hook":action,"detail":error.to_string(),"exit_code":exit_code}));
         }
         if let Some(id) = record["launch_id"].as_str() {
             let _ = update_launch(
@@ -425,7 +462,9 @@ async fn run_hook(name: &str, record: &Value, action: &str) {
                 &serde_json::Map::from_iter([("hook_errors".into(), errors)]),
             );
         }
+        return false;
     }
+    true
 }
 
 /// A recorded live pane must still carry this launch's identity. Never select
@@ -549,7 +588,7 @@ async fn attach_pane(record: &Value) -> Result<i32, Error> {
 }
 
 pub(crate) async fn persistent_shell(agent: &Agent, command: &str) -> Result<i32, Error> {
-    if !crate::host_platform::is_sandbox_running(&agent.name).await {
+    if !crate::host_platform::guest_exec_available(&agent.name).await {
         return Err("sandbox exec control is unavailable; run agent diagnostics".into());
     }
     let root = crate::host_platform::config_dir();
@@ -558,24 +597,49 @@ pub(crate) async fn persistent_shell(agent: &Agent, command: &str) -> Result<i32
         std::fs::read_to_string(root.join("data/instance_id"))?.trim(),
         agent.id
     );
-    let existing = tokio::process::Command::new("tmux")
-        .args(["has-session", "-t", &format!("={session}")])
-        .output()
-        .await?;
-    if !existing.status.success() {
-        let result = tokio::process::Command::new("tmux")
-            .args(["new-session", "-d", "-s", &session])
-            .arg(root.join("bin/safeyolo"))
-            .arg("--root")
-            .arg(&root)
-            .args(["agent", "shell", "--", &agent.name, "-c", command])
-            .status()
+    {
+        let path = root.join("data/tmux-launch.lock");
+        let _lock =
+            tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&path))
+                .await??;
+        let existing = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(root.join("data/tmux.sock"))
+            .args(["has-session", "-t", &format!("={session}")])
+            .output()
             .await?;
-        if !result.success() {
-            return Err("could not open the persistent independent shell".into());
+        if !existing.status.success() {
+            let args = vec![
+                "--config".to_owned(),
+                crate::host_platform::config_path()
+                    .to_string_lossy()
+                    .into_owned(),
+                "agent".to_owned(),
+                "shell".to_owned(),
+                "--".to_owned(),
+                agent.name.clone(),
+                "-c".to_owned(),
+                command.to_owned(),
+            ];
+            let result = tmux_session_with_current_env(
+                &session,
+                "sandbox-shell",
+                &root.join("bin/safeyolo"),
+                &args,
+            )
+            .await?;
+            if !result.status.success() {
+                return Err(format!(
+                    "could not open independent shell: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                )
+                .into());
+            }
         }
     }
     Ok(tokio::process::Command::new("tmux")
+        .arg("-S")
+        .arg(root.join("data/tmux.sock"))
         .env_remove("TMUX")
         .args(["attach-session", "-t", &format!("={session}")])
         .status()
@@ -584,12 +648,223 @@ pub(crate) async fn persistent_shell(agent: &Agent, command: &str) -> Result<i32
         .unwrap_or(1))
 }
 
-fn read_json(path: &std::path::Path) -> Result<Option<Value>, Error> {
-    match std::fs::read(path) {
-        Ok(source) => Ok(Some(serde_json::from_slice(&source)?)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
+fn valid_tmux_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+async fn tmux_session_with_current_env(
+    session: &str,
+    name: &str,
+    binary: &std::path::Path,
+    arguments: &[String],
+) -> Result<std::process::Output, Error> {
+    // tmux only imports its configured update-environment names from a client
+    // when creating a session. Transfer current names and mask values left
+    // in a pre-existing server, without putting any values in command argv.
+    let socket = crate::host_platform::config_dir().join("data/tmux.sock");
+    let option = tokio::process::Command::new("tmux")
+        .arg("-S")
+        .arg(&socket)
+        .args(["show-options", "-gqv", "update-environment"])
+        .output()
+        .await?;
+    let previous = if option.status.success() {
+        let global = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .args(["show-environment", "-g"])
+            .output()
+            .await?;
+        if !global.status.success() {
+            return Err("Could not inspect tmux server environment".into());
+        }
+        let mut names = BTreeSet::new();
+        for (name, _) in std::env::vars_os() {
+            if let Some(name) = name.to_str().filter(|name| valid_tmux_env_name(name)) {
+                names.insert(name.to_owned());
+            }
+        }
+        for line in global.stdout.split(|byte| *byte == b'\n') {
+            let line = line.strip_prefix(b"-").unwrap_or(line);
+            let name = line.split(|byte| *byte == b'=').next().unwrap_or_default();
+            if let Ok(name) = std::str::from_utf8(name)
+                && valid_tmux_env_name(name)
+            {
+                names.insert(name.to_owned());
+            }
+        }
+        let previous = String::from_utf8(option.stdout)?.trim_end().to_owned();
+        let names = names.into_iter().collect::<Vec<_>>().join(" ");
+        let set = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .args(["set-option", "-g", "update-environment", &names])
+            .status()
+            .await?;
+        if !set.success() {
+            return Err("Could not set tmux environment update names".into());
+        }
+        Some(previous)
+    } else {
+        let sessions = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .arg("list-sessions")
+            .output()
+            .await?;
+        if sessions.status.success() {
+            return Err("Could not inspect existing tmux environment setting".into());
+        }
+        None
+    };
+    let created = tokio::process::Command::new("tmux")
+        .arg("-S")
+        .arg(&socket)
+        .args([
+            "new-session",
+            "-d",
+            "-P",
+            "-F",
+            "#{socket_path}\n#{pane_id}",
+            "-s",
+            session,
+            "-n",
+            name,
+        ])
+        .arg(binary)
+        .args(arguments)
+        .output()
+        .await;
+    if let Some(previous) = previous {
+        let restored = tokio::process::Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .args(["set-option", "-g", "update-environment", &previous])
+            .status()
+            .await;
+        if !matches!(restored, Ok(status) if status.success()) {
+            if created.as_ref().is_ok_and(|output| output.status.success()) {
+                let _ = tokio::process::Command::new("tmux")
+                    .arg("-S")
+                    .arg(&socket)
+                    .args(["kill-session", "-t", &format!("={session}")])
+                    .status()
+                    .await;
+            }
+            return Err("Could not restore tmux environment update names".into());
+        }
     }
+    Ok(created?)
+}
+
+/// Fixed target used by the shipped tmux launchers. Preserve the accepted
+/// current-environment handoff without changing an unrelated terminal server.
+pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Value, Error> {
+    // Cover environment transfer and arrangement together: two different
+    // agents can create their windows concurrently in the same instance.
+    let path = crate::host_platform::config_dir().join("data/tmux-launch.lock");
+    let _lock =
+        tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&path)).await??;
+    let agent = crate::host_agents::list()?
+        .into_iter()
+        .find(|agent| agent.name == name)
+        .ok_or("agent is not configured")?;
+    let record = read_json(&launch_path(name))?.ok_or("no prepared launch")?;
+    if record["launch_id"] != launch_id
+        || record["agent_id"] != agent.id
+        || record["state"] != "starting"
+    {
+        return Err("no matching prepared tmux launch".into());
+    }
+    let kind = record
+        .pointer("/launcher/kind")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if !matches!(kind, "tmux-window" | "tmux-pane") {
+        return Err("prepared launch does not select a tmux preset".into());
+    }
+    let session = record["tmux_session"]
+        .as_str()
+        .ok_or("tmux session missing")?;
+    let socket = crate::host_platform::config_dir().join("data/tmux.sock");
+    let temporary = format!("sy-launch-{}", launch_id);
+    let arguments = vec![
+        "--config".to_owned(),
+        crate::host_platform::config_path()
+            .to_string_lossy()
+            .into_owned(),
+        "agent".to_owned(),
+        "entrypoint".to_owned(),
+        name.to_owned(),
+        launch_id.to_owned(),
+    ];
+    let output = tmux_session_with_current_env(
+        &temporary,
+        name,
+        &crate::host_platform::config_dir().join("bin/safeyolo"),
+        &arguments,
+    )
+    .await?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not create agent terminal: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    // Each launch gets the caller's environment in its temporary session.
+    // Moving its pane/window retains it without changing other live agents.
+    let existing = tokio::process::Command::new("tmux")
+        .arg("-S")
+        .arg(&socket)
+        .args(["has-session", "-t", &format!("={session}")])
+        .output()
+        .await?;
+    let mut arrange = tokio::process::Command::new("tmux");
+    arrange.arg("-S").arg(&socket);
+    if !existing.status.success() {
+        arrange.args(["rename-session", "-t", &format!("={temporary}"), session]);
+    } else {
+        arrange.args([
+            if kind == "tmux-pane" {
+                "join-pane"
+            } else {
+                "move-window"
+            },
+            "-d",
+            "-s",
+            &format!("={temporary}:"),
+            "-t",
+            &format!("={session}:"),
+        ]);
+    }
+    let moved = arrange.output().await?;
+    if !moved.status.success() {
+        // A short command may have completed before arrangement. Its actual
+        // exit record remains authoritative; no replacement is launched.
+        let current = read_json(&launch_path(name))?.ok_or("launch record disappeared")?;
+        if current["launch_id"] != launch_id
+            || !matches!(current["state"].as_str(), Some("exited" | "failed"))
+        {
+            return Err(format!(
+                "could not arrange agent terminal: {}",
+                String::from_utf8_lossy(&moved.stderr)
+            )
+            .into());
+        }
+    }
+    let target = String::from_utf8(output.stdout)?;
+    let (socket, pane) = target
+        .trim_end()
+        .rsplit_once('\n')
+        .ok_or("tmux did not report socket and pane")?;
+    Ok(json!({"tmux_socket":socket,"pane_id":pane}))
+}
+
+fn read_json(path: &std::path::Path) -> Result<Option<Value>, Error> {
+    crate::guest_commands::read_state(path)
 }
 
 fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
@@ -686,24 +961,79 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
 
 async fn runtime(agent: &Agent) -> Result<Value, Error> {
     let sandbox = crate::host_runs::observe(&agent.name).await;
+    let proxy_attachment = match crate::native_config::read(&crate::host_platform::config_path()) {
+        Ok(config) => match config
+            .listeners
+            .iter()
+            .find(|entry| entry.agent_id == agent.name)
+        {
+            Some(listener) => {
+                let reachable = crate::host_commands::proxy_live()
+                    && tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        tokio::net::UnixStream::connect(&listener.socket_path),
+                    )
+                    .await
+                    .is_ok_and(|connected| connected.is_ok());
+                json!({"state":if reachable {"ready"} else {"unavailable"}, "socket":listener.socket_path})
+            }
+            None => {
+                json!({"state":"absent","next_action":"start the configured agent to prepare its proxy listener"})
+            }
+        },
+        Err(error) => json!({"state":"unknown","error":error.to_string()}),
+    };
+    let effective_configuration = if sandbox["runtime_state"] == "stopped" {
+        Value::Null
+    } else {
+        crate::guest_commands::read_state(
+            &agent_dir(&agent.name).join("config-share/host-launch-context.json"),
+        )
+        .ok()
+        .flatten()
+        .filter(|context| context["generation"] == sandbox["run_id"])
+        .map_or(Value::Null, |context| {
+            json!({
+                "workspace":context["workspace"], "memory_mb":context["memory_mb"],
+                "extra_shares":context["extra_shares"]
+            })
+        })
+    };
     let ready = sandbox["exec"] == true;
-    let mut launcher = selected_launcher(agent)?;
+    let (record, record_error) = match read_json(&launch_path(&agent.name)) {
+        Ok(Some(record)) if record["agent_id"] == agent.id && record["name"] == agent.name => {
+            (Some(record), None)
+        }
+        Ok(Some(_)) => (
+            None,
+            Some("stored launcher identity does not match this agent".to_owned()),
+        ),
+        Ok(None) => (None, None),
+        Err(error) => (
+            None,
+            Some(format!("coding-agent record is unreadable: {error}")),
+        ),
+    };
+    let mut launcher = record
+        .as_ref()
+        .and_then(|value| value.get("launcher"))
+        .cloned()
+        .unwrap_or_else(|| {
+            selected_launcher(agent)
+                .unwrap_or_else(|error| json!({"kind":"unknown","error":error.to_string()}))
+        });
     let mut state = "stopped".to_owned();
     let mut attachable = false;
     let mut launch_id = Value::Null;
     let mut exit_code = Value::Null;
-    let mut error = Value::Null;
+    let mut error = record_error
+        .as_ref()
+        .map_or(Value::Null, |error| error.clone().into());
+    if record_error.is_some() {
+        state = "unknown".into();
+    }
     let mut hook_errors = json!([]);
-    if let Some(record) = read_json(&launch_path(&agent.name))? {
-        if record.get("agent_id").and_then(Value::as_str) != Some(&agent.id)
-            || record.get("name").and_then(Value::as_str) != Some(&agent.name)
-        {
-            return Err(format!(
-                "Stored launcher identity does not match agent {}",
-                agent.name
-            )
-            .into());
-        }
+    if let Some(record) = record.as_ref() {
         if let Some(value) = record.get("launcher") {
             launcher = value.clone();
         }
@@ -720,14 +1050,19 @@ async fn runtime(agent: &Agent) -> Result<Value, Error> {
             .unwrap_or("unknown");
         if !ready {
             if matches!(recorded, "launching" | "running" | "stopping" | "finishing")
-                && process_matches(&record, "runner_pid", "runner_token")
+                && process_matches(record, "runner_pid", "runner_token")
             {
                 state = "finishing".to_owned();
             }
         } else if launcher.get("kind").and_then(Value::as_str) == Some("supervisor") {
             if recorded == "starting" {
                 state = "starting".to_owned();
-            } else if let Some(supervisor) = supervisor_state(&agent.name)? {
+            } else if let Some(supervisor) =
+                supervisor_state(&agent.name).unwrap_or_else(|supervisor_error| {
+                    error = supervisor_error.to_string().into();
+                    Some(json!({"state":"unknown"}))
+                })
+            {
                 let current = supervisor
                     .get("state")
                     .and_then(Value::as_str)
@@ -759,14 +1094,14 @@ async fn runtime(agent: &Agent) -> Result<Value, Error> {
             state = recorded.to_owned();
             if matches!(recorded, "launching" | "running" | "stopping" | "finishing")
                 && record.get("runner_pid").is_some()
-                && !process_matches(&record, "runner_pid", "runner_token")
+                && !process_matches(record, "runner_pid", "runner_token")
             {
                 state = "exited".to_owned();
                 if error.is_null() {
                     error = "Launch process exited without recording its result".into();
                 }
             } else if recorded == "running" {
-                state = if process_matches(&record, "pid", "process_token") {
+                state = if process_matches(record, "pid", "process_token") {
                     "running"
                 } else if record.get("runner_pid").is_some() {
                     "finishing"
@@ -782,9 +1117,11 @@ async fn runtime(agent: &Agent) -> Result<Value, Error> {
     if ready {
         match crate::host_platform::coding_agent_observation(&agent.name).await {
             Ok(observed) if observed == "running" => {
-                if launch_id.is_null() {
+                if launch_id.is_null() || matches!(state.as_str(), "stopped" | "exited" | "failed")
+                {
                     state = "manual".into();
                     attachable = false;
+                    launcher = json!({"kind":"manual","source":"observed guest command"});
                 } else if state == "unknown" {
                     state = "observed".into();
                 }
@@ -801,21 +1138,26 @@ async fn runtime(agent: &Agent) -> Result<Value, Error> {
         }
     } else if sandbox["runtime_state"] != "stopped" {
         state = "unknown".into();
+    } else if state != "finishing" {
+        state = "stopped".into();
     }
-    if let Some(record) = read_json(&launch_path(&agent.name))? {
-        if matches!(
+    if let Some(record) = record.as_ref()
+        && matches!(
             record.pointer("/launcher/kind").and_then(Value::as_str),
             Some("tmux-window" | "tmux-pane")
-        ) {
-            attachable = terminal_live(&record).await;
-        }
+        )
+    {
+        attachable = terminal_live(record).await;
     }
     Ok(json!({
-        "agent_id":agent.id,"name":agent.name,
+        "agent_id":agent.id,"name":agent.name,"configured":true,
         "sandbox_state":sandbox["runtime_state"],"runtime_state":sandbox["runtime_state"],
         "control_state":sandbox["control_state"],"run_id":sandbox["run_id"],
         "runtime_error":sandbox["error"],"next_action":sandbox["next_action"],
         "exec":sandbox["exec"],"port_forward":sandbox["port_forward"],
+        "proxy_attachment":proxy_attachment,"traffic":{"state":"unknown","source":"proxy traffic telemetry"},
+        "effective_configuration":effective_configuration,
+        "next_start_configuration":{"workspace":agent.folder,"memory_mb":agent.memory_mb.unwrap_or(4096),"mounts":agent.mounts},
         "terminal_state":if attachable {"running"} else {"absent"},
         "agent_state":state,"launcher":launcher,"attachable":attachable,
         "launch_id":launch_id,"exit_code":exit_code,"error":error,
@@ -830,7 +1172,7 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
         for agent in &agents {
             observed.push(match runtime(agent).await {
                 Ok(value) => value,
-                Err(error) => json!({"agent_id":agent.id,"name":agent.name,"runtime_state":"unknown","control_state":"unknown","agent_state":"unknown","error":error.to_string()}),
+                Err(error) => json!({"agent_id":agent.id,"name":agent.name,"sandbox_state":"unknown","runtime_state":"unknown","control_state":"unknown","agent_state":"unknown","terminal_state":"unknown","attachable":false,"exec":false,"error":error.to_string(),"next_action":"inspect agent diagnostics; existing runtime evidence is preserved"}),
             });
         }
         return Ok(json!({"agents":observed}));
@@ -847,6 +1189,7 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
         }
         "status" => runtime(&agent).await,
         "stop" => stop(&agent).await,
+        "cleanup" => cleanup(&agent).await,
         _ => Ok(json!({"error":"invalid host operation","status_code":400})),
     };
     match result {
@@ -860,13 +1203,14 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
 async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
-    let lock_name = agent.name.clone();
     let lock_root = agent_dir(&agent.name);
-    let _lock = tokio::task::spawn_blocking(move || {
-        let _ = lock_name;
-        SetupLock::acquire_in(&lock_root, None)
-    })
-    .await??;
+    let _lock =
+        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_root, None)).await??;
+    let current = crate::host_agents::list()?
+        .into_iter()
+        .find(|current| current.id == agent.id)
+        .ok_or("agent configuration was removed while start was waiting")?;
+    let agent = &current;
     let observed = runtime(agent).await?;
     let state = observed
         .get("agent_state")
@@ -892,8 +1236,11 @@ async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
         std::path::Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
         agent.dangerously_allow_unowned,
     )?;
-    stop_supervisor(&agent.name).await?;
-    if !crate::host_platform::is_sandbox_running(&agent.name).await {
+    if observed["runtime_state"] == "stopped" {
+        if observed["backend"].is_object() {
+            crate::host_platform::stop_sandbox(&agent.name).await?;
+        }
+        clear_stale_guest_command(&agent.name)?;
         let slot = crate::host_agents::reserve_network_slot(&agent.name)?;
         let address = u32::from(slot) + 1;
         let ip = format!("10.200.{}.{}", address / 256, address % 256);
@@ -929,6 +1276,7 @@ async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
     if operation == "sandbox-start" {
         return runtime(agent).await;
     }
+    stop_supervisor(&agent.name).await?;
     let mut launcher = selected_launcher(agent)?;
     if foreground {
         launcher = json!({"kind":"foreground","source":"caller terminal"});
@@ -1048,9 +1396,10 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
         return Err("native proxy config path must be absolute".into());
     }
     let _same_process_lock = LISTENER_LOCK.lock().await;
-    let _lock = crate::host_platform::lock_host_state(
-        &crate::host_platform::config_dir().join("data/native-listeners.lock"),
-    )?;
+    let lock_path = crate::host_platform::config_dir().join("data/native-listeners.lock");
+    let _lock =
+        tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock_path))
+            .await??;
     let cwd = crate::host_platform::config_dir();
     let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
@@ -1093,8 +1442,15 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
             retained.push(entry.clone());
         }
     }
-    let map_path = crate::host_platform::config_dir().join("data/agent_map.json");
-    let map: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(map_path)?)?;
+    let map_path = crate::host_platform::agent_map_path()?;
+    let map: serde_json::Map<String, Value> = match std::fs::read(map_path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .or_else(|_| crate::host_platform::agent_map_from_runs())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            crate::host_platform::agent_map_from_runs()?
+        }
+        Err(error) => return Err(error.into()),
+    };
     for (name, entry) in map {
         let Some(ip) = entry.get("ip").and_then(Value::as_str) else {
             continue;
@@ -1143,7 +1499,8 @@ pub(crate) async fn sync_agent_listeners() -> Result<(), Error> {
     temporary
         .as_file()
         .set_permissions(std::fs::Permissions::from_mode(mode))?;
-    temporary.persist(path)?;
+    temporary.persist(&path)?;
+    File::open(parent)?.sync_all()?;
     // Stop and independent recovery can update the projection while the
     // proxy is unavailable. Startup reconstructs listeners from current runs.
     if !crate::host_commands::proxy_live() {
@@ -1218,191 +1575,9 @@ async fn invoke_launcher(agent: &Agent, record: &Value) -> Result<(), Error> {
             )?;
             Ok(())
         }
-        "tmux-window" | "tmux-pane" => launch_tmux(agent, record, kind).await,
-        "script" | "manager" => launch_script(agent, record).await,
+        "tmux-window" | "tmux-pane" | "script" | "manager" => launch_script(agent, record).await,
         _ => Err(format!("unsupported agent launcher: {kind}").into()),
     }
-}
-
-fn valid_tmux_env_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    matches!(bytes.next(), Some(b'A'..=b'Z' | b'a'..=b'z' | b'_'))
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
-async fn tmux_session_with_current_env(
-    session: &str,
-    name: &str,
-    binary: &std::path::Path,
-    arguments: &[String],
-) -> Result<std::process::Output, Error> {
-    // tmux only imports its configured update-environment names from a client
-    // when creating a session. Transfer all current names and mask values left
-    // in a pre-existing server, without putting any values in command argv.
-    let _lock = TMUX_LAUNCH_LOCK.lock().await;
-    let option = tokio::process::Command::new("tmux")
-        .args(["show-options", "-gqv", "update-environment"])
-        .output()
-        .await?;
-    let previous = if option.status.success() {
-        let global = tokio::process::Command::new("tmux")
-            .args(["show-environment", "-g"])
-            .output()
-            .await?;
-        if !global.status.success() {
-            return Err("Could not inspect tmux server environment".into());
-        }
-        let mut names = BTreeSet::new();
-        for (name, _) in std::env::vars_os() {
-            if let Some(name) = name.to_str().filter(|name| valid_tmux_env_name(name)) {
-                names.insert(name.to_owned());
-            }
-        }
-        for line in global.stdout.split(|byte| *byte == b'\n') {
-            let line = line.strip_prefix(b"-").unwrap_or(line);
-            let name = line.split(|byte| *byte == b'=').next().unwrap_or_default();
-            if let Ok(name) = std::str::from_utf8(name)
-                && valid_tmux_env_name(name)
-            {
-                names.insert(name.to_owned());
-            }
-        }
-        let previous = String::from_utf8(option.stdout)?.trim_end().to_owned();
-        let names = names.into_iter().collect::<Vec<_>>().join(" ");
-        let set = tokio::process::Command::new("tmux")
-            .args(["set-option", "-g", "update-environment", &names])
-            .status()
-            .await?;
-        if !set.success() {
-            return Err("Could not set tmux environment update names".into());
-        }
-        Some(previous)
-    } else {
-        let sessions = tokio::process::Command::new("tmux")
-            .arg("list-sessions")
-            .output()
-            .await?;
-        if sessions.status.success() {
-            return Err("Could not inspect existing tmux environment setting".into());
-        }
-        None
-    };
-    let created = tokio::process::Command::new("tmux")
-        .env("SAFEYOLO_CONFIG_DIR", crate::host_platform::config_dir())
-        .args([
-            "new-session",
-            "-d",
-            "-P",
-            "-F",
-            "#{socket_path}\n#{pane_id}",
-            "-s",
-            session,
-            "-n",
-            name,
-        ])
-        .arg(binary)
-        .args(arguments)
-        .output()
-        .await;
-    if let Some(previous) = previous {
-        let restored = tokio::process::Command::new("tmux")
-            .args(["set-option", "-g", "update-environment", &previous])
-            .status()
-            .await;
-        if !matches!(restored, Ok(status) if status.success()) {
-            if created.as_ref().is_ok_and(|output| output.status.success()) {
-                let _ = tokio::process::Command::new("tmux")
-                    .args(["kill-session", "-t", &format!("={session}")])
-                    .status()
-                    .await;
-            }
-            return Err("Could not restore tmux environment update names".into());
-        }
-    }
-    Ok(created?)
-}
-
-async fn launch_tmux(agent: &Agent, record: &Value, kind: &str) -> Result<(), Error> {
-    let session = record
-        .get("tmux_session")
-        .and_then(Value::as_str)
-        .ok_or("tmux session missing")?;
-    let launch_id = record
-        .get("launch_id")
-        .and_then(Value::as_str)
-        .ok_or("launch ID missing")?;
-    let binary = std::env::var_os("SAFEYOLO_NATIVE_PROXY_BINARY")
-        .map(PathBuf::from)
-        .unwrap_or(crate::host_platform::config_dir().join("bin/safeyolo-proxy"));
-    let arguments = [
-        "--host-agent-entrypoint".to_owned(),
-        agent.name.clone(),
-        launch_id.to_owned(),
-    ];
-    let output = tokio::process::Command::new("tmux")
-        .args(["has-session", "-t", &format!("={session}")])
-        .output()
-        .await?;
-    let existing = output.status.success();
-    let temporary = existing.then(|| format!("safeyolo-agent-{}", uuid::Uuid::new_v4().simple()));
-    let created = temporary.as_deref().unwrap_or(session);
-    let output = tmux_session_with_current_env(created, &agent.name, &binary, &arguments).await?;
-    if !output.status.success() {
-        return Err(format!(
-            "tmux launcher failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    if let Some(temporary) = temporary {
-        let mut command = tokio::process::Command::new("tmux");
-        if kind == "tmux-pane" {
-            command.args([
-                "join-pane",
-                "-d",
-                "-s",
-                &format!("{temporary}:"),
-                "-t",
-                &format!("={session}:"),
-            ]);
-        } else {
-            command.args([
-                "move-window",
-                "-d",
-                "-s",
-                &format!("{temporary}:"),
-                "-t",
-                &format!("={session}:"),
-            ]);
-        }
-        let moved = command.output().await;
-        if !moved.as_ref().is_ok_and(|output| output.status.success()) {
-            let _ = tokio::process::Command::new("tmux")
-                .args(["kill-session", "-t", &format!("={temporary}")])
-                .status()
-                .await;
-            let moved = moved?;
-            return Err(format!(
-                "tmux launcher failed: {}",
-                String::from_utf8_lossy(&moved.stderr)
-            )
-            .into());
-        }
-    }
-    let value = String::from_utf8(output.stdout)?;
-    let (socket, pane) = value
-        .trim_end()
-        .rsplit_once('\n')
-        .ok_or("tmux did not report a pane")?;
-    update_launch(
-        &agent.name,
-        launch_id,
-        &serde_json::Map::from_iter([
-            ("tmux_socket".to_owned(), socket.into()),
-            ("pane_id".to_owned(), pane.into()),
-        ]),
-    )?;
-    Ok(())
 }
 
 pub(crate) fn validate_host_script(path: &std::path::Path) -> Result<(), Error> {
@@ -1472,6 +1647,10 @@ fn script_command(path: &std::path::Path, action: &str, record: &Value) -> tokio
     command
         .arg(action)
         .env("SAFEYOLO_CONFIG_DIR", crate::host_platform::config_dir())
+        .env(
+            "SAFEYOLO_NATIVE_CONFIG_PATH",
+            crate::host_platform::config_path(),
+        )
         .env("SAFEYOLO_LOGS_DIR", logs_dir)
         .env("SAFEYOLO_AGENT_NAME", field("name"))
         .env("SAFEYOLO_AGENT_ID", field("agent_id"))
@@ -1479,7 +1658,17 @@ fn script_command(path: &std::path::Path, action: &str, record: &Value) -> tokio
         .env("SAFEYOLO_WORKSPACE", field("workspace"))
         .env("SAFEYOLO_LAUNCH_MODE", field("mode"))
         .env("SAFEYOLO_TMUX_SESSION", field("tmux_session"))
-        .env("SAFEYOLO_TMUX_SOCKET", field("tmux_socket"))
+        .env(
+            "SAFEYOLO_TMUX_SOCKET",
+            if field("tmux_socket").is_empty() {
+                crate::host_platform::config_dir()
+                    .join("data/tmux.sock")
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                field("tmux_socket").to_owned()
+            },
+        )
         .env("SAFEYOLO_LAUNCH_PANE", field("pane_id"))
         .env(
             "SAFEYOLO_AGENT_EXIT_CODE",
@@ -1528,24 +1717,38 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
     if !result.is_object() {
         return Err("Host launch result must be a JSON object or empty".into());
     }
-    let mut changes = serde_json::Map::new();
+    let _lock = LaunchLock::acquire(&agent.name)?;
+    let mut current = read_json(&launch_path(&agent.name))?.ok_or("current launch is missing")?;
+    if current["launch_id"] != launch_id {
+        return Err("launch changed during host launcher invocation".into());
+    }
     for key in ["pane_id", "tmux_socket"] {
         if let Some(value) = result.get(key) {
-            changes.insert(key.to_owned(), value.clone());
+            current[key] = value.clone();
         }
     }
-    changes.insert("state".into(), "unknown".into());
-    update_launch(&agent.name, launch_id, &changes)
+    if current["state"] == "starting"
+        && matches!(
+            current.pointer("/launcher/kind").and_then(Value::as_str),
+            Some("script" | "manager")
+        )
+    {
+        current["state"] = "unknown".into();
+    }
+    write_json(&launch_path(&agent.name), &current)
 }
 
 async fn stop(agent: &Agent) -> Result<Value, Error> {
     let directory = agent_dir(&agent.name);
     let _lock =
         tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??;
-    stop_supervisor(&agent.name).await?;
+    let command_warning = stop_supervisor(&agent.name)
+        .await
+        .err()
+        .map(|error| error.to_string());
     stop_launcher(agent).await?;
     let observed = crate::host_runs::observe(&agent.name).await;
-    if observed["runtime_state"] != "stopped" {
+    if observed["runtime_state"] != "stopped" || observed["backend"].is_object() {
         crate::host_platform::stop_sandbox(&agent.name).await?;
     }
     crate::host_platform::update_agent_map(&agent.name, None)?;
@@ -1562,6 +1765,60 @@ async fn stop(agent: &Agent) -> Result<Value, Error> {
         None,
         json!({"reason":"user_request"}),
     );
+    let mut result = runtime(agent).await?;
+    if let Some(warning) = command_warning {
+        result["command_stop_warning"] = warning.into();
+    }
+    Ok(result)
+}
+
+fn clear_stale_guest_command(name: &str) -> Result<(), Error> {
+    for relative in [
+        "home/.safeyolo-command-supervisor.json",
+        "home/.safeyolo-command-supervisor.stop",
+        "config-share/command-supervisor-enabled",
+    ] {
+        match std::fs::remove_file(agent_dir(name).join(relative)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+async fn cleanup(agent: &Agent) -> Result<Value, Error> {
+    stop(agent).await?;
+    let directory = agent_dir(&agent.name);
+    let lock_directory = directory.clone();
+    let _lock =
+        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_directory, None)).await??;
+    if crate::host_runs::observe(&agent.name).await["runtime_state"] != "stopped" {
+        return Err("backend is not proven stopped; its state was preserved".into());
+    }
+    if let Some(record) = read_json(&launch_path(&agent.name))?
+        && process_matches(&record, "runner_pid", "runner_token")
+    {
+        return Err(
+            "coding-agent exit hooks are still finishing; retry agent cleanup after they finish"
+                .into(),
+        );
+    }
+    clear_stale_guest_command(&agent.name)?;
+    for file in [
+        "runtime.json",
+        "current-launch.json",
+        "userns.pid",
+        "container.pid",
+        "vm.pid",
+        "vm.token",
+    ] {
+        match std::fs::remove_file(directory.join(file)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     runtime(agent).await
 }
 
@@ -1572,39 +1829,43 @@ async fn stop_supervisor(name: &str) -> Result<(), Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    let Some(mut state) = supervisor_state(name)? else {
+    let Some(state) = supervisor_state(name)? else {
         return Ok(());
     };
-    let path = supervisor_path(name);
-    write_json(
-        &path.with_file_name(".safeyolo-command-supervisor.stop"),
-        &json!({"requested_at":time::OffsetDateTime::now_utc().unix_timestamp(),"name":name}),
+    let id = state["supervision_id"]
+        .as_str()
+        .ok_or("command supervisor ownership is unverified")?;
+    crate::guest_commands::request_stop(
+        &agent_dir(name).join("home"),
+        &agent_dir(name).join("config-share"),
+        id,
     )?;
-    let current = state
-        .get("state")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    if matches!(current, "stopped" | "failed" | "exited") {
-        state["state"] = "stopped".into();
-        state["next_restart_at"] = Value::Null;
-        write_json(&path, &state)?;
-    } else if state.get("runtime_owner").and_then(Value::as_str) != Some("guest-pid1") {
-        // This state lives in the agent-writable home. A PID plus process
-        // start token from that file cannot authorize a host signal. Let the
-        // supervisor consume its stop fence, then require its acknowledgement.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while tokio::time::Instant::now() < deadline {
-            if supervisor_state(name)?
-                .as_ref()
-                .is_none_or(|value| value.get("state").and_then(Value::as_str) == Some("stopped"))
-            {
-                return Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Give the native supervisor its existing ten-second command termination
+    // interval before the host stops PID 1. A fence alone does not prove exit.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let current = supervisor_state(name)?
+            .ok_or("command supervisor state disappeared; completion is unverified")?;
+        if current["supervision_id"] != id {
+            return Err(
+                "command supervisor ownership changed; replacement work was left intact".into(),
+            );
         }
-        return Err("Could not stop the command supervisor; the sandbox was left intact to prevent an automatic restart".into());
+        if matches!(
+            current["state"].as_str(),
+            Some("stopped" | "failed" | "exited")
+        ) && current["command_pid"].is_null()
+            && current["command_start_token"].is_null()
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(
+                "command supervisor stop deadline expired; completion is unverified".into(),
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    Ok(())
 }
 
 async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
@@ -1654,4 +1915,28 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_home_changes_cannot_replace_the_active_host_setup_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("agent");
+        let first = SetupLock::acquire_in(&directory, None).unwrap();
+        let guest = directory.join("home/.safeyolo");
+        std::fs::create_dir_all(&guest).unwrap();
+        let replaced = guest.join("host-setup.lock");
+        std::fs::write(&replaced, b"guest replacement").unwrap();
+        std::fs::remove_file(&replaced).unwrap();
+        let second = SetupLock::acquire_in(
+            &directory,
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(10)),
+        );
+        assert!(second.is_err(), "guest home bypassed the active host lock");
+        drop(first);
+        assert!(SetupLock::acquire_in(&directory, None).is_ok());
+    }
 }

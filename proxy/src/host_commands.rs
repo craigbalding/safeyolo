@@ -20,16 +20,27 @@ pub fn handles(args: &[String]) -> bool {
     })
 }
 
-pub async fn run(root: PathBuf, args: &[String]) -> Result<i32, Error> {
-    let root = root.canonicalize()?;
-    host_platform::in_instance(root, run_inner(args)).await
+pub async fn run(config: PathBuf, args: &[String]) -> Result<i32, Error> {
+    let parent = config
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()?;
+    let config = parent.join(config.file_name().ok_or("configuration has no filename")?);
+    host_platform::in_config(config, run_inner(args)).await
 }
 
 /// Rebuild derived listeners from current runs before native proxy startup.
 /// Guest traffic is not a recovery trigger.
 pub async fn prepare_proxy(config: &mut crate::Config) -> Result<(), Error> {
     if let Some(path) = config.native_config_path.clone() {
-        host_platform::in_config(path, restore_attachments(config)).await?;
+        host_platform::in_config(path.clone(), async {
+            restore_attachments(config).await?;
+            host_lifecycle::sync_agent_listeners().await?;
+            *config = crate::native_config::read(&path)?;
+            Ok::<_, Error>(())
+        })
+        .await?;
     }
     Ok(())
 }
@@ -67,6 +78,12 @@ pub(crate) fn proxy_live() -> bool {
                 .zip(record["token"].as_str())
                 .is_some_and(|(pid, token)| {
                     host_lifecycle::process_token(pid).as_deref() == Some(token)
+                        && host_platform::process_has_path_argument(
+                            pid,
+                            &host_platform::config_dir().join("bin/safeyolo-proxy"),
+                            b"--config",
+                            &host_platform::config_path(),
+                        )
                 })
         })
 }
@@ -79,7 +96,8 @@ async fn start_proxy() -> Result<(), Error> {
     if proxy_live() {
         return Ok(());
     }
-    let config = crate::native_config::read(&root.join("config.toml"))?;
+    let config_path = host_platform::config_path();
+    let config = crate::native_config::read(&config_path)?;
     let readiness = &config.readiness_file;
     match fs::remove_file(readiness) {
         Ok(()) => {}
@@ -94,7 +112,7 @@ async fn start_proxy() -> Result<(), Error> {
     let mut command = tokio::process::Command::new(root.join("bin/safeyolo-proxy"));
     command
         .args(["--config"])
-        .arg(root.join("config.toml"))
+        .arg(config_path)
         .env("SAFEYOLO_CONFIG_DIR", &root)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
@@ -170,9 +188,9 @@ pub(crate) async fn restore_attachments(config: &mut crate::Config) -> Result<()
         if run["agent_id"] != agent.id || run["run_id"] != observed["run_id"] {
             continue;
         }
-        let ip = run["ip"]
-            .as_str()
-            .ok_or("runtime attribution address is missing")?;
+        let Some(ip) = run["ip"].as_str() else {
+            continue;
+        };
         if ip.parse::<std::net::Ipv4Addr>().is_err() {
             continue;
         }
@@ -259,12 +277,8 @@ async fn diagnostics(agent: &host_agents::Agent) -> Result<Value, Error> {
 async fn run_inner(args: &[String]) -> Result<i32, Error> {
     let root = host_platform::config_dir();
     match args {
-        [kind, operation, target] if kind == "agent" && operation == "launcher-target" => {
-            let (socket, pane) = target
-                .trim_end()
-                .rsplit_once('\n')
-                .ok_or("launcher did not report socket and pane")?;
-            print(&json!({"tmux_socket":socket,"pane_id":pane}))?;
+        [kind, operation, name, id] if kind == "agent" && operation == "launcher-session" => {
+            print(&host_lifecycle::launcher_session(name, id).await?)?;
         }
         [kind, operation, name, id] if kind == "agent" && operation == "entrypoint" => {
             return host_lifecycle::run_entrypoint(name, id).await;
@@ -284,7 +298,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             )?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only]\nsafeyolo [--root ROOT] agent status|stop|attach|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nConfiguration changes apply at the next sandbox start. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nConfiguration changes apply at the next sandbox start. Attach never launches an absent coding agent. Shell is independent."
         ),
         [kind, operation, name, rest @ ..]
             if kind == "agent" && matches!(operation.as_str(), "create" | "configure") =>
@@ -317,7 +331,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     },
                 ));
             }
-            let agent = host_agents::configure(name, &options, operation == "create")?;
+            let agent = host_agents::configure(name, &options, operation == "create").await?;
             print(
                 &json!({"configuration":agent,"scope":"next sandbox start; current run is unchanged"}),
             )?;
@@ -340,14 +354,27 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             let agent = agent(name)?;
             let extra = &rest[1..];
             match operation.as_str() {
-                "start"|"stop"|"status"=>{
+                "start"|"stop"|"status"|"cleanup"=>{
                     let operation=if operation=="start" {
                         match extra {[]=>"start",[arg]if arg=="--foreground"=>"start-foreground",[arg]if arg=="--sandbox-only"=>"sandbox-start",_=>return Err("start accepts --foreground or --sandbox-only".into())}
                     }else{if !extra.is_empty(){return Err("unexpected agent argument".into());} operation};
                     if operation.starts_with("start") || operation=="sandbox-start" {start_proxy().await?;}
-                    let observed=host_lifecycle::operate(operation,Some(&agent.id)).await?;
+                    // Ordinary named runtime operations use the same authenticated
+                    // Admin path as Commander. Foreground terminals stay local;
+                    // independent stop remains available when the proxy is down.
+                    let observed = if matches!(operation, "start" | "stop") && proxy_live() {
+                        crate::native_client::admin(
+                            &host_platform::config_path(),
+                            &format!("/admin/agents/{}/{operation}", agent.id),
+                            hyper::Method::POST,
+                            Value::Null,
+                            Duration::from_secs(130),
+                        ).await?
+                    } else {
+                        host_lifecycle::operate(operation,Some(&agent.id)).await?
+                    };
                     if let Some(error)=observed["error"].as_str().filter(|_|observed["status_code"].is_number()){return Err(error.into());}
-                    if operation=="start-foreground" {
+                    if operation=="start-foreground" && observed["state"]=="starting" {
                         let id=observed["launch_id"].as_str().ok_or("no foreground launch was prepared")?;
                         return host_lifecycle::run_entrypoint(name,id).await;
                     }
@@ -359,6 +386,11 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
                     if persistent {return host_lifecycle::persistent_shell(&agent,command).await;}
                     let mut child=host_platform::spawn_guest_command(name,command).await?;
                     return Ok(child.wait().await?.code().unwrap_or(1));
+                },
+                "present"=>{ if !extra.is_empty(){return Err("unexpected desktop argument".into());}
+                    let result = crate::desktop_present::present(agent.id.clone(), false).await
+                        .map_err(|error| format!("desktop presentation failed: {error:?}; run agent diagnostics {name}"))?;
+                    print(&result)?;
                 },
                 "diagnostics"=>{
                     match extra {

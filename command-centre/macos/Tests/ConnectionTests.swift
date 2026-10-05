@@ -267,8 +267,8 @@ extension ModelTests {
         precondition(client.connectionState == .eventsDisabled && client.adminConnected)
         precondition(client.agents.count == 1 && socketCount == 0)
         precondition(client.connectionGuidance!.contains("On this Mac"))
-        precondition(client.connectionGuidance!.contains("safeyolo command-centre enable"))
-        precondition(client.connectionGuidance!.contains("do not add --all"))
+        precondition(client.connectionGuidance!.contains("[command_centre]"))
+        precondition(client.connectionGuidance!.contains("Agents stay running."))
         precondition(client.eventFeedGap == nil, "A feed that never connected has no observed interruption")
         var updates = 0
         let subscription = client.objectWillChange.sink { updates += 1 }
@@ -312,7 +312,7 @@ extension ModelTests {
         precondition(client.connectionState == .reconnecting && client.adminConnected)
         precondition(client.eventEndpoint == nil && client.eventFeedGap == nil)
         precondition(client.connectionGuidance!.contains("On the connected SafeYolo host"))
-        precondition(client.connectionGuidance!.contains("If disabled"))
+        precondition(client.connectionGuidance!.contains("Check [command_centre]"))
         precondition(client.diagnosticReport.contains("NSURLErrorDomain (-1004)"))
         var updates = 0
         let subscription = client.objectWillChange.sink { updates += 1 }

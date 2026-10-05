@@ -183,6 +183,11 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                         "error":if !recorded {json!("current-run record is missing or corrupt; backend remains live")} else if !holder {json!("namespace holder is missing; control uses the verified surviving backend namespaces")} else {Value::Null}}),
                     );
                 }
+                if state["status"] == "stopped" {
+                    return Ok(json!({"runtime_state":"stopped","control_state":"ready",
+                        "run_id":id.trim_start_matches("safeyolo-"),"exec":false,"port_forward":false,
+                        "backend":state}));
+                }
             }
             if root.join(id).exists() {
                 return Err("runsc backend state is present but could not be reconciled".into());

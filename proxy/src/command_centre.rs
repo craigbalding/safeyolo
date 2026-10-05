@@ -57,6 +57,7 @@ impl Host {
             return Err("command_centre.events_port must be nonzero".into());
         }
         let tailnet = match centre.share.as_str() {
+            _ if !centre.enabled => None,
             "local" => None,
             "tailnet" => {
                 if centre.tailnet_admin_port == 0
@@ -137,6 +138,10 @@ impl Host {
         self.user.as_deref()
     }
 
+    pub(crate) fn config_path(&self) -> Option<&std::path::Path> {
+        self.config_path.as_deref()
+    }
+
     pub(crate) fn executable(&self) -> Option<PathBuf> {
         let path = self.root.join("bin/safeyolo");
         // Discovery only: host-owned installed layout selects the binary.
@@ -164,23 +169,20 @@ impl Host {
         Ok(id.to_owned())
     }
 
+    pub(crate) async fn scope<T>(&self, work: impl std::future::Future<Output = T>) -> T {
+        if let Some(path) = &self.config_path {
+            return crate::host_platform::in_config(path.clone(), work).await;
+        }
+        crate::host_platform::in_instance(self.root.clone(), work).await
+    }
+
     pub(crate) async fn agents(
         &self,
         operation: &str,
         agent_id: Option<&str>,
     ) -> Result<Value, Error> {
-        if let Some(path) = &self.config_path {
-            return crate::host_platform::in_config(
-                path.clone(),
-                crate::host_lifecycle::operate(operation, agent_id),
-            )
-            .await;
-        }
-        crate::host_platform::in_instance(
-            self.root.clone(),
-            crate::host_lifecycle::operate(operation, agent_id),
-        )
-        .await
+        self.scope(crate::host_lifecycle::operate(operation, agent_id))
+            .await
     }
 }
 

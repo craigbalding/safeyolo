@@ -156,6 +156,7 @@ final class CommandCentreController: ObservableObject {
             hostUser: client?.hostUser,
             hostExecutable: client?.hostExecutable,
             hostRoot: client?.hostRoot,
+            hostConfigPath: client?.hostConfigPath,
             transport: savedRemoteProfile?.transport ?? .tailnet,
             action: action
         )

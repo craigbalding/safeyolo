@@ -1,10 +1,8 @@
 //! Configured agents in the host-owned policy.toml.
 
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::Write,
-    os::fd::AsRawFd,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -92,34 +90,14 @@ impl Agent {
     }
 }
 
-fn policy_path() -> PathBuf {
-    crate::host_platform::config_dir().join("policy.toml")
-}
-
-struct PolicyLock(File);
-
-impl PolicyLock {
-    fn exclusive() -> Result<Self, Error> {
-        let path = crate::host_platform::config_dir().join(".policy.toml.lock");
-        std::fs::create_dir_all(path.parent().ok_or("policy lock has no parent")?)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        Ok(Self(file))
+fn policy_path() -> Result<PathBuf, Error> {
+    let path = crate::host_platform::config_path();
+    if path.is_file() {
+        return crate::native_config::read(&path)?
+            .policy_file
+            .ok_or_else(|| "native policy_file is missing".into());
     }
-}
-
-impl Drop for PolicyLock {
-    fn drop(&mut self) {
-        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-    }
+    Ok(crate::host_platform::config_dir().join("policy.toml"))
 }
 
 fn read_document(path: &Path) -> Result<DocumentMut, Error> {
@@ -145,7 +123,7 @@ fn save_document(path: &Path, document: &DocumentMut) -> Result<(), Error> {
 
 /// Local operator configuration only. Executables and arguments are never
 /// accepted by the remote lifecycle API.
-pub(crate) fn configure(
+pub(crate) async fn configure(
     name: &str,
     options: &[(String, String)],
     create: bool,
@@ -153,8 +131,15 @@ pub(crate) fn configure(
     if !crate::host_platform::valid_agent_name(name) {
         return Err("invalid agent name".into());
     }
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let directory = crate::host_platform::config_dir().join("agents").join(name);
+    let _setup = tokio::task::spawn_blocking(move || {
+        crate::host_lifecycle::SetupLock::acquire_in(&directory, None)
+    })
+    .await??;
+    let path = policy_path()?;
+    let lock_path = path.clone();
+    let _lock =
+        tokio::task::spawn_blocking(move || crate::approvals::lock_policy(&lock_path)).await??;
     let mut document = read_document(&path)?;
     let exists = document
         .get("agents")
@@ -226,6 +211,12 @@ pub(crate) fn configure(
         tempfile::NamedTempFile::new_in(path.parent().ok_or("policy has no parent")?)?;
     temporary.write_all(document.to_string().as_bytes())?;
     crate::policy::Policy::from_native_path(temporary.path())?;
+    if options.iter().any(|(key, _)| key == "host_script") {
+        if crate::host_runs::observe(name).await["runtime_state"] != "stopped" {
+            return Err("stop the agent before applying a host setup script; saved configuration is unchanged".into());
+        }
+        crate::host_boot::setup(&agent).await?;
+    }
     save_document(&path, &document)?;
     Ok(agent)
 }
@@ -233,7 +224,7 @@ pub(crate) fn configure(
 /// Read the atomic native policy snapshot. Fresh agent creation owns ID
 /// assignment; status does not migrate or rewrite configuration.
 pub(crate) fn list() -> Result<Vec<Agent>, Error> {
-    let document = read_document(&policy_path())?;
+    let document = read_document(&policy_path()?)?;
     let mut agents = document
         .get("agents")
         .and_then(Item::as_table_like)
@@ -250,10 +241,10 @@ pub(crate) fn list() -> Result<Vec<Agent>, Error> {
 }
 
 /// Preserve the assigned 10.200/16 identity and avoid addresses already in
-/// the live agent map, including legacy agents with no saved slot.
+/// the derived live attachment projection.
 pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let agents = document
         .get("agents")
@@ -286,7 +277,7 @@ pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
         }
     }
     let mut active = std::collections::HashMap::new();
-    let map_path = crate::host_platform::config_dir().join("data/agent_map.json");
+    let map_path = crate::host_platform::agent_map_path()?;
     if let Ok(source) = std::fs::read(&map_path)
         && let Ok(map) =
             serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&source)
@@ -341,8 +332,8 @@ pub(crate) fn reserve_network_slot(name: &str) -> Result<u16, Error> {
 /// Reserve a unique Tailnet HTTPS port, returning its previous value so a
 /// failed presentation can restore the host-owned policy.
 pub(crate) fn reserve_tailnet_port(name: &str) -> Result<(u16, Option<u16>), Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let agents = document
         .get("agents")
@@ -386,8 +377,8 @@ pub(crate) fn restore_tailnet_port(
     expected: u16,
     previous: Option<u16>,
 ) -> Result<bool, Error> {
-    let _lock = PolicyLock::exclusive()?;
-    let path = policy_path();
+    let path = policy_path()?;
+    let _lock = crate::approvals::lock_policy(&path)?;
     let mut document = read_document(&path)?;
     let Some(agents) = document.get("agents").and_then(Item::as_table_like) else {
         return Ok(false);

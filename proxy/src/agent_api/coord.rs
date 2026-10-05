@@ -108,13 +108,16 @@ pub(crate) struct CoordOwner {
 }
 
 impl CoordOwner {
-    fn new() -> Self {
-        let data_dir = std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
-            .map(PathBuf::from)
+    fn new(directory: Option<PathBuf>) -> Self {
+        let data_dir = directory
             .or_else(|| {
-                std::env::var_os("HOME")
+                std::env::var_os("SAFEYOLO_COORD_DATA_DIR")
                     .map(PathBuf::from)
-                    .map(|home| home.join(".safeyolo/data/coord"))
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(PathBuf::from)
+                            .map(|home| home.join(".safeyolo/data/coord"))
+                    })
             })
             .unwrap_or_else(|| PathBuf::from(".safeyolo/data/coord"));
         Self {
@@ -134,8 +137,8 @@ pub struct CoordClient {
 }
 
 impl CoordClient {
-    pub(crate) fn new(policy_file: Option<PathBuf>) -> Self {
-        Self::with_owner(Arc::new(CoordOwner::new()), policy_file)
+    pub(crate) fn new(policy_file: Option<PathBuf>, directory: Option<PathBuf>) -> Self {
+        Self::with_owner(Arc::new(CoordOwner::new(directory)), policy_file)
     }
 
     pub(crate) fn with_owner(owner: Arc<CoordOwner>, policy_file: Option<PathBuf>) -> Self {
@@ -3748,7 +3751,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_body_limits_preserve_utf8_byte_semantics() {
-        let client = CoordClient::new(None);
+        let client = CoordClient::new(None, None);
         let oversized =
             serde_json::to_vec(&json!({"body": "x".repeat(MAX_BODY_BYTES + 1)})).unwrap();
         let outcome = send(
@@ -3873,7 +3876,7 @@ mod tests {
 
     #[test]
     fn reload_facades_share_only_process_coord_owner() {
-        let owner = Arc::new(CoordOwner::new());
+        let owner = Arc::new(CoordOwner::new(None));
         let first = CoordClient::with_owner(owner.clone(), Some(PathBuf::from("old.toml")));
         let replacement = CoordClient::with_owner(owner, Some(PathBuf::from("new.toml")));
         assert!(Arc::ptr_eq(&first.owner(), &replacement.owner()));

@@ -276,6 +276,12 @@ struct ModelTests {
         precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
         let attachArgs = try shellArguments(sshArgs[3])
         precondition(attachArgs == ["--root", root.path, "agent", "attach", "--", name])
+        let selectedFile = root.appendingPathComponent("selected config.toml").path
+        let selectedCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
+            hostExecutable: executable.path, hostRoot: root.path, hostConfigPath: selectedFile)
+        let selectedSSHArgs = try shellArguments(selectedCommand, function: "ssh")
+        let selectedArgs = try shellArguments(selectedSSHArgs[3])
+        precondition(selectedArgs == ["--config", selectedFile, "agent", "attach", "--", name])
         let shellCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
                                                    hostExecutable: executable.path, hostRoot: root.path, action: .shell)
         let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
@@ -419,17 +425,22 @@ struct ModelTests {
         let inventory = try JSONDecoder().decode(
             AgentInventory.self,
             from: Data("""
-            {"agents":[{"agent_id":"ag-probe","name":"probe","sandbox_state":"ready","agent_state":"exited","attachable":false}]}
+            {"agents":[{"agent_id":"ag-probe","name":"probe","sandbox_state":"running","control_state":"ready","terminal_state":"absent","exec":true,"agent_state":"exited","attachable":false}]}
             """.utf8)
         )
         precondition(
             inventory.agents == [
-                AgentInfo(agentID: "ag-probe", name: "probe", sandboxState: "ready", agentState: "exited", launcher: nil, attachable: false, error: nil)
+                AgentInfo(agentID: "ag-probe", name: "probe", sandboxState: "running", agentState: "exited", controlState: "ready", terminalState: "absent", exec: true, launcher: nil, attachable: false, error: nil)
             ]
         )
         precondition(inventory.agents[0].sandboxReady)
         precondition(inventory.agents[0].canStart)
         precondition(!inventory.agents[0].attachable)
+        let degraded = try JSONDecoder().decode(AgentInfo.self, from: Data("""
+            {"agent_id":"ag-damaged","name":"damaged","sandbox_state":"degraded","control_state":"unavailable","terminal_state":"running","exec":false,"agent_state":"unknown","attachable":true,"runtime_error":"holder missing","next_action":"agent diagnostics"}
+            """.utf8))
+        precondition(!degraded.sandboxReady && !degraded.canStart && degraded.attachable)
+        precondition(degraded.runtimeError == "holder missing")
         let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil,
                                             hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
         precondition(local == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent attach -- 'probe'")

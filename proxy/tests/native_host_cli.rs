@@ -211,6 +211,52 @@ fn host_scripts_cannot_execute_from_the_proposed_writable_workspace() {
 }
 
 #[test]
+fn host_setup_keeps_the_explicit_config_and_failed_setup_does_not_publish() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    let selected = root.join("selected.toml");
+    fs::copy(root.join("config.toml"), &selected).unwrap();
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let hook = temp.path().join("setup-hook.sh");
+    fs::write(&hook, b"#!/bin/sh\nprintf '%s\\n' \"$SAFEYOLO_NATIVE_CONFIG_PATH\" > \"$SAFEYOLO_AGENT_HOME/source\"\nexit 41\n").unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let call = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--config")
+            .arg(&selected)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    value(call(&[
+        "agent",
+        "create",
+        "marker",
+        "--workspace",
+        workspace.to_str().unwrap(),
+    ]));
+    let saved = fs::read(root.join("policy.toml")).unwrap();
+    let failed = call(&[
+        "agent",
+        "configure",
+        "marker",
+        "--host-script",
+        hook.to_str().unwrap(),
+    ]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("saved configuration is unchanged"));
+    assert_eq!(fs::read(root.join("policy.toml")).unwrap(), saved);
+    assert_eq!(
+        fs::read_to_string(root.join("agents/marker/home/source"))
+            .unwrap()
+            .trim(),
+        selected.to_str().unwrap()
+    );
+}
+
+#[test]
 fn same_named_agents_have_separate_native_state_and_read_only_diagnostics() {
     let temp = tempfile::tempdir().unwrap();
     let a = temp.path().join("a");
@@ -280,4 +326,157 @@ fn help_uses_native_lifecycle_and_has_no_old_aliases() {
     ] {
         assert!(!help.contains(alias));
     }
+}
+
+#[test]
+fn fresh_proxy_uses_the_explicit_toml_and_keeps_the_other_instance_unchanged() {
+    let temp = tempfile::tempdir().unwrap();
+    let a = temp.path().join("a");
+    let b = temp.path().join("b");
+    initialize(&a);
+    initialize(&b);
+    let selected = a.join("selected.toml");
+    let source = fs::read_to_string(a.join("config.toml"))
+        .unwrap()
+        .replace("admin_port = 9090", "admin_port = 0");
+    fs::write(&selected, source).unwrap();
+    let a_default = fs::read(a.join("config.toml")).unwrap();
+    let b_default = fs::read(b.join("config.toml")).unwrap();
+    let selected_cli = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", &selected)
+            .env("SAFEYOLO_CONFIG_DIR", &b)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    struct StopOnDrop<'a>(&'a Path);
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+                .arg("--config")
+                .arg(self.0)
+                .arg("stop")
+                .output();
+        }
+    }
+    let _stop = StopOnDrop(&selected);
+    value(selected_cli(&["start"]));
+    assert!(a.join("data/ready.json").is_file());
+    assert!(!b.join("data/ready.json").exists());
+    assert!(fs::read_to_string(&selected).unwrap().contains("reload_id"));
+    assert_eq!(fs::read(a.join("config.toml")).unwrap(), a_default);
+    assert_eq!(fs::read(b.join("config.toml")).unwrap(), b_default);
+    value(selected_cli(&[
+        "agent",
+        "create",
+        "marker",
+        "--workspace",
+        temp.path().to_str().unwrap(),
+    ]));
+    assert_eq!(
+        value(selected_cli(&["agent", "status", "marker"]))["name"],
+        "marker"
+    );
+    assert!(
+        !fs::read_to_string(b.join("policy.toml"))
+            .unwrap()
+            .contains("[agents.marker]")
+    );
+    value(selected_cli(&["stop"]));
+    fs::write(&selected, "agent_launcher = false\n").unwrap();
+    let failed = selected_cli(&["agent", "status", "marker"]);
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("config.toml settings"));
+    assert_eq!(fs::read(a.join("config.toml")).unwrap(), a_default);
+    assert_eq!(fs::read(b.join("config.toml")).unwrap(), b_default);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_tmux_launch_uses_current_environment_on_the_owned_socket() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("a");
+    initialize(&root);
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let created = value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ],
+    ));
+    let dir = root.join("agents/marker");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("current-launch.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name":"marker", "agent_id":created["configuration"]["id"], "launch_id":"launch-env",
+            "launcher":{"kind":"tmux-window"}, "state":"starting", "tmux_session":"fixture"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let socket = root.join("data/tmux.sock");
+    struct OwnedServer<'a>(&'a Path);
+    impl Drop for OwnedServer<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(self.0)
+                .arg("kill-server")
+                .output();
+        }
+    }
+    let _server = OwnedServer(&socket);
+    let old = Command::new("tmux")
+        .arg("-S")
+        .arg(&socket)
+        .env("SAFEYOLO_RUNSC_ROOT", "old-server-root")
+        .env("SAFEYOLO_CONFIG_DIR", "old-server-config")
+        .args(["new-session", "-d", "-s", "control", "sleep", "30"])
+        .output()
+        .unwrap();
+    assert!(
+        old.status.success(),
+        "{}",
+        String::from_utf8_lossy(&old.stderr)
+    );
+    // This harmless terminal fixture records selected nonsecret values. It
+    // supplies no sandbox or coding-agent acceptance.
+    fs::remove_file(root.join("bin/safeyolo")).unwrap();
+    fs::write(root.join("bin/safeyolo"), b"#!/bin/sh\nprintf '%s\\n' \"$SAFEYOLO_CONFIG_DIR\" \"${SAFEYOLO_RUNSC_ROOT-unset}\" > \"$SAFEYOLO_CONFIG_DIR/environment-marker\"\nexec sleep 30\n").unwrap();
+    fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
+    let started = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+        .arg("--root")
+        .arg(&root)
+        .args(["agent", "launcher-session", "marker", "launch-env"])
+        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env_remove("SAFEYOLO_RUNSC_ROOT")
+        .output()
+        .unwrap();
+    let target = value(started);
+    assert_eq!(target["tmux_socket"], socket.to_str().unwrap());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while !root.join("environment-marker").exists() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("environment-marker")).unwrap(),
+        format!("{}\nunset\n", root.display())
+    );
+    assert!(
+        Command::new("tmux")
+            .arg("-S")
+            .arg(&socket)
+            .args(["has-session", "-t", "=control"])
+            .status()
+            .unwrap()
+            .success()
+    );
 }

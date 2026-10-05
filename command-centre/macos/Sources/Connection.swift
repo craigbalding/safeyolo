@@ -131,7 +131,7 @@ enum AgentTerminalAction: String {
 func agentTerminalCommand(
     name: String, remote: Bool, terminalTarget: String?,
     adminURL: String? = nil, hostUser: String? = nil,
-    hostExecutable: String? = nil, hostRoot: String? = nil,
+    hostExecutable: String? = nil, hostRoot: String? = nil, hostConfigPath: String? = nil,
     transport: RemoteTransport = .tailnet, action: AgentTerminalAction = .attach
 ) throws -> String {
     func quoted(_ value: String) -> String {
@@ -144,8 +144,12 @@ func agentTerminalCommand(
           let root = hostRoot, root.hasPrefix("/") else {
         throw ConnectionError.missingNativeInstallation
     }
-    let command = quoted(executable) + " --root " + quoted(root)
-        + " agent \(actionArguments) -- " + quoted(name)
+    let selection: String
+    if let config = hostConfigPath {
+        guard config.hasPrefix("/") else { throw ConnectionError.missingNativeInstallation }
+        selection = " --config " + quoted(config)
+    } else { selection = " --root " + quoted(root) }
+    let command = quoted(executable) + selection + " agent \(actionArguments) -- " + quoted(name)
     guard remote else { return command }
     let target: String
     if let override = terminalTarget?.trimmingCharacters(in: .whitespacesAndNewlines), !override.isEmpty {

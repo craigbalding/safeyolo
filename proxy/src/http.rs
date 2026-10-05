@@ -1135,7 +1135,8 @@ async fn open_outbound(
         }
         (Some(connection), None) => connection,
         (None, Some(provider)) => Connected {
-            stream: crate::provider_stream::open(provider, destination.port).await?,
+            stream: crate::provider_stream::open(&runtime.config, provider, destination.port)
+                .await?,
             peer: None,
             observation: crate::traffic_view::UpstreamConnectionObservation::new(
                 format!("upstream-{}", uuid::Uuid::new_v4().simple()),

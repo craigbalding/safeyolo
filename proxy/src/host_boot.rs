@@ -99,6 +99,48 @@ fn validate_script_for_agent(agent: &Agent, script: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Host setup is an explicit operator configuration action, never a start hook.
+/// The caller holds the agent's setup lock and has proved its backend stopped.
+pub(crate) async fn setup(agent: &Agent) -> Result<(), Error> {
+    let root = config_dir();
+    let home = root.join("agents").join(&agent.name).join("home");
+    fs::create_dir_all(&home)?;
+    let script = Path::new(
+        agent
+            .host_script
+            .as_deref()
+            .ok_or("host script is missing")?,
+    )
+    .canonicalize()?;
+    validate_script_for_agent(agent, script.to_str().ok_or("invalid host script path")?)?;
+    let result = tokio::process::Command::new(script)
+        .env("SAFEYOLO_AGENT_NAME", &agent.name)
+        .env("SAFEYOLO_AGENT_HOME", &home)
+        .env(
+            "SAFEYOLO_AGENT_FOLDER",
+            agent.folder.as_deref().ok_or("missing workspace")?,
+        )
+        .env(
+            "SAFEYOLO_WORKSPACE",
+            agent.folder.as_deref().ok_or("missing workspace")?,
+        )
+        .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env(
+            "SAFEYOLO_NATIVE_CONFIG_PATH",
+            crate::host_platform::config_path(),
+        )
+        .env("SAFEYOLO_EXECUTABLE", root.join("bin/safeyolo"))
+        .status()
+        .await?;
+    if !result.success() {
+        return Err(format!(
+            "host setup script failed ({result}); saved configuration is unchanged"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value, Error> {
     validate(agent)?;
     let root = config_dir();
@@ -113,18 +155,26 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
         Path::new(agent.folder.as_deref().ok_or("missing workspace")?),
         agent.dangerously_allow_unowned,
     )?;
-    if let Some(script) = &agent.host_script {
-        let script = Path::new(script).canonicalize()?;
-        crate::host_lifecycle::validate_host_script(&script)?;
-        let result = tokio::process::Command::new(script)
-            .env("SAFEYOLO_AGENT_NAME", &agent.name)
-            .env("SAFEYOLO_AGENT_HOME", &home)
-            .env("SAFEYOLO_WORKSPACE", &workspace)
-            .env("SAFEYOLO_CONFIG_DIR", &root)
-            .status()
-            .await?;
-        if !result.success() {
-            return Err("host setup script failed; sandbox was not started".into());
+    #[cfg(target_os = "macos")]
+    {
+        let lock = root.join("data/vm-ssh-key.lock");
+        let _lock =
+            tokio::task::spawn_blocking(move || crate::host_platform::lock_host_state(&lock))
+                .await??;
+        let key = root.join("data/vm_ssh_key");
+        if !key.is_file() {
+            let generated = tokio::process::Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(&key)
+                .status()
+                .await?;
+            if !generated.success() {
+                return Err(
+                    "could not generate the instance's guest SSH key; no sandbox was started"
+                        .into(),
+                );
+            }
+            fs::set_permissions(key, fs::Permissions::from_mode(0o600))?;
         }
     }
     let mut shares = Vec::new();
@@ -142,7 +192,9 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     crate::guest_commands::stage(&home, &share, &root.join("assets/guest"), context.clone())?;
     for name in ["agent_token", "authorized_keys"] {
         let source = if name == "agent_token" {
-            root.join("data/agent_token")
+            crate::native_config::read(&crate::host_platform::config_path())?
+                .data_dir()
+                .join("agent_token")
         } else {
             root.join("data/vm_ssh_key.pub")
         };
@@ -223,7 +275,6 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
             &directory,
             &rootfs,
             &workspace,
-            &share,
             ip,
             &agent.name,
             &shares,
@@ -239,7 +290,6 @@ fn oci(
     directory: &Path,
     rootfs: &Path,
     workspace: &Path,
-    share: &Path,
     ip: &str,
     name: &str,
     shares: &[(PathBuf, String, bool)],
@@ -251,9 +301,14 @@ fn oci(
         json!({"destination":"/sys","type":"sysfs","source":"sysfs","options":["nosuid","noexec","nodev","ro"]}),
         json!({"destination":"/tmp","type":"tmpfs","source":"tmpfs","options":["nosuid","nodev","mode=1777"]}),
         bind(workspace, "/workspace", false),
-        bind(share, "/safeyolo", true),
+        bind(&directory.join("config-share"), "/safeyolo", true),
         bind(&directory.join("status"), "/safeyolo-status", false),
         bind(&directory.join("home"), "/home/agent", false),
+        bind(
+            &root.join("certs/mitmproxy-ca-cert.pem"),
+            "/usr/local/share/ca-certificates/safeyolo.crt",
+            true,
+        ),
         bind(
             &root.join("data/sockets").join(format!("{ip}_{name}")),
             "/safeyolo/proxy",
@@ -277,6 +332,9 @@ fn oci(
             .lines()
             .filter(|line| !line.is_empty())
         {
+            if shares.iter().any(|(_, selected, _)| selected == guest) {
+                continue;
+            }
             if !Path::new(guest).is_absolute()
                 || Path::new(guest)
                     .components()

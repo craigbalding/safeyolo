@@ -10,6 +10,7 @@ struct InstanceInfo: Decodable {
     let hostUser: String?
     let hostExecutable: String?
     let hostRoot: String?
+    let hostConfigPath: String?
     let webmitmURL: String?
     let commandCentreEvents: EventEndpoint?
 
@@ -19,6 +20,7 @@ struct InstanceInfo: Decodable {
         case hostUser = "host_user"
         case hostExecutable = "host_executable"
         case hostRoot = "host_root"
+        case hostConfigPath = "host_config_path"
         case webmitmURL = "webmitm_url"
         case commandCentreEvents = "command_centre_events"
     }
