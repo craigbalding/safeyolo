@@ -196,6 +196,7 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                     return Ok(
                         json!({"runtime_state":if !recorded || !holder {"degraded"} else if ready {"running"} else {"starting"},"control_state":if holder {"ready"} else {"recovered"},
                         "run_id":run_id,"exec":ready,"port_forward":ready,"backend":state,
+                        "next_action":if !recorded {json!(format!("run agent diagnostics {name} to inspect the live backend; agent stop {name} remains available"))} else if !holder {json!(format!("run agent diagnostics {name} to inspect recovered namespace control; agent stop {name} remains available"))} else {Value::Null},
                         "error":if !recorded {json!("current-run record is missing or corrupt; backend remains live")} else if !holder {json!("namespace holder is missing; control uses the verified surviving backend namespaces")} else {Value::Null}}),
                     );
                 }
@@ -256,12 +257,14 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                     return Ok(
                         json!({"runtime_state":if !matched {"degraded"} else if ready {"running"} else {"unknown"},"control_state":"ready","run_id":run_id,
                         "exec":ready,"port_forward":ready,"backend":status,
+                        "next_action":if !matched || !ready {json!(format!("run agent diagnostics {name} to inspect the identified VZ helper; agent stop {name} remains available"))} else {Value::Null},
                         "error":if !matched {json!("saved host handle is incomplete; private control still identifies the live helper")} else if !ready {json!("helper is responsive but its VM is not running")} else {Value::Null}}),
                     );
                 }
                 Err(error) if run.is_some_and(|run| process_matches(name, run, "backend")) => {
                     return Ok(
-                        json!({"runtime_state":"degraded","control_state":"unavailable","run_id":run.unwrap()["run_id"],"exec":false,"port_forward":false,"error":error.to_string()}),
+                        json!({"runtime_state":"degraded","control_state":"unavailable","run_id":run.unwrap()["run_id"],"exec":false,"port_forward":false,"error":error.to_string(),
+                        "next_action":format!("run agent diagnostics {name} to inspect the unavailable private control path; agent stop {name} uses the verified helper identity")}),
                     );
                 }
                 Err(error)
