@@ -210,7 +210,7 @@ def observe_launch(name: str, *, sandbox_ready: bool) -> dict:
         if records.is_dir() and any(records.glob("*.json")):
             from .platform import get_platform
 
-            command = "python3 /safeyolo/guest-command-observation.py --check"
+            command = "/safeyolo/safeyolo-guest observe check"
             platform = get_platform()
             try:
                 process = platform.popen_in_sandbox(name, command)

@@ -1,0 +1,13 @@
+[package]
+name = "safeyolo-guest"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+license = "MIT"
+
+[dependencies]
+libc = "=0.2.189"
+ring = "0.17"
+serde_json = "1"
+tempfile = "3"

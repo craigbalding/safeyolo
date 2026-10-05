@@ -132,6 +132,9 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     binary = tmp_path / "selected-proxy"
     binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
     binary.chmod(0o755)
+    guest = tmp_path / "selected-guest"
+    guest.write_bytes(b"selected Linux guest command bytes")
+    guest.chmod(0o755)
     native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
     metadata = tmp_path / "native.json"
     metadata.write_text(json.dumps(native))
@@ -141,6 +144,7 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
         ["uv", "build", "--wheel", "--out-dir", str(destination)], cwd=builder.ROOT, check=True,
         env={**os.environ, "SAFEYOLO_BUILD_REVISION": REVISION,
              "SAFEYOLO_NATIVE_BINARY": str(binary), "SAFEYOLO_NATIVE_BUILD_METADATA": str(metadata),
+             "SAFEYOLO_GUEST_HELPER": str(guest),
              "SAFEYOLO_BUILD_PROFILE": "debug",
              "SAFEYOLO_NATIVE_PLATFORM_TAG": tag},
         capture_output=True, text=True,
@@ -150,6 +154,7 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     assert f".dev0+g{REVISION}.debug-" in wheel.name
     with zipfile.ZipFile(wheel) as archive:
         assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
+        assert archive.read("safeyolo/bin/safeyolo-guest") == guest.read_bytes()
         assert json.loads(archive.read("safeyolo/_native_build.json")) == native
         wheel_metadata, = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
         assert b"Root-Is-Purelib: false" in archive.read(wheel_metadata)

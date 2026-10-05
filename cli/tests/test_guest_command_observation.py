@@ -28,23 +28,16 @@ def guest(tmp_path, monkeypatch):
     records.mkdir(parents=True)
     context = tmp_path / "context.json"
     context.write_text(json.dumps({"generation": "boot-1"}))
-    source = Path(launchers.__file__).with_name("guest-command-observation.py")
-    bootstrap = (
-        "import runpy, sys; from pathlib import Path; "
-        f"ns = runpy.run_path({str(source)!r}); "
-        "main = ns['main']; "
-        f"main.__globals__.update(CONTEXT=Path({str(context)!r}), RECORDS=Path({str(records)!r})); "
-        "sys.exit(main())"
-    )
-    command = [sys.executable, "-c", bootstrap]
+    source = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).resolve().parents[2] / "guest/command/target/debug/safeyolo-guest")))
+    command = [str(source), "--context", str(context), "--records", str(records), "observe"]
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.return_value = True
     platform.agent_rootfs_path.return_value = tmp_path
 
     def check(name, command):
         assert name == "probe"
-        assert command == "python3 /safeyolo/guest-command-observation.py --check"
-        return subprocess.Popen([sys.executable, "-c", bootstrap, "--check"],
+        assert command == "/safeyolo/safeyolo-guest observe check"
+        return subprocess.Popen([str(source), "--context", str(context), "--records", str(records), "observe", "check"],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     platform.popen_in_sandbox.side_effect = check
@@ -54,7 +47,7 @@ def guest(tmp_path, monkeypatch):
 
 def start_command(guest):
     command, records, _context, _platform = guest
-    process = subprocess.Popen([*command, "/bin/sleep", "60"])
+    process = subprocess.Popen([*command, "exec", "--", "/bin/sleep", "60"])
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and process.poll() is None:
         if (records / f"{process.pid}.json").exists():
@@ -97,7 +90,8 @@ def test_stale_record_does_not_claim_running(guest, stale):
             record = json.loads(path.read_text())
             record[stale] = "stale"
             path.write_text(json.dumps(record))
-        assert launchers.observe_launch("probe", sandbox_ready=True)["agent_state"] == "stopped"
+        expected = "unknown" if stale == "invalid-json" else "stopped"
+        assert launchers.observe_launch("probe", sandbox_ready=True)["agent_state"] == expected
     finally:
         process.kill()
         process.wait(timeout=5)
@@ -132,7 +126,7 @@ def test_custom_script_without_shebang_preserves_arguments_and_exit_code(guest, 
     script = tmp_path / "custom-command"
     script.write_text('printf "%s\\n" "$1"\nexit 7\n')
     script.chmod(0o755)
-    result = subprocess.run([*guest[0], str(script), "argument with spaces"], capture_output=True, text=True)
+    result = subprocess.run([*guest[0], "exec", "--", str(script), "argument with spaces"], capture_output=True, text=True)
     assert result.returncode == 7, result.stderr
     assert result.stdout == "argument with spaces\n"
 

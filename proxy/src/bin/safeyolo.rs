@@ -287,7 +287,12 @@ async fn run() -> Result<(), Error> {
     match arguments.as_slice() {
         [command] if command == "init" => initialize(&root),
         [help] if matches!(help.as_str(), "--help" | "help") => {
-            println!("safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version");
+            println!(
+                "safeyolo [--root ROOT] agent recover NAME [--timeout SECONDS]\nsafeyolo guest-command stage HOME SHARE ASSETS CONTEXT_JSON\nRecovery requires an already booted guest with idle command supervision. Staging is for a stopped guest; the caller supplies this run's context."
+            );
+            println!(
+                "safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version"
+            );
             Ok(())
         }
         [version] if version == "--version" => {
@@ -308,6 +313,39 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [command, rest @ ..] if command == "test-context" => context_command(rest).await,
+        [agent, recover, name] if agent == "agent" && recover == "recover" => {
+            let result = safeyolo_proxy::recover_guest_probe(&root, name, Duration::from_secs(15))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        [agent, recover, name, option, seconds]
+            if agent == "agent" && recover == "recover" && option == "--timeout" =>
+        {
+            let seconds: f64 = seconds.parse()?;
+            if !seconds.is_finite() || seconds <= 0.0 {
+                return Err("--timeout must be positive seconds".into());
+            }
+            let result = safeyolo_proxy::recover_guest_probe(
+                &root,
+                name,
+                Duration::try_from_secs_f64(seconds)?,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        [guest, stage, home, share, assets, context]
+            if guest == "guest-command" && stage == "stage" =>
+        {
+            let context = serde_json::from_slice(&std::fs::read(context)?)?;
+            let result = safeyolo_proxy::guest_commands::stage(
+                Path::new(home),
+                Path::new(share),
+                Path::new(assets),
+                context,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
         [policy, command] if policy == "policy" && command == "show" => {
             let result = admin(&config, Method::GET, Value::Null).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
@@ -335,7 +373,7 @@ async fn run() -> Result<(), Error> {
                 }
             }
         }
-        _ => Err("usage: safeyolo [--root ROOT] policy check FILE | policy show | policy apply FILE | config check FILE | test-context --help | --version".into()),
+        _ => Err("usage: safeyolo --help".into()),
     }
 }
 

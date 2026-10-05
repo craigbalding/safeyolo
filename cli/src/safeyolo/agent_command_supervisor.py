@@ -469,9 +469,19 @@ def start_command_supervisor(name: str, command: str) -> None:
             raise RuntimeError(f"agent command supervisor already running for {name}")
         raise RuntimeError(f"stale command supervisor state for {name}; stop it first")
     state = _base_state(name, command)
+    from .vm import get_agent_config_share_dir
+
+    context_path = get_agent_config_share_dir(name) / "host-launch-context.json"
+    try:
+        context = json.loads(context_path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SupervisorStateError(f"Cannot read this run's guest context: {context_path}; stage and boot the agent first") from exc
+    if not isinstance(context, dict) or not isinstance(context.get("generation"), str) or not context["generation"]:
+        raise SupervisorStateError("Guest context has no current-run generation; stage and boot the agent first")
+    state["generation"] = context["generation"]
+    state["supervision_id"] = uuid.uuid4().hex
     _stop_path(name).unlink(missing_ok=True)
     _write_json(_state_path(name), state)
-    from .vm import get_agent_config_share_dir
 
     # The read-only configuration share is host-owned. PID 1 checks this
     # marker on each pass, including when a sandbox was booted without an agent.

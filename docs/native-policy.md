@@ -10,8 +10,9 @@ The remaining host commands and final release packages have separate owners.
 On supported Ubuntu, run the following command as your ordinary host account
 from the repository checkout. The source installation requires Bash and Rust
 1.94. The directory `$HOME/.safeyolo-native` must have no existing instance
-configuration or tokens. Installation builds the production CLI and
-proxy, installs both in `bin`, and creates `config.toml`, `policy.toml`, a private
+configuration or tokens. Installation builds the production CLI, proxy and
+Linux guest command helper. It installs the host executables in `bin`, stages
+the guest helper and boot scripts in `assets/guest`, and creates `config.toml`, `policy.toml`, a private
 operator token, a separate private Agent API token, a durable instance identity,
 and separate runtime and log directories.
 
@@ -20,8 +21,11 @@ and separate runtime and log directories.
 ```
 
 The installer prints the full source commit and build profile. If matching
-native binaries are already built, supply their directory with `--artifacts`;
-installation then copies those binaries without compiling. The installed
+native host binaries are already built, supply their directory with `--artifacts`
+and the Linux guest artifact directory with `--guest-artifacts`. The latter must
+contain `safeyolo-guest`, `safeyolo-guest.version` and `safeyolo-guest.sha256`
+from `scripts/build_guest_command.sh`, with the same source commit and profile.
+Installation verifies and copies those binaries without compiling. The installed
 commands use neither Python nor source-checkout imports.
 
 The generated policy retains the existing wildcard network allowance, credential

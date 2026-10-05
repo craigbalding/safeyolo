@@ -319,9 +319,9 @@ if [ -f /safeyolo/guest-init-per-run ]; then
     cp /safeyolo/guest-init-per-run /run/safeyolo/guest-init-per-run
     chmod +x /run/safeyolo/guest-init-per-run
 fi
-if [ -f /safeyolo/guest-command-supervisor.py ]; then
-    cp /safeyolo/guest-command-supervisor.py /run/safeyolo/guest-command-supervisor.py
-    chmod +x /run/safeyolo/guest-command-supervisor.py
+if [ -f /safeyolo/safeyolo-guest ]; then
+    cp /safeyolo/safeyolo-guest /run/safeyolo/safeyolo-guest
+    chmod +x /run/safeyolo/safeyolo-guest
 fi
 
 # --------------------------------------------------------------------------

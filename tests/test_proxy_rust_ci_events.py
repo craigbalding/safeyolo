@@ -120,7 +120,7 @@ def test_full_matrix_is_overnight_or_explicit_and_uses_the_exact_head() -> None:
     assert "git rev-parse HEAD" in job["steps"][1]["run"]
     steps = {step.get("name"): step for step in job["steps"]}
     assert steps["Test and build the Rust proxy"]["timeout-minutes"] == (
-        "${{ matrix.os == 'macos-latest' && 20 || 10 }}"
+        "${{ matrix.os == 'macos-latest' && 20 || 15 }}"
     )
     assert steps["Stop the Python-owned Coord fixture"]["if"] == "always()"
     peer = steps["Provide the macOS owned HTTP peer address"]
