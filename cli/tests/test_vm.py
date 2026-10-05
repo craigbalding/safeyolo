@@ -2,6 +2,8 @@
 
 import json
 import os
+import resource
+import shlex
 import shutil
 import signal
 import subprocess
@@ -642,7 +644,7 @@ class TestPrepareConfigShare:
 
         assert limit < first_mount < handoff
 
-    def test_guest_init_sets_nofile_for_pid1_and_children(self, tmp_config_dir):
+    def test_guest_init_sets_nofile_for_pid1_and_children(self, tmp_config_dir, tmp_path):
         """The real PID 1 prefix establishes the promised inherited limit."""
         share = prepare_config_share("agent1", "/workspace")
         source = (share / "guest-init").read_text()
@@ -651,24 +653,29 @@ class TestPrepareConfigShare:
         )
         assert separator
 
-        current_hard = int(
-            subprocess.run(
-                ["bash", "-c", "ulimit -Hn"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
-        if current_hard < 65536:
+        current_hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        if current_hard != resource.RLIM_INFINITY and current_hard < 65536:
             pytest.skip("test host hard RLIMIT_NOFILE is below the product limit")
 
-        prefix = prefix.replace('"/proc/1/limits"', '"/proc/$$/limits"')
+        capture_limits = ""
+        if Path("/proc/self/limits").is_file():
+            prefix = prefix.replace('"/proc/1/limits"', '"/proc/$$/limits"')
+        else:
+            # macOS has no procfs. Model its guest-facing format using the
+            # actual shell limits after prlimit, not a pre-set passing value.
+            limits = shlex.quote(str(tmp_path / "limits"))
+            prefix = prefix.replace('"/proc/1/limits"', limits)
+            capture_limits = (
+                "    printf 'Max open files %s %s files\\n' "
+                f'"$(ulimit -Sn)" "$(ulimit -Hn)" > {limits}\n'
+            )
         harness = (
             "ulimit -Sn 4096\n"
             "prlimit() {\n"
             "    [ \"$1\" = --pid ] && [ \"$2\" = 1 ] "
             "&& [ \"$3\" = --nofile=65536:65536 ] || return 2\n"
-            "    builtin ulimit -n 65536\n"
+            "    builtin ulimit -n 65536 || return\n"
+            f"{capture_limits}"
             "}\n"
             f"{prefix}\n"
             "printf 'pid1 %s %s\\n' \"$(ulimit -Sn)\" \"$(ulimit -Hn)\"\n"
@@ -2324,7 +2331,7 @@ class TestBuildCustomRootfs:
             ': "${SAFEYOLO_TARGET_ARCH:?}"\n'
             '[ -d "$SAFEYOLO_ROOTFS_WORK_DIR" ]\n'
             'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
-            'echo -n stub > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
+            'printf %s stub > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
 
         with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
@@ -2437,7 +2444,7 @@ class TestBuildCustomRootfs:
             '#!/bin/sh\n'
             'set -e\n'
             'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
-            'echo -n staged > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
+            'printf %s staged > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
 
         # On Linux, direct exec of this source path would fail with errno 26.
@@ -2514,7 +2521,7 @@ class TestBuildCustomRootfs:
             # The builder must have cleared the tree before calling us.
             '[ ! -e "$SAFEYOLO_ROOTFS_OUT_TREE" ] || exit 5\n'
             'mkdir -p "$SAFEYOLO_ROOTFS_OUT_TREE/etc"\n'
-            'echo -n fresh > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
+            'printf %s fresh > "$SAFEYOLO_ROOTFS_OUT_TREE/etc/hostname"\n',
         )
         with patch("safeyolo.vm.platform.system", return_value="Linux", autospec=True,):
             out = build_custom_rootfs("agent0", script)
