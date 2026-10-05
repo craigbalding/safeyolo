@@ -279,6 +279,12 @@ async fn observe_checked(name: &str) -> Result<Value, Error> {
                 "VZ helper remains live but its private control path is unavailable".into(),
             );
         }
+        if run.is_some_and(|run| !saved_vz_helper_is_dead(run)) {
+            return Err(
+                "VZ backend absence is unverified; the saved handle is incomplete or identifies a live unrelated process"
+                    .into(),
+            );
+        }
     }
     if saved.is_err() {
         return Err("current-run record is corrupt; backend absence is unverified".into());
