@@ -194,8 +194,6 @@ safeyolo doctor
 | `safeyolo demo` | Guided tour of SafeYolo security features |
 | `safeyolo lab` | Create, attach, recover, inspect, or tear down a SafeYolo experimentation workbench |
 
-**Aliases:** `safeyolo up` = `start` (accepts `--wait/--no-wait` and `--profile`), `safeyolo down` = `stop`
-
 #### Lab
 
 ```bash
