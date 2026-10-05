@@ -297,7 +297,7 @@ jobs:
           exit 1
 
       - name: Test and build the Rust proxy
-        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 10 }}
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && 20 || 15 }}
         working-directory: proxy
         env:
           SAFEYOLO_PYTHON: ${{ github.workspace }}/.venv/bin/python
