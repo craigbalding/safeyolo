@@ -57,7 +57,6 @@ def path_is_within(path: Path, directory: Path) -> bool:
 
 
 def resolved_process_path(value: str, cwd: Path | None) -> Path | None:
-    value = value.strip()
     if not value:
         return None
     path = Path(value)
@@ -171,37 +170,82 @@ def darwin_process_arguments(pid: int) -> tuple[list[str], list[str]]:
     return argv, environment
 
 
+def darwin_process_files(pid: int, libproc: ctypes.CDLL) -> tuple[Path, list[Path]]:
+    """Read raw cwd and vnode paths; lsof escapes names even with -F0.
+
+    These fixed public Darwin layouts come from sys/proc_info.h:
+    proc_vnodepathinfo is two 1176-byte vnode_info_path entries (path at152);
+    vnode_fdinfowithpath is 1200 bytes (path at176); proc_fdinfo is8 bytes.
+    Native paths also avoid lsof's ambiguous caret notation for control bytes.
+    """
+    cwd_info = ctypes.create_string_buffer(2352)
+    ctypes.set_errno(0)
+    if libproc.proc_pidinfo(pid, 9, 0, cwd_info, len(cwd_info)) != len(cwd_info):
+        raise OSError(ctypes.get_errno() or errno.EIO, "cannot inspect process cwd", pid)
+    cwd = Path(os.fsdecode(cwd_info.raw[152:1176].split(b"\0", 1)[0])).resolve()
+
+    ctypes.set_errno(0)
+    size = libproc.proc_pidinfo(pid, 1, 0, None, 0)
+    if size == 0:
+        if ctypes.get_errno():
+            raise OSError(ctypes.get_errno(), "cannot list process files", pid)
+        return cwd, []
+    # Leave room for descriptors opened between the size query and inspection.
+    descriptors = ctypes.create_string_buffer(size + 32 * 8)
+    ctypes.set_errno(0)
+    count = libproc.proc_pidinfo(pid, 1, 0, descriptors, len(descriptors))
+    if count == 0 and ctypes.get_errno():
+        raise OSError(ctypes.get_errno(), "cannot inspect process files", pid)
+    if count < 0 or count % 8 or count >= len(descriptors):
+        raise OSError(errno.EIO, "incomplete process file listing", pid)
+    files = []
+    for offset in range(0, count, 8):
+        fd = int.from_bytes(descriptors.raw[offset:offset + 4], sys.byteorder, signed=True)
+        fd_type = int.from_bytes(descriptors.raw[offset + 4:offset + 8], sys.byteorder)
+        if fd_type != 1:  # PROX_FDTYPE_VNODE
+            continue
+        info = ctypes.create_string_buffer(1200)
+        ctypes.set_errno(0)
+        length = libproc.proc_pidfdinfo(pid, fd, 2, info, len(info))
+        if length != len(info):
+            # A descriptor or its process can close during this inspection.
+            if length == 0 and ctypes.get_errno() in (errno.EBADF, errno.ENOENT, errno.ESRCH):
+                continue
+            raise OSError(ctypes.get_errno() or errno.EIO, "cannot inspect open file", pid)
+        name = info.raw[176:1200].split(b"\0", 1)[0]
+        if name:
+            files.append(Path(os.fsdecode(name)).resolve())
+    return cwd, files
+
+
 def darwin_active_owner(target: Path) -> int | None:
     """Use Mac process facilities for the same argv/env/cwd/FD protections."""
-    listing = subprocess.run(["lsof", "-F", "pfn0"], capture_output=True, check=False)
-    if listing.returncode not in (0, 1):
-        raise SystemExit("cannot inspect Mac process file references; target retained")
-    directories: dict[int, Path] = {}
-    pid, descriptor = None, None
-    for field in listing.stdout.split(b"\0"):
-        field = field.lstrip(b"\n")
-        if field.startswith(b"p"):
-            pid, descriptor = int(field[1:]), None
-        elif field.startswith(b"f"):
-            descriptor = field[1:]
-        elif field.startswith(b"n") and pid is not None:
-            path = Path(os.fsdecode(field[1:])).resolve()
-            if descriptor == b"cwd":
-                directories[pid] = path
-            if path_is_within(path, target):
-                return pid
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    libproc.proc_pidinfo.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
+    ]
+    libproc.proc_pidfdinfo.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
+    ]
     processes = subprocess.check_output(["ps", "-axo", "pid="], text=True)
     for pid in map(int, processes.split()):
-        if pid == os.getpid():
-            continue
         try:
-            argv, environment = darwin_process_arguments(pid)
+            cwd, files = darwin_process_files(pid, libproc)
         except OSError as exc:
             # Like /proc, vanished and inaccessible foreign processes are absent.
             if exc.errno in (errno.ESRCH, errno.EINVAL, errno.EPERM, errno.EACCES):
                 continue
             raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
-        cwd = directories.get(pid)
+        if path_is_within(cwd, target) or any(path_is_within(path, target) for path in files):
+            return pid
+        if pid == os.getpid():
+            continue
+        try:
+            argv, environment = darwin_process_arguments(pid)
+        except OSError as exc:
+            if exc.errno in (errno.ESRCH, errno.EINVAL, errno.EPERM, errno.EACCES):
+                continue  # The process vanished or its arguments are inaccessible.
+            raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
         if argv_references_target(argv, cwd, target) or environment_references_target(
             environment, cwd, target
         ):

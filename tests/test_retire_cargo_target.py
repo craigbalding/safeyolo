@@ -186,3 +186,42 @@ def test_prefix_env_does_not_claim_target(tmp_path: Path) -> None:
     finally:
         owner.terminate()
         owner.wait(timeout=5)
+
+
+@pytest.mark.parametrize("owner_kind", ["cwd", "open-fd"])
+@pytest.mark.parametrize("suffix", ["real\ttab", "real\nnewline", r"literal\ttab", r"literal\nnewline", "control\x01byte", "literal^Abyte"])
+def test_live_file_owner_preserves_exact_path_bytes(
+    tmp_path: Path, owner_kind: str, suffix: str
+) -> None:
+    target, receipt, record, commit = _fixture(tmp_path)
+    target = target.rename(target.with_name(f"target-{suffix}"))
+    owner = _start_owner(target, owner_kind)
+    try:
+        result = _run(target, receipt, record, commit)
+        assert owner.poll() is None
+        assert result.returncode != 0
+        assert f"target is still referenced by live process {owner.pid}" in result.stderr
+        assert target.is_dir()
+        assert not record.exists()
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)
+
+
+@pytest.mark.parametrize("owner_kind", ["env", "relative-env", "argv", "relative-argv"])
+def test_live_argument_owner_preserves_trailing_whitespace(
+    tmp_path: Path, owner_kind: str
+) -> None:
+    target, receipt, record, commit = _fixture(tmp_path)
+    target = target.rename(target.with_name("target-trailing \t"))
+    owner = _start_owner(target, owner_kind)
+    try:
+        result = _run(target, receipt, record, commit)
+        assert owner.poll() is None
+        assert result.returncode != 0
+        assert f"target is still referenced by live process {owner.pid}" in result.stderr
+        assert target.is_dir()
+        assert not record.exists()
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)
