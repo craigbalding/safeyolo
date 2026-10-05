@@ -105,9 +105,21 @@ jobs:
           fi
 
       - name: Install the pinned Rust toolchain
-        if: steps.changes.outputs.rust == 'true'
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
         working-directory: proxy
-        run: rustup show active-toolchain
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Restore Rust dependency cache
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          cache-bin: false
+          cache-on-failure: true
 
       - name: Check Rust formatting and lint
         if: steps.changes.outputs.rust == 'true'
@@ -233,13 +245,26 @@ jobs:
 
       - name: Install the pinned Rust toolchain
         working-directory: proxy
-        run: rustup show active-toolchain
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          cache-bin: false
+          cache-on-failure: true
 
       - name: Check Rust formatting and lint
         working-directory: proxy
         run: |
           ../scripts/cargo_with_space.sh fmt --all -- --check
-          ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+          host_target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$host_target"
+          ../scripts/cargo_with_space.sh clippy --locked --target "$host_target" --all-targets -- -D warnings
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -366,6 +391,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Install the pinned Rust toolchain
+        if: needs.focused-pr.outputs.rust == 'true'
+        working-directory: proxy
+        run: |
+          rustup show active-toolchain
+          printf 'RUSTUP_TOOLCHAIN=%s\n' "$(rustup show active-toolchain | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Restore Rust dependency cache
+        if: needs.focused-pr.outputs.rust == 'true'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: |
+            proxy -> target
+            guest/command -> target
+          cache-bin: false
+          cache-on-failure: true
+
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
