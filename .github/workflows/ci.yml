@@ -44,6 +44,10 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Install Mac package fixture dependency
+        if: runner.os == 'macOS'
+        run: brew install dpkg
+
       - name: Install dependencies
         run: uv sync --frozen --group dev
 
@@ -94,6 +98,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends libegl1 socat
+
+      - name: Install Mac preview test dependency
+        if: runner.os == 'macOS'
+        run: brew install socat
 
       - name: Install dependencies
         run: uv sync --frozen --group dev
