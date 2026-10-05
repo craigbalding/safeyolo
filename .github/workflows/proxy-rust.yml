@@ -415,6 +415,8 @@ jobs:
           prune-cache: true
       - name: Prepare platform test dependencies
         run: uv sync --frozen --group dev --python 3.12
+      - name: Install Mac preview test dependency
+        run: brew install socat
       - name: Test current CLI platform boundaries
         run: |
           uv run --frozen pytest -q cli/tests/test_vm.py cli/tests/test_vm_control.py \
