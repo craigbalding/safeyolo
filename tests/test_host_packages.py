@@ -132,6 +132,9 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     binary = tmp_path / "selected-proxy"
     binary.write_bytes(b"selected debug runtime, different from checkout release bytes")
     binary.chmod(0o755)
+    guest = tmp_path / "selected-guest"
+    guest.write_bytes(b"selected Linux guest command bytes")
+    guest.chmod(0o755)
     native = {"commit": REVISION, "profile": "debug", "platform": consumer.host_platform()}
     metadata = tmp_path / "native.json"
     metadata.write_text(json.dumps(native))
@@ -141,6 +144,7 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
         ["uv", "build", "--wheel", "--out-dir", str(destination)], cwd=builder.ROOT, check=True,
         env={**os.environ, "SAFEYOLO_BUILD_REVISION": REVISION,
              "SAFEYOLO_NATIVE_BINARY": str(binary), "SAFEYOLO_NATIVE_BUILD_METADATA": str(metadata),
+             "SAFEYOLO_GUEST_HELPER": str(guest),
              "SAFEYOLO_BUILD_PROFILE": "debug",
              "SAFEYOLO_NATIVE_PLATFORM_TAG": tag},
         capture_output=True, text=True,
@@ -150,6 +154,7 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
     assert f".dev0+g{REVISION}.debug-" in wheel.name
     with zipfile.ZipFile(wheel) as archive:
         assert archive.read("safeyolo/bin/safeyolo-proxy") == binary.read_bytes()
+        assert archive.read("safeyolo/bin/safeyolo-guest") == guest.read_bytes()
         assert json.loads(archive.read("safeyolo/_native_build.json")) == native
         wheel_metadata, = [name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")]
         assert b"Root-Is-Purelib: false" in archive.read(wheel_metadata)
@@ -157,14 +162,10 @@ def test_wheel_hook_packages_the_selected_bytes_and_platform_without_compiling(t
 
 def write_consumer_package(directory: Path, native: dict) -> dict:
     binary = b"known proxy bytes"
-    guest = b"known Linux guest command bytes"
     native["proxy"] = {"sha256": hashlib.sha256(binary).hexdigest(), "settings": {"profile": "dev"}}
-    native["guest_command"] = {"sha256": hashlib.sha256(guest).hexdigest(),
-                               "identity": f"safeyolo-guest 0.1.0 commit={REVISION} profile=debug"}
     wheel = directory / "safeyolo-0.1.0-py3-none-linux_x86_64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("safeyolo/bin/safeyolo-proxy", binary)
-        archive.writestr("safeyolo/bin/safeyolo-guest", guest)
         archive.writestr("safeyolo/_native_build.json", json.dumps(native))
         archive.writestr("safeyolo/_build_identity.json", json.dumps({
             "source_revision": REVISION, "build_identifier": "host-linux-amd64-debug",
@@ -222,24 +223,6 @@ def test_consumer_checks_actual_glibc_requirement(consumer_package, monkeypatch)
     directory, _ = consumer_package
     monkeypatch.setattr(consumer.platform, "libc_ver", lambda: ("glibc", "2.38"))
     with pytest.raises(ValueError, match="requires glibc 2.39"):
-        consumer.verify(directory)
-
-
-@pytest.mark.parametrize("change", ["sha256", "identity"])
-def test_consumer_rejects_misidentified_guest_command(consumer_package, change):
-    directory, manifest = consumer_package
-    # Outer checksums still match: challenge the actual native component binding.
-    manifest["native"]["guest_command"][change] = "different"
-    wheel = directory / manifest["wheel"]
-    with zipfile.ZipFile(wheel) as archive:
-        files = {name: archive.read(name) for name in archive.namelist()}
-    files["safeyolo/_native_build.json"] = json.dumps(manifest["native"]).encode()
-    with zipfile.ZipFile(wheel, "w") as archive:
-        for name, content in files.items():
-            archive.writestr(name, content)
-    manifest["files"][wheel.name] = consumer.sha256(wheel)
-    write_manifest(directory, manifest)
-    with pytest.raises(ValueError, match="guest command"):
         consumer.verify(directory)
 
 
@@ -347,15 +330,10 @@ def test_macos_package_wheel_and_manifest_share_the_actual_minimum(tmp_path, mon
     guest.mkdir()
     (guest / "vsock-term").write_bytes(b"guest terminal bytes")
     (guest / "build.json").write_text(json.dumps({"commit": REVISION, "sha256": consumer.sha256(guest / "vsock-term")}))
-    guest_command = tmp_path / "safeyolo-guest"
-    guest_command.write_bytes(b"selected Linux guest command bytes")
-    guest_command.chmod(0o755)
     native = {
         "commit": REVISION, "platform": "darwin-arm64", "profile": profile,
         "proxy": {"sha256": consumer.sha256(proxy), "settings": {"profile": "release" if profile == "production" else "dev"}},
         "helper": {"sha256": consumer.sha256(helper), "profile": helper_profile, "identity": helper_identity},
-        "guest_command": {"sha256": consumer.sha256(guest_command),
-                          "identity": f"safeyolo-guest 0.1.0 commit={REVISION} profile={profile}"},
     }
     monkeypatch.setattr(builder, "host_platform", lambda: "darwin-arm64")
     monkeypatch.setattr(consumer, "host_platform", lambda: "darwin-arm64")
@@ -380,7 +358,7 @@ def test_macos_package_wheel_and_manifest_share_the_actual_minimum(tmp_path, mon
     monkeypatch.setattr(consumer.subprocess, "check_output", check_output)
     monkeypatch.setattr(consumer, "verify_helper", lambda *args: None)
     directory = tmp_path / f"package-{profile}"
-    archive = builder.package(profile, {"proxy": proxy, "helper": helper, "guest_command": guest_command}, native, directory, guest)
+    archive = builder.package(profile, {"proxy": proxy, "helper": helper}, native, directory, guest)
     assert archive.is_file()
     manifest = consumer.verify(directory)
     assert manifest["native"] == native
@@ -389,7 +367,6 @@ def test_macos_package_wheel_and_manifest_share_the_actual_minimum(tmp_path, mon
     with zipfile.ZipFile(directory / manifest["wheel"]) as wheel:
         wheel_metadata, = [name for name in wheel.namelist() if name.endswith(".dist-info/WHEEL")]
         assert b"Tag: py3-none-macosx_15_2_arm64" in wheel.read(wheel_metadata)
-        assert wheel.read("safeyolo/bin/safeyolo-guest") == guest_command.read_bytes()
     monkeypatch.setattr(consumer.platform, "mac_ver", lambda: ("15.2", ("", "", ""), "arm64"))
     with pytest.raises(ValueError, match="requires macOS 15.2.1"):
         consumer.verify(directory)

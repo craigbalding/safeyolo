@@ -247,7 +247,6 @@ def package(profile: str, paths: dict, native: dict, directory: Path, vsock_dire
         "SAFEYOLO_BUILD_ID": f"host-{native['platform']}-{profile}",
         "SAFEYOLO_NATIVE_BINARY": str(paths["proxy"].resolve()), "SAFEYOLO_NATIVE_PLATFORM_TAG": tag,
         "SAFEYOLO_NATIVE_BUILD_METADATA": str(metadata.resolve()),
-        "SAFEYOLO_GUEST_HELPER": str(paths["guest_command"].resolve()),
     }
     subprocess.run(["uv", "build", "--wheel", "--out-dir", str(directory)], cwd=ROOT, env=environment, check=True)
     metadata.unlink()
@@ -288,38 +287,11 @@ def package(profile: str, paths: dict, native: dict, directory: Path, vsock_dire
     return archive
 
 
-def build_guest_command(profile: str, guest_directory: Path) -> Path:
-    """Use the Linux artifact on Mac; build the missing Linux output once."""
-    binary = guest_directory / profile / "safeyolo-guest"
-    if not binary.is_file():
-        if host_platform() == "darwin-arm64":
-            raise ValueError(f"required Linux guest artifact is missing: {binary}")
-        subprocess.run([str(ROOT / "scripts/build_guest_command.sh")], cwd=ROOT, check=True,
-                       env={**os.environ, "SAFEYOLO_BUILD_REVISION": commit(), "SAFEYOLO_BUILD_PROFILE": profile})
-        target = Path(os.environ.get("SAFEYOLO_GUEST_TARGET_DIR", str(ROOT / "guest/command/target")))
-        if os.environ.get("SAFEYOLO_GUEST_TARGET"):
-            target /= os.environ["SAFEYOLO_GUEST_TARGET"]
-        binary = target / ("release" if profile == "production" else "debug") / "safeyolo-guest"
-    identity = Path(str(binary) + ".version").read_text().strip()
-    if identity != f"safeyolo-guest 0.1.0 commit={commit()} profile={profile}":
-        raise ValueError("guest command source/profile identity differs from the selected package")
-    if sha256(binary) != Path(str(binary) + ".sha256").read_text().strip():
-        raise ValueError("guest command checksum differs from the built artifact")
-    with binary.open("rb") as stream:
-        header = stream.read(20)
-    machine = 62 if host_platform() == "linux-amd64" else 183
-    if header[:4] != b"\x7fELF" or int.from_bytes(header[18:20], "little") != machine:
-        raise ValueError("guest command artifact has the wrong Linux architecture")
-    return binary
-
-
 def build(directory: Path, debug_directory: Path, vsock_directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="host-packages-", dir=directory) as temporary:
         for profile in ("production", "debug"):
             paths, native = build_runtimes(profile, debug_directory)
-            paths["guest_command"] = build_guest_command(profile, vsock_directory / "guest-command")
-            native["guest_command"] = {"sha256": sha256(paths["guest_command"]), "identity": Path(str(paths["guest_command"]) + ".version").read_text().strip()}
             name = f"safeyolo-{native['platform']}-{profile}"
             archive = package(profile, paths, native, Path(temporary) / name, vsock_directory)
             shutil.move(str(archive), directory / archive.name)

@@ -80,11 +80,6 @@ def verify_wheel(wheel: Path, native: dict) -> None:
         binary = archive.read("safeyolo/bin/safeyolo-proxy")
         if hashlib.sha256(binary).hexdigest() != native["proxy"]["sha256"]:
             raise ValueError("wheel proxy bytes differ from built runtime")
-        guest = archive.read("safeyolo/bin/safeyolo-guest")
-        if hashlib.sha256(guest).hexdigest() != native["guest_command"]["sha256"]:
-            raise ValueError("wheel guest command bytes differ from built runtime")
-        if f"commit={native['commit']} profile={native['profile']}" not in native["guest_command"]["identity"]:
-            raise ValueError("guest command source/profile differs from package")
         with tempfile.TemporaryDirectory(prefix="safeyolo-package-proxy-", dir=wheel.parent.parent) as temporary:
             executable = Path(temporary) / "safeyolo-proxy"
             executable.write_bytes(binary)
