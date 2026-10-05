@@ -401,6 +401,95 @@ async fn selected_reads_and_six_authority_rejections_have_live_controls() {
 }
 
 #[tokio::test]
+async fn approval_preserves_operator_host_fields_and_enforced_rate() {
+    for inline in [true, false] {
+        let fixture = Fixture::new().await;
+        let host = if inline {
+            format!(
+                "[agents.worker.hosts]\n'{}'={{egress='prompt',rate=2,expires=2030-01-01T00:00:00Z}}\n",
+                fixture.address
+            )
+        } else {
+            format!(
+                "[agents.worker.hosts.'{}']\negress='prompt'\nrate=2\nexpires=2030-01-01T00:00:00Z\n",
+                fixture.address
+            )
+        };
+        fixture
+            .apply(&format!("{}\n{host}", fixture.source()))
+            .await;
+        let id = fixture.selected().await;
+        assert_eq!(
+            fixture
+                .prepare(&id, "Keep the operator's existing limit")
+                .await
+                .status,
+            202
+        );
+        let before: toml::Value = toml::from_str(&fixture.source()).unwrap();
+        let approved = fixture.resolve(&id, "approve").await;
+        assert_eq!(approved.status, 200, "{}", approved.json());
+        let after: toml::Value = toml::from_str(&fixture.source()).unwrap();
+
+        let origin = fixture.origin.clone();
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let served = tokio::spawn(async move {
+            let mut requests = 0;
+            loop {
+                let mut stream = tokio::select! {
+                    _ = &mut stopped => break,
+                    accepted = origin.accept() => accepted.unwrap().0,
+                };
+                let mut request = [0; 8192];
+                assert!(
+                    timeout(LIMIT, stream.read(&mut request))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        > 0
+                );
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n821-marker").await.unwrap();
+                requests += 1;
+            }
+            requests
+        });
+        let mut statuses = Vec::new();
+        for _ in 0..3 {
+            let reply = fixture.network("worker", fixture.address).await;
+            statuses.push(reply.status);
+            if reply.status == 200 {
+                assert_eq!(reply.body, b"821-marker");
+            }
+        }
+        stop.send(()).unwrap();
+        let requests = timeout(LIMIT, served).await.unwrap().unwrap();
+        let destination = fixture.address.to_string();
+        fixture.stop().await;
+
+        assert_eq!(statuses, [200, 200, 429], "existing rate was widened");
+        assert_eq!(requests, 2, "rate-limited request reached origin");
+        let mut expected = before["agents"]["worker"]["hosts"][&destination].clone();
+        expected["egress"] = toml::Value::String("allow".into());
+        expected.as_table_mut().unwrap().remove("expires");
+        let mut actual = after["agents"]["worker"]["hosts"][&destination].clone();
+        let fields = actual.as_table_mut().unwrap();
+        assert_eq!(
+            fields.remove("approval_request_id").unwrap().as_str(),
+            Some(id.as_str())
+        );
+        let action = fields.remove("approval_action").unwrap();
+        assert_eq!(
+            serde_json::to_value(action).unwrap(),
+            approved.json()["action"]
+        );
+        assert_eq!(
+            actual, expected,
+            "approval changed fields outside its effect"
+        );
+    }
+}
+
+#[tokio::test]
 async fn sequential_and_concurrent_decisions_change_permission_once_without_resetting_budgets() {
     for concurrent in [false, true] {
         let fixture = Fixture::new().await;

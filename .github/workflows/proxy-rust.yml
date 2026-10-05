@@ -128,13 +128,16 @@ jobs:
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
 
-      - name: Build and check native guest command operations
-        if: steps.changes.outputs.guest == 'true'
+      - name: Build the native guest command artifact
+        if: steps.changes.outputs.rust == 'true' || steps.changes.outputs.guest == 'true'
         env:
           SAFEYOLO_BUILD_PROFILE: debug
           CARGO_BUILD_JOBS: "1"
+        run: scripts/build_guest_command.sh
+
+      - name: Check native guest command operations
+        if: steps.changes.outputs.guest == 'true'
         run: |
-          scripts/build_guest_command.sh
           scripts/cargo_with_space.sh test --manifest-path guest/command/Cargo.toml --locked
           scripts/cargo_with_space.sh clippy --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
 

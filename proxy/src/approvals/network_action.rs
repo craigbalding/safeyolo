@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use toml_edit::{InlineTable, Value as TomlValue};
+use toml_edit::{InlineTable, Item, Value as TomlValue};
 use zeroize::Zeroizing;
 
 use super::{NetworkScope, invalid};
@@ -374,9 +374,21 @@ pub(crate) fn resolve(
         let changed = if matches!(decision, Decision::Approve) {
             let (mut document, context) = crate::policy::parse_toml_for_edit(source)
                 .map_err(|_| invalid("policy unavailable"))?;
-            let mut fields = InlineTable::new();
-            fields.insert("egress", TomlValue::from("allow"));
-            fields.insert("approval_request_id", TomlValue::from(request_id));
+            let hosts = super::hosts_table(&mut document, &scope)?;
+            let host = hosts
+                .entry(&scope.destination())
+                .or_insert(Item::Value(TomlValue::InlineTable(InlineTable::new())));
+            let fields = host
+                .as_table_like_mut()
+                .ok_or_else(|| invalid("host entry must be a table"))?;
+            // The fixed action changes egress and its until-removed lifetime,
+            // while retaining the operator's rate and other host fields.
+            fields.insert("egress", Item::Value(TomlValue::from("allow")));
+            fields.remove("expires");
+            fields.insert(
+                "approval_request_id",
+                Item::Value(TomlValue::from(request_id)),
+            );
             let mut action = InlineTable::new();
             for (key, value) in serde_json::to_value(&record.action)
                 .map_err(|_| invalid("action unavailable"))?
@@ -396,8 +408,10 @@ pub(crate) fn resolve(
                     },
                 );
             }
-            fields.insert("approval_action", TomlValue::InlineTable(action));
-            super::replace_host(&mut document, &scope, fields)?;
+            fields.insert(
+                "approval_action",
+                Item::Value(TomlValue::InlineTable(action)),
+            );
             resolved = Some(event);
             crate::policy::restore_large_toml_integers(&document.to_string(), &context)
         } else {
