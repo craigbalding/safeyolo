@@ -1895,7 +1895,7 @@ async fn stop_launcher(agent: &Agent) -> Result<(), Error> {
         .get("state")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
-    if !matches!(state, "exited" | "failed" | "stopped") {
+    if !matches!(state, "exited" | "failed" | "stopped" | "stopping") {
         let launch_id = record
             .get("launch_id")
             .and_then(Value::as_str)

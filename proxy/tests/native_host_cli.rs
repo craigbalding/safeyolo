@@ -98,6 +98,64 @@ fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid(
     assert!(!directory.join("runtime.json").exists());
 }
 
+#[test]
+fn incomplete_launcher_stop_can_be_repeated_and_cleaned_without_a_new_launch() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ],
+    ));
+    let agent_id = value(cli(&root, &["agent", "status", "marker"]))["agent_id"].clone();
+    let script = temp.path().join("launcher.sh");
+    let actions = temp.path().join("actions");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            actions.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+    let launch = root.join("agents/marker/current-launch.json");
+    fs::write(
+        &launch,
+        serde_json::to_vec(&serde_json::json!({
+            "name":"marker", "agent_id":agent_id, "launch_id":"launch-incomplete",
+            "state":"unknown", "launcher":{"kind":"script","script":script}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        let stopped = value(cli(&root, &["agent", "stop", "marker"]));
+        assert_eq!(stopped["runtime_state"], "stopped");
+        assert_eq!(stopped["agent_id"], agent_id);
+    }
+    assert_eq!(fs::read_to_string(&actions).unwrap(), "stop\nstop\n");
+    let saved: Value = serde_json::from_slice(&fs::read(&launch).unwrap()).unwrap();
+    assert_eq!(saved["launch_id"], "launch-incomplete");
+    assert_eq!(saved["state"], "stopping");
+    value(cli(&root, &["agent", "cleanup", "marker"]));
+    assert!(!launch.exists());
+    assert_eq!(fs::read_to_string(&actions).unwrap(), "stop\nstop\nstop\n");
+    let mut wrong_agent = saved;
+    wrong_agent["agent_id"] = "another-agent".into();
+    fs::write(&launch, serde_json::to_vec(&wrong_agent).unwrap()).unwrap();
+    assert!(!cli(&root, &["agent", "stop", "marker"]).status.success());
+    assert_eq!(fs::read_to_string(&actions).unwrap(), "stop\nstop\nstop\n");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unrelated_live_pid_is_not_a_backend_or_signal_authority() {
