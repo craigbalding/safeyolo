@@ -49,7 +49,7 @@ if __package__:
         _runtime_observation,
     )
     from .installed_sections import copy_prepared_nats, owned_processes, surviving_processes
-    from .native_credentials import store_credential
+    from .native_credentials import native_cli, store_credential
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -60,7 +60,7 @@ else:
         _runtime_observation,
     )
     from installed_sections import copy_prepared_nats, owned_processes, surviving_processes
-    from native_credentials import store_credential
+    from native_credentials import native_cli, store_credential
 
 BODY = b"owned-r638-response-needle\n"
 TASK_ID = "r638-process-local"
@@ -470,6 +470,9 @@ def main() -> None:
     task_policy = {"permissions": [{"action": "network:request", "resource": f"{args.origin_host}/*",
                                     "effect": "deny", "condition": {"agent": "alice"}}]}
     package_id = installed_identity(args.cli, args.rust_revision)
+    args.native_cli = native_cli(args.native_cli,
+                                 proxy=Path(package_id["package"]) / "bin/safeyolo-proxy",
+                                 revision=args.rust_revision)
     args.state_parent.mkdir(parents=True, exist_ok=True)
     if args.config_dir is not None:
         root = args.config_dir.resolve()

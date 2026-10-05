@@ -94,6 +94,9 @@ fi
 # product CLI still comes from install.sh's isolated uv tool environment.
 uv sync --frozen --group dev
 export PATH="$(uv tool dir --bin):$REPO_ROOT/.venv/bin:$PATH"
+# install.sh's existing Cargo build produces both native commands. Keep this
+# input explicit for access/continuity instead of guessing a debug artifact.
+export SAFEYOLO_NATIVE_CLI="${SAFEYOLO_NATIVE_CLI:-$INSTALL_ROOT/proxy/target/release/safeyolo}"
 
 if [ "$LANE" != "proxy" ]; then
     if [ "$(uname -s)" = "Linux" ]; then

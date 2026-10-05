@@ -155,6 +155,9 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
     env["PATH"] = os.pathsep.join((str(directory / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
     env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
     env["SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR"] = str(source)
+    # Preparation builds both native binaries through install.sh. Its subprocess
+    # cannot export this selection back into the section runner's environment.
+    env.setdefault("SAFEYOLO_NATIVE_CLI", str(checkout / "proxy/target/release/safeyolo"))
     if lane == "systrap":
         env["SAFEYOLO_RUNSC_PLATFORM"] = "systrap"
     else:

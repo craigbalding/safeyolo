@@ -1,7 +1,7 @@
 """Seed synthetic test credentials through the native host command.
 
-SAFEYOLO_NATIVE_CLI selects an installed native CLI. Source fixtures default to
-the repository's debug artifact. This helper never reads or encrypts secrets.
+SAFEYOLO_NATIVE_CLI or an explicit path selects the native CLI. Preparation
+binds it to the selected proxy; no warm source artifact is assumed here.
 """
 
 from __future__ import annotations
@@ -13,13 +13,39 @@ import tempfile
 from pathlib import Path
 
 
+def native_cli(binary: Path | None = None, *, proxy: Path | None = None,
+               revision: str | None = None) -> Path:
+    """Require a usable native CLI, matching the selected runtime when supplied."""
+    selected = binary or os.environ.get("SAFEYOLO_NATIVE_CLI")
+    if not selected:
+        raise RuntimeError("Set SAFEYOLO_NATIVE_CLI to the matching native safeyolo executable")
+    binary = Path(selected).expanduser().resolve()
+
+    def identity(path: Path, name: str) -> list[str]:
+        try:
+            result = subprocess.run([str(path), "--version"], capture_output=True,
+                                    text=True, timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f"Native credential setup cannot run {name}; check SAFEYOLO_NATIVE_CLI") from exc
+        fields = result.stdout.strip().split()
+        if result.returncode or len(fields) != 4 or fields[0] != name or not fields[2].startswith("commit="):
+            raise RuntimeError(f"Native credential setup requires a versioned {name} executable")
+        return fields[2:]
+
+    selected_identity = identity(binary, "safeyolo")
+    if proxy is not None and selected_identity != identity(proxy, "safeyolo-proxy"):
+        raise RuntimeError("Native credential CLI and selected proxy source/profile identities differ")
+    if revision and selected_identity[0] != f"commit={revision}":
+        raise RuntimeError("Native credential CLI does not match the selected install commit")
+    return binary
+
+
 def store_credential(data_dir: Path, name: str, value: str, *, kind: str = "bearer",
                      refresh_token: str | None = None, token_url: str | None = None,
                      client_id: str | None = None, client_secret: str | None = None,
                      expires_at: str | None = None, binary: Path | None = None) -> None:
     """Write one synthetic record, without placing values in argv or output."""
-    repository = Path(__file__).resolve().parents[2]
-    binary = binary or Path(os.environ.get("SAFEYOLO_NATIVE_CLI", repository / "proxy/target/debug/safeyolo"))
+    binary = native_cli(binary)
     data_dir.mkdir(parents=True, exist_ok=True)
     # Keep input files outside the instance. The host command chooses the single
     # native store through this temporary config; it does not need a live proxy.

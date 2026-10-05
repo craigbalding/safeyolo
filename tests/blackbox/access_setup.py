@@ -82,7 +82,7 @@ capabilities:
 """
 
 
-def prepare(config_dir: Path) -> None:
+def prepare(config_dir: Path, *, native_cli: Path) -> None:
     policy_path = config_dir / "policy.toml"
     policy = tomlkit.parse(policy_path.read_text())
     hosts = policy["hosts"]
@@ -122,7 +122,7 @@ def prepare(config_dir: Path) -> None:
     data = config_dir / "data"
     data.mkdir(exist_ok=True)
     credential = "p3-native-" + secrets.token_hex(20)
-    store_credential(data, "p3-owned", credential)
+    store_credential(data, "p3-owned", credential, binary=native_cli)
     fixture = config_dir / "p3-fixture.json"
     fixture.write_text(json.dumps({"credential_name": "p3-owned", "credential": credential}) + "\n")
     fixture.chmod(0o600)
@@ -131,8 +131,10 @@ def prepare(config_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config_dir", type=Path)
+    parser.add_argument("--native-cli", required=True, type=Path,
+                        help="Matching native safeyolo executable prepared by the launcher")
     args = parser.parse_args()
-    prepare(args.config_dir.resolve())
+    prepare(args.config_dir.resolve(), native_cli=args.native_cli)
 
 
 if __name__ == "__main__":
