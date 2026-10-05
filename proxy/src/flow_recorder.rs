@@ -32,10 +32,17 @@ pub(crate) struct FlowRecorder {
 impl FlowRecorder {
     /// Read settings once. Reload changes admission but keeps this store and
     /// writer, including the case where recording was disabled at startup.
-    pub(crate) fn start(enabled: bool, path: &Path, policy: Option<&Policy>) -> Self {
+    pub(crate) fn start(
+        enabled: bool,
+        path: &Path,
+        policy: Option<&Policy>,
+        native: Option<&crate::native_config::Capture>,
+    ) -> Self {
         let (store, writer) = if enabled {
-            let (settings, configured_path) =
-                policy.map(Policy::flow_store_settings).unwrap_or_default();
+            let (settings, configured_path) = match native {
+                Some(native) => (native.store_settings(), None),
+                None => policy.map(Policy::flow_store_settings).unwrap_or_default(),
+            };
             let path = match configured_path.as_ref().filter(|value| value.truthy()) {
                 Some(CircuitValue::Other(Value::String(path))) => Ok(Path::new(path)),
                 Some(_) => Err(ErrorKind::Type),
@@ -51,7 +58,13 @@ impl FlowRecorder {
             } else {
                 Some(FlowWriter::new(
                     store.clone(),
-                    queue_capacity(std::env::var("SAFEYOLO_FLOW_QUEUE_MAX").ok().as_deref()),
+                    native
+                        .map(|settings| {
+                            usize::try_from(settings.queue_max.max(0)).unwrap_or(usize::MAX)
+                        })
+                        .unwrap_or_else(|| {
+                            queue_capacity(std::env::var("SAFEYOLO_FLOW_QUEUE_MAX").ok().as_deref())
+                        }),
                 ))
             };
             (Some(store), writer)

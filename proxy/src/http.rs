@@ -225,7 +225,22 @@ fn full(body: impl Into<Bytes>) -> Body {
         .boxed()
 }
 
-fn inspection_options(runtime: &Runtime) -> Option<crate::inspection::Options> {
+fn inspection_options(
+    runtime: &Runtime,
+    identity: &ConnectionIdentity,
+    host: &str,
+) -> Option<crate::inspection::Options> {
+    if runtime.config.native_product
+        && runtime.policy.as_ref().is_some_and(|policy| {
+            !policy.is_addon_enabled(
+                crate::policy::Addon::PatternScanner,
+                Some(host),
+                identity.request_agent(),
+            )
+        })
+    {
+        return None;
+    }
     runtime.config.inspection.as_ref().map(|_| {
         let flags = runtime.operator_modes.flags();
         crate::inspection::Options {
@@ -1492,10 +1507,14 @@ where
         request_id,
     };
     let mut outcome = if runtime.config.agent_api_enabled {
-        let token_path = std::env::var_os("SAFEYOLO_DATA_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| runtime.config.data_dir())
-            .join("agent_token");
+        let token_path = if runtime.config.native_product {
+            runtime.config.data_dir()
+        } else {
+            std::env::var_os("SAFEYOLO_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| runtime.config.data_dir())
+        }
+        .join("agent_token");
         let policy = runtime
             .policy
             .as_ref()
@@ -1649,6 +1668,9 @@ where
     }
     // This is terminal local dispatch: no remaining observer receives request
     // headers, query, or body, including when the handler is unavailable.
+    if runtime.config.native_product && request.uri().path().trim_end_matches('/') == "/trace" {
+        outcome.name_trace_controls();
+    }
     let bytes = outcome.response.body_bytes();
     let size = bytes.len() as u64;
     let mut reply = Response::builder()
@@ -3168,7 +3190,7 @@ where
     context.attach_live(live.clone());
     if !circuit_hook_failed
         && inspection_admitted
-        && let Some(options) = inspection_options(&runtime)
+        && let Some(options) = inspection_options(&runtime, identity, &destination.policy_host)
     {
         context.attach_inspection(
             runtime.scanner.clone(),
@@ -3465,7 +3487,7 @@ where
             decision.decision,
         ));
     }
-    let response_scan = match inspection_options(&runtime) {
+    let response_scan = match inspection_options(&runtime, identity, &destination.policy_host) {
         Some(options)
             if runtime
                 .scanner

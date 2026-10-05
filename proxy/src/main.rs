@@ -26,7 +26,13 @@ async fn main() -> Result<(), Error> {
             let code = safeyolo_proxy::run_host_agent_entrypoint(&name, &launch_id).await?;
             std::process::exit(code);
         }
-        _ => return Err("usage: safeyolo-proxy --config CONFIG.json".into()),
+        Some("--help") => {
+            println!(
+                "safeyolo-proxy --config config.toml\nsafeyolo-proxy --version\n\nconfig.toml owns paths, listeners and runtime settings.\npolicy.toml owns host policy and named controls.\nRelative paths belong to the config.toml directory.\nCtrl-C stops this foreground process; SIGHUP reloads configuration.\nEmbedded development launchers may still pass their internal JSON configuration."
+            );
+            return Ok(());
+        }
+        _ => return Err("usage: safeyolo-proxy --config config.toml | --version | --help".into()),
     }
     let config_path = PathBuf::from(arguments.next().ok_or("--config needs a path")?);
     if arguments.next().is_some() {

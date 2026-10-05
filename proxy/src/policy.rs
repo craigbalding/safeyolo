@@ -373,6 +373,7 @@ pub enum Addon {
     CredentialGuard,
     CircuitBreaker,
     SseStreaming,
+    PatternScanner,
 }
 impl Addon {
     fn index(self) -> usize {
@@ -381,15 +382,17 @@ impl Addon {
             Self::CredentialGuard => 1,
             Self::CircuitBreaker => 2,
             Self::SseStreaming => 3,
+            Self::PatternScanner => 4,
         }
     }
 }
-const ADDON_COUNT: usize = 4;
+const ADDON_COUNT: usize = 5;
 const ADDON_NAMES: [&str; ADDON_COUNT] = [
     "network_guard",
     "credential_guard",
     "circuit_breaker",
     "sse_streaming",
+    "pattern_scanner",
 ];
 
 #[derive(Clone, Default, Debug)]

@@ -338,6 +338,14 @@ impl NetworkGuard {
         mut submit: impl FnMut(&AuditIntent) -> Result<()>,
         mut observe: impl FnMut(&TraceIntent),
     ) -> Result<Outcome> {
+        let policy_file = if pdp
+            .policy()
+            .is_some_and(|policy| policy.native_controls().is_some())
+        {
+            "policy.toml"
+        } else {
+            "policy.yaml"
+        };
         let mut output = Outcome {
             kind: OutcomeKind::Bypassed,
             response: None,
@@ -421,7 +429,14 @@ impl NetworkGuard {
             violation
         };
         if let Some(violation) = violation {
-            self.violation(request, options.block, violation, &mut output, &mut submit)?;
+            self.violation(
+                request,
+                options.block,
+                violation,
+                &mut output,
+                &mut submit,
+                policy_file,
+            )?;
             output.trace.state = "evaluated";
             output.trace.outcome = Some(output.kind);
             output.trace.status = output.response.as_ref().map(|response| response.status);
@@ -466,6 +481,7 @@ impl NetworkGuard {
         violation: Violation,
         output: &mut Outcome,
         submit: &mut impl FnMut(&AuditIntent) -> Result<()>,
+        policy_file: &str,
     ) -> Result<()> {
         let domain = request.host;
         let safe = sanitize(domain);
@@ -486,7 +502,7 @@ impl NetworkGuard {
                     } else {
                         format!("Access would be denied to {safe}")
                     },
-                    json!({"error":"Access denied by proxy","domain":domain,"reason":reason,"type":"access_denied","action":"self_correct","reflection":format!("Network access to {safe} is not in the security policy. If you need this domain, ask the operator to add it to policy.yaml.")}),
+                    json!({"error":"Access denied by proxy","domain":domain,"reason":reason,"type":"access_denied","action":"self_correct","reflection":format!("Network access to {safe} is not in the security policy. If you need this domain, ask the operator to add it to {policy_file}.")}),
                     json!({"reason":reason,"decision_type":"access_denied"}),
                     None,
                     vec![],

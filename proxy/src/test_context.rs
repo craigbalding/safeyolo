@@ -18,8 +18,7 @@
 //! FlowStore recording. This module returns decisions and metadata updates, not
 //! a flow/addon framework. Response recording uses the applied context and the
 //! request-id start_time; body snippets are the first 512 characters of capture_body.
-//! The shared Python atomic context-file writer remains a CLI producer helper.
-//! Header formatting here does not publish files or install a watcher.
+//! The native CLI uses this formatter and atomic writer for watched files.
 
 use num_bigint::BigInt;
 use serde::Serialize;
@@ -213,6 +212,25 @@ impl Context {
     pub fn header_line(&self) -> String {
         format!("{HEADER}: {}", self.format())
     }
+}
+
+/// Replace a watched file only after a complete canonical value is durable.
+/// Failed staging or replacement leaves the previous file intact.
+pub fn atomic_write(path: &std::path::Path, context: &Context) -> std::io::Result<()> {
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary
+        .as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    temporary.write_all(context.format().as_bytes())?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// These values must come from authenticated transport/service discovery, never

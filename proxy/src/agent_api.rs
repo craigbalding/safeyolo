@@ -393,6 +393,11 @@ pub struct Outcome<'a> {
     pub circuit_events: Vec<crate::circuits::Transition>,
 }
 impl Outcome<'_> {
+    pub(crate) fn name_trace_controls(&mut self) {
+        if let ResponseBody::Json(body) = &mut self.response.body {
+            crate::policy::native::name_control_fields(body);
+        }
+    }
     /// Native containment for an escaped authentication producer callback.
     /// The historical source fixture registered handler and guard separately;
     /// the production addon container may stop before its guard on that error.
@@ -779,7 +784,10 @@ async fn authenticated_read<'p>(
     if path == "/config" {
         match policy {
             PolicyState::Ready(policy) => {
-                return match policy.sensor_config() {
+                return match policy
+                    .native_sensor_config()
+                    .unwrap_or_else(|| policy.sensor_config())
+                {
                     Ok(config) => response(200, config),
                     Err(crate::policy::BaselineSerializationError::NonJsonTimestamp) => {
                         let mut outcome =

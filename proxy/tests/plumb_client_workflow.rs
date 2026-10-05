@@ -33,6 +33,7 @@ fn config(root: &Path) -> Config {
     std::fs::write(root.join("policy.json"), r#"{"permissions":[]}"#).unwrap();
     Config {
         native_product: false,
+        native_settings: None,
         listeners: ["alice", "bob", "carol", "dave"]
             .into_iter()
             .map(|agent| AgentListener {

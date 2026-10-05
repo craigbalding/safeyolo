@@ -152,6 +152,7 @@ struct Worker {
 /// One process owner should retain this writer across Runtime reloads. Creation
 /// is inert; file access and the worker start on the first emission only.
 pub struct Writer {
+    named_controls: bool,
     path: PathBuf,
     settings: Settings,
     queue: Arc<Queue>,
@@ -178,6 +179,7 @@ impl Writer {
 
     pub fn new(path: PathBuf, settings: Settings) -> Self {
         Self {
+            named_controls: false,
             path,
             queue: Arc::new(Queue {
                 pending: Mutex::new(Pending::default()),
@@ -187,6 +189,11 @@ impl Writer {
             settings,
             worker: Mutex::new(Worker::default()),
         }
+    }
+
+    pub(crate) fn with_named_controls(mut self, enabled: bool) -> Self {
+        self.named_controls = enabled;
+        self
     }
     #[cfg(test)]
     pub(crate) fn poison_for_test(&self) {
@@ -222,7 +229,10 @@ impl Writer {
         at: OffsetDateTime,
         receipt: Option<oneshot::Sender<bool>>,
     ) -> Result<Submission> {
-        let record = event.record(at);
+        let mut record = event.record(at);
+        if self.named_controls {
+            record.name_control();
+        }
         let mut worker = self.worker.lock().map_err(|_| Error(ErrorKind::Poisoned))?;
         if worker.stopped {
             return Ok(Submission::Stopped);

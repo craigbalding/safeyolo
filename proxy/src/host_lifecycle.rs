@@ -283,15 +283,15 @@ fn read_json(path: &std::path::Path) -> Result<Option<Value>, Error> {
     }
 }
 
-fn selected_launcher(agent: &Agent) -> Value {
-    let configured = agent.launcher.clone().or_else(|| {
-        let path = crate::host_platform::config_dir().join("config.yaml");
-        let source = std::fs::read_to_string(path).ok()?;
-        let config = yaml_rust2::YamlLoader::load_from_str(&source).ok()?;
-        config.first()?["agent_launcher"]["default"]
-            .as_str()
-            .map(str::to_owned)
-    });
+fn selected_launcher(agent: &Agent) -> Result<Value, Error> {
+    let configured = match &agent.launcher {
+        Some(launcher) => Some(launcher.clone()),
+        None => {
+            crate::native_config::host_settings()?
+                .agent_launcher
+                .default
+        }
+    };
     let (mut value, source) = match configured {
         Some(value) if agent.launcher.is_some() => (value, "agent"),
         Some(value) => (value, "host default"),
@@ -320,7 +320,7 @@ fn selected_launcher(agent: &Agent) -> Value {
     if let Some(script) = script {
         result["script"] = script.into();
     }
-    result
+    Ok(result)
 }
 
 fn harness(agent: &Agent) -> Option<&'static str> {
@@ -377,7 +377,7 @@ fn supervisor_state(name: &str) -> Result<Option<Value>, Error> {
 
 async fn runtime(agent: &Agent) -> Result<Value, Error> {
     let ready = crate::host_platform::is_sandbox_running(&agent.name).await;
-    let mut launcher = selected_launcher(agent);
+    let mut launcher = selected_launcher(agent)?;
     let mut state = "stopped".to_owned();
     let mut attachable = false;
     let mut launch_id = Value::Null;
@@ -553,7 +553,7 @@ async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
             return Err(error.into());
         }
     }
-    let mut launcher = selected_launcher(agent);
+    let mut launcher = selected_launcher(agent)?;
     if interactive {
         launcher = json!({"kind":"tmux-window","source":"requested"});
         if let Some(path) = std::env::var_os("SAFEYOLO_CLI_ASSETS_DIR") {
@@ -569,7 +569,7 @@ async fn start(agent: &Agent, interactive: bool) -> Result<Value, Error> {
     let launch_id = format!("launch-{}", uuid::Uuid::new_v4().simple());
     let timestamp =
         time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339)?;
-    let session = tmux_session();
+    let session = tmux_session()?;
     let record = json!({
         "name":agent.name,"agent_id":agent.id,"launch_id":launch_id,
         "launcher":launcher,"workspace":workspace,"mode":"background",
@@ -647,19 +647,10 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn tmux_session() -> String {
-    let path = crate::host_platform::config_dir().join("config.yaml");
-    let Some(config) = std::fs::read_to_string(path)
-        .ok()
-        .and_then(|source| yaml_rust2::YamlLoader::load_from_str(&source).ok())
-    else {
-        return "safeyolo".to_owned();
-    };
-    config
-        .first()
-        .and_then(|value| value["agent_launcher"]["tmux_session"].as_str())
-        .unwrap_or("safeyolo")
-        .to_owned()
+fn tmux_session() -> Result<String, Error> {
+    Ok(crate::native_config::host_settings()?
+        .agent_launcher
+        .tmux_session)
 }
 
 async fn sync_agent_listeners() -> Result<(), Error> {
@@ -679,11 +670,18 @@ async fn sync_agent_listeners() -> Result<(), Error> {
         .ok_or("native proxy working directory is missing")?;
     let sockets = crate::host_platform::config_dir().join("data/sockets");
     let source = std::fs::read(&path)?;
-    let mut config: Value = serde_json::from_slice(&source)?;
+    let native = path
+        .extension()
+        .is_some_and(|extension| extension == "toml");
+    let mut config: Value = if native {
+        serde_json::to_value(crate::native_config::read(&path)?)?
+    } else {
+        serde_json::from_slice(&source)?
+    };
     let entries = config
         .get("listeners")
         .and_then(Value::as_array)
-        .ok_or("native listeners must be a JSON array")?;
+        .ok_or("native listeners must be an array")?;
     let mut retained = Vec::new();
     for entry in entries {
         let socket = entry
@@ -734,8 +732,29 @@ async fn sync_agent_listeners() -> Result<(), Error> {
     let mode = std::fs::metadata(&path)?.permissions().mode();
     let parent = path.parent().ok_or("native config has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    serde_json::to_writer_pretty(&mut temporary, &config)?;
-    temporary.write_all(b"\n")?;
+    if native {
+        let mut document: toml_edit::DocumentMut = std::str::from_utf8(&source)?.parse()?;
+        let mut listeners = toml_edit::ArrayOfTables::new();
+        for entry in config["listeners"]
+            .as_array()
+            .ok_or("listeners must be an array")?
+        {
+            let mut table = toml_edit::Table::new();
+            for (name, value) in entry.as_object().ok_or("listener must be a table")? {
+                table.insert(
+                    name,
+                    toml_edit::value(value.as_str().ok_or("listener fields must be strings")?),
+                );
+            }
+            listeners.push(table);
+        }
+        document["listeners"] = toml_edit::Item::ArrayOfTables(listeners);
+        document["reload_id"] = toml_edit::value(requested.as_str());
+        temporary.write_all(document.to_string().as_bytes())?;
+    } else {
+        serde_json::to_writer_pretty(&mut temporary, &config)?;
+        temporary.write_all(b"\n")?;
+    }
     temporary.as_file().sync_all()?;
     temporary
         .as_file()

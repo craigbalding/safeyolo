@@ -17,7 +17,8 @@ fn document_with_memory(
     sample: fn() -> Result<crate::memory_monitor::MemorySample, crate::memory_monitor::SampleError>,
     now: fn() -> f64,
 ) -> CircuitValue {
-    let mut report = indexmap::IndexMap::from([("proxy".into(), json!("safeyolo").into())]);
+    let mut report: indexmap::IndexMap<String, CircuitValue> =
+        indexmap::IndexMap::from([("proxy".into(), json!("safeyolo").into())]);
     let memory = match runtime.memory_monitor.get_stats(sample, now) {
         Ok(stats) => stats,
         Err(error) => memory_failure(error.kind()),
@@ -106,6 +107,17 @@ fn document_with_memory(
         Err(error) => failure("RuntimeError", &error.to_string()),
     };
     report.insert("metrics".into(), metrics);
+    if runtime.config.native_product {
+        report = report
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    crate::policy::native::control_label(&name).to_owned(),
+                    value,
+                )
+            })
+            .collect();
+    }
     CircuitValue::Object(report)
 }
 
