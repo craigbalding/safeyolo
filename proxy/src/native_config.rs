@@ -513,11 +513,8 @@ tailnet_port=8443
         )
         .unwrap();
         let capture = read(&path).unwrap().native_settings.unwrap().capture;
-        assert_eq!(
-            capture.store_settings().max_response_body_bytes,
-            (-1).into()
-        );
-        assert_eq!(capture.store_settings().preview_text_chars, (-2).into());
+        assert_eq!(capture.store_settings().max_response_body_bytes, -1);
+        assert_eq!(capture.store_settings().preview_text_chars, -2);
         assert_eq!(capture.queue_max, -1);
     }
 
