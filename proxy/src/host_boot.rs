@@ -185,7 +185,7 @@ pub(crate) async fn stage(agent: &Agent, ip: &str, run_id: &str) -> Result<Value
     }
     let previous = crate::guest_commands::read_state(&share.join("host-launch-context.json"))?
         .unwrap_or(Value::Null);
-    let context = json!({"generation":run_id,"workspace":workspace,"memory_mb":agent.memory_mb.unwrap_or(4096),
+    let context = json!({"generation":run_id,"agent_id":agent.id,"ip":ip,"workspace":workspace,"memory_mb":agent.memory_mb.unwrap_or(4096),
         "extra_shares":shares.iter().map(|(host,_,ro)| json!({"host_path":host,"read_only":ro})).collect::<Vec<_>>(),
         "writable_mounts":shares.iter().filter(|(_,_,ro)| !ro).map(|(host,_,_)| host).collect::<Vec<_>>(),
         "command_payloads":previous.get("command_payloads").cloned().unwrap_or_else(|| json!({}))});

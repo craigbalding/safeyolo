@@ -180,20 +180,19 @@ pub(crate) async fn restore_attachments(config: &mut crate::Config) -> Result<()
         // projection or make the whole proxy unavailable. Preserve unknown
         // bindings until they can be reconciled; only a proven stale backend
         // authorizes their removal.
-        let run = match host_runs::read(&agent.name) {
-            Ok(run) => run,
-            Err(_) => continue,
+        let run = host_runs::read(&agent.name).ok().flatten();
+        let context = crate::guest_commands::read_state(
+            &root
+                .join("agents")
+                .join(&agent.name)
+                .join("config-share/host-launch-context.json"),
+        )
+        .ok()
+        .flatten();
+        let Some(ip) = current_attachment_ip(&agent, &observed, run.as_ref(), context.as_ref())
+        else {
+            continue;
         };
-        let Some(run) = run else { continue };
-        if run["agent_id"] != agent.id || run["run_id"] != observed["run_id"] {
-            continue;
-        }
-        let Some(ip) = run["ip"].as_str() else {
-            continue;
-        };
-        if ip.parse::<std::net::Ipv4Addr>().is_err() {
-            continue;
-        }
         host_platform::update_agent_map(&agent.name, Some(ip))?;
         config.listeners.retain(|entry| {
             entry.agent_id != agent.name || !entry.socket_path.starts_with(&sockets)
@@ -207,6 +206,35 @@ pub(crate) async fn restore_attachments(config: &mut crate::Config) -> Result<()
         });
     }
     Ok(())
+}
+
+fn current_attachment_ip<'a>(
+    agent: &host_agents::Agent,
+    observed: &Value,
+    run: Option<&'a Value>,
+    context: Option<&'a Value>,
+) -> Option<&'a str> {
+    if !matches!(
+        observed["runtime_state"].as_str(),
+        Some("running" | "starting" | "degraded")
+    ) {
+        return None;
+    }
+    let run_id = observed["run_id"].as_str()?;
+    // The backend observation must identify this incarnation before either
+    // host-owned record can supply its listener address. The read-only boot
+    // share remains available when the saved process handle is lost.
+    for (record, generation_key) in [(run, "run_id"), (context, "generation")] {
+        let Some(record) = record else { continue };
+        if record["agent_id"] == agent.id
+            && record[generation_key] == run_id
+            && let Some(ip) = record["ip"].as_str()
+            && ip.parse::<std::net::Ipv4Addr>().is_ok()
+        {
+            return Some(ip);
+        }
+    }
+    None
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -417,6 +445,55 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lost_host_handle_can_restore_only_the_observed_agents_current_listener() {
+        let agent = host_agents::Agent {
+            id: "ag-current".into(),
+            name: "probe".into(),
+            folder: None,
+            launcher: None,
+            host_script: None,
+            memory_mb: None,
+            rootfs_overlay: None,
+            user_default_args: Vec::new(),
+            mounts: Vec::new(),
+            dangerously_allow_unowned: false,
+        };
+        let observed = json!({"runtime_state":"degraded", "run_id":"current"});
+        let context = json!({"generation":"current", "agent_id":"ag-current", "ip":"10.80.0.10"});
+        assert_eq!(
+            current_attachment_ip(&agent, &observed, None, Some(&context)),
+            Some("10.80.0.10")
+        );
+        let invalid_handle = json!({"run_id":"current", "agent_id":"ag-current", "ip":false});
+        assert_eq!(
+            current_attachment_ip(&agent, &observed, Some(&invalid_handle), Some(&context)),
+            Some("10.80.0.10")
+        );
+        for (field, value) in [
+            ("generation", json!("prior")),
+            ("agent_id", json!("ag-other")),
+            ("ip", json!("invalid address")),
+        ] {
+            let mut conflicting = context.clone();
+            conflicting[field] = value;
+            assert_eq!(
+                current_attachment_ip(&agent, &observed, None, Some(&conflicting)),
+                None,
+                "conflicting {field} was accepted"
+            );
+        }
+        for state in ["stopped", "unknown"] {
+            let mut unavailable = observed.clone();
+            unavailable["runtime_state"] = state.into();
+            assert_eq!(
+                current_attachment_ip(&agent, &unavailable, None, Some(&context)),
+                None,
+                "boot metadata alone was accepted as runtime evidence"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn accepting_shell_without_banner_reports_the_bounded_hop_failure() {
         let directory = tempfile::tempdir().unwrap();

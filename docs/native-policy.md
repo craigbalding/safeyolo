@@ -1,9 +1,10 @@
-# Native policy commands
+# Native agents and policy commands
 
 The native CLI validates, displays and applies host-centred policy through the
 existing native proxy. Use a fresh instance directory. These commands also
 validate runtime settings and format, write, declare, read and clear test context.
-The remaining host commands and final release packages have separate owners.
+The installed CLI also configures agents, controls their lifecycle and opens
+terminals. Final release packages remain separate work.
 
 ## Install and start
 
@@ -53,19 +54,65 @@ source_id = "10.0.0.3"
 
 The `source_id` values are host-owned declaration slots for these test listeners.
 The Admin API binds IPv4 loopback and requires the token in `data/admin_token`.
-Keep that token on the host. Check the configuration, then start the proxy in
-a host terminal. `SAFEYOLO_CONFIG_DIR` binds the existing host readers to this
-instance directory:
+Keep that token on the host. Check the configuration, then start and inspect
+the proxy from a host terminal:
 
 ```sh
 "$HOME/.safeyolo-native/bin/safeyolo" config check "$HOME/.safeyolo-native/config.toml"
-SAFEYOLO_CONFIG_DIR="$HOME/.safeyolo-native" "$HOME/.safeyolo-native/bin/safeyolo-proxy" --config "$HOME/.safeyolo-native/config.toml"
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" start
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" status
 ```
 
-The process remains in that terminal. A usable instance has an accepted
-`data/ready.json` marker and accepting agent sockets. An occupied endpoint or
-unreadable input produces a startup error. Press Ctrl-C in that terminal to stop
-the proxy after using the commands below.
+The proxy runs in the background. An occupied endpoint or unreadable input
+produces a startup error and points to `logs/proxy.log`. `status` and `doctor`
+report proxy health separately from each agent's runtime, control, command and
+terminal state. These observations remain available when the Admin API is down.
+The top-level `stop` command stops the proxy; stop each agent separately.
+
+## Configure and use an agent
+
+Run these commands on the host as the account that owns the workspace.
+The native installation above supplies guest helpers and launchers. Before
+starting a sandbox, also install the platform's guest images: Ubuntu uses
+`share/rootfs-tree`; macOS uses `share/Image`, `share/initramfs.cpio.gz` and
+`share/rootfs-base.ext4`. Ubuntu needs the maintained runsc and user-namespace
+setup. macOS needs the installed `bin/safeyolo-vm` and `bin/vsock-term` helpers.
+See the [guest build instructions](../guest/README.md) for these prerequisites.
+
+In this example, `$HOME/work` is an existing directory owned by your account.
+The command runs an interactive shell in the guest, using your current terminal:
+
+```sh
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent create work --workspace "$HOME/work" --memory 4096
+"$HOME/.safeyolo-native/bin/safeyolo" --root "$HOME/.safeyolo-native" agent start work --foreground
+```
+
+To start a persistent background command, set `--command` when creating or
+configuring the agent, then use `agent start work` without `--foreground`.
+The shipped tmux-window launcher survives viewer loss. `agent attach work`
+reopens the recorded session. Attach reports absence when the command is stopped;
+it does not launch a replacement. `agent shell work` opens an independent shell.
+
+Use `agent configure work --workspace PATH --memory MB` to change settings.
+The output identifies next-start scope. The current sandbox keeps its existing
+workspace and memory until one `agent stop work` / `agent start work` cycle.
+Repeat `--mount HOST:GUEST[:ro]` for explicit shares. Read-only shares reject guest
+writes. An unowned workspace requires the existing explicit
+`--dangerously-allow-unowned` override.
+
+If a shell fails, run `agent diagnostics work`. The result names runtime and
+control failures independently of proxy availability. On macOS it also checks
+the private helper control and the SSH banner. A connection without a banner
+reports the failed shell hop after the existing three-second deadline.
+`agent recover work` uses the independent shared-home/PID-1 command probe;
+it requires a running guest and idle command supervision, without SSH or a model.
+If control recovery is unavailable, `agent stop work` still uses verified backend
+identity. It does not signal an unrelated PID from a stale record.
+
+Commander discovers the installed native executable from its authenticated
+instance endpoint. Named launch and status use the Admin API. Remote terminal
+operations require the configured SSH route separately; the admin token supplies
+no SSH access. Closing a terminal or Commander does not stop the background run.
 
 ## Check, show and apply
 
