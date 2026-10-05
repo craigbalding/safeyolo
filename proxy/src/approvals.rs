@@ -684,7 +684,7 @@ pub(crate) fn update_policy<T>(
 #[derive(Clone, Copy)]
 pub(crate) enum PolicyActivation {
     Candidate,
-    Rollback,
+    Rollback { list_mtime: f64 },
 }
 
 /// A whole replacement does not need to parse the rejected saved candidate.
@@ -743,11 +743,16 @@ fn restore_policy(
     original: &str,
     activate: &mut impl FnMut(&str, PolicyActivation) -> std::result::Result<(), String>,
 ) -> Result<()> {
+    // Capture inputs referenced by the original SAVED bytes before restoring
+    // them. Reading the candidate file here would observe the wrong lists.
+    // Invalid saved inputs must still be restored; the watcher retains its
+    // existing validation/error behavior if it later reaches those inputs.
+    let list_mtime = crate::policy::Policy::saved_lists_mtime(path, original).unwrap_or_default();
     save_policy(path, original).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to restore original policy: {}", error.error),
     })?;
-    activate(original, PolicyActivation::Rollback).map_err(|error| ApprovalError {
+    activate(original, PolicyActivation::Rollback { list_mtime }).map_err(|error| ApprovalError {
         kind: ErrorKind::Rollback,
         message: format!("failed to reactivate restored policy: {error}"),
     })

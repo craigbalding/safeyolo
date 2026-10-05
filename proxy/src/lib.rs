@@ -881,7 +881,7 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
                         .map_err(|error| error.to_string())?;
                     prepare_policy_runtime(current, candidate).map_err(|error| error.to_string())?
                 }
-                approvals::PolicyActivation::Rollback => {
+                approvals::PolicyActivation::Rollback { list_mtime } => {
                     // Restored SAVED bytes may never have been live. Restore
                     // the exact pre-apply generation instead of compiling them.
                     let previous = before_activation
@@ -890,7 +890,7 @@ pub(crate) fn apply_native_policy(state: &RuntimeState, source: &str) -> Result<
                     let mut runtime = previous.as_ref().clone();
                     if let Some(policy) = runtime.policy.as_mut() {
                         policy
-                            .observe_restored_native_file()
+                            .observe_restored_native_file(list_mtime)
                             .map_err(|error| error.to_string())?;
                     }
                     runtime

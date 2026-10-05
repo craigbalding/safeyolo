@@ -289,11 +289,19 @@ def test_failed_activation_retains_live_generation_when_saved_policy_differs(tmp
         pid = instance.process.pid
         # Select a saved/live mismatch without asking the existing mtime
         # watcher to activate the external candidate before the failed apply.
-        saved = DENY.replace('egress="deny"', f'egress="{saved_egress}"')
+        saved_list = tmp_path / "saved-targets.txt"
+        saved_list.write_text("saved.example\n")
+        saved = (
+            DENY.replace('egress="deny"', f'egress="{saved_egress}"')
+            + f'\n[lists]\nsaved = {json.dumps(str(saved_list))}\n'
+            + '[hosts."$saved"]\negress = "allow"\n'
+        )
         metadata = instance.policy.stat()
         instance.policy.write_text(saved)
         os.utime(instance.policy, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
         assert instance.show()["status"] == "saved_differs"
+        checked = instance.cli("policy", "check", str(instance.policy))
+        assert checked.returncode == 0, checked.stderr
         controls(instance, origin, other)
         failed = instance.apply(DENY + "\n[credential.activation_failure]\nmatch = ['\\uD800']\n", valid=False)
         assert "activation failed" in failed.stderr

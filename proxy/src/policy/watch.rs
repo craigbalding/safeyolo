@@ -23,11 +23,21 @@ impl PolicyFileTimes {
 }
 
 impl Policy {
+    /// Observe the lists named by saved bytes before an owned restoration.
+    /// These observations do not compile or activate that saved policy.
+    pub(crate) fn saved_lists_mtime(path: &Path, source: &str) -> Result<f64> {
+        source_lists_max_mtime(path, source)
+    }
+
     /// A rejected native apply restored only saved bytes. Acknowledge that
     /// owned write without replacing the live source, list inputs or controls.
-    pub(crate) fn observe_restored_native_file(&mut self) -> Result<()> {
+    pub(crate) fn observe_restored_native_file(&mut self, list_mtime: f64) -> Result<()> {
         if let (Some(path), Some(times)) = (&self.baseline_path, &mut self.file_times) {
-            times.record_own_expiry_write(modified(path)?);
+            let baseline = modified(path)?;
+            times.baseline = baseline;
+            // Use the pre-restoration observation, so a later list edit stays
+            // visible even if it precedes this runtime publication.
+            times.lists = list_mtime;
         }
         Ok(())
     }
@@ -158,12 +168,16 @@ fn lists_max_mtime(path: &Path) -> Result<f64> {
     let Ok(source) = fs::read_to_string(path).map(Zeroizing::new) else {
         return Ok(0.0);
     };
+    source_lists_max_mtime(path, &source)
+}
+
+fn source_lists_max_mtime(path: &Path, source: &str) -> Result<f64> {
     let format = match path.extension().and_then(|value| value.to_str()) {
         Some("toml") => Format::Toml,
         Some("yaml" | "yml") => Format::Yaml,
         _ => Format::Json,
     };
-    let Ok((mut raw, mut timestamps)) = decode_policy_value(&source, format) else {
+    let Ok((mut raw, mut timestamps)) = decode_policy_value(source, format) else {
         // The existing native decoder has documented representation gaps; this
         // preserves the file-decode failure boundary without another parser.
         return Ok(0.0);
