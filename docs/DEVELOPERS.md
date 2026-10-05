@@ -281,9 +281,10 @@ repeat. Finally restore the candidate, clean the changed packages, rebuild it,
 and require its hash to match the first candidate build. Mutant hashes must be
 distinct. The wrapper records the batch, canonical source path, and source
 directory identity in the target. The wrapper refuses a target from another
-source tree, including a replacement tree at the same scratch path. Retire the
-disposable target after acceptance; keep the commands, patches, hashes, and
-required executables as evidence.
+source tree, including a replacement tree at the same scratch path. After
+acceptance, keep the target if the next approved work can reuse it within that
+source-batch binding. Retire it when it is no longer useful; keep the commands,
+patches, hashes, and required executables as evidence.
 
 Reuse one target directory per active candidate through coding and reviewer
 correction rounds. Keep the source location, toolchain, profile and target mode
