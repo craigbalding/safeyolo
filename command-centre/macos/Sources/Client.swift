@@ -30,7 +30,8 @@ final class SafeYoloClient: ObservableObject {
     @Published private(set) var pendingTerminalIDs = Set<String>()
     @Published private(set) var instanceID = ""
     @Published private(set) var hostUser: String?
-    @Published private(set) var hostPython: String?
+    @Published private(set) var hostExecutable: String?
+    @Published private(set) var hostRoot: String?
     @Published private(set) var webmitmURL: URL?
     @Published private(set) var webMITMKeyCopied = false
     @Published private(set) var requestErrors: [String: String] = [:]
@@ -363,7 +364,8 @@ final class SafeYoloClient: ObservableObject {
             )
             if instanceID != validatedID { instanceID = validatedID }
             if hostUser != instance.hostUser { hostUser = instance.hostUser }
-            if hostPython != instance.hostPython { hostPython = instance.hostPython }
+            if hostExecutable != instance.hostExecutable { hostExecutable = instance.hostExecutable }
+            if hostRoot != instance.hostRoot { hostRoot = instance.hostRoot }
             let freshWebURL = instance.webmitmURL.flatMap { URL(string: $0) }
             if webmitmURL != freshWebURL { webmitmURL = freshWebURL }
             if eventEndpoint != instance.commandCentreEvents { eventEndpoint = instance.commandCentreEvents }

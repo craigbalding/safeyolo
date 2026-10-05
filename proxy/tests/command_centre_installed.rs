@@ -124,7 +124,9 @@ fi
     let identity = identity.1;
     assert_eq!(identity["safeyolo_instance_id"], HOST_ID);
     assert_eq!(identity["host_user"], "operator");
-    assert_eq!(identity["host_python"], "/no/python/interpreter");
+    assert!(identity.get("host_python").is_none());
+    assert!(identity["host_executable"].is_null());
+    assert_eq!(identity["host_root"], root.to_str().unwrap());
     assert_eq!(
         identity["command_centre_events"],
         json!({"enabled":true,"port":events_port})

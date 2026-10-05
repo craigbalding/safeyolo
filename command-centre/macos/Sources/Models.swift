@@ -8,7 +8,8 @@ struct InstanceInfo: Decodable {
     let schemaVersion: Int
     let safeyoloInstanceID: String
     let hostUser: String?
-    let hostPython: String?
+    let hostExecutable: String?
+    let hostRoot: String?
     let webmitmURL: String?
     let commandCentreEvents: EventEndpoint?
 
@@ -16,7 +17,8 @@ struct InstanceInfo: Decodable {
         case schemaVersion = "schema_version"
         case safeyoloInstanceID = "safeyolo_instance_id"
         case hostUser = "host_user"
-        case hostPython = "host_python"
+        case hostExecutable = "host_executable"
+        case hostRoot = "host_root"
         case webmitmURL = "webmitm_url"
         case commandCentreEvents = "command_centre_events"
     }

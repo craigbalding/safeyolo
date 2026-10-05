@@ -1420,7 +1420,8 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
                 "schema_version":1,
                 "safeyolo_instance_id":stable_id,
                 "host_user":host.user(),
-                "host_python":host.python(),
+                "host_executable":host.executable(),
+                "host_root":host.root(),
                 "webmitm_url":Value::Null,
                 "command_centre_events":{"enabled":host.events_port().is_some(),"port":host.events_port()},
                 "capabilities":{

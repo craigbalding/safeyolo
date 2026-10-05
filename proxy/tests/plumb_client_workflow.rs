@@ -34,6 +34,7 @@ fn config(root: &Path) -> Config {
     Config {
         native_product: false,
         native_settings: None,
+        native_config_dir: None,
         listeners: ["alice", "bob", "carol", "dave"]
             .into_iter()
             .map(|agent| AgentListener {

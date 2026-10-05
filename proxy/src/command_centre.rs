@@ -2,7 +2,7 @@
 //! The native Admin listener authenticates and validates requests before these
 //! fixed host commands can run. None of these helpers handles proxy traffic.
 
-use std::path::PathBuf;
+use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
 use serde_json::Value;
 use tokio::sync::oneshot;
@@ -11,7 +11,7 @@ use crate::Error;
 
 #[derive(Clone)]
 pub(crate) struct Host {
-    cli_python: Option<PathBuf>,
+    root: PathBuf,
     user: Option<String>,
     instance_file: PathBuf,
     events_port: Option<u16>,
@@ -76,7 +76,10 @@ impl Host {
             _ => return Err("command_centre.share must be local or tailnet".into()),
         };
         let host = Self {
-            cli_python: None,
+            root: config
+                .native_config_dir
+                .clone()
+                .ok_or("native configuration directory is missing")?,
             user: std::env::var("USER").ok(),
             instance_file: config.data_dir().join("instance_id"),
             events_port: Some(centre.events_port),
@@ -95,9 +98,6 @@ impl Host {
             }
             return Ok(None);
         };
-        // This is only an informational field for clients that explicitly
-        // launch the separate Python CLI. Native proxy operations never use it.
-        let cli_python = std::env::var_os("SAFEYOLO_CLI_PYTHON").map(PathBuf::from);
         let user = std::env::var("SAFEYOLO_OPERATOR_HOST_USER")
             .ok()
             .filter(|value| !value.is_empty());
@@ -122,7 +122,7 @@ impl Host {
             return Err("Command Centre events must be enabled for Tailnet publication".into());
         }
         Ok(Some(Self {
-            cli_python,
+            root: crate::host_platform::config_dir(),
             user,
             instance_file,
             events_port,
@@ -138,11 +138,19 @@ impl Host {
         self.user.as_deref()
     }
 
-    pub(crate) fn python(&self) -> &str {
-        self.cli_python
-            .as_ref()
-            .and_then(|path| path.to_str())
-            .unwrap_or_default()
+    pub(crate) fn executable(&self) -> Option<PathBuf> {
+        let path = self.root.join("bin/safeyolo");
+        // Discovery only: host-owned installed layout selects the binary.
+        // No request or user-configured executable/argv is evaluated here.
+        let metadata = std::fs::metadata(&path).ok()?;
+        (self.root.is_absolute()
+            && metadata.is_file()
+            && metadata.permissions().mode() & 0o111 != 0)
+            .then_some(path)
+    }
+
+    pub(crate) fn root(&self) -> &std::path::Path {
+        &self.root
     }
 
     pub(crate) fn instance_id(&self) -> Result<String, Error> {

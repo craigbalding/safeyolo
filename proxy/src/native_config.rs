@@ -185,7 +185,10 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     if path.extension().and_then(|value| value.to_str()) != Some("toml") {
         return Err("native configuration requires config.toml".into());
     }
-    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let root = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let mut value = crate::policy::parse_toml_document(&std::fs::read_to_string(path)?)?;
     let fields = value
         .as_object_mut()
@@ -275,6 +278,7 @@ pub fn read(path: &Path) -> Result<Config, Error> {
     let mut config: Config = serde_json::from_value(value)?;
     config.native_product = true;
     config.native_settings = Some(settings);
+    config.native_config_dir = Some(root.canonicalize()?);
     config.validate()?;
     Ok(config)
 }
@@ -315,6 +319,31 @@ pub(crate) fn host_settings() -> Result<Settings, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_installation_root_comes_only_from_the_configuration_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "admin_port=0\n").unwrap();
+        let config = read(&path).unwrap();
+        assert_eq!(
+            config.native_config_dir,
+            Some(directory.path().canonicalize().unwrap())
+        );
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("native_config_dir")
+                .is_none()
+        );
+        std::fs::write(&path, "native_config_dir='/another/instance'\n").unwrap();
+        assert!(
+            read(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("native_config_dir")
+        );
+    }
 
     #[test]
     fn fresh_loader_keeps_nondefault_settings_and_resolves_runtime_paths() {

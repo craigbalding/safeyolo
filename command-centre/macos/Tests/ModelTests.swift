@@ -216,31 +216,33 @@ struct ModelTests {
 
     private static func testAutomaticTerminalTarget() throws {
         let adminURL = "https://server.example.ts.net:9443"
-        let python = "/opt/safeyolo/bin/python"
+        let executablePath = "/opt/safeyolo/bin/safeyolo"
         let automatic = try agentTerminalCommand(
-            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator", hostPython: python
+            name: "probe", remote: true, terminalTarget: nil, adminURL: adminURL, hostUser: "operator", hostExecutable: executablePath, hostRoot: "/opt/safeyolo"
         )
-        let explicit = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostPython: python)
+        let explicit = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@server.example.ts.net", hostExecutable: executablePath, hostRoot: "/opt/safeyolo")
         precondition(automatic == explicit)
         precondition(!automatic.contains("9443"))
         let override = try agentTerminalCommand(
-            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator", hostPython: python
+            name: "probe", remote: true, terminalTarget: "custom-alias", adminURL: adminURL, hostUser: "operator", hostExecutable: executablePath, hostRoot: "/opt/safeyolo"
         )
         precondition(override.hasPrefix("ssh -t -- 'custom-alias' "))
         let local = try agentTerminalCommand(
-            name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator"
+            name: "probe", remote: false, terminalTarget: "ignored", adminURL: adminURL, hostUser: "operator",
+            hostExecutable: executablePath, hostRoot: "/opt/safeyolo"
         )
-        precondition(local == "safeyolo agent attach -- 'probe'")
+        precondition(local == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent attach -- 'probe'")
         do {
             _ = try agentTerminalCommand(
                 name: "probe", remote: true, terminalTarget: nil,
-                adminURL: "http://localhost:19090", hostUser: "operator", transport: .sshTunnel
+                adminURL: "http://localhost:19090", hostUser: "operator",
+                hostExecutable: executablePath, hostRoot: "/opt/safeyolo", transport: .sshTunnel
             )
             preconditionFailure("A forwarded API URL is not the SSH server")
         } catch ConnectionError.missingTerminalTarget {}
         let tunnel = try agentTerminalCommand(
             name: "probe", remote: true, terminalTarget: "tunnel-alias",
-            adminURL: "http://localhost:19090", hostUser: "operator", hostPython: python, transport: .sshTunnel
+            adminURL: "http://localhost:19090", hostUser: "operator", hostExecutable: executablePath, hostRoot: "/opt/safeyolo", transport: .sshTunnel
         )
         precondition(tunnel.hasPrefix("ssh -t -- 'tunnel-alias' "))
 
@@ -266,25 +268,46 @@ struct ModelTests {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("attach '\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let executable = root.appendingPathComponent("python fixture")
+        let executable = root.appendingPathComponent("native fixture")
         try Data("#!/bin/sh\nprintf '%s\\0' \"$@\"\n".utf8).write(to: executable)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
-        let command = try agentTerminalCommand(name: name, remote: true, terminalTarget: target, hostPython: executable.path)
+        let command = try agentTerminalCommand(name: name, remote: true, terminalTarget: target, hostExecutable: executable.path, hostRoot: root.path)
         let sshArgs = try shellArguments(command, function: "ssh")
         precondition(sshArgs.count == 4 && sshArgs[0] == "-t" && sshArgs[1] == "--" && sshArgs[2] == target)
         let attachArgs = try shellArguments(sshArgs[3])
-        precondition(attachArgs == ["-m", "safeyolo.cli", "agent", "attach", "--", name])
+        precondition(attachArgs == ["--root", root.path, "agent", "attach", "--", name])
         let shellCommand = try agentTerminalCommand(name: name, remote: true, terminalTarget: target,
-                                                   hostPython: executable.path, action: .shell)
+                                                   hostExecutable: executable.path, hostRoot: root.path, action: .shell)
         let shellSSHArgs = try shellArguments(shellCommand, function: "ssh")
         let shellArgs = try shellArguments(shellSSHArgs[3])
-        precondition(shellArgs == ["-m", "safeyolo.cli", "agent", "shell", "--persistent", "--", name])
-        let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil, action: .shell)
-        precondition(localShell == "safeyolo agent shell --persistent -- 'probe'")
+        precondition(shellArgs == ["--root", root.path, "agent", "shell", "--persistent", "--", name])
+        let localShell = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil,
+            hostExecutable: executablePath, hostRoot: "/opt/safeyolo", action: .shell)
+        precondition(localShell == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent shell --persistent -- 'probe'")
         do {
             _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host")
             preconditionFailure("A missing installation must not fall back to the remote shell's PATH")
-        } catch ConnectionError.missingRemoteInstallation {}
+        } catch ConnectionError.missingNativeInstallation {}
+        let interpreterOnly = try JSONDecoder().decode(
+            InstanceInfo.self,
+            from: Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-fixture","host_python":"/usr/bin/python3"}"#.utf8)
+        )
+        for remote in [false, true] {
+            do {
+                _ = try agentTerminalCommand(
+                    name: "probe", remote: remote, terminalTarget: "operator@host",
+                    hostExecutable: interpreterOnly.hostExecutable, hostRoot: interpreterOnly.hostRoot
+                )
+                preconditionFailure("Interpreter-only discovery must not supply a terminal command")
+            } catch ConnectionError.missingNativeInstallation {}
+            do {
+                _ = try agentTerminalCommand(
+                    name: "probe", remote: remote, terminalTarget: "operator@host",
+                    hostExecutable: executablePath
+                )
+                preconditionFailure("The instance root is required even when the executable is known")
+            } catch ConnectionError.missingNativeInstallation {}
+        }
     }
 
     @MainActor
@@ -292,7 +315,7 @@ struct ModelTests {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         StubURLProtocol.responsesByPath = [
-            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator","host_python":"/opt/safeyolo/bin/python"}"#.utf8)),
+            "/admin/instance": (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","host_user":"operator","host_executable":"/opt/safeyolo/bin/safeyolo","host_root":"/opt/safeyolo"}"#.utf8)),
             "/admin/approvals": (200, Data(#"{"approvals":[]}"#.utf8)),
             "/admin/agents": (503, Data(#"{"error":"agent inventory unavailable"}"#.utf8)),
         ]
@@ -324,7 +347,8 @@ struct ModelTests {
         precondition(StubURLProtocol.requestCount >= 9, "Expected three snapshot attempts")
         precondition(agentErrors[firstFailure...].allSatisfy { $0 != nil }, "Successful identity/approval retries cleared the agent error")
         precondition(client.hostUser == "operator")
-        precondition(client.hostPython == "/opt/safeyolo/bin/python")
+        precondition(client.hostExecutable == "/opt/safeyolo/bin/safeyolo")
+        precondition(client.hostRoot == "/opt/safeyolo")
         precondition(client.webmitmURL == nil)
         StubURLProtocol.responsesByPath["/admin/instance"] = (200, Data(#"{"schema_version":1,"safeyolo_instance_id":"sy-remote-test","webmitm_url":"https://dev.example.ts.net:8443/"}"#.utf8))
         await client.refreshInstance()
@@ -406,13 +430,15 @@ struct ModelTests {
         precondition(inventory.agents[0].sandboxReady)
         precondition(inventory.agents[0].canStart)
         precondition(!inventory.agents[0].attachable)
-        let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil)
-        precondition(local == "safeyolo agent attach -- 'probe'")
-        let remote = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostPython: "/opt/safeyolo/bin/python")
+        let local = try agentTerminalCommand(name: "probe", remote: false, terminalTarget: nil,
+                                            hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
+        precondition(local == "'/opt/safeyolo/bin/safeyolo' --root '/opt/safeyolo' agent attach -- 'probe'")
+        let remote = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: "operator@host", hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
         precondition(remote.hasPrefix("ssh -t -- 'operator@host' "))
         precondition(!remote.contains("agent run"))
         do {
-            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: nil)
+            _ = try agentTerminalCommand(name: "probe", remote: true, terminalTarget: nil,
+                                         hostExecutable: "/opt/safeyolo/bin/safeyolo", hostRoot: "/opt/safeyolo")
             preconditionFailure("Remote terminal needs a discovered or explicitly configured target")
         } catch ConnectionError.missingTerminalTarget {}
 
