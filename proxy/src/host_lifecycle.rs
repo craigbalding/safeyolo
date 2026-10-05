@@ -727,7 +727,7 @@ async fn tmux_session_with_current_env(
             "-d",
             "-P",
             "-F",
-            "#{socket_path}\n#{pane_id}",
+            "#{pane_id}",
             "-s",
             session,
             "-n",
@@ -782,9 +782,18 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
         .pointer("/launcher/kind")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if !matches!(kind, "tmux-window" | "tmux-pane") {
-        return Err("prepared launch does not select a tmux preset".into());
-    }
+    let pane = match kind {
+        "tmux-window" => false,
+        "tmux-pane" => true,
+        // Custom launchers retain their script identity for hooks and attach.
+        // The shipped preset they delegate to supplies its own layout.
+        "script" | "manager" => match std::env::var("SAFEYOLO_TMUX_LAYOUT").as_deref() {
+            Ok("window") => false,
+            Ok("pane") => true,
+            _ => return Err("custom launcher did not select a shipped tmux layout".into()),
+        },
+        _ => return Err("prepared launch does not select a tmux preset".into()),
+    };
     let session = record["tmux_session"]
         .as_str()
         .ok_or("tmux session missing")?;
@@ -828,11 +837,7 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
         arrange.args(["rename-session", "-t", &format!("={temporary}"), session]);
     } else {
         arrange.args([
-            if kind == "tmux-pane" {
-                "join-pane"
-            } else {
-                "move-window"
-            },
+            if pane { "join-pane" } else { "move-window" },
             "-d",
             "-s",
             &format!("={temporary}:"),
@@ -855,11 +860,15 @@ pub(crate) async fn launcher_session(name: &str, launch_id: &str) -> Result<Valu
             .into());
         }
     }
+    // The socket was selected with -S. Only the pane needs discovery.
     let target = String::from_utf8(output.stdout)?;
-    let (socket, pane) = target
-        .trim_end()
-        .rsplit_once('\n')
-        .ok_or("tmux did not report socket and pane")?;
+    let pane = target.trim();
+    if pane
+        .strip_prefix('%')
+        .is_none_or(|number| number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err("tmux did not report a valid pane for this launch".into());
+    }
     Ok(json!({"tmux_socket":socket,"pane_id":pane}))
 }
 

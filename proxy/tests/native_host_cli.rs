@@ -538,3 +538,101 @@ fn native_tmux_launch_uses_current_environment_on_the_owned_socket() {
             .success()
     );
 }
+
+#[test]
+fn custom_launchers_can_delegate_to_the_shipped_tmux_presets() {
+    for (kind, preset) in [("script", "tmux-window"), ("manager", "tmux-pane")] {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("instance");
+        initialize(&root);
+        let workspace = temp.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let created = value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                "marker",
+                "--workspace",
+                workspace.to_str().unwrap(),
+            ],
+        ));
+        let directory = root.join("agents/marker");
+        fs::create_dir_all(&directory).unwrap();
+        let record = serde_json::json!({
+            "name":"marker", "agent_id":created["configuration"]["id"],
+            "launch_id":"launch-custom", "launcher":{"kind":kind},
+            "state":"starting", "tmux_session":"custom"
+        });
+        fs::write(
+            directory.join("current-launch.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        // A terminal-only control records entry. The real preset and native
+        // CLI arrange it; this fixture does not claim guest/runtime proof.
+        fs::remove_file(root.join("bin/safeyolo")).unwrap();
+        fs::write(
+            root.join("bin/safeyolo"),
+            b"#!/bin/sh\nprintf entered > \"$SAFEYOLO_CONFIG_DIR/custom-entry\"\nexec sleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(root.join("bin/safeyolo"), fs::Permissions::from_mode(0o755)).unwrap();
+        let socket = root.join("data/tmux.sock");
+        struct OwnedServer<'a>(&'a Path);
+        impl Drop for OwnedServer<'_> {
+            fn drop(&mut self) {
+                let _ = Command::new("tmux")
+                    .arg("-S")
+                    .arg(self.0)
+                    .arg("kill-server")
+                    .output();
+            }
+        }
+        let _server = OwnedServer(&socket);
+        let invalid = Command::new(env!("CARGO_BIN_EXE_safeyolo"))
+            .arg("--root")
+            .arg(&root)
+            .args(["agent", "launcher-session", "marker", "launch-custom"])
+            .env("SAFEYOLO_TMUX_LAYOUT", "invalid")
+            .output()
+            .unwrap();
+        assert!(!invalid.status.success());
+        assert!(!root.join("custom-entry").exists());
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cli/src/safeyolo/launchers")
+            .join(format!("{preset}.sh"));
+        let started = Command::new("bash")
+            .arg(script)
+            .arg("launch")
+            .env("SAFEYOLO_EXECUTABLE", env!("CARGO_BIN_EXE_safeyolo"))
+            .env("SAFEYOLO_NATIVE_CONFIG_PATH", root.join("config.toml"))
+            .env("SAFEYOLO_CONFIG_DIR", &root)
+            .env("SAFEYOLO_AGENT_NAME", "marker")
+            .env("SAFEYOLO_LAUNCH_ID", "launch-custom")
+            .env("SAFEYOLO_TMUX_SESSION", "custom")
+            .env("SAFEYOLO_TMUX_SOCKET", &socket)
+            .output()
+            .unwrap();
+        assert!(
+            started.status.success(),
+            "{kind} / {preset}: {}",
+            String::from_utf8_lossy(&started.stderr)
+        );
+        let target: Value = serde_json::from_slice(&started.stdout).unwrap();
+        assert_eq!(target["tmux_socket"], socket.to_str().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !root.join("custom-entry").exists() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(fs::read(root.join("custom-entry")).unwrap(), b"entered");
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.join("current-launch.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            saved, record,
+            "delegation replaced the custom hook identity"
+        );
+    }
+}

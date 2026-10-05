@@ -3,14 +3,14 @@
 What an agent can observe about itself and the processes it owns inside a
 SafeYolo sandbox — and what it deliberately cannot.
 
-For a stopped coding harness inside a ready sandbox, use `safeyolo agent diag
-NAME` to inspect its recorded launch. `agent shell NAME` opens an independent
+For a stopped coding harness inside a ready sandbox, use `safeyolo agent
+diagnostics NAME` to inspect its recorded launch. `agent shell NAME` opens an independent
 guest shell; `agent attach NAME` reconnects to the existing coding-agent
 terminal. See [agent launchers](agent-launchers.md) for persistent runs and
-temporary interactive debugging of managed agents.
+independent inspection of managed agents.
 
 For a shell that survives loss of the operator connection, use
-`safeyolo agent shell NAME --persistent`. Repeating the command reattaches to
+`safeyolo agent shell --persistent NAME`. Repeating the command reattaches to
 the same independent shell through host tmux. You can still run guest tmux
 inside that shell and start the coding agent manually for guest-side lab work.
 The plain `agent shell NAME` command keeps its direct-shell behavior.
@@ -105,12 +105,12 @@ that (the rootless-gVisor path); otherwise it delegates to the ordinary
 setuid `/usr/bin/sudo` (the real-kernel path used on the macOS microVM).
 
 What *is* platform-specific is how the shim's preconditions get
-satisfied. `platform/linux.py` explicitly seeds `CAP_SETUID`,
-`CAP_SETGID`, and (now) `CAP_SYS_PTRACE` in the OCI `root_caps` list,
-because rootless gVisor needs them stated. `platform/darwin.py` doesn't
+satisfied. The native gVisor boot inputs in `proxy/src/host_boot.rs` seed `CAP_SETUID`,
+`CAP_SETGID`, and `CAP_SYS_PTRACE` in the Open Container Initiative (OCI) capability sets,
+because rootless gVisor needs them stated. The VZ launch does not
 manage caps at all — the real Linux kernel inside the microVM does that
 work, and the ext4 rootfs image is mounted with suid honoured. So the
-two platform modules look asymmetric even when the guest-facing
+two platform implementations look asymmetric even when the guest-facing
 behaviour lines up. Genuine parity gaps show up as agent-visible
 differences (a command works on one platform and not the other); report
 those as bugs rather than working around them.
@@ -180,15 +180,15 @@ Run these commands from the host operator account after installing the current
 VM helper and restarting the agent:
 
 ```sh
-safeyolo agent diag NAME
-safeyolo agent vm status NAME
-safeyolo agent vm relays NAME --json
-safeyolo agent diag NAME --hang
+safeyolo agent diagnostics NAME
+safeyolo agent diagnostics NAME relays
+safeyolo agent diagnostics NAME dump
 ```
 
-`agent diag` reports the installed helper and the running helper separately.
+`agent diagnostics` reports reconciled runtime/control and shell observations.
+Its private helper status reports the running helper identity.
 The running identity includes its PID, source revision and dirty state, build
-profile, architecture and debugger authority. `vm status --json` also includes
+profile, architecture and debugger authority. Private helper status also includes
 start time, uptime, cached Virtualization state, queue heartbeat and relay-loop
 heartbeats. See [VM helper development](DEVELOPERS.md#macos-vm-helper-development)
 for production/development signing and symbol bundles.
@@ -208,7 +208,7 @@ Responses identify stale heartbeats and accepted shell connections still
 awaiting execution. VM state with an old heartbeat is an observation from
 that time, not evidence of current queue responsiveness.
 
-`vm relays` lists flow IDs, types, phases, transferred bytes and buffered bytes.
+`agent diagnostics NAME relays` lists flow IDs, types, phases, transferred bytes and buffered bytes.
 Its JSON records also include acceptance/progress times and endpoint FDs.
 `relay_fd_count` counts tracked data endpoints; control listener/client FDs are
 reported separately. These are relevant owned-descriptor counts, not a scan of
@@ -216,34 +216,30 @@ every FD opened internally by Virtualization. Listings use bounded pages and
 one client deadline. Flow IDs belong to one helper instance; they cannot be
 carried across a restart.
 
-`agent diag NAME --hang` and `agent vm dump NAME` save a mode-0600 JSON dump at
-`vm-control/NAME.hang.json`. `agent vm dump NAME --output PATH` selects another
-artifact path. The dump includes identity, cached VM state, executor health,
+`agent diagnostics NAME dump` prints the helper's JSON dump. If you need to
+retain it, set `umask 077` and redirect the output to a new private file.
+The dump includes identity, cached VM state, executor health,
 counts, the oldest 256 active flows, and up to 64 recent completed/error records
 and control events. It marks flow-list truncation explicitly. No debugger,
 shell relay or proxy relay is needed to generate it.
 
-To recover a pathological connection, list it first, then cancel its flow ID:
+To recover a pathological connection, list it first. Replace `INSTANCE` with
+the helper instance ID from that list, and `42` with the selected flow ID.
 
 ```sh
-safeyolo agent vm relays NAME
-safeyolo agent vm cancel NAME 42 --reason 'stalled download'
-safeyolo agent vm cancel NAME --all --kind proxy --dry-run
-safeyolo agent vm cancel NAME --all --kind proxy --reason 'recover stalled proxy flows'
+safeyolo agent diagnostics NAME relays
+safeyolo agent diagnostics NAME cancel INSTANCE 42
 ```
 
-Cancellation terminates the associated network or shell connection. It does
-not stop the VM. Bulk selection requires both `--all` and `--kind proxy|shell`,
-and captures existing IDs before sending cancellation batches. `--dry-run`
-only lists that selection. The helper rejects a stale instance ID and records
-the operator UID, helper instance, selected IDs, reason and action ID in
+Cancellation terminates that network or shell
+connection without stopping the VM. The helper rejects a stale instance ID and records
+the operator UID, helper instance, selected ID, reason and action ID in
 `NAME.sock.audit.jsonl` before queuing cancellation. If it cannot write that
 private audit, it refuses the operation.
 
-The CLI reports closure only after observing that the selected IDs have left
-the active ledger. If the deadline expires, cancellation may already be queued;
-the command reports the unverified outcome and the audit retains the action.
-Inspect the relay list before taking another recovery action.
+The helper reports the cancellation request and any pending closure separately.
+Inspect the relay list to confirm that the selected ID has left the active
+ledger before taking another recovery action.
 
 Use these observations to narrow a shell incident:
 
@@ -273,7 +269,7 @@ must bind them before boot. This operation needs no Python or SSH connection.
 ROOT/bin/safeyolo --root ROOT agent recover NAME
 ```
 
-The probe is intended for a sandbox started with `agent run NAME
+The probe is intended for a sandbox started with `agent start NAME
 --sandbox-only`, or another running sandbox whose command supervisor is idle.
 It also works alongside a normal interactive/terminal launcher if that launcher
 does not occupy the command supervisor. It refuses an active, starting or

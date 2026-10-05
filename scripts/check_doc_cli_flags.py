@@ -9,7 +9,8 @@ things the code no longer provides (or never provided).
 How it works
 ------------
 
-1. Introspect the Typer ``app`` and walk its Click command tree.
+1. Read the native CLI's usage strings and introspect the remaining Python
+   Typer ``app`` command tree during the native replacement.
    Build ``{"agent add": {"--host-script", "--force", "-f", ...},
             "start":     {"--dev", "--test", ...}, ...}``.
 2. Walk every fenced code block and inline code span in the user-facing doc
@@ -32,6 +33,7 @@ Exit codes
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -41,7 +43,7 @@ CLI_SRC = REPO_ROOT / "cli" / "src"
 
 # Load the shared shipped-docs allowlist (user-facing docs plus
 # agent-facing skill files). Both tiers can contain `safeyolo` invocations
-# that must resolve against the current Typer surface. Defined once in
+# that must resolve against the current native or Python surface. Defined once in
 # scripts/doc_allowlist.toml.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
@@ -56,8 +58,39 @@ INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _PLACEHOLDER_RE = re.compile(r"^(?:[A-Z_][A-Z0-9_]*|<[^>]+>|\$\w+|\{[^}]+\})$")
 
 
+def _native_cli_surface() -> dict[str, set[str]]:
+    """Read commands/flags from the native CLI's authoritative usage strings.
+
+    This keeps the existing source-only doc check usable before a Rust build.
+    Native help and its parser are also checked by native_host_cli tests.
+    """
+    surface: dict[str, set[str]] = {"": set()}
+    for relative in ("proxy/src/bin/safeyolo.rs", "proxy/src/host_commands.rs"):
+        source = (REPO_ROOT / relative).read_text()
+        for literal in re.findall(r'"(safeyolo (?:[^"\\]|\\.)*)"', source):
+            for usage in json.loads('"' + literal + '"').splitlines():
+                if not usage.startswith("safeyolo "):
+                    continue
+                rest = usage.removeprefix("safeyolo ")
+                while rest.startswith("["):
+                    global_options, rest = rest.split("]", 1)
+                    surface[""].update(re.findall(r"--?[a-z][a-z0-9-]*", global_options))
+                    rest = rest.strip()
+                flags = set(re.findall(r"(?<![\w-])--?[a-z][a-z0-9-]*", rest))
+                paths = [""]
+                for token in rest.split():
+                    if not re.fullmatch(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)*", token):
+                        break
+                    paths = [" ".join((path, word)).strip() for path in paths for word in token.split("|")]
+                    for path in paths:
+                        surface.setdefault(path, set())
+                for path in paths:
+                    surface[path].update(flags)
+    return surface
+
+
 def _load_cli_surface() -> dict[str, set[str]]:
-    """Return {command_path: allowed_flag_set} for the full Typer surface.
+    """Return {command_path: allowed_flag_set} during native replacement.
 
     ``command_path`` uses space-separated tokens as they'd be typed on the
     CLI, e.g. ``"agent add"`` or ``"policy host add"``. The empty string is
@@ -93,6 +126,8 @@ def _load_cli_surface() -> dict[str, set[str]]:
                 walk(subcommands[sub_name], path + [sub_name])
 
     walk(typer.main.get_command(app), [])
+    for command, flags in _native_cli_surface().items():
+        surface.setdefault(command, set()).update(flags)
     return surface
 
 
