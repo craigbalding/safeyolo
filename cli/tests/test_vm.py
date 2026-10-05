@@ -458,6 +458,10 @@ class TestPrepareConfigShare:
     def test_native_boot_staging_prepares_stopped_agent_without_running_python_later(
         self, tmp_config_dir, tmp_path, monkeypatch,
     ):
+        from safeyolo.platform.linux import LinuxPlatform
+
+        monkeypatch.setattr("safeyolo.platform.get_platform", LinuxPlatform)
+        monkeypatch.setattr("safeyolo.vm.sys.platform", "linux")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         rootfs = tmp_config_dir / "share" / "rootfs-tree"
@@ -465,7 +469,7 @@ class TestPrepareConfigShare:
         (tmp_config_dir / "policy.toml").write_text(
             f'[agents.agent1]\nfolder = "{workspace}"\n'
         )
-        with tempfile.TemporaryDirectory(prefix="sy-nb-") as short:
+        with tempfile.TemporaryDirectory(prefix="sy-nb-", dir="/tmp") as short:
             alias = Path(short) / "config"
             alias.symlink_to(tmp_config_dir, target_is_directory=True)
             monkeypatch.setenv("SAFEYOLO_CONFIG_DIR", str(alias))

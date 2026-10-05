@@ -5,12 +5,20 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import create_autospec
 
 import httpx
 import pytest
 from typer.testing import CliRunner
+
+
+@pytest.fixture
+def socket_dir():
+    """Keep real Unix sockets below macOS's 104-byte sun_path limit."""
+    with tempfile.TemporaryDirectory(prefix="sy-sock-", dir="/tmp") as directory:
+        yield Path(directory)
 
 # Production proxy startup puts the repository root on PYTHONPATH so the
 # package-external ``pdp`` module is available to directly registered addons.

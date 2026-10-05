@@ -35,8 +35,8 @@ def _relay(number, kind="proxy"):
 
 
 @contextmanager
-def _server(tmp_path, monkeypatch, respond, *, fragment_delay=0.0):
-    path = tmp_path / "c.sock"
+def _server(socket_dir, monkeypatch, respond, *, fragment_delay=0.0):
+    path = socket_dir / "c.sock"
     monkeypatch.setattr(vm_control, "socket_path", lambda name: path)
     requests = []
     errors = []
@@ -97,8 +97,8 @@ def test_control_path_rejects_invalid_names(name):
         vm_control.socket_path(name)
 
 
-def test_runtime_status_and_diagnostic_use_same_control_response(tmp_path, monkeypatch):
-    with _server(tmp_path, monkeypatch, lambda request: _status()) as requests:
+def test_runtime_status_and_diagnostic_use_same_control_response(socket_dir, monkeypatch):
+    with _server(socket_dir, monkeypatch, lambda request: _status()) as requests:
         value = vm_control.read_status("demo")
         checks = agent_diag._check_vm_runtime("demo")
     assert value["pid"] == 123
@@ -107,10 +107,10 @@ def test_runtime_status_and_diagnostic_use_same_control_response(tmp_path, monke
     assert [request["operation"] for request in requests] == ["status", "status"]
 
 
-def test_stale_executor_and_vm_queue_are_not_green(tmp_path, monkeypatch):
+def test_stale_executor_and_vm_queue_are_not_green(socket_dir, monkeypatch):
     response = _status(health="relay_executor_not_progressing", unresponsive_loops=["proxy"],
                        accepted_shell_pending=3, monotonic_now=20)
-    with _server(tmp_path, monkeypatch, lambda request: response):
+    with _server(socket_dir, monkeypatch, lambda request: response):
         checks = agent_diag._check_vm_runtime("demo")
     assert checks[1].status == "WARN" and "3 shell accepts pending" in checks[1].message
     assert checks[2].status == "WARN" and "cached" in checks[2].message
@@ -120,25 +120,25 @@ def test_stale_executor_and_vm_queue_are_not_green(tmp_path, monkeypatch):
     b"not json\n", b"[]\n", _reply(schema_version=True), _reply(instance="bad\nname"),
     _reply(ok=False, error="stale instance"), b"x" * (2 * 1024 * 1024 + 1) + b"\n",
 ], ids=["invalid-json", "array", "boolean-schema", "invalid-instance", "refused", "oversized"])
-def test_malformed_or_refused_control_reply_is_an_error(tmp_path, monkeypatch, response):
-    with _server(tmp_path, monkeypatch, lambda request: response):
+def test_malformed_or_refused_control_reply_is_an_error(socket_dir, monkeypatch, response):
+    with _server(socket_dir, monkeypatch, lambda request: response):
         with pytest.raises(vm_control.VMControlError):
             vm_control.request("demo", "status")
 
 
-def test_control_read_has_one_deadline_for_slow_fragments(tmp_path, monkeypatch):
-    with _server(tmp_path, monkeypatch, lambda request: _status(), fragment_delay=0.03):
+def test_control_read_has_one_deadline_for_slow_fragments(socket_dir, monkeypatch):
+    with _server(socket_dir, monkeypatch, lambda request: _status(), fragment_delay=0.03):
         with pytest.raises(vm_control.VMControlError, match="timed out|deadline"):
             vm_control.request("demo", "status", timeout=0.09)
 
 
-def test_relay_pagination_and_instance_guard(tmp_path, monkeypatch):
+def test_relay_pagination_and_instance_guard(socket_dir, monkeypatch):
     def reply(request):
         if request["after"] == 0:
             return _reply(relays=[_relay(1)], next_after=1)
         return _reply(relays=[_relay(2)], next_after=None)
 
-    with _server(tmp_path, monkeypatch, reply):
+    with _server(socket_dir, monkeypatch, reply):
         instance, records = vm_control.list_relays("demo")
     assert instance == "process-one" and [row["id"] for row in records] == [1, 2]
 
@@ -149,13 +149,13 @@ def test_relay_pagination_and_instance_guard(tmp_path, monkeypatch):
     _reply(relays=[], next_after=1),
     _reply(relays=[_relay(True)], next_after=None),
 ])
-def test_changed_instance_or_nonprogressing_page_is_rejected(tmp_path, monkeypatch, second):
-    with _server(tmp_path, monkeypatch, lambda request: _reply(relays=[_relay(1)], next_after=1) if request["after"] == 0 else second):
+def test_changed_instance_or_nonprogressing_page_is_rejected(socket_dir, monkeypatch, second):
+    with _server(socket_dir, monkeypatch, lambda request: _reply(relays=[_relay(1)], next_after=1) if request["after"] == 0 else second):
         with pytest.raises(vm_control.VMControlError):
             vm_control.list_relays("demo")
 
 
-def test_cancellation_waits_for_observed_removal_and_preserves_reason(tmp_path, monkeypatch):
+def test_cancellation_waits_for_observed_removal_and_preserves_reason(socket_dir, monkeypatch):
     polls = 0
 
     def reply(request):
@@ -165,35 +165,35 @@ def test_cancellation_waits_for_observed_removal_and_preserves_reason(tmp_path, 
         polls += 1
         return _reply(relays=[_relay(1)] if polls == 1 else [], next_after=None)
 
-    with _server(tmp_path, monkeypatch, reply) as requests:
+    with _server(socket_dir, monkeypatch, reply) as requests:
         result = vm_control.cancel_relays("demo", "process-one", [1], reason="stalled download")
     assert polls == 2 and result["closed_ids"] == [1]
     assert requests[0]["instance"] == "process-one" and requests[0]["reason"] == "stalled download"
 
 
-def test_queued_cancellation_is_not_reported_closed_on_timeout(tmp_path, monkeypatch):
+def test_queued_cancellation_is_not_reported_closed_on_timeout(socket_dir, monkeypatch):
     def reply(request):
         return _reply(queued_ids=[1], action_id="audit-one") if request["operation"] == "cancel" else _reply(relays=[_relay(1)], next_after=None)
 
-    with _server(tmp_path, monkeypatch, reply):
+    with _server(socket_dir, monkeypatch, reply):
         with pytest.raises(vm_control.VMControlError, match="deadline|timed out"):
             vm_control.cancel_relays("demo", "process-one", [1], reason="test", timeout=0.1)
 
 
-def test_private_dump_replaces_link_without_writing_its_target(tmp_path, monkeypatch):
-    target = tmp_path / "unrelated"
+def test_private_dump_replaces_link_without_writing_its_target(socket_dir, monkeypatch):
+    target = socket_dir / "unrelated"
     target.write_text("preserve me")
-    output = tmp_path / "dump.json"
+    output = socket_dir / "dump.json"
     output.symlink_to(target)
-    with _server(tmp_path, monkeypatch, lambda request: _status()):
+    with _server(socket_dir, monkeypatch, lambda request: _status()):
         assert vm_control.write_dump("demo", output) == output
     assert target.read_text() == "preserve me" and not output.is_symlink()
     assert output.stat().st_mode & 0o777 == 0o600
     assert json.loads(output.read_text())["pid"] == 123
 
 
-def test_bulk_dry_run_only_reads_matching_snapshot(tmp_path, monkeypatch):
-    with _server(tmp_path, monkeypatch, lambda request: _reply(relays=[_relay(1), _relay(2, "shell")], next_after=None)) as requests:
+def test_bulk_dry_run_only_reads_matching_snapshot(socket_dir, monkeypatch):
+    with _server(socket_dir, monkeypatch, lambda request: _reply(relays=[_relay(1), _relay(2, "shell")], next_after=None)) as requests:
         result = CliRunner().invoke(agent_app, ["vm", "cancel", "demo", "--all", "--kind", "proxy", "--dry-run", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["selected_ids"] == [1]
