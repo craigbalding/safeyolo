@@ -94,9 +94,11 @@ def test_focused_pr_job_covers_fast_positive_and_negative_boundaries() -> None:
         "tests/proxy_contracts/test_readiness.py",
         "cargo_with_space.sh test --locked --test agent_api_audit",
         "cargo_with_space.sh test --locked --test gateway_workflow oauth_refresh_reaches_origin_once_and_shared_flight_reuses_token -- --exact",
+        "cargo_with_space.sh test --locked --lib native_config::tests",
+        "cargo_with_space.sh test --locked --lib policy::native::tests",
     ):
         assert required in runs
-    assert "cargo_with_space.sh test --locked --lib" not in runs
+    assert "../scripts/cargo_with_space.sh test --locked --lib" not in native["run"].splitlines()
     # The concurrent resource observation remains in the final full suite;
     # it does not turn each intermediate PR's focused check into a load probe.
     assert "repeated_service_oauth_activity_runs_concurrently" not in runs

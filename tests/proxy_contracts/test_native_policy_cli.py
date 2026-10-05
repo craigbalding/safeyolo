@@ -488,7 +488,7 @@ def test_native_listener_update_preserves_other_toml_settings():
     source = DENY + '\n[agents.alice]\nagent_id="ag-11111111111111111111111111111111"\n'
     extra = (f'\n[command_centre]\nenabled=true\nevents_port={events_port}\n'
              '[capture]\nmax_request_body_bytes=9\nqueue_max=7\n[trace]\nttl_s=12\n')
-    with tempfile.TemporaryDirectory(prefix="native-listeners-", dir=REPO.parent) as directory, native_instance(
+    with tempfile.TemporaryDirectory(prefix="sy-listeners-", dir=Path.home()) as directory, native_instance(
         Path(directory), source, extra_config=extra,
     ) as instance:
         runner = instance.root / "bin/runsc"
