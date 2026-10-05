@@ -218,9 +218,13 @@ trap graceful_shutdown TERM INT
 COMMAND_SUPERVISOR_PID=
 COMMAND_SUPERVISOR_STATE=/home/agent/.safeyolo-command-supervisor.json
 COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop
-COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/guest-command-supervisor.py
+COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/safeyolo-guest
 if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
-    COMMAND_SUPERVISOR_SCRIPT=/safeyolo/guest-command-supervisor.py
+    COMMAND_SUPERVISOR_SCRIPT=/safeyolo/safeyolo-guest
+fi
+if [ ! -x "$COMMAND_SUPERVISOR_SCRIPT" ]; then
+    echo 'FATAL: required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2
+    exit 127
 fi
 
 command_supervisor_terminal() {
@@ -246,7 +250,6 @@ stop_command_supervisor_if_requested() {
 
 start_command_supervisor_if_needed() {
     [ -f /safeyolo/command-supervisor-enabled ] || return 0
-    [ -x "$COMMAND_SUPERVISOR_SCRIPT" ] || return 0
     stop_command_supervisor_if_requested
     [ -f "$COMMAND_SUPERVISOR_STOP" ] && return 0
     command_supervisor_terminal && return 0
@@ -270,11 +273,11 @@ start_command_supervisor_if_needed() {
             setsid setpriv --reuid=agent --regid=agent --clear-groups \
                 --inh-caps=+setuid,+setgid --ambient-caps=+setuid,+setgid \
                 /bin/bash -c \
-                "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+                "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise" >/dev/null 2>&1 < /dev/null &
             ;;
         *)
             setsid su agent -s /bin/bash -c \
-                "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'" >/dev/null 2>&1 < /dev/null &
+                "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise" >/dev/null 2>&1 < /dev/null &
             ;;
     esac
     COMMAND_SUPERVISOR_PID=$!

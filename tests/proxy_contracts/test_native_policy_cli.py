@@ -97,6 +97,7 @@ def native_instance(directory, source=DENY, *, services=False, parent_proxy=None
     root = directory / "installed"
     installation = subprocess.run(
         [str(REPO / "scripts/install_native.sh"), "--root", str(root), "--artifacts", str(artifacts),
+         "--guest-artifacts", os.environ.get("SAFEYOLO_GUEST_ARTIFACTS", str(REPO / "guest/command/target/debug")),
          "--profile", "debug"], capture_output=True, text=True, timeout=15,
     )
     assert installation.returncode == 0, installation.stderr

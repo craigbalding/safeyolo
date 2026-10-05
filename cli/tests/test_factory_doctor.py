@@ -947,7 +947,11 @@ def test_factory_doctor_accepts_boot_observation_wrapper_for_owned_payload(cli_r
     command.write_text(
         "#!/bin/sh\n"
         "# SafeYolo configured-command observation\n"
-        'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+        'if [ ! -x /safeyolo/safeyolo-guest ]; then\n'
+        "    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n"
+        '    exit 127\n'
+        'fi\n'
+        'exec /safeyolo/safeyolo-guest observe exec -- "$0.payload" "$@"\n'
     )
     command.chmod(0o755)
     info = payload.lstat()
@@ -980,7 +984,11 @@ def test_factory_doctor_rejects_unowned_observation_payload(cli_runner, factory_
     command.write_text(
         "#!/bin/sh\n"
         "# SafeYolo configured-command observation\n"
-        'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+        'if [ ! -x /safeyolo/safeyolo-guest ]; then\n'
+        "    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n"
+        '    exit 127\n'
+        'fi\n'
+        'exec /safeyolo/safeyolo-guest observe exec -- "$0.payload" "$@"\n'
     )
     command.chmod(0o755)
     share = home.parent / "config-share"

@@ -28,6 +28,7 @@ mod flow_runtime_tests;
 pub mod flow_store;
 mod flow_writer;
 pub mod grants;
+pub mod guest_commands;
 mod host_agents;
 mod host_events;
 mod host_lifecycle;
@@ -35,6 +36,15 @@ mod host_lifecycle;
 /// Run one host-owned coding-agent launch in a native terminal wrapper.
 pub async fn run_host_agent_entrypoint(name: &str, launch_id: &str) -> Result<i32, Error> {
     host_lifecycle::run_entrypoint(name, launch_id).await
+}
+
+/// Run the bounded PID-1/shared-home diagnostic without guest SSH.
+pub fn recover_guest_probe(
+    root: &std::path::Path,
+    name: &str,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, Error> {
+    host_lifecycle::recover_guest_probe(root, name, timeout)
 }
 pub mod host_names;
 mod host_platform;

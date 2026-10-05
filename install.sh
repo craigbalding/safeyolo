@@ -35,6 +35,14 @@ build_native_proxy() {
     echo "install.sh: Cargo completed without proxy/target/release/safeyolo-proxy" >&2
     return 1
   fi
+  if [[ $(uname -s) == Linux && -z ${SAFEYOLO_GUEST_HELPER:-} ]]; then
+    SAFEYOLO_BUILD_PROFILE=production "$REPO_ROOT/scripts/build_guest_command.sh" || return 1
+    export SAFEYOLO_GUEST_HELPER="${SAFEYOLO_GUEST_TARGET_DIR:-$REPO_ROOT/guest/command/target}/${SAFEYOLO_GUEST_TARGET:+$SAFEYOLO_GUEST_TARGET/}release/safeyolo-guest"
+  fi
+  if [[ ! -f ${SAFEYOLO_GUEST_HELPER:-} ]]; then
+    echo 'install.sh: provide SAFEYOLO_GUEST_HELPER with the matching Linux guest artifact; build it on Linux with scripts/build_guest_command.sh' >&2
+    return 1
+  fi
 }
 
 read_python_requirement() {

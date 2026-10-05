@@ -10,6 +10,8 @@ on:
       - "cli/src/safeyolo/rust_proxy.py"
       - "cli/tests/test_rust_proxy.py"
       - "proxy/**"
+      - "guest/command/**"
+      - "scripts/build_guest_command.sh"
       - "tests/proxy_contracts/**"
       - "tests/blackbox/proxy_backend.py"
       - "tests/blackbox/run-tests.sh"
@@ -83,6 +85,12 @@ jobs:
             echo 'ERROR: changed-path matcher failed' >&2
             exit 2
           fi
+          if grep -Eq '^(guest/command/|proxy/src/(guest_commands|host_lifecycle)|scripts/(build_guest_command|install_native)|cli/src/safeyolo/(guest-|vm\.py|agent_command_supervisor)|cli/tests/test_(agent_command_supervisor|guest_command_observation|vm_recovery_recipe))' "$RUNNER_TEMP/changed-paths"; then
+            echo 'guest=true' >> "$GITHUB_OUTPUT"
+          elif [ "$?" -ne 1 ]; then
+            echo 'ERROR: changed-path matcher failed' >&2
+            exit 2
+          fi
           if grep -Eq '^(vm/|proxy/src/(host_platform|desktop_|provider_stream)|cli/src/safeyolo/(vm|runtime_identity|desktop|preview|platform/(darwin|__init__))|cli/tests/test_darwin_platform)' "$RUNNER_TEMP/changed-paths"; then
             echo 'macos=true' >> "$GITHUB_OUTPUT"
           elif [ "$?" -ne 1 ]; then
@@ -107,6 +115,20 @@ jobs:
         run: |
           ../scripts/cargo_with_space.sh fmt --all -- --check
           ../scripts/cargo_with_space.sh clippy --locked --all-targets -- -D warnings
+
+      - name: Build and check native guest command operations
+        if: steps.changes.outputs.guest == 'true'
+        env:
+          SAFEYOLO_BUILD_PROFILE: debug
+          CARGO_BUILD_JOBS: "1"
+        run: |
+          scripts/build_guest_command.sh
+          scripts/cargo_with_space.sh test --manifest-path guest/command/Cargo.toml --locked
+          scripts/cargo_with_space.sh clippy --manifest-path guest/command/Cargo.toml --locked --all-targets -- -D warnings
+
+      - name: Build the native CLI for recovery checks
+        if: steps.changes.outputs.guest == 'true'
+        run: scripts/cargo_with_space.sh build --manifest-path proxy/Cargo.toml --locked --bin safeyolo
 
       - name: Install uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -136,6 +158,15 @@ jobs:
             tests/test_proxy_cutover_deletion_map.py \
             tests/test_blackbox_sinkhole.py::test_sinkhole_head_has_get_headers_no_body_and_control_observation \
             tests/test_workflow_action_pins.py
+
+      - name: Test guest command staging and bounded native recovery
+        if: steps.changes.outputs.guest == 'true'
+        env:
+          SAFEYOLO_GUEST_HELPER: ${{ github.workspace }}/guest/command/target/debug/safeyolo-guest
+        run: |
+          uv run --frozen pytest -q cli/tests/test_agent_command_supervisor.py \
+            cli/tests/test_guest_command_observation.py cli/tests/test_vm_recovery_recipe.py \
+            cli/tests/test_vm.py::TestPrepareConfigShare
 
       - name: Test desktop presentation and preview
         run: |
@@ -317,7 +348,11 @@ jobs:
       - name: Run native proxy component contracts
         env:
           PYTEST_ADDOPTS: ${{ matrix.os == 'macos-latest' && '--basetemp=/tmp/sy-rs' || '' }}
-        run: uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            SAFEYOLO_BUILD_PROFILE=debug scripts/build_guest_command.sh
+          fi
+          uv run --frozen pytest -q tests/proxy_contracts --proxy-backend rust
 
   macos-pr:
     name: Relevant macOS platform checks

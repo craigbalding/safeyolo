@@ -1042,17 +1042,18 @@ def prepare_config_share(
     # guest-diag.py is an opt-in user diagnostic and requires python3
     # in the rootfs (default base includes it? no -- users install if
     # needed, it's not on the boot path).
-    for src_name, dst_name in [
+    helper = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).parent / "bin/safeyolo-guest")))
+    if not helper.is_file():
+        raise VMError(f"Required native guest helper is missing: {helper}; build/stage the installed Linux guest assets")
+    boot_executables = [
         ("guest-init.sh", "guest-init"),
         ("guest-init-static.sh", "guest-init-static"),
         ("guest-init-per-run.sh", "guest-init-per-run"),
-        ("guest-command-supervisor.py", "guest-command-supervisor.py"),
-        ("guest-command-observation.py", "guest-command-observation.py"),
         ("guest-proxy-forwarder.sh", "guest-proxy-forwarder"),
         ("guest-shell-bridge.sh", "guest-shell-bridge"),
         ("guest-diag.py", "guest-diag"),
-    ]:
-        src = Path(__file__).parent / src_name
+    ]
+    for src, dst_name in [(Path(__file__).parent / name, target) for name, target in boot_executables] + [(helper, "safeyolo-guest")]:
         dst = share_dir / dst_name
         # Write each boot executable to a temporary file. Then replace the
         # destination. An in-place copy keeps the old inode. The guest can then
@@ -1284,7 +1285,11 @@ def stage_guest_command_observation(home: Path, payload_identities: dict[str, li
     wrapper = (
         b"#!/bin/sh\n"
         b"# SafeYolo configured-command observation\n"
-        b'exec python3 /safeyolo/guest-command-observation.py "$0.payload" "$@"\n'
+        b'if [ ! -x /safeyolo/safeyolo-guest ]; then\n'
+        b"    echo 'Required native guest helper is missing: /safeyolo/safeyolo-guest; restage the installed guest assets' >&2\n"
+        b'    exit 127\n'
+        b'fi\n'
+        b'exec /safeyolo/safeyolo-guest observe exec -- "$0.payload" "$@"\n'
     )
     pending = []
     for name in (".safeyolo-command", ".safeyolo-interactive-command"):

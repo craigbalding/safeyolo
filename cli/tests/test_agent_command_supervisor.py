@@ -14,12 +14,22 @@ import time
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from safeyolo import agent_command_supervisor as supervisor
 from safeyolo.cli import app
 from safeyolo.config import get_agent_command_supervisor_state_path
 from safeyolo.platform import AgentPlatform
+
+
+@pytest.fixture(autouse=True)
+def current_run_context(tmp_config_dir):
+    from safeyolo.vm import get_agent_config_share_dir
+
+    share = get_agent_config_share_dir("demo")
+    share.mkdir(parents=True, exist_ok=True)
+    (share / "host-launch-context.json").write_text(json.dumps({"generation": "test-generation"}))
 
 
 class _Process:
@@ -82,21 +92,16 @@ def _state(tmp_config_dir, name: str) -> dict:
 
 
 def _stage_guest_supervisor_artifact(tmp_path: Path) -> tuple[Path, Path]:
-    """Run the guest artifact in an isolated test workspace.
-
-    The shipped artifact must use the guest mount at ``/workspace``.  The
-    GitHub host running this test does not provide that mount, so only the
-    copied test artifact receives an equivalent temporary directory.
-    """
-    script = Path(__file__).resolve().parents[1] / "src/safeyolo/guest-command-supervisor.py"
-    source = script.read_text()
-    assert source.count('cwd="/workspace"') == 1
+    """Use the built native helper with explicit isolated fixture paths."""
+    binary = Path(os.environ.get("SAFEYOLO_GUEST_HELPER", str(Path(__file__).resolve().parents[2] / "guest/command/target/debug/safeyolo-guest")))
     artifact_dir = tmp_path / "isolated-config-share"
     artifact_dir.mkdir()
     workspace = tmp_path / "guest-workspace"
     workspace.mkdir()
-    artifact = artifact_dir / script.name
-    artifact.write_text(source.replace('cwd="/workspace"', f"cwd={str(workspace)!r}"))
+    context = artifact_dir / "context.json"
+    context.write_text(json.dumps({"generation": "test-generation"}))
+    artifact = artifact_dir / "safeyolo-guest"
+    artifact.write_text(f"#!/bin/sh\nexec {shlex.quote(str(binary))} --context {shlex.quote(str(context))} --workspace {shlex.quote(str(workspace))} \"$@\"\n")
     artifact.chmod(artifact.stat().st_mode | 0o111)
     return artifact, workspace
 
@@ -339,6 +344,7 @@ def test_restart_reconciles_checkpointed_terminal_without_duplicate_response(
     assert coord.load_state(coord_state_path)["in_flight"] == []
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Native guest processes use Linux /proc")
 def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
     stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
@@ -359,11 +365,13 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
         {
             **supervisor._base_state("demo", command),
             "runtime_owner": "guest-pid1",
+            "generation": "test-generation",
+            "supervision_id": "guest-fixture",
         },
     )
     artifact, workspace = _stage_guest_supervisor_artifact(tmp_path)
     result = subprocess.run(
-        [sys.executable, str(artifact)],
+        [str(artifact), "supervise"],
         env={
             **os.environ,
             "SAFEYOLO_COMMAND_SUPERVISOR_STATE": str(state_path),
@@ -383,6 +391,7 @@ def test_guest_owner_restarts_command_and_retains_bounded_evidence(tmp_path):
     assert "\\x1b" not in state["last_stderr"]
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Native guest processes use Linux /proc")
 def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
     stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
@@ -392,10 +401,12 @@ def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
         {
             **supervisor._base_state("demo", "exec sleep 60"),
             "runtime_owner": "guest-pid1",
+            "generation": "test-generation",
+            "supervision_id": "guest-fixture",
         },
     )
     process = subprocess.Popen(
-        [sys.executable, str(artifact)],
+        [str(artifact), "supervise"],
         env={
             **os.environ,
             "SAFEYOLO_COMMAND_SUPERVISOR_STATE": str(state_path),
@@ -423,6 +434,7 @@ def test_guest_owner_stop_marker_interrupts_live_command(tmp_path):
             process.kill()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Native guest processes use Linux /proc")
 def test_guest_pid1_path_restarts_command_and_reconciles_checkpoint_once(tmp_path):
     state_path = tmp_path / "command-supervisor.json"
     stop_path = tmp_path / ".safeyolo-command-supervisor.stop"
@@ -483,6 +495,8 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
         {
             **supervisor._base_state("demo", f"exec python3 {worker_path} {attempts_path} {started_path} {output_path} {checkpoint_path} {stop_path}"),
             "runtime_owner": "guest-pid1",
+            "generation": "test-generation",
+            "supervision_id": "guest-fixture",
         },
     )
     source = (
@@ -500,14 +514,14 @@ stop.write_text(json.dumps({"name": "demo", "requested_at": "worker"}))
         "COMMAND_SUPERVISOR_STOP=/home/agent/.safeyolo-command-supervisor.stop",
         f"COMMAND_SUPERVISOR_STOP={stop_path}",
     ).replace(
-        "COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/guest-command-supervisor.py",
+        "COMMAND_SUPERVISOR_SCRIPT=/run/safeyolo/safeyolo-guest",
         f"COMMAND_SUPERVISOR_SCRIPT={artifact}",
     )
     owner_fragment = owner_fragment.replace(
-        "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'",
+        "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise",
         "export SAFEYOLO_COMMAND_SUPERVISOR_STATE='$COMMAND_SUPERVISOR_STATE'; "
         "export SAFEYOLO_COMMAND_SUPERVISOR_STOP='$COMMAND_SUPERVISOR_STOP'; "
-        "exec python3 '$COMMAND_SUPERVISOR_SCRIPT'",
+        "exec '$COMMAND_SUPERVISOR_SCRIPT' supervise",
     )
     # The test already runs as the guest agent uid; production PID 1 uses
     # `su agent` because it starts as root.
@@ -628,7 +642,7 @@ def test_stop_intent_prevents_restart_after_command_crash(tmp_config_dir):
 
 
 def test_start_publishes_command_for_guest_pid1_owner(tmp_config_dir):
-    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True)
+    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True, exist_ok=True)
     supervisor.start_command_supervisor("demo", "exec worker")
 
     assert _state(tmp_config_dir, "demo")["command"] == "exec worker"
@@ -637,7 +651,7 @@ def test_start_publishes_command_for_guest_pid1_owner(tmp_config_dir):
 
 
 def test_start_replaces_a_fenced_guest_owned_run(tmp_config_dir):
-    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True)
+    (tmp_config_dir / "agents/demo/config-share").mkdir(parents=True, exist_ok=True)
     _seed_state(tmp_config_dir, "demo", "exec old-worker")
     state_path = get_agent_command_supervisor_state_path("demo")
     state = _state(tmp_config_dir, "demo")

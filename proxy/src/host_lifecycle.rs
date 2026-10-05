@@ -36,7 +36,14 @@ struct SetupLock(File);
 
 impl SetupLock {
     fn acquire(name: &str) -> Result<Self, Error> {
-        let home = agent_dir(name).join("home");
+        Self::acquire_in(&agent_dir(name), None)
+    }
+
+    fn acquire_in(
+        directory: &std::path::Path,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Self, Error> {
+        let home = directory.join("home");
         std::fs::create_dir_all(&home)?;
         let directory = home.join(".safeyolo");
         if !directory.exists() {
@@ -51,7 +58,7 @@ impl SetupLock {
             || metadata.uid() != unsafe { libc::geteuid() }
             || metadata.permissions().mode() & 0o022 != 0
         {
-            return Err(format!("unsafe host setup directory for agent {name}").into());
+            return Err("unsafe host setup directory for agent".into());
         }
         let name = std::ffi::CString::new("host-setup.lock")?;
         let descriptor = unsafe {
@@ -74,9 +81,7 @@ impl SetupLock {
             return Err("unsafe host setup lock".into());
         }
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        lock_until(&file, deadline)?;
         Ok(Self(file))
     }
 }
@@ -93,7 +98,14 @@ struct LaunchLock(File);
 
 impl LaunchLock {
     fn acquire(name: &str) -> Result<Self, Error> {
-        let path = launch_path(name).with_extension("lock");
+        Self::acquire_in(&agent_dir(name), None)
+    }
+
+    fn acquire_in(
+        directory: &std::path::Path,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Self, Error> {
+        let path = directory.join("current-launch.lock");
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -101,11 +113,114 @@ impl LaunchLock {
             .mode(0o600)
             .truncate(false)
             .open(path)?;
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        lock_until(&file, deadline)?;
         Ok(Self(file))
     }
+}
+
+fn lock_until(file: &File, deadline: Option<std::time::Instant>) -> Result<(), Error> {
+    loop {
+        let flags = libc::LOCK_EX | if deadline.is_some() { libc::LOCK_NB } else { 0 };
+        if unsafe { libc::flock(file.as_raw_fd(), flags) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock {
+            return Err(error.into());
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Err("host recovery deadline expired while acquiring the agent lock; guest completion is unverified".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Use the existing PID-1 supervisor through the shared home, independent of
+/// SSH, host transport liveness, the Admin API and a coding-agent model.
+pub(crate) fn recover_guest_probe(
+    root: &std::path::Path,
+    name: &str,
+    timeout: std::time::Duration,
+) -> Result<Value, Error> {
+    if !crate::host_platform::valid_agent_name(name) || timeout.is_zero() {
+        return Err("recovery needs a valid agent name and positive deadline".into());
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let directory = root.join("agents").join(name);
+    let home = directory.join("home");
+    let share = directory.join("config-share");
+    if !home.is_dir() || !share.join("safeyolo-guest").is_file() {
+        return Err("required native guest helper/home is missing; stage the installed guest assets and boot this agent first".into());
+    }
+    let _setup = SetupLock::acquire_in(&directory, Some(deadline))?;
+    let _launch = LaunchLock::acquire_in(&directory, Some(deadline))?;
+    if let Some(launch) = crate::guest_commands::read_state(&directory.join("current-launch.json"))?
+        && matches!(
+            launch["state"].as_str(),
+            Some("starting" | "launching" | "stopping" | "finishing")
+        )
+    {
+        return Err("a launcher is active or transitioning; its state was left intact".into());
+    }
+    let context = crate::guest_commands::read_state(&share.join("host-launch-context.json"))?
+        .ok_or("host launch context is missing")?;
+    let generation = context["generation"]
+        .as_str()
+        .filter(|generation| !generation.is_empty())
+        .ok_or("current-run generation is missing")?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let command = format!("exec {} probe {}", crate::guest_commands::HELPER, id);
+    crate::guest_commands::publish(&home, &share, name, &command, &id, generation)?;
+    let state_path = home.join(".safeyolo-command-supervisor.json");
+    let result = (|| {
+        loop {
+            let state = crate::guest_commands::read_state(&state_path)?
+                .ok_or("supervisor ownership disappeared; completion is unverified")?;
+            if state["supervision_id"] != id
+                || state["command"] != command
+                || state["generation"] != generation
+            {
+                return Err(
+                    "supervisor ownership changed; replacement state was left intact".into(),
+                );
+            }
+            if matches!(
+                state["state"].as_str(),
+                Some("stopped" | "failed" | "exited")
+            ) {
+                if !state["command_pid"].is_null() || !state["command_start_token"].is_null() {
+                    return Err(
+                        "guest command identity remains occupied; completion is unverified".into(),
+                    );
+                }
+                let result: Value =
+                    serde_json::from_str(state["last_stderr"].as_str().unwrap_or("")).map_err(
+                        |error| format!("guest did not record a complete probe result: {error}"),
+                    )?;
+                if result["probe_id"] != id
+                    || state["last_stderr_truncated"] == true
+                    || state["last_exit_code"] != 0
+                {
+                    return Err("guest probe result or exit status is incomplete; inspect the command supervisor state".into());
+                }
+                return Ok(
+                    json!({"generation":generation,"supervision_id":id,"result":result,"state":state}),
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("host recovery deadline expired; guest completion is unverified; inspect the command supervisor state".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    })();
+    // A fence prevents replay but does not claim termination. Never alter a
+    // replacement command or signal a host PID copied from guest-writable state.
+    if let Some(current) = crate::guest_commands::read_state(&state_path)?
+        && current["supervision_id"] == id
+    {
+        crate::guest_commands::request_stop(&home, &share, &id)?;
+    }
+    result
 }
 
 impl Drop for LaunchLock {
@@ -797,25 +912,24 @@ async fn invoke_launcher(agent: &Agent, record: &Value) -> Result<(), Error> {
         .ok_or("launch ID is missing")?;
     match kind {
         "supervisor" => {
-            let path = supervisor_path(&agent.name);
-            let stop = path.with_file_name(".safeyolo-command-supervisor.stop");
-            if let Err(error) = std::fs::remove_file(stop)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(error.into());
-            }
-            write_json(
-                &path,
-                &json!({
-                    "schema_version":1,"name":agent.name,"command":record["command"],
-                    "state":"starting","runtime_owner":"guest-pid1","started_at":time::OffsetDateTime::now_utc().unix_timestamp(),
-                    "restart_count":0,"consecutive_failures":0,"heartbeat_at":null,
-                    "last_stderr":"","last_exit_code":null,"next_restart_at":null
-                }),
-            )?;
-            std::fs::write(
-                agent_dir(&agent.name).join("config-share/command-supervisor-enabled"),
-                b"",
+            let directory = agent_dir(&agent.name);
+            let share = directory.join("config-share");
+            let context =
+                crate::guest_commands::read_state(&share.join("host-launch-context.json"))?.ok_or(
+                    "host launch context is missing; stage this agent before starting its command",
+                )?;
+            let generation = context["generation"]
+                .as_str()
+                .ok_or("current-run generation is missing")?;
+            crate::guest_commands::publish(
+                &directory.join("home"),
+                &share,
+                &agent.name,
+                record["command"]
+                    .as_str()
+                    .ok_or("guest command is missing")?,
+                launch_id,
+                generation,
             )?;
             update_launch(
                 &agent.name,

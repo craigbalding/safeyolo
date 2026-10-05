@@ -67,6 +67,22 @@ jobs:
               'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
           }) + '\n')
           PY
+      - name: Build Linux guest command artifacts for ARM hosts
+        env:
+          SAFEYOLO_BUILD_REVISION: ${{ github.event.workflow_run.head_sha }}
+          CARGO_BUILD_JOBS: "1"
+          SAFEYOLO_CARGO_RESERVE_GIB: "2"
+        run: |
+          cd guest/command
+          rustup show active-toolchain
+          cd ../..
+          for profile in production debug; do
+            SAFEYOLO_BUILD_PROFILE="$profile" scripts/build_guest_command.sh
+            directory=release
+            if [ "$profile" = debug ]; then directory=debug; fi
+            mkdir -p "$RUNNER_TEMP/vsock/guest-command/$profile"
+            cp guest/command/target/"$directory"/safeyolo-guest{,.version,.sha256} "$RUNNER_TEMP/vsock/guest-command/$profile/"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: host-guest-terminal
@@ -120,7 +136,7 @@ jobs:
           --native-attempt "$NATIVE_ATTEMPT"
           --platform "$HOST_PLATFORM" --directory "$RUNNER_TEMP/debug-input"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        if: matrix.platform == 'darwin-arm64'
+        if: matrix.platform != 'linux-amd64'
         with:
           name: host-guest-terminal
           path: ${{ runner.temp }}/vsock-input
