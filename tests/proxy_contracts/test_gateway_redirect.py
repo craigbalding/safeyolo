@@ -14,8 +14,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from safeyolo.core.vault import Vault, VaultCredential
 from tests.blackbox.host.uds_transport import UDSProxyTransport
+from tests.blackbox.native_credentials import store_credential
 from tests.proxy_contracts.harness import launch_proxy, request
 
 AGENT_API = "http://_safeyolo.proxy.internal"
@@ -166,12 +166,7 @@ def _fixture_state(directory: Path) -> None:
     agent_token = data / "agent_token"
     agent_token.write_text(AGENT_TOKEN)
     agent_token.chmod(0o600)
-    key = data / "vault.key"
-    key.write_text(VAULT_PASSPHRASE)
-    key.chmod(0o600)
-    vault = Vault(data / "vault.yaml.enc")
-    vault.unlock(VAULT_PASSPHRASE)
-    vault.store(VaultCredential(VAULT_NAME, "bearer", VAULT_CREDENTIAL))
+    store_credential(data, VAULT_NAME, VAULT_CREDENTIAL)
 
 
 def _gateway_token(proxy) -> str:

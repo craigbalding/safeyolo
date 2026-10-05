@@ -377,6 +377,21 @@ PY
     unset SAFEYOLO_RUST_PROXY || true
 fi
 
+if [ "$ACCESS" = true ]; then
+    # The installed lane supplies its matching native host command. Config-only
+    # consumers also select an explicit input, without requiring a warm build.
+    SAFEYOLO_NATIVE_CLI="$(cd "$CALLER_DIR" && python3 - "$SCRIPT_DIR" "$INSTALLED_RUST_BIN" "$INSTALL_COMMIT" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from native_credentials import native_cli
+print(native_cli(proxy=Path(sys.argv[2]) if sys.argv[2] else None,
+                 revision=sys.argv[3] or None))
+PY
+)"
+    export SAFEYOLO_NATIVE_CLI
+fi
+
 echo "=== SafeYolo Blackbox Tests ==="
 echo "  Instance: $SAFEYOLO_CONFIG_DIR"
 echo "  Proxy:    localhost:$TEST_PROXY_PORT  Admin: localhost:$TEST_ADMIN_PORT  Web: localhost:$TEST_WEB_PORT"
@@ -445,7 +460,7 @@ fi
 if [ "$ACCESS" = true ]; then
     export SAFEYOLO_COORD_DATA_DIR="${SAFEYOLO_COORD_DATA_DIR:-$SAFEYOLO_CONFIG_DIR/data/coord}"
     export SAFEYOLO_NATS_TEST_INSTANCE="${SAFEYOLO_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
-    python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR"
+    python3 "$SCRIPT_DIR/access_setup.py" "$SAFEYOLO_CONFIG_DIR" --native-cli "$SAFEYOLO_NATIVE_CLI"
 fi
 
 # Restore a parent selected by an interrupted native run before reading or

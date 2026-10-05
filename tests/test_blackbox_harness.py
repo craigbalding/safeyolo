@@ -27,6 +27,7 @@ from tests.blackbox.installed_ingress import installed_identity
 from tests.blackbox.isolation import installed_access as guest
 from tests.blackbox.isolation import installed_lifecycle as guest_lifecycle
 from tests.blackbox.isolation import installed_workloads as guest_workloads
+from tests.blackbox.native_credentials import native_cli, store_credential
 from tests.blackbox.proxy_backend import SelectionError, identity
 from tests.proxy_contracts import harness as proxy_harness
 from tests.proxy_contracts.websocket_peer import read_head
@@ -670,7 +671,25 @@ OTHER_REVISION = "b" * 40
 SELECTED_REVISION = "a" * 40
 
 
-def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch):
+@pytest.fixture
+def native_credential_cli(tmp_path):
+    """Command-shaping input only; never a native-store or delivery witness."""
+    binary = tmp_path / "native-cli"
+    call = tmp_path / "native-credential-call.json"
+    binary.write_text(
+        f"#!{sys.executable}\nimport json,sys,tomllib\nfrom pathlib import Path\n"
+        "if sys.argv[1:] == ['--version']:\n"
+        f"    print('safeyolo 0.1.0 commit={SELECTED_REVISION} profile=debug')\n"
+        "else:\n"
+        "    args = sys.argv[1:]\n"
+        "    data = tomllib.loads((Path(args[1]) / 'config.toml').read_text())['data_dir']\n"
+        f"    Path({str(call)!r}).write_text(json.dumps({{'args':args,'data_dir':data}}))\n"
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeypatch, native_credential_cli):
     """Run the launcher's final addon rewrite and capture the guest's calls."""
     source = tmp_path / "source-instance"
     instance = tmp_path / "test-instance"
@@ -678,6 +697,7 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     environment.update(
         SAFEYOLO_CONFIG_DIR=str(source),
         SAFEYOLO_TEST_CONFIG_DIR=str(instance),
+        SAFEYOLO_NATIVE_CLI=str(native_credential_cli),
         PATH=f"{Path(sys.executable).parent}:{environment['PATH']}",
         PYTHONPATH=f"{ROOT / 'cli/src'}:{ROOT}",
     )
@@ -692,6 +712,9 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     prepared = subprocess.run(command, env=environment, cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert prepared.returncode == 0, prepared.stdout[-1000:] + prepared.stderr[-1000:]
     assert "no proxy or guest started" in prepared.stdout
+    seeded = json.loads((tmp_path / "native-credential-call.json").read_text())
+    assert seeded["args"][2:7] == ["credentials", "add", "p3-owned", "--type", "bearer"]
+    assert seeded["data_dir"] == str(instance / "data")
     targets = yaml.safe_load((instance / "addons.yaml").read_text())["addons"]["test_context"]["target_hosts"]
     policy = tomllib.loads((instance / "policy.toml").read_text())
     assert policy["hosts"][guest.BASIC_HOST]["service"] == "p3_basic"
@@ -751,13 +774,14 @@ def test_access_launcher_targets_match_selected_guest_requests(tmp_path, monkeyp
     ]
 
 
-def test_installed_setup_command_failure_is_infrastructure(tmp_path):
+def test_installed_setup_command_failure_is_infrastructure(tmp_path, native_credential_cli):
     cli = tmp_path / "safeyolo"
     cli.write_text("#!/bin/sh\necho 'deliberate init failure' >&2\nexit 1\n")
     cli.chmod(0o755)
     environment = {**os.environ,
                    "PATH": f"{tmp_path}:{Path(sys.executable).parent}:{os.environ['PATH']}",
                    "SAFEYOLO_CONFIG_DIR": str(tmp_path / "prepared"),
+                   "SAFEYOLO_NATIVE_CLI": str(native_credential_cli),
                    "SAFEYOLO_TEST_CONFIG_DIR": str(tmp_path / "section")}
     result = subprocess.run(
         [str(ROOT / "tests/blackbox/run-tests.sh"), "--expect-platform", "systrap",
@@ -767,6 +791,37 @@ def test_installed_setup_command_failure_is_infrastructure(tmp_path):
     assert "deliberate init failure" in result.stderr
     assert result.returncode == 2
     assert "Starting sinkhole" not in result.stdout
+
+
+def test_access_setup_requires_selected_native_cli_before_mutation(tmp_path, monkeypatch):
+    """No implicit source build may satisfy the maintained seeding input."""
+    monkeypatch.delenv("SAFEYOLO_NATIVE_CLI", raising=False)
+    data = tmp_path / "uncreated" / "data"
+    with pytest.raises(RuntimeError, match="Set SAFEYOLO_NATIVE_CLI"):
+        store_credential(data, "synthetic", "synthetic-selected-value")
+    assert not data.exists()
+    environment = {**os.environ, "SAFEYOLO_CONFIG_DIR": str(tmp_path / "source"),
+                   "SAFEYOLO_TEST_CONFIG_DIR": str(tmp_path / "instance")}
+    result = subprocess.run(
+        [str(ROOT / "tests/blackbox/run-tests.sh"), "--expect-platform", "systrap",
+         "--access-config-only"], env=environment, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 2
+    assert "Set SAFEYOLO_NATIVE_CLI" in result.stderr
+    assert not (tmp_path / "instance").exists()
+
+
+def test_selected_native_credential_cli_matches_runtime_and_revision(tmp_path, native_credential_cli):
+    """The launcher rejects stale seeding inputs before preparing live access."""
+    proxy = tmp_path / "runtime"
+    proxy.write_text(f"#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 commit={SELECTED_REVISION} profile=debug\\n'\n")
+    proxy.chmod(0o755)
+    assert native_cli(native_credential_cli, proxy=proxy, revision=SELECTED_REVISION) == native_credential_cli
+    with pytest.raises(RuntimeError, match="selected install commit"):
+        native_cli(native_credential_cli, proxy=proxy, revision=OTHER_REVISION)
+    proxy.write_text(f"#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 commit={OTHER_REVISION} profile=debug\\n'\n")
+    with pytest.raises(RuntimeError, match="identities differ"):
+        native_cli(native_credential_cli, proxy=proxy)
 
 
 def test_held_guest_keeps_preamble_and_observation(monkeypatch):
@@ -1089,6 +1144,66 @@ def installed_section_commands(tmp_path, monkeypatch):
     section.chmod(0o755)
     monkeypatch.setattr(installed_sections, "REPOSITORY", repository)
     return repository
+
+
+@pytest.mark.parametrize("explicit_cli", [False, True], ids=["prepared-default", "explicit-input"])
+def test_installed_package_wrapper_binds_prepared_native_cli(
+    tmp_path, installed_section_commands, native_credential_cli, explicit_cli
+):
+    """Reach real continuity selection from the parent; earlier package steps are staged."""
+    repository = installed_section_commands
+    scripts = repository / "tests/blackbox"
+    wrapper = scripts / "run-installed-package.sh"
+    shutil.copy2(ROOT / "tests/blackbox/run-installed-package.sh", wrapper)
+    release_cli = repository / "proxy/target/release/safeyolo"
+    prepare = scripts / "run-lane.sh"
+    with prepare.open("a") as output:
+        output.write(
+            f"native = pathlib.Path({str(release_cli)!r})\n"
+            "native.parent.mkdir(parents=True)\n"
+            f"native.write_bytes(pathlib.Path({str(native_credential_cli)!r}).read_bytes())\n"
+            "native.chmod(0o755)\n"
+            "(binary_dir / 'safeyolo').write_text('#!/bin/sh\\nmkdir -p \"$SAFEYOLO_CONFIG_DIR\"\\n')\n"
+        )
+    proxy = tmp_path / "package/bin/safeyolo-proxy"
+    proxy.parent.mkdir(parents=True)
+    proxy.write_text(f"#!/bin/sh\nprintf 'safeyolo-proxy 0.1.0 commit={SELECTED_REVISION} profile=debug\\n'\n")
+    proxy.chmod(0o755)
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    for name, script in (("runsc", "exit 0"), ("git", f"echo {SELECTED_REVISION}")):
+        command = commands / name
+        command.write_text(f"#!/bin/sh\n{script}\n")
+        command.chmod(0o755)
+    selected = native_credential_cli if explicit_cli else release_cli
+    python = commands / "python3"
+    python.write_text(
+        f"#!{sys.executable}\nimport os,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1] == '-c': os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+        "if sys.argv[1].endswith('/installed_state_transition.py'):\n"
+        f"    sys.path.insert(0, {str(ROOT)!r})\n"
+        "    from tests.blackbox import installed_state_transition as continuity\n"
+        f"    continuity.installed_identity = lambda *_: {{'package':{str(proxy.parent.parent)!r}}}\n"
+        "    original = continuity.native_cli\n"
+        "    def check_selected(*args, **kwargs):\n"
+        "        actual = original(*args, **kwargs)\n"
+        f"        assert actual == Path({str(selected)!r}).resolve()\n"
+        "        print('matching native continuity input selected')\n"
+        "        raise SystemExit(0)\n"
+        "    continuity.native_cli = check_selected\n"
+        "    sys.argv = sys.argv[1:]\n"
+        "    continuity.main()\n"
+        f"if sys.argv[1:3] == ['-', {str(scripts)!r}]: print({str(proxy)!r})\n"
+    )
+    python.chmod(0o755)
+    env = {**os.environ, "PATH": f"{commands}:{os.environ['PATH']}", "HOME": str(tmp_path),
+           "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR": str(tmp_path / "artifacts")}
+    env.pop("SAFEYOLO_NATIVE_CLI", None)
+    if explicit_cli:
+        env["SAFEYOLO_NATIVE_CLI"] = str(native_credential_cli)
+    result = subprocess.run([str(wrapper)], env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "matching native continuity input selected" in result.stdout
 
 
 @pytest.mark.parametrize("failure,expected", [(0, 0), (1, 1), (2, 2)])

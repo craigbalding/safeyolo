@@ -284,6 +284,9 @@ jobs:
           rust_proxy="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo-proxy"
           test -x "$rust_proxy"
           printf 'SAFEYOLO_RUST_PROXY=%s\n' "$rust_proxy" >> "$GITHUB_ENV"
+          native_cli="$GITHUB_WORKSPACE/proxy/target/$host_target/debug/safeyolo"
+          test -x "$native_cli"
+          printf 'SAFEYOLO_NATIVE_CLI=%s\n' "$native_cli" >> "$GITHUB_ENV"
 
       - name: Stop the Python-owned Coord fixture
         if: always()

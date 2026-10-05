@@ -571,54 +571,6 @@ def _check_tokens() -> DiagResult:
     )
 
 
-def _check_vault() -> DiagResult:
-    """Check service gateway vault setup."""
-    from .vault import _get_key_path, _get_vault_path
-
-    key_path = _get_key_path()
-    vault_path = _get_vault_path()
-
-    if not key_path.exists() and not vault_path.exists():
-        return DiagResult(
-            name="Service gateway vault",
-            status="pass",
-            message=f"Not configured (no {vault_path})",
-        )
-
-    if not key_path.exists():
-        return DiagResult(
-            name="Service gateway vault",
-            status="fail",
-            message="Vault key missing but vault file exists (partial setup)",
-            remediation="Check ~/.safeyolo/data/ or re-run: safeyolo vault add",
-        )
-
-    if not vault_path.exists():
-        return DiagResult(
-            name="Service gateway vault",
-            status="pass",
-            message=f"Key present at {key_path}; no credentials stored at {vault_path}",
-        )
-
-    try:
-        from .vault import _load_vault
-
-        vault, _ = _load_vault()
-        cred_count = len(vault.list_names())
-        return DiagResult(
-            name="Service gateway vault",
-            status="pass",
-            message=f"Unlocked {vault_path} ({cred_count} credential{'s' if cred_count != 1 else ''})",
-        )
-    except Exception as exc:
-        return DiagResult(
-            name="Service gateway vault",
-            status="fail",
-            message=f"Cannot decrypt: {type(exc).__name__}: {exc}",
-            remediation="Check vault.key matches vault.yaml.enc",
-        )
-
-
 def _check_log_health() -> DiagResult:
     """Check log file sizes and disk usage."""
     logs_dir = get_logs_dir()
@@ -1195,7 +1147,6 @@ def _run_checks(verbose: bool = False) -> list[DiagResult]:
             ("Egress enforcement", _check_firewall),
             ("Coord message plane", _check_coord_message_plane),
             ("Tokens", _check_tokens),
-            ("Service gateway vault", _check_vault),
             ("Log health", _check_log_health),
             ("Pending approvals", _check_pending_approvals),
             ("Flow store", _check_flow_store),

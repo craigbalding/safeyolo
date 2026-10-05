@@ -11,7 +11,10 @@ from pathlib import Path
 
 import tomlkit
 
-from safeyolo.core.vault import Vault, VaultCredential
+if __package__:
+    from .native_credentials import store_credential
+else:
+    from native_credentials import store_credential
 
 BASIC = """\
 schema_version: 1
@@ -79,7 +82,7 @@ capabilities:
 """
 
 
-def prepare(config_dir: Path) -> None:
+def prepare(config_dir: Path, *, native_cli: Path) -> None:
     policy_path = config_dir / "policy.toml"
     policy = tomlkit.parse(policy_path.read_text())
     hosts = policy["hosts"]
@@ -118,15 +121,8 @@ def prepare(config_dir: Path) -> None:
 
     data = config_dir / "data"
     data.mkdir(exist_ok=True)
-    passphrase = secrets.token_urlsafe(32)
-    key = data / "vault.key"
-    key.write_text(passphrase + "\n")
-    key.chmod(0o600)
-    credential = "p3-vault-" + secrets.token_hex(20)
-    vault = Vault(data / "vault.yaml.enc")
-    vault.unlock(passphrase)
-    vault.store(VaultCredential(name="p3-owned", type="bearer", value=credential))
-    (data / "vault.yaml.enc").chmod(0o600)
+    credential = "p3-native-" + secrets.token_hex(20)
+    store_credential(data, "p3-owned", credential, binary=native_cli)
     fixture = config_dir / "p3-fixture.json"
     fixture.write_text(json.dumps({"credential_name": "p3-owned", "credential": credential}) + "\n")
     fixture.chmod(0o600)
@@ -135,8 +131,10 @@ def prepare(config_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config_dir", type=Path)
+    parser.add_argument("--native-cli", required=True, type=Path,
+                        help="Matching native safeyolo executable prepared by the launcher")
     args = parser.parse_args()
-    prepare(args.config_dir.resolve())
+    prepare(args.config_dir.resolve(), native_cli=args.native_cli)
 
 
 if __name__ == "__main__":

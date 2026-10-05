@@ -9,7 +9,8 @@ things the code no longer provides (or never provided).
 How it works
 ------------
 
-1. Introspect the Typer ``app`` and walk its Click command tree.
+1. Introspect the retained Typer ``app`` and read the native credential/service
+   command help from its Rust source.
    Build ``{"agent add": {"--host-script", "--force", "-f", ...},
             "start":     {"--dev", "--test", ...}, ...}``.
 2. Walk every fenced code block and inline code span in the user-facing doc
@@ -32,6 +33,7 @@ Exit codes
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -41,7 +43,7 @@ CLI_SRC = REPO_ROOT / "cli" / "src"
 
 # Load the shared shipped-docs allowlist (user-facing docs plus
 # agent-facing skill files). Both tiers can contain `safeyolo` invocations
-# that must resolve against the current Typer surface. Defined once in
+# that must resolve against the current command surface. Defined once in
 # scripts/doc_allowlist.toml.
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from _doc_config import ALL_SHIPPED_DOCS  # noqa: E402
@@ -57,7 +59,7 @@ _PLACEHOLDER_RE = re.compile(r"^(?:[A-Z_][A-Z0-9_]*|<[^>]+>|\$\w+|\{[^}]+\})$")
 
 
 def _load_cli_surface() -> dict[str, set[str]]:
-    """Return {command_path: allowed_flag_set} for the full Typer surface.
+    """Return {command_path: allowed_flag_set} for retained Python and native credential/service commands.
 
     ``command_path`` uses space-separated tokens as they'd be typed on the
     CLI, e.g. ``"agent add"`` or ``"policy host add"``. The empty string is
@@ -93,6 +95,20 @@ def _load_cli_surface() -> dict[str, set[str]]:
                 walk(subcommands[sub_name], path + [sub_name])
 
     walk(typer.main.get_command(app), [])
+    # These replaced commands are native-only. Read their declared help instead
+    # of retaining Python implementations solely for documentation validation.
+    source = (REPO_ROOT / "proxy/src/bin/safeyolo/credential_commands.rs").read_text()
+    for constant in ("CREDENTIAL_HELP", "SERVICE_HELP"):
+        match = re.search(rf'pub const {constant}: &str = ("(?:[^"\\]|\\.)*");', source)
+        if match is None:
+            raise ValueError(f"missing native help: {constant}")
+        for line in json.loads(match.group(1)).splitlines():
+            command = re.match(r"safeyolo \[--root ROOT\] ([a-z-]+) ([a-z-]+)", line)
+            if command:
+                group, action = command.groups()
+                surface.setdefault(group, set())
+                surface.setdefault(f"{group} {action}", set()).update(re.findall(r"--[a-z-]+", line))
+    surface[""].add("--root")
     return surface
 
 

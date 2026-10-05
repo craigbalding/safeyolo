@@ -2329,21 +2329,38 @@ pub(crate) async fn respond_with_context<B: Body<Data = Bytes>>(
         outcome.audit = Some(mutation(event, "Operator host policy updated", body_value));
         return Ok(outcome);
     }
+    if method == Method::GET && path == "/admin/services" {
+        return services::catalogue(policy);
+    }
+    if method == Method::GET
+        && let Some(agent) = services::agent_path(&path)
+    {
+        return services::authorized(policy, &services::decode_name(agent)?);
+    }
     if method == Method::POST
         && let Some(agent) = services::agent_path(&path)
     {
-        let agent = agent.to_owned();
-        return services::authorize(request, agent, policy, policy_path, service_audit).await;
+        let agent = services::decode_name(agent)?;
+        return services::authorize(
+            request,
+            agent,
+            policy,
+            policy_path,
+            service_audit,
+            task_state,
+        )
+        .await;
     }
     if method == Method::DELETE
         && let Some((agent, service)) = services::revocation_path(&path)
     {
         return services::revoke(
             request,
-            agent.to_owned(),
-            service.to_owned(),
+            services::decode_name(agent)?,
+            services::decode_name(service)?,
             policy_path,
             service_audit,
+            task_state.filter(|_| policy.and_then(Policy::native_controls).is_some()),
         )
         .await;
     }

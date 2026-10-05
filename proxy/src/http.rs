@@ -2925,6 +2925,16 @@ where
                     }
                 };
                 let start = match start {
+                    crate::credential_injection::Start::External(pending) => pending
+                        .resolve(
+                            runtime
+                                .config
+                                .native_settings
+                                .as_ref()
+                                .and_then(|settings| settings.onepassword_executable.as_deref()),
+                        )
+                        .await
+                        .map_err(|error| Box::new(error) as Error),
                     crate::credential_injection::Start::Refresh(pending) => {
                         resolve_refresh(&runtime, identity, request_id, &upgrades, pending).await
                     }
@@ -2995,7 +3005,8 @@ where
                         strip_hop_headers(reply.headers_mut());
                         return Ok((prior_block(reply), "deny".into()));
                     }
-                    crate::credential_injection::Start::Refresh(_) => {
+                    crate::credential_injection::Start::Refresh(_)
+                    | crate::credential_injection::Start::External(_) => {
                         let reply =
                             gateway_response(503, "GATEWAY_REFRESH_UNAVAILABLE", request_id)?;
                         return Ok((prior_block(reply), "deny".into()));

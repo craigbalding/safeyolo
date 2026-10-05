@@ -21,6 +21,7 @@ export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --basetemp=$PACKAGE_DIR/p"
 mkdir -p "$ARTIFACTS"
 "$SCRIPT_DIR/run-lane.sh" proxy --prepare-only
 export PATH="$UV_TOOL_BIN_DIR:$REPO_ROOT/.venv/bin:$PATH"
+export SAFEYOLO_NATIVE_CLI="${SAFEYOLO_NATIVE_CLI:-$REPO_ROOT/proxy/target/release/safeyolo}"
 export SAFEYOLO_CONFIG_DIR="$PACKAGE_DIR/instance"
 export SAFEYOLO_LOGS_DIR="$SAFEYOLO_CONFIG_DIR/logs"
 export SAFEYOLO_COORD_DATA_DIR="$SAFEYOLO_CONFIG_DIR/data/coord"

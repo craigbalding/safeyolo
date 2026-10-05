@@ -18,8 +18,8 @@ it uses `~/.safeyolo/`. SafeYolo does not search for a project-local
 ├── agents/              # Agent metadata, persistent homes, and overlays
 ├── share/               # Installed guest artifacts
 ├── data/                # Admin token, HMAC secret, agent API tokens
-│   ├── vault.yaml.enc   # Encrypted credential vault
-│   ├── vault.key        # Vault encryption key (auto-generated, 0600 permissions)
+│   ├── credentials.enc  # Native encrypted credential store
+│   ├── credentials.key  # Native encryption key (auto-generated, 0600 permissions)
 │   └── native.json      # Generated Rust proxy configuration
 ```
 
@@ -311,7 +311,9 @@ Agent-scoped behaviour:
 - Service bindings use `capability:` (not `role:`). The `account:` field declares whose account the credential belongs to (`agent`, `operator`, or a custom label).
 - Grants (once-grants, session grants) are tracked under the agent section. Grant TTL defaults to 1 hour, configurable via `gateway.grant_ttl_seconds` in the policy file.
 
-The CLI writes agent metadata (`safeyolo agent authorize` / `safeyolo agent revoke`). Run `safeyolo policy show` to see the merged result.
+The native CLI activates service bindings with `safeyolo services authorize` and
+removes them with `safeyolo services revoke`. See [native credential setup](native-credentials.md)
+for the complete workflow, including binding and risk approval.
 
 ### Workspace and memory
 
@@ -368,11 +370,9 @@ addons:
 
 Service definitions describe APIs: auth methods, capabilities (named sets of allowed routes), and risky routes (tagged with ATT&CK tactics). They are used by the service gateway to enforce per-agent access control.
 
-- Builtin services (gmail, slack, etc.) ship inside the installed
-  `safeyolo/services/` package directory, including editable source installs
-  and built wheels.
-- User definitions go in `~/.safeyolo/services/` (or
-  `$SAFEYOLO_CONFIG_DIR/services/`). They override builtins by the service
+- Native init installs builtin services (gmail, slack, minifuse) in the
+  instance's `builtin-services/` directory.
+- Operator definitions go in the native instance's `services/` directory. They override builtins by the service
   `name`; duplicate names within one source or any malformed definition make
   discovery/authorization fail with the offending file named.
 - The CLI, running gateway, and policy compiler use that same builtin-then-user
@@ -439,8 +439,7 @@ provider application must listen on guest port 8088. From the operator's host
 terminal, map the host and authorize the caller:
 
 ```sh
-safeyolo policy host add proofspot.safeyolo.internal --service proofspot
-safeyolo agent authorize pentest proofspot --capability assessment
+safeyolo services authorize pentest proofspot --capability assessment --host proofspot.safeyolo.internal --allow-host-network
 ```
 
 The authorization creates an agent-bound `sgw_` token without a vault
@@ -454,14 +453,18 @@ upstream error without connecting to the service host by DNS or ordinary TCP.
 Opaque `CONNECT` tunnels to provider hosts are denied because the gateway
 needs an HTTP route to authorize each request.
 
-## Vault
+## Native credentials
 
-Encrypted credential store for the service gateway. Credentials are stored encrypted at rest and referenced by name in policy.toml agent service bindings.
+The native host CLI stores local credentials in encrypted `data/credentials.enc`
+with a mode-0600 `data/credentials.key`. Service bindings select a credential by
+name; metadata never includes its value. The same store can hold a host-selected
+1Password reference, whose value is resolved transiently after authorization and
+approval. It is never substituted with a local value or persisted after resolution.
 
-- Key auto-generated at `~/.safeyolo/data/vault.key` (0600 permissions).
-- Credentials stored in `~/.safeyolo/data/vault.yaml.enc`.
-- Managed via CLI: `safeyolo vault add`, `safeyolo vault list`, `safeyolo vault remove`, `safeyolo vault oauth2`.
-- Referenced by name in policy.toml agent service bindings (the `token:` field).
+Follow the two [native setup paths](native-credentials.md) for local credentials
+and 1Password. The native CLI replaces Python vault and service setup commands;
+old vault files are not read or migrated. Existing native OAuth refresh retains
+its atomic writer and failure behavior.
 
 ### Credential Condition Formats
 

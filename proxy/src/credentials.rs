@@ -1,30 +1,10 @@
-//! Existing encrypted vault format, inactive in proxy transport.
+//! Native encrypted credentials and host-controlled external references.
 //!
-//! Files contain a 16-byte salt followed by a Fernet token. The key is derived
-//! with PBKDF2-HMAC-SHA256, 480,000 iterations, from the UTF-8 passphrase. Fernet
-//! authenticates the encrypted YAML; vault files have no Fernet token TTL.
-//! Mozilla's `fernet` crate supplies the protocol and RustCrypto primitives.
-//!
-//! One Vault and its clones serialize local mutations. Python's vault has no
-//! cross-process lock, so independent writers still require coordination. Polling
-//! and gateway activation belong to the caller. Atomic reload and write rollback
-//! retain the previous snapshot on failure, correcting Python's partial reload
-//! and mutation-before-save behavior. Changed salt requires a fresh unlock.
-//!
-//! OAuth refresh inventory (core/vault.py and service_gateway.py): `oauth2`, a
-//! nonempty refresh_token and token_url, and actual expiry are required. Despite
-//! its name, auth.refresh_on_401 gates refresh before credential injection. Python
-//! sends a form POST with grant_type=refresh_token, refresh_token, client_id and
-//! client_secret (missing client values become empty), with a 10-second timeout.
-//! Success requires an HTTP success status and JSON access_token; refresh_token
-//! rotates only when present, expires_in replaces expiry relative to response
-//! time, then the vault saves. HTTP/JSON failure returns false and the gateway
-//! retains the old credential for injection; missing access_token or invalid
-//! expires_in can instead propagate errors during publication. The old method
-//! reselects by name after network completion without a version check or request
-//! deduplication. Conditional publication below prevents a late refresh from
-//! replacing an edited credential. HTTP execution, refresh arbitration, key-file
-//! loading and secret injection belong to the caller.
+//! Files contain a 16-byte salt followed by an authenticated Fernet token.
+//! PBKDF2-HMAC-SHA256 derives the key with 480,000 iterations. New native
+//! credentials use encrypted JSON; old vault files and keys are not loaded.
+//! Clones share snapshots and OAuth revisions. A file lock serializes native
+//! command writes with refresh publication across processes.
 
 use std::{
     collections::HashMap,
@@ -38,24 +18,18 @@ use std::{
     time::SystemTime,
 };
 
-use base64::{
-    Engine, alphabet,
-    engine::{
-        DecodePaddingMode,
-        general_purpose::{GeneralPurpose, GeneralPurposeConfig, URL_SAFE},
-    },
-};
+use base64::{Engine, engine::general_purpose::URL_SAFE};
 use fernet::Fernet;
 use ring::{
     pbkdf2,
     rand::{SecureRandom, SystemRandom},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::policy::{expiry_has_offset, parse_expiry, parse_yaml_for_vault};
+use crate::policy::{expiry_has_offset, parse_expiry};
 
 const SALT_LENGTH: usize = 16;
 const KDF_ITERATIONS: u32 = 480_000;
@@ -82,7 +56,7 @@ pub enum ActivationPhase {
 }
 
 /// Errors intentionally contain no source text, passphrase, token, or callback
-/// error strings. YAML parser diagnostics can include decrypted credential text.
+/// error strings. Parser diagnostics can include decrypted credential text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VaultError {
     pub kind: ErrorKind,
@@ -152,6 +126,7 @@ pub struct Credential {
     pub name: String,
     pub credential_type: String,
     pub value: Secret,
+    pub reference: Option<ExternalReference>,
     pub refresh_token: Option<Secret>,
     pub token_url: Option<String>,
     pub client_id: Option<String>,
@@ -164,6 +139,7 @@ impl Credential {
             name: name.into(),
             credential_type: credential_type.into(),
             value,
+            reference: None,
             refresh_token: None,
             token_url: None,
             client_id: None,
@@ -176,6 +152,7 @@ impl Credential {
             name: self.name.clone(),
             credential_type: self.credential_type.clone(),
             expires_at: self.expires_at.clone(),
+            reference: self.reference.clone(),
         }
     }
     /// Python treats malformed expiry as expired but raises for valid naive
@@ -209,6 +186,74 @@ pub struct CredentialMetadata {
     #[serde(rename = "type")]
     pub credential_type: String,
     pub expires_at: Option<String>,
+    pub reference: Option<ExternalReference>,
+}
+
+/// Provider selection is stored by the host. Guests select only minted gateway
+/// credentials; neither a reference nor an executable comes from their request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "provider", content = "reference", rename_all = "lowercase")]
+pub enum ExternalReference {
+    Onepassword(String),
+}
+
+impl ExternalReference {
+    pub fn validate(&self) -> Result<()> {
+        let Self::Onepassword(reference) = self;
+        if !reference.starts_with("op://")
+            || reference[5..].is_empty()
+            || reference.chars().any(char::is_control)
+        {
+            return Err(error(ErrorKind::Format));
+        }
+        Ok(())
+    }
+}
+
+fn lock_file(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
+/// Fresh native state has its own names and JSON schema. Old vault keys/files
+/// are never inspected. This is the same encrypted store used by OAuth refresh.
+pub fn open(data_dir: &Path) -> Result<Vault> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::create_dir_all(data_dir)?;
+    let key_path = data_dir.join("credentials.key");
+    let key_lock = lock_file(&data_dir.join(".credentials.key.lock"))?;
+    let key = match fs::read_to_string(&key_path) {
+        Ok(key) => Zeroizing::new(key),
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => {
+            let mut raw = Zeroizing::new([0u8; 32]);
+            SystemRandom::new()
+                .fill(raw.as_mut())
+                .map_err(|_| error(ErrorKind::State))?;
+            let key = Zeroizing::new(URL_SAFE.encode(raw.as_ref()));
+            let mut file = fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .mode(0o600)
+                .open(&key_path)?;
+            file.write_all(key.as_bytes())?;
+            file.sync_all()?;
+            key
+        }
+        Err(failure) => return Err(failure.into()),
+    };
+    drop(key_lock);
+    if key.trim().is_empty() {
+        return Err(error(ErrorKind::Authentication));
+    }
+    Vault::unlock(data_dir.join("credentials.enc"), &Secret::new(key.trim()))
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -263,10 +308,10 @@ pub struct Vault {
     state: Arc<Mutex<State>>,
 }
 impl Vault {
-    /// Match Python unlock: create an empty encrypted vault when the file is
-    /// absent. Gateway startup must check its configured paths before calling.
+    /// Create an empty encrypted store when absent.
     pub fn unlock(path: impl Into<PathBuf>, passphrase: &Secret) -> Result<Self> {
         let path = path.into();
+        let _file_lock = lock_file(&path.with_extension("lock"))?;
         let loaded = match read_file(&path) {
             Ok(value) => Some(value),
             Err(value) if value.io_kind == Some(std::io::ErrorKind::NotFound) => None,
@@ -357,8 +402,8 @@ impl Vault {
     }
     /// Returns false without writing or activating if a store, removal, changed
     /// reload, or visible external file replacement superseded the snapshot.
-    /// Unrelated credential edits do not invalidate it. This is local atomicity,
-    /// not a cross-process lock: independent vault writers require coordination.
+    /// Unrelated edits through this Vault preserve the revision. Visible external
+    /// writes are also checked under the file lock before conditional publication.
     pub fn replace_if_current(
         &self,
         snapshot: &CredentialSnapshot,
@@ -466,17 +511,30 @@ impl Vault {
         mutation: impl FnOnce(&mut Vec<Credential>) -> bool,
         mut activate: impl FnMut(ActivationPhase, &[CredentialMetadata]) -> std::result::Result<(), ()>,
     ) -> Result<bool> {
+        let _file_lock = lock_file(&self.path.with_extension("lock"))?;
         let mut state = self.lock()?;
         if let Some(snapshot) = expected
             && !self.same_revision(&state, snapshot)
         {
             return Ok(false);
         }
+        let (original, original_stamp) = read_file(&self.path)?;
+        if original_stamp != state.stamp {
+            if expected.is_some() {
+                return Ok(false);
+            }
+            if original.get(..SALT_LENGTH) != Some(state.salt.as_slice()) {
+                return Err(error(ErrorKind::KeyChanged));
+            }
+            let loaded = decrypt(&state.cipher, &original)?;
+            state.revisions = revisions_for(&state, &loaded, None);
+            state.credentials = loaded;
+            state.stamp = original_stamp.clone();
+        }
         let mut candidate = state.credentials.clone();
         if !mutation(&mut candidate) {
             return Ok(false);
         }
-        let (original, original_stamp) = read_file(&self.path)?;
         if expected.is_some() && original_stamp != state.stamp {
             return Ok(false);
         }
@@ -591,6 +649,7 @@ fn revisions_for(
 
 fn same_credential(left: &Credential, right: &Credential) -> bool {
     left.name == right.name
+        && left.reference == right.reference
         && left.credential_type == right.credential_type
         && left.value.expose_secret() == right.value.expose_secret()
         && left.refresh_token.as_ref().map(Secret::expose_secret)
@@ -630,90 +689,30 @@ fn derive_cipher(passphrase: &Secret, salt: &[u8; SALT_LENGTH]) -> Result<Zeroiz
         .ok_or_else(|| error(ErrorKind::State))
 }
 fn decrypt(cipher: &Fernet, raw: &[u8]) -> Result<Vec<Credential>> {
-    let token = canonical_token(
+    let token = std::str::from_utf8(
         raw.get(SALT_LENGTH..)
             .ok_or_else(|| error(ErrorKind::Authentication))?,
-    )?;
-    // fernet 0.2.2 applies a future-clock check even with TTL=None, unlike
-    // Python cryptography. Its explicit-time API disables that extra check when
-    // now+MAX_CLOCK_SKEW is u64::MAX. No TTL is supplied; HMAC, version and PKCS7
-    // verification still run in the library. Keep this adapter private to vaults.
+    )
+    .map_err(|_| error(ErrorKind::Authentication))?;
     let plaintext = Zeroizing::new(
         cipher
-            .decrypt_at_time(&token, None, u64::MAX - 60)
+            .decrypt(token)
             .map_err(|_| error(ErrorKind::Authentication))?,
     );
-    let plaintext = std::str::from_utf8(&plaintext).map_err(|_| error(ErrorKind::Format))?;
-    let mut document = parse_yaml_for_vault(plaintext).map_err(|_| error(ErrorKind::Format))?;
+    let mut document: Value =
+        serde_json::from_slice(&plaintext).map_err(|_| error(ErrorKind::Format))?;
     let result = decode_credentials(&mut document);
     wipe_json(&mut document);
     result
 }
 
-/// Python's urlsafe_b64decode uses binascii's non-strict mode: non-alphabet
-/// bytes and premature padding are ignored, completed padding ends the token,
-/// and final incomplete groups fail. Canonicalize those encodings through the
-/// base64 library; no authenticated token bytes are modified or trusted here.
-fn canonical_token(raw: &[u8]) -> Result<String> {
-    let mut encoded = Vec::new();
-    let mut padding = 0;
-    for byte in raw {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'-' | b'_' => {
-                encoded.push(match byte {
-                    b'+' => b'-',
-                    b'/' => b'_',
-                    value => *value,
-                });
-                padding = 0;
-            }
-            b'=' if encoded.len() % 4 == 3 => {
-                encoded.push(b'=');
-                break;
-            }
-            b'=' if encoded.len() % 4 == 2 => {
-                padding += 1;
-                if padding == 2 {
-                    encoded.extend_from_slice(b"==");
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    if !encoded.len().is_multiple_of(4) {
-        return Err(error(ErrorKind::Authentication));
-    }
-    let decoder = GeneralPurpose::new(
-        &alphabet::URL_SAFE,
-        GeneralPurposeConfig::new()
-            .with_decode_padding_mode(DecodePaddingMode::RequireCanonical)
-            .with_decode_allow_trailing_bits(true),
-    );
-    let decoded = decoder
-        .decode(encoded)
-        .map_err(|_| error(ErrorKind::Authentication))?;
-    Ok(URL_SAFE.encode(decoded))
-}
 fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
-    if matches!(document, Value::Null | Value::Bool(false))
-        || document.as_array().is_some_and(Vec::is_empty)
-        || document.as_str() == Some("")
-        || document.as_f64() == Some(0.0)
-    {
-        return Ok(Vec::new());
-    }
     let document = document
         .as_object_mut()
         .ok_or_else(|| error(ErrorKind::Format))?;
-    let Some(records) = document.get_mut("credentials") else {
-        return Ok(Vec::new());
-    };
-    // Python iterates these two empty containers without producing records.
-    // Null, booleans and numbers remain invalid credential containers.
-    if records.as_object().is_some_and(Map::is_empty) || records.as_str() == Some("") {
-        return Ok(Vec::new());
-    }
+    let records = document
+        .get_mut("credentials")
+        .ok_or_else(|| error(ErrorKind::Format))?;
     let records = records
         .as_array_mut()
         .ok_or_else(|| error(ErrorKind::Format))?;
@@ -727,6 +726,16 @@ fn decode_credentials(document: &mut Value) -> Result<Vec<Credential>> {
             required(record, "type")?,
             Secret::new(required(record, "value")?),
         );
+        credential.reference = record
+            .get_mut("reference")
+            .map(Value::take)
+            .filter(|value| !value.is_null())
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| error(ErrorKind::Format))?;
+        if let Some(reference) = &credential.reference {
+            reference.validate()?;
+        }
         credential.refresh_token = optional(record, "refresh_token")?.map(Secret::new);
         credential.token_url = optional(record, "token_url")?;
         credential.client_id = optional(record, "client_id")?;
@@ -770,8 +779,8 @@ fn encrypt(
     salt: &[u8; SALT_LENGTH],
     credentials: &[Credential],
 ) -> Result<Vec<u8>> {
-    // JSON is valid YAML and avoids a public Serialize implementation for secret
-    // records. Escaping uses serde_json only inside this encrypted-storage path.
+    // Secret records have no public Serialize implementation. Escaping uses
+    // serde_json only inside this encrypted-storage path.
     let mut plaintext = Zeroizing::new(Vec::new());
     plaintext.extend_from_slice(b"{\"credentials\":[");
     for (index, credential) in credentials.iter().enumerate() {
@@ -834,6 +843,14 @@ fn encrypt(
                 serde_json::to_writer(&mut *plaintext, value)
                     .map_err(|_| error(ErrorKind::Format))?;
             }
+        }
+        if let Some(reference) = &credential.reference {
+            if comma {
+                plaintext.push(b',');
+            }
+            plaintext.extend_from_slice(b"\"reference\":");
+            serde_json::to_writer(&mut *plaintext, reference)
+                .map_err(|_| error(ErrorKind::Format))?;
         }
         plaintext.push(b'}');
     }

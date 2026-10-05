@@ -584,8 +584,8 @@ async fn unchanged_policy_reload_does_not_race_service_token_publication() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
-    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
             "contract-secret",
@@ -636,8 +636,8 @@ async fn legacy_normalization_keeps_watcher_watermark_and_origin_token_valid() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
-    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
             "contract-secret",
@@ -700,8 +700,8 @@ async fn expired_grant_reload_restart_and_legacy_consumer_removal_are_live() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
-    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
             "contract-secret",
@@ -927,8 +927,8 @@ async fn contract_binding_body_query_and_risk_grant_are_live() {
     std::fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     std::fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     std::fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    std::fs::write(root_path.join("data/vault.key"), PASS).unwrap();
-    let vault_path = root_path.join("data/vault.yaml.enc");
+    std::fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let vault_path = root_path.join("data/credentials.enc");
     let vault = Vault::unlock(&vault_path, &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
@@ -1510,8 +1510,8 @@ async fn selected_python_native_python_service_authorization_rollback() {
     fs::write(root_path.join("admin-token"), b"operator-token").unwrap();
     fs::write(root_path.join("data/agent_token"), b"agent-token").unwrap();
     fs::write(root_path.join("services/contract.yaml"), SERVICE).unwrap();
-    fs::write(root_path.join("data/vault.key"), PASS).unwrap();
-    let vault = Vault::unlock(root_path.join("data/vault.yaml.enc"), &Secret::new(PASS)).unwrap();
+    fs::write(root_path.join("data/credentials.key"), PASS).unwrap();
+    let vault = Vault::unlock(root_path.join("data/credentials.enc"), &Secret::new(PASS)).unwrap();
     vault
         .store(Credential::new(
             "contract-secret",

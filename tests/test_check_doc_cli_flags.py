@@ -162,3 +162,11 @@ class TestValidateLine:
         )
         assert err is not None
         assert "proxy web share" in err
+
+
+def test_native_credential_commands_replace_python_surface():
+    surface = mod._load_cli_surface()
+    assert mod._validate_line("safeyolo credentials reference NAME --provider onepassword --reference op://vault/item/field", surface) is None
+    assert mod._validate_line("safeyolo services authorize alice slack --capability reader --credential account", surface) is None
+    assert mod._validate_line("safeyolo credentials add NAME --value synthetic", surface) is not None
+    assert mod._validate_line("safeyolo agent authorize alice slack", surface) is not None

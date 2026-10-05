@@ -1133,30 +1133,11 @@ class TestServiceDispatch:
             reason="user_denied",
         )
 
-    def test_missing_capability_prompt_is_used_for_authorization(self):
+    def test_service_setup_points_to_native_commands_without_a_python_store(self):
         api = _api()
-        api.authorize_service.return_value = {"status": "authorized"}
-        event = _service_event(capability="")
-        with (
-            patch(
-                "safeyolo.commands.watch.console.input",
-                return_value="mail",
-                autospec=True,
-            ),
-            patch(
-                "safeyolo.commands.watch._pick_or_create_credential",
-                return_value="gmail-main",
-                autospec=True,
-            ),
-        ):
-            assert _service_approve(event, api) == "authorized"
-
-        api.authorize_service.assert_called_once_with(
-            agent="boris",
-            service="gmail",
-            capability="mail",
-            credential="gmail-main",
-        )
+        with pytest.raises(NotImplementedError, match="native safeyolo credentials and services authorize"):
+            _service_approve(_service_event(capability=""), api)
+        api.authorize_service.assert_not_called()
 
 
 class TestDesktopPresentDispatch:
