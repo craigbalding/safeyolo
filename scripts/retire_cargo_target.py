@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -218,8 +219,47 @@ def darwin_process_files(pid: int, libproc: ctypes.CDLL) -> tuple[Path, list[Pat
     return cwd, files
 
 
+def darwin_process_images(pid: int, libproc: ctypes.CDLL) -> Iterator[Path]:
+    """Inspect executable and mapped files even after their descriptors close."""
+    executable = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE
+    ctypes.set_errno(0)
+    length = libproc.proc_pidpath(pid, executable, len(executable))
+    if not 0 < length < len(executable) or executable.raw.find(b"\0") != length:
+        raise OSError(ctypes.get_errno() or errno.EIO, "cannot inspect executable", pid)
+    yield Path(os.fsdecode(executable.raw[:length])).resolve()
+
+    # Public sys/proc_info.h: proc_regionwithpathinfo is 1272 bytes; the
+    # 96-byte region header holds address/size at 80/88 and path starts at 248.
+    address = 0
+    while True:
+        region = ctypes.create_string_buffer(1272)
+        ctypes.set_errno(0)
+        length = libproc.proc_pidinfo(pid, 8, address, region, len(region))
+        # XNU proc_pidregionpathinfo returns EINVAL at the end of the VM map.
+        if length == 0 and ctypes.get_errno() == errno.EINVAL:
+            return
+        if length != len(region):
+            raise OSError(ctypes.get_errno() or errno.EIO, "cannot inspect mapped file", pid)
+        start = int.from_bytes(region.raw[80:88], sys.byteorder)
+        size = int.from_bytes(region.raw[88:96], sys.byteorder)
+        end = start + size
+        # At a gap Darwin can first return the next region's start with size 0;
+        # query that start again. Require forward progress, not a nonzero size.
+        if end <= address or end > 1 << 64:
+            raise OSError(errno.EIO, "incomplete process region listing", pid)
+        name = region.raw[248:1272]
+        if b"\0" not in name:
+            raise OSError(errno.EIO, "incomplete mapped file path", pid)
+        name = name.split(b"\0", 1)[0]
+        if name:
+            yield Path(os.fsdecode(name)).resolve()
+        if end == 1 << 64:
+            return
+        address = end
+
+
 def darwin_active_owner(target: Path) -> int | None:
-    """Use Mac process facilities for the same argv/env/cwd/FD protections."""
+    """Inspect Mac argv/env/cwd/descriptors and executable/mapping references."""
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     libproc.proc_pidinfo.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int,
@@ -227,6 +267,7 @@ def darwin_active_owner(target: Path) -> int | None:
     libproc.proc_pidfdinfo.argtypes = [
         ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int,
     ]
+    libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
     processes = subprocess.check_output(["ps", "-axo", "pid="], text=True)
     for pid in map(int, processes.split()):
         try:
@@ -250,6 +291,13 @@ def darwin_active_owner(target: Path) -> int | None:
             environment, cwd, target
         ):
             return pid
+        try:
+            if any(path_is_within(path, target) for path in darwin_process_images(pid, libproc)):
+                return pid
+        except OSError as exc:
+            if exc.errno in (errno.ESRCH, errno.EPERM, errno.EACCES):
+                continue
+            raise SystemExit(f"cannot inspect Mac process {pid}; target retained") from exc
     return None
 
 
