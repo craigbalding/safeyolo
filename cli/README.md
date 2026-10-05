@@ -403,86 +403,28 @@ not apply to these deliberately staged coding-harness credentials.
   publishes the gated gateway with foreground Tailscale Serve. SafeYolo
   reserves a stable per-agent HTTPS port starting at 8443.
 
-### Service Gateway
+### Service Gateway and credentials
 
-Authorize agents to access external or sandbox-provided services through the
-gateway. A YAML service definition can supply:
+Use the installed native CLI for local credentials, optional 1Password references
+and service authorization. Follow [native credential setup](../docs/native-credentials.md)
+for the two complete paths and their host prerequisites. Local setup needs neither
+1Password nor Python command helpers.
 
-- the service host;
-- named capabilities and their allowed routes;
-- risky routes and their MITRE ATT&CK tactics; and
-- an optional authentication method and injection settings.
+`services list` and `services show` inspect the running gateway's accepted
+catalogue. `services authorize` selects an agent, capability, credential and
+account; `services authorized` returns that agent's minted token. Contract binding
+with `services bind` and risky-route approval with `services approve` are separate
+operations. Revoke service access with `services revoke`; remove the stored
+credential with `credentials remove`.
 
-| Command | Description |
-|---------|-------------|
-| `safeyolo agent authorize <agent> <service>` | Authorize an agent to use a service (with `--capability`) |
-| `safeyolo agent revoke <agent> <service>` | Revoke service access for an agent |
-| `safeyolo services list` | List available service definitions |
-| `safeyolo services show <name>` | Show service details (host, capabilities, risky routes) |
+Sandbox-provided services can omit authentication while retaining agent-bound
+service authorization and trusted caller headers. See [Service provided by a sandbox](../docs/CONFIGURATION.md#service-provided-by-a-sandbox).
 
-To supply a credential from a host environment variable, first set `GMAIL_TOKEN`
-in your host shell to the token you intend to share. For an existing agent named
-`work`, this command binds that credential to Gmail's `read_agent_folder`
-capability:
-
-```sh
-safeyolo agent authorize work gmail --capability read_agent_folder --token-env GMAIL_TOKEN
-```
-
-**Example flow:**
-
-```bash
-# List available services
-safeyolo services list
-
-# Authorize the agent to use the github service with a specific capability
-safeyolo agent authorize myproject github --capability create_pr
-
-# Verify the policy was updated
-safeyolo policy show --section hosts
-
-# Revoke access when no longer needed
-safeyolo agent revoke myproject github
-```
-
-When the selected capability declares `source: operator` contract bindings,
-`agent authorize` records the service authorization but reports that setup is
-incomplete and lists the binding names. Have the named agent submit the
-operator-provided values to its Agent API at `POST /gateway/submit-binding`,
-then approve the system-authored contract prompt with `safeyolo watch`. There
-is no host-side binding submission command.
-
-A sandbox-provided service uses a configured provider agent with the same name
-as the service. Its definition can omit `auth`; the caller still needs an
-agent-bound service authorization. See [Service provided by a sandbox](../docs/CONFIGURATION.md#service-provided-by-a-sandbox)
-for the service definition, host mapping, and caller workflow.
-
-### Vault Management
-
-Store and manage credentials used by service gateway integrations.
-
-| Command | Description |
-|---------|-------------|
-| `safeyolo vault add <name>` | Store a credential (value prompted securely) |
-| `safeyolo vault list` | List stored credentials (never shows values) |
-| `safeyolo vault remove <name>` | Remove a credential |
-| `safeyolo vault oauth2 <name> --provider google ...` | Run OAuth2 browser consent flow |
-
-```bash
-# Add a credential
-safeyolo vault add github-token
-
-# List stored credentials
-safeyolo vault list
-
-# Remove a credential
-safeyolo vault remove github-token
-
-# OAuth2 flow (opens browser for consent)
-safeyolo vault oauth2 google-creds --provider google --client-id <id> --client-secret <secret> --scope gmail.readonly
-```
-
-**Note:** The vault is encrypted at rest. An encryption key is auto-generated at `~/.safeyolo/data/vault.key` on first use.
+Local values are encrypted in the native instance's `data/credentials.enc`, with
+its mode-0600 `data/credentials.key`. External values are not persisted. Native
+commands replace the Python vault and agent authorize/revoke commands. There is
+no conversion of old vault state or native browser-consent helper; use host files
+with `credentials add --type oauth2` for retained OAuth refresh.
 
 ### Policy Inspection
 

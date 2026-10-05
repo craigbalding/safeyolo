@@ -11,8 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from safeyolo.api import AdminAPI
 from safeyolo.commands.watch import scan_pending_approvals
-from safeyolo.core.vault import Vault, VaultCredential
 from safeyolo.operator_approvals import approve
+from tests.blackbox.native_credentials import store_credential
 from tests.proxy_contracts.harness import read_events, request
 from tests.proxy_contracts.test_native_network_policy import policy_proxy
 
@@ -176,10 +176,7 @@ def _gateway_files(directory):
     (services / "fixture.yaml").write_text(SERVICE_YAML)
     data = directory / "data"
     data.mkdir()
-    (data / "vault.key").write_text("fixture-vault-passphrase")
-    vault = Vault(data / "vault.yaml.enc")
-    vault.unlock("fixture-vault-passphrase")
-    vault.store(VaultCredential(name=VAULT_NAME, type="bearer", value=VAULT_VALUE))
+    store_credential(data, VAULT_NAME, VAULT_VALUE)
     operator_token_file = directory / "operator-token"
     operator_token_file.write_text("fixture-operator-token\n")
     return services, builtin, operator_token_file

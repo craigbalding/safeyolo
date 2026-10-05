@@ -19,6 +19,9 @@ use safeyolo_proxy::{
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
+#[path = "safeyolo/credential_commands.rs"]
+mod credential_commands;
+
 fn check(path: &Path) -> Result<(), Error> {
     // The shared loader compiles the policy without evaluating a request or
     // persisting expiry changes. It therefore does not spend a live quota.
@@ -71,11 +74,35 @@ fn initialize(root: &Path) -> Result<(), Error> {
         "config.toml",
         include_str!("../../config/native/config.toml"),
     )?;
+    safeyolo_proxy::credentials::open(&root.join("data"))?;
+    std::fs::create_dir_all(root.join("builtin-services"))?;
+    std::fs::create_dir_all(root.join("services"))?;
+    for (name, source) in [
+        (
+            "builtin-services/gmail.yaml",
+            include_str!("../../../cli/src/safeyolo/services/gmail.yaml"),
+        ),
+        (
+            "builtin-services/slack.yaml",
+            include_str!("../../../cli/src/safeyolo/services/slack.yaml"),
+        ),
+        (
+            "builtin-services/minifuse.yaml",
+            include_str!("../../../cli/src/safeyolo/services/minifuse.yaml"),
+        ),
+    ] {
+        write_new(name, source)?;
+    }
     println!("Initialized native instance: {}", root.display());
     Ok(())
 }
 
-async fn admin(config_path: &Path, method: Method, body: Value) -> Result<Value, Error> {
+async fn admin(
+    config_path: &Path,
+    path: &str,
+    method: Method,
+    body: Value,
+) -> Result<Value, Error> {
     let config = native_config::read(config_path)?;
     let configured_port = config.admin_port.ok_or("Admin API is disabled")?;
     let port = if configured_port == 0 {
@@ -106,7 +133,7 @@ async fn admin(config_path: &Path, method: Method, body: Value) -> Result<Value,
     send_json(
         socket,
         &format!("127.0.0.1:{port}"),
-        "/admin/policy/baseline",
+        path,
         token,
         method,
         body,
@@ -287,7 +314,7 @@ async fn run() -> Result<(), Error> {
     match arguments.as_slice() {
         [command] if command == "init" => initialize(&root),
         [help] if matches!(help.as_str(), "--help" | "help") => {
-            println!("safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo --version");
+            println!("safeyolo [--root ROOT] policy check FILE\nsafeyolo [--root ROOT] policy show\nsafeyolo [--root ROOT] policy apply FILE\nsafeyolo config check FILE\nsafeyolo test-context --run ID --agent NAME [--role VALUE] [--suite VALUE] [--subject VALUE] [--step VALUE] [--test VALUE] [--intent VALUE] [--expect VALUE] [--field KEY=VALUE] [--header] [--write FILE]\nsafeyolo test-context declare --socket SOCKET --token-file FILE --run ID --agent NAME [--ttl SECONDS]\nsafeyolo test-context current|clear --socket SOCKET --token-file FILE\n\ncheck validates without saving or spending quotas.\nshow reads effective policy and its source from the running process.\napply saves and activates through the operator Admin API.\nROOT contains config.toml and policy.toml. Named controls: network, credentials, patterns, test_context, circuits.\nContext agent is annotation; the trusted listener owns identity. --write atomically replaces a watched file.\n\nsafeyolo [--root ROOT] credentials --help\nsafeyolo [--root ROOT] services --help\n\nsafeyolo --version");
             Ok(())
         }
         [version] if version == "--version" => {
@@ -308,15 +335,17 @@ async fn run() -> Result<(), Error> {
             Ok(())
         }
         [command, rest @ ..] if command == "test-context" => context_command(rest).await,
+        [command, rest @ ..] if command == "credentials" => credential_commands::credentials(&config, rest).await,
+        [command, rest @ ..] if command == "services" => credential_commands::services(&config, rest).await,
         [policy, command] if policy == "policy" && command == "show" => {
-            let result = admin(&config, Method::GET, Value::Null).await?;
+            let result = admin(&config, "/admin/policy/baseline", Method::GET, Value::Null).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
         [policy, command, path] if policy == "policy" && command == "apply" => {
             Policy::from_native_path(Path::new(path))?;
             let source = Policy::read_native_candidate(Path::new(path))?;
-            match admin(&config, Method::PUT, json!({"source":source.as_str()})).await {
+            match admin(&config, "/admin/policy/baseline", Method::PUT, json!({"source":source.as_str()})).await {
                 Ok(result) if result["status"] == "active" => {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                     Ok(())
@@ -324,7 +353,7 @@ async fn run() -> Result<(), Error> {
                 Ok(_) => Err("Admin API did not confirm activation; run policy show to inspect saved and active state".into()),
                 Err(error) => {
                     eprintln!("Policy apply failed: {error}");
-                    match admin(&config, Method::GET, Value::Null).await {
+                    match admin(&config, "/admin/policy/baseline", Method::GET, Value::Null).await {
                         Ok(status) => {
                             eprintln!("Policy status: {}; saved source matches active: {}", status["status"], status["saved_matches_active"]);
                             if let Some(repair) = status.get("repair").and_then(Value::as_str) { eprintln!("{repair}"); }

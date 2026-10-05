@@ -29,12 +29,9 @@ from safeyolo.commands.doctor import (
     _check_sandbox_runtime,
     _check_tokens,
     _check_upstream_ca_cert,
-    _check_vault,
     _check_vsock_term,
     _run_checks,
 )
-from safeyolo.commands.vault import _load_vault
-from safeyolo.core.vault import Vault
 
 
 class _OpenSocket:
@@ -417,98 +414,6 @@ class TestCheckTokens:
         result = _check_tokens()
         assert result.status == "pass"
         assert "pending" in result.message
-
-
-class TestCheckVault:
-    def test_not_configured(self, tmp_config_dir, monkeypatch):
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_key_path",
-            lambda: tmp_config_dir / "data" / "vault.key",
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_vault_path",
-            lambda: tmp_config_dir / "data" / "vault.yaml.enc",
-        )
-        result = _check_vault()
-        assert result.status == "pass"
-        assert "Not configured" in result.message
-
-    def test_key_missing_vault_exists(self, tmp_config_dir, monkeypatch):
-        data_dir = tmp_config_dir / "data"
-        vault_file = data_dir / "vault.yaml.enc"
-        vault_file.write_bytes(b"encrypted-data")
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_key_path",
-            lambda: data_dir / "vault.key",
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_vault_path",
-            lambda: vault_file,
-        )
-        result = _check_vault()
-        assert result.status == "fail"
-        assert "key missing" in result.message.lower()
-
-    def test_key_present_no_vault(self, tmp_config_dir, monkeypatch):
-        data_dir = tmp_config_dir / "data"
-        key_file = data_dir / "vault.key"
-        key_file.write_text("test-key")
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_key_path",
-            lambda: key_file,
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_vault_path",
-            lambda: data_dir / "vault.yaml.enc",
-        )
-        result = _check_vault()
-        assert result.status == "pass"
-        assert "no credentials" in result.message.lower()
-
-    def test_decrypt_success(self, tmp_config_dir, monkeypatch):
-        data_dir = tmp_config_dir / "data"
-        key_file = data_dir / "vault.key"
-        key_file.write_text("test-key")
-        vault_file = data_dir / "vault.yaml.enc"
-        vault_file.write_bytes(b"encrypted-data")
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_key_path",
-            lambda: key_file,
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_vault_path",
-            lambda: vault_file,
-        )
-        mock_vault = create_autospec(Vault, instance=True, spec_set=True)
-        mock_vault.list_names.return_value = ["openai", "anthropic"]
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._load_vault",
-            lambda: (mock_vault, None),
-        )
-        result = _check_vault()
-        assert result.status == "pass"
-        assert "2 credentials" in result.message
-
-    def test_decrypt_failure(self, tmp_config_dir, monkeypatch):
-        data_dir = tmp_config_dir / "data"
-        key_file = data_dir / "vault.key"
-        key_file.write_text("test-key")
-        vault_file = data_dir / "vault.yaml.enc"
-        vault_file.write_bytes(b"encrypted-data")
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_key_path",
-            lambda: key_file,
-        )
-        monkeypatch.setattr(
-            "safeyolo.commands.vault._get_vault_path",
-            lambda: vault_file,
-        )
-        load_vault = create_autospec(_load_vault, spec_set=True)
-        load_vault.side_effect = ValueError("bad key")
-        monkeypatch.setattr("safeyolo.commands.vault._load_vault", load_vault)
-        result = _check_vault()
-        assert result.status == "fail"
-        assert "Cannot decrypt" in result.message
 
 
 class TestCheckFlowStore:

@@ -49,6 +49,7 @@ if __package__:
         _runtime_observation,
     )
     from .installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from .native_credentials import store_credential
 else:
     from harness.sinkhole_parent import Request as ParentRequest
     from installed_host_smoke import (
@@ -59,9 +60,9 @@ else:
         _runtime_observation,
     )
     from installed_sections import copy_prepared_nats, owned_processes, surviving_processes
+    from native_credentials import store_credential
 
 BODY = b"owned-r638-response-needle\n"
-PASS = "synthetic-r638-vault-passphrase"
 TASK_ID = "r638-process-local"
 
 
@@ -452,6 +453,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--native", action="store_true", help="Compatibility option; all runs use the native proxy")
     parser.add_argument("--cli", "--rust-cli", dest="cli", required=True, type=Path)
+    parser.add_argument("--native-cli", type=Path, help="Installed native CLI for synthetic credential setup; defaults to SAFEYOLO_NATIVE_CLI")
     parser.add_argument("--install-commit", "--rust-revision", dest="rust_revision", required=True)
     parser.add_argument("--state-parent", required=True, type=Path)
     parser.add_argument("--config-dir", type=Path, help="New isolated directory for the native procedure")
@@ -513,19 +515,12 @@ save_agent('alice',{'agent_id':'ag-r638-alice','folder':sys.argv[1]})
 save_agent('bob',{'agent_id':'ag-r638-bob','folder':sys.argv[1]})
 print(json.dumps({'agents':'registered'}))
 """, str(root))
-        # The installed CLI creates the canonical encrypted file and its key.
-        installed_python(args.cli, env, """
-import json,sys
-from pathlib import Path
-from safeyolo.core.vault import Vault,VaultCredential
-p=Path(sys.argv[1]); v=Vault(p/'vault.yaml.enc'); v.unlock(sys.argv[2]);
-v.store(VaultCredential('contract-secret','oauth2','synthetic-r638-expired',
-    refresh_token='synthetic-r638-refresh-v0',token_url=sys.argv[3],
-    client_id='r638',client_secret='synthetic-client',expires_at='2020-01-01T00:00:00+00:00'))
-(p/'vault.key').write_text(sys.argv[2]); (p/'vault.key').chmod(0o600)
-print(json.dumps({'names':v.list_names()}))
-""", str(root / "data"), PASS,
-                   f"http://127.0.0.1:{oauth.server_port}/oauth/token")
+        # Native commands create the fresh store; Python is only test transport.
+        store_credential(root / "data", "contract-secret", "synthetic-r638-expired",
+                         kind="oauth2", refresh_token="synthetic-r638-refresh-v0",
+                         token_url=f"http://127.0.0.1:{oauth.server_port}/oauth/token",
+                         client_id="r638", client_secret="synthetic-client",
+                         expires_at="2020-01-01T00:00:00+00:00", binary=args.native_cli)
         # A service file is an operator-authored input, shared by both releases.
         service_dir = root / "services"
         service_dir.mkdir(exist_ok=True)
@@ -682,12 +677,12 @@ print(json.dumps(asyncio.run(exercise())))
         check(ca.is_file() and hmac.is_file(), "initial native process did not create CA/HMAC state")
         ca_snapshot = ca_files(root)
         check(len(ca_snapshot) >= 2, "installed launcher did not create CA and key files")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+        for path in (ca, hmac, root / "data/credentials.key", root / "data/credentials.enc"):
             private_file(path)
         initial_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         initial_state = {"ca_sha256": sha(ca), "hmac_sha256": sha(hmac),
                          "hmac_fingerprint": key_fingerprint(hmac),
-                         "vault_sha256": sha(root / "data/vault.yaml.enc"),
+                         "vault_sha256": sha(root / "data/credentials.enc"),
                          "policy_sha256": sha(root / "policy.toml")}
         stop(active, root, env)
         active = None
@@ -710,7 +705,7 @@ print(json.dumps(asyncio.run(exercise())))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "Rust changed the Python CA files, HMAC key, or synthetic fingerprint")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         private_file(hmac)
         native_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         bob = socket_for(root, "bob")
@@ -901,10 +896,10 @@ print(json.dumps({'test_context':'removed_after_flow'}))
               "native OAuth refresh did not inject refreshed credential: "
               f"{origin.seen[-1]['authorization'][-24:]!r}; provider calls={len(oauth.seen)}")
         check(len(oauth.seen) == 1, "native OAuth did not call provider exactly once")
-        native_vault_hash = sha(root / "data/vault.yaml.enc")
+        native_vault_hash = sha(root / "data/credentials.enc")
         check(native_vault_hash != initial_state["vault_sha256"],
               "native OAuth refresh did not durably change vault")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         print(json.dumps({"native_write": {"authorization": authorization,
                           "binding_id": binding_id, "grant_id": grant_id,
                           "request_status": gateway_status,
@@ -963,7 +958,7 @@ print(json.dumps({'test_context':'removed_after_flow'}))
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "Python rollback changed CA/HMAC identity")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         private_file(hmac)
         replacement_circuit_status, replacement_circuit = json_request(alice, "GET", "/circuits", agent_token)
         check(replacement_circuit_status == 200 and
@@ -1058,17 +1053,21 @@ print(json.dumps(asyncio.run(exercise())))
         status, _ = json_request(alice, "POST", f"/api/flows/{flow_id}/tag", agent_token,
                                  {"tag": "replacement", "value": "rollback"})
         check(status == 200, "replacement could not write its durable flow tag")
+        # Expire the synthetic access token through the native command and let
+        # the running proxy's existing OAuth owner perform the second refresh.
+        store_credential(root / "data", "contract-secret", "synthetic-r638-access-v1",
+                         kind="oauth2", refresh_token="synthetic-r638-refresh-v1",
+                         token_url=f"http://127.0.0.1:{oauth.server_port}/oauth/token",
+                         client_id="r638", client_secret="synthetic-client",
+                         expires_at="2020-01-01T00:00:00+00:00", binary=args.native_cli)
+        eventually(granted_request, "replacement native OAuth did not deliver")
+        check(origin.seen[-1]["authorization"] == "Bearer synthetic-r638-access-v2",
+              "replacement native OAuth did not inject the second refreshed value")
         replacement_read = installed_python(args.cli, env, """
 import json,sys
 from pathlib import Path
-from safeyolo.core.vault import Vault
 from safeyolo.policy.toml_roundtrip import load_agents,load_roundtrip,locked_policy_mutate,upsert_agent
 root=Path(sys.argv[1]); binding_id=sys.argv[2]; grant_id=sys.argv[3]
-vault=Vault(root/'data/vault.yaml.enc'); vault.unlock((root/'data/vault.key').read_text())
-cred=vault.get('contract-secret'); assert cred and cred.value=='synthetic-r638-access-v1'
-cred.expires_at='2020-01-01T00:00:00+00:00'; vault.store(cred)
-assert vault.refresh_oauth2('contract-secret')
-assert vault.get('contract-secret').value=='synthetic-r638-access-v2'
 policy=root/'policy.toml'; alice=load_agents(load_roundtrip(policy))['alice']
 assert any(g['grant_id']==grant_id for g in alice['grants'])
 assert any(b['binding_id']==binding_id for b in alice['contract_bindings'])
@@ -1084,13 +1083,13 @@ def revoke(doc):
 locked_policy_mutate(policy,revoke,save_if_unchanged=False)
 alice=load_agents(load_roundtrip(policy))['alice']
 assert not alice.get('services') and not alice.get('grants') and not alice.get('contract_bindings')
-print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
+print(json.dumps({'native_grant_read':True,
           'native_binding_read':True,'service_revoked':True}))
 """, str(root), binding_id, grant_id)
         check(len(oauth.seen) == 2, "replacement native process OAuth writer did not call provider")
-        check(sha(root / "data/vault.yaml.enc") != native_vault_hash,
+        check(sha(root / "data/credentials.enc") != native_vault_hash,
               "replacement native process OAuth did not durably update native vault")
-        private_file(root / "data/vault.yaml.enc")
+        private_file(root / "data/credentials.enc")
         check(sha(provider_snapshot) == provider_hash,
               "replacement changed the provider-owned snapshot")
         catalog_override.unlink()
@@ -1131,7 +1130,7 @@ print(json.dumps({'vault_refreshed':True,'native_grant_read':True,
         check(ca_files(root) == ca_snapshot and sha(hmac) == initial_state["hmac_sha256"]
               and key_fingerprint(hmac) == initial_state["hmac_fingerprint"],
               "return Rust changed CA/HMAC identity")
-        for path in (ca, hmac, root / "data/vault.key", root / "data/vault.yaml.enc"):
+        for path in (ca, hmac, root / "data/credentials.key", root / "data/credentials.enc"):
             private_file(path)
         returned_tls = trusted_tls_request(alice, tls_origin.server_port, root, args.origin_host)
         status, returned_circuit = json_request(alice, "GET", "/circuits", agent_token)

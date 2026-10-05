@@ -173,7 +173,7 @@ safeyolo watch
 
 Review the agent, destination or service capability, and requested credential use.
 You can authorize, deny, or defer the request. See [access configuration](docs/CONFIGURATION.md#policy-cli-commands)
-for host policies and [service access](cli/README.md#service-gateway)
+for host policies and [native service access](docs/native-credentials.md)
 for binding credentials to specific capabilities.
 
 ## Everyday commands

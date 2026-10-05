@@ -1,5 +1,12 @@
 # State compatibility and rollback inventory
 
+Native #819 removes Python vault commands and old encrypted-YAML compatibility.
+Fresh synthetic credential inputs now use the native host CLI, and the running
+proxy owns refresh. Supply the installed native executable with `--native-cli`
+or `SAFEYOLO_NATIVE_CLI` when running the continuity procedure. Historical
+compatibility rows and receipts below keep their original revision and scope;
+they do not require conversion of old vault state.
+
 The current installed native continuity procedure is
 [`installed_state_transition.py`](../tests/blackbox/installed_state_transition.py).
 It checks four authenticated native process lifetimes through restart,

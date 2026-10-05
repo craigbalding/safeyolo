@@ -543,6 +543,33 @@ impl Store {
         Ok(())
     }
 
+    pub(crate) fn edit_native_policy(
+        &self,
+        edit: impl FnOnce(&mut DocumentMut) -> Result<()>,
+        activate: impl FnMut(
+            &str,
+            crate::approvals::PolicyActivation,
+        ) -> std::result::Result<(), String>,
+    ) -> Result<()> {
+        let mut current = self.lock()?;
+        let next = crate::approvals::edit_policy(
+            &self.path,
+            false,
+            |document, context| {
+                edit(document)?;
+                Snapshot::from_document(
+                    document,
+                    OffsetDateTime::now_utc(),
+                    Some(&current),
+                    context,
+                )
+            },
+            activate,
+        )?;
+        *current = next;
+        Ok(())
+    }
+
     /// Reconcile an externally edited native policy without rewriting it. The
     /// existing store protects its own snapshot while the caller activates the
     /// matching policy under the same file lock.

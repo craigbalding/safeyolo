@@ -700,10 +700,12 @@ environment variables above).
 **Hot-reload:** Both packaged and user service directories are watched for changes (2s poll). A complete valid reload updates the registry and recompiles policy; an invalid reload keeps the previous pair active and logs the offending file. Vault requires proxy restart.
 
 **Related CLI:**
-- `safeyolo agent authorize <agent> <service> --capability <name>` -- wire an agent to a service
-- `safeyolo services list` and `safeyolo services show` -- inspect service definitions
-- `safeyolo vault add`, `safeyolo vault list`, `safeyolo vault remove`, and
-  `safeyolo vault oauth2` -- manage credentials
+The current native replacement uses `safeyolo credentials add`,
+`safeyolo credentials reference`, `safeyolo services authorize`, and
+`safeyolo services revoke`. See [native credential setup](native-credentials.md)
+for complete instructions. The former Python vault and agent authorization
+commands are removed; this historical addon description does not provide a
+current setup procedure.
 
 ---
 

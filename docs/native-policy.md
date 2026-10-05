@@ -13,7 +13,8 @@ from the repository checkout. The source installation requires Bash and Rust
 configuration or tokens. Installation builds the production CLI and
 proxy, installs both in `bin`, and creates `config.toml`, `policy.toml`, a private
 operator token, a separate private Agent API token, a durable instance identity,
-and separate runtime and log directories.
+separate runtime and log directories, the native encrypted credential store,
+and built-in service definitions.
 
 ```sh
 ./scripts/install_native.sh --root "$HOME/.safeyolo-native"
@@ -62,6 +63,9 @@ The process remains in that terminal. A usable instance has an accepted
 `data/ready.json` marker and accepting agent sockets. An occupied endpoint or
 unreadable input produces a startup error. Press Ctrl-C in that terminal to stop
 the proxy after using the commands below.
+
+For local credentials, optional 1Password references, service authorization and
+separate binding/risk approval, follow [native credential setup](native-credentials.md).
 
 ## Check, show and apply
 

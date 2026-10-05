@@ -42,7 +42,8 @@ passed to the existing storage/queue owners without a new positive-only rule.
 | `readiness_file` | Path; `data/ready.json` | Generated readiness path; accepted process/listener marker. |
 | `audit_log_path`, `event_log` | Paths; `logs/audit.jsonl`, `logs/events.jsonl` | Generated log paths; canonical audit writer and separate runtime diagnostics. |
 | `circuit_state_file` | Path; `data/circuits.json` | Generated circuit snapshot path; existing circuit state owner. Empty disables snapshots. |
-| `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; absent | Generated service directories; shared service registry. Set both together. Catalogue and delivery remain #819. |
+| `gateway_builtin_services_dir`, `gateway_services_dir` | Paths; `builtin-services`, `services` | Native init installs builtins; operator definitions override them by name. CLI and delivery read the same accepted catalogue. Set both together. |
+| `onepassword_executable` | Absolute host executable path; absent | Optional 1Password resolver, after service/policy/approval checks. Authentication stays in the host environment. Restart after changing it; local credentials do not need it. |
 | `parent_proxy`, `upstream_ca_file` | URL/path; absent | `proxy.upstream_proxy`, `proxy.upstream_ca_cert`; native upstream transport and trust loader. |
 | `tls_ca_file` | Path; absent | Generated signing CA path; native TLS interception. |
 | `ignore_hosts` | String array; `[]` | `proxy.ignore_hosts`; existing exact TLS bypass entries. |

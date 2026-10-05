@@ -186,6 +186,7 @@ impl Redirect {
     }
 }
 pub enum Start {
+    External(Box<PendingExternal>),
     Blocked(Blocked),
     Redirect(Redirect),
     Ready(HeaderReplacement),
@@ -426,6 +427,18 @@ pub fn prepare(
         return Ok(Start::Blocked(deny(context, Missing::Initial, 0)));
     };
     let credential = snapshot.credential();
+    if credential.reference.is_some() {
+        // Redirects do not need a provider read. No resolved value is cached in
+        // the snapshot or the store, including after successful delivery.
+        if context.scheme == "http" && !context.selection.allow_http {
+            return finish(context, Some(snapshot), 0);
+        }
+        return Ok(Start::External(Box::new(PendingExternal {
+            context,
+            vault: vault.clone(),
+            snapshot,
+        })));
+    }
     // Match short-circuit order literally: a naive expiry fails even when the
     // final refresh flag is false; missing refresh fields are checked by OAuth.
     if context.selection.auth_kind.is_some()
@@ -478,6 +491,49 @@ fn empty_evidence(refreshed: u64) -> Evidence {
     }
 }
 fn finish(context: Context, snapshot: Option<CredentialSnapshot>, refreshed: u64) -> Result<Start> {
+    finish_with_value(context, snapshot, refreshed, None)
+}
+
+pub struct PendingExternal {
+    context: Context,
+    vault: Vault,
+    snapshot: CredentialSnapshot,
+}
+
+impl PendingExternal {
+    pub async fn resolve(self, executable: Option<&std::path::Path>) -> Result<Start> {
+        let reference = self
+            .snapshot
+            .credential()
+            .reference
+            .as_ref()
+            .ok_or_else(|| error(ErrorKind::Superseded, 0))?;
+        match crate::credential_resolver::resolve(reference, executable).await {
+            Ok(value) => {
+                if !self
+                    .vault
+                    .is_current(&self.snapshot)
+                    .map_err(|e| error(ErrorKind::Vault(e), 0))?
+                {
+                    return Err(error(ErrorKind::Superseded, 0));
+                }
+                finish_with_value(self.context, Some(self.snapshot), 0, Some(value))
+            }
+            Err(failure) => Ok(Start::Blocked(deny(
+                self.context,
+                Missing::Provider(failure),
+                0,
+            ))),
+        }
+    }
+}
+
+fn finish_with_value(
+    context: Context,
+    snapshot: Option<CredentialSnapshot>,
+    refreshed: u64,
+    resolved: Option<Secret>,
+) -> Result<Start> {
     let mut evidence = empty_evidence(refreshed);
     let selection = &context.selection;
     if context.scheme == "http" && selection.auth_kind.is_some() {
@@ -527,19 +583,23 @@ fn finish(context: Context, snapshot: Option<CredentialSnapshot>, refreshed: u64
         Some("bearer") => Some(Secret::new(format!(
             "{} {}",
             selection.auth_scheme,
-            snapshot
+            resolved
                 .as_ref()
-                .expect("authenticated selection has a vault snapshot")
-                .credential()
-                .value
+                .or_else(|| snapshot
+                    .as_ref()
+                    .map(|snapshot| &snapshot.credential().value))
+                .expect("authenticated selection has a resolved credential")
                 .expose_secret()
         ))),
         Some("api_key") => Some(
-            snapshot
+            resolved
                 .as_ref()
-                .expect("authenticated selection has a vault snapshot")
-                .credential()
-                .value
+                .or_else(|| {
+                    snapshot
+                        .as_ref()
+                        .map(|snapshot| &snapshot.credential().value)
+                })
+                .expect("authenticated selection has a resolved credential")
                 .clone(),
         ),
         _ => None,
@@ -576,15 +636,17 @@ fn finish(context: Context, snapshot: Option<CredentialSnapshot>, refreshed: u64
     }))
 }
 enum Missing {
+    Provider(crate::credential_resolver::Failure),
     Vault,
     Initial,
     AfterRefresh,
 }
 fn deny(context: Context, missing: Missing, refreshed: u64) -> Blocked {
     let (reason,code,action,reflection)=match missing {
+        Missing::Provider(failure)=>("External credential resolution failed", failure.code(), "retry", failure.message().into()),
         Missing::Vault=>("Vault not available","VAULT_UNAVAILABLE","abort","The credential vault is not loaded. The proxy may still be starting up.".into()),
-        Missing::Initial=>("Credential not found in vault","CREDENTIAL_NOT_FOUND","self_correct",format!("Credential '{}' is not in the vault. Re-run `safeyolo agent authorize` to store it.",sanitize(&context.selection.vault_token))),
-        Missing::AfterRefresh=>("Credential lost after refresh","CREDENTIAL_NOT_FOUND","abort","The credential was lost during OAuth2 token refresh. Re-run `safeyolo agent authorize` to restore it.".into()),
+        Missing::Initial=>("Credential not found in vault","CREDENTIAL_NOT_FOUND","self_correct",format!("Credential '{}' is not stored. Use host `safeyolo credentials add` or `credentials reference`, then `services authorize`.",sanitize(&context.selection.vault_token))),
+        Missing::AfterRefresh=>("Credential lost after refresh","CREDENTIAL_NOT_FOUND","abort","The credential was lost during OAuth2 token refresh. Use host `safeyolo credentials add` to restore it.".into()),
     };
     let body = json!({"error":reason,"type":code.to_lowercase(),"reason_codes":[code],"action":action,"reflection":reflection,"addon":"service-gateway"});
     let mut headers = vec![
