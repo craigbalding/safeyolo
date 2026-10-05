@@ -248,8 +248,8 @@ This reduces total delivery effort, including review and CI, rather than merely
 reducing patch size.
 
 Hosted native, retained CLI and installed blackbox jobs restore Rust dependency
-caches after selecting the pinned toolchain. Default-branch runs save these
-caches, including when later checks fail. Workspace product binaries still
+caches after selecting the pinned toolchain. Jobs save these dependency caches
+even when later checks fail, so correction rounds can reuse them. Workspace product binaries still
 build from the checked-out candidate. The full native lane uses the same explicit
 host target for Clippy, tests and builds, retaining its Coord test runner.
 
