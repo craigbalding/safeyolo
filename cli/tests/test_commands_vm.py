@@ -1880,10 +1880,10 @@ class TestRunAgent:
     @pytest.mark.parametrize("lock_kind", ("hardlink", "symlink"))
     def test_setup_lock_rejects_ambiguous_lock_entry(self, config_dir, lock_kind):
         from safeyolo.agent_lifecycle import _agent_host_setup_lock
-        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+        from safeyolo.vm import ensure_agent_persistent_dirs
 
         ensure_agent_persistent_dirs("unsafe-lock")
-        lock_path = get_agent_home_dir("unsafe-lock") / ".safeyolo/host-setup.lock"
+        lock_path = config_dir / "agents/unsafe-lock/host-setup.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.parent.chmod(0o700)
         source = lock_path.with_name("lock-source")
@@ -1901,16 +1901,18 @@ class TestRunAgent:
 
     def test_setup_lock_rejects_symlinked_state_directory(self, config_dir, tmp_path):
         from safeyolo.agent_lifecycle import _agent_host_setup_lock, _open_safe_setup_directory
-        from safeyolo.vm import ensure_agent_persistent_dirs, get_agent_home_dir
+        from safeyolo.vm import ensure_agent_persistent_dirs
 
         ensure_agent_persistent_dirs("unsafe-parent")
-        state_dir = get_agent_home_dir("unsafe-parent") / ".safeyolo"
+        state_dir = config_dir / "agents/unsafe-parent"
         outside = tmp_path / "outside"
         outside.mkdir()
         # A permission rejection must not masquerade as symlink rejection.
         outside.chmod(0o700)
         fd = _open_safe_setup_directory(outside, "unsafe-parent")
         os.close(fd)
+        (state_dir / "home").rmdir()
+        state_dir.rmdir()
         state_dir.symlink_to(outside, target_is_directory=True)
 
         with pytest.raises(RuntimeError, match="unsafe host setup directory"):
@@ -1918,6 +1920,27 @@ class TestRunAgent:
                 pass
 
         assert not (outside / "host-setup.lock").exists()
+
+    def test_guest_home_cannot_replace_the_active_host_setup_lock(self, config_dir):
+        import fcntl
+
+        from safeyolo.agent_lifecycle import _agent_host_setup_lock
+        from safeyolo.vm import get_agent_home_dir
+
+        with _agent_host_setup_lock("protected-lock"):
+            home = get_agent_home_dir("protected-lock")
+            guest_lock = home / ".safeyolo/host-setup.lock"
+            guest_lock.parent.mkdir()
+            guest_lock.write_text("guest replacement")
+            guest_lock.unlink()
+            guest_lock.write_text("another guest replacement")
+            host_lock = config_dir / "agents/protected-lock/host-setup.lock"
+            with host_lock.open("r+") as contender:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        with host_lock.open("r+") as contender:
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     @pytest.mark.parametrize("entry_kind", ("file", "fifo"))
     def test_setup_directory_rejects_non_directory(self, tmp_path, entry_kind):
@@ -1945,11 +1968,10 @@ class TestRunAgent:
 
     def test_setup_lock_works_without_o_path(self, config_dir, monkeypatch):
         from safeyolo.agent_lifecycle import _agent_host_setup_lock
-        from safeyolo.vm import get_agent_home_dir
 
         monkeypatch.delattr(os, "O_PATH", raising=False)
         with _agent_host_setup_lock("portable-lock"):
-            lock = get_agent_home_dir("portable-lock") / ".safeyolo/host-setup.lock"
+            lock = config_dir / "agents/portable-lock/host-setup.lock"
             assert lock.is_file()
             assert stat.S_IMODE(lock.stat().st_mode) == 0o600
 
@@ -1959,8 +1981,8 @@ class TestRunAgent:
 
         monkeypatch.setattr("safeyolo.vm.ensure_agent_persistent_dirs", lambda _name: None)
         monkeypatch.setattr(
-            "safeyolo.vm.get_agent_home_dir",
-            lambda name: config_dir / "agents" / name / "home",
+            "safeyolo.config.get_agents_dir",
+            lambda: config_dir / "agents",
         )
         monkeypatch.setattr(
             agent_module,

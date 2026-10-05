@@ -1,10 +1,10 @@
-"""Tests for the typed agent lifecycle used by operator clients."""
+"""Tests for the remaining Python workflow lifecycle helpers."""
 
 from unittest.mock import create_autospec, patch
 
 import pytest
 
-from safeyolo.agent_lifecycle import AgentLifecycleError, list_agent_runtimes, start_agent, stop_agent
+from safeyolo.agent_lifecycle import list_agent_runtimes, stop_agent_by_name
 from safeyolo.platform import AgentPlatform
 
 
@@ -37,112 +37,10 @@ def test_inventory_reports_configured_harness_without_probing_guest(script, expe
     platform.exec_in_sandbox.assert_not_called()
 
 
-def test_start_agent_uses_only_fixed_configured_options():
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = True
-    with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": "stopped"}, autospec=True),
-        patch(
-            "safeyolo.agent_lifecycle._run_agent",
-            return_value=0,
-            autospec=True,
-        ) as run,
-    ):
-        result = start_agent("ag-probe")
-
-    assert result.agent_id == "ag-probe"
-    assert result.name == "probe"
-    assert result.sandbox_state == "ready"
-    # A successful launch request is not proof of a live coding-agent session.
-    assert result.agent_state == "stopped"
-    run.assert_called_once_with(
-        name="probe",
-        yolo=True,
-        launch_mode="background",
-        interactive=False,
-        no_snapshot=True,
-        rename_tmux_window=False,
-    )
-
-
-def test_start_agent_rejects_unknown_identity():
-    with patch(
-        "safeyolo.agent_lifecycle.get_agent_by_id",
-        return_value=None,
-        autospec=True,
-    ):
-        with pytest.raises(AgentLifecycleError, match="Agent not found") as caught:
-            start_agent("ag-missing")
-    assert caught.value.status_code == 404
-
-
-@pytest.mark.parametrize("state", ["starting", "running", "stopping", "unknown"])
-def test_start_agent_rejects_state_the_operator_client_cannot_start(state):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = True
-    with (
-        patch("safeyolo.agent_lifecycle.get_agent_by_id",
-              return_value=("probe", {"agent_id": "ag-probe"}), autospec=True),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": state}, autospec=True),
-        patch("safeyolo.commands.agent._run_agent", autospec=True) as run,
-        pytest.raises(AgentLifecycleError, match=f"Agent cannot start while {state}") as caught,
-    ):
-        start_agent("ag-probe")
-    assert caught.value.status_code == 409
-    run.assert_not_called()
-
-
-def test_start_agent_preserves_failure_detail_for_operator(caplog):
-    platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
-    platform.is_sandbox_running.return_value = False
-    with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe\r\n\x1b[31m\u202e", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
-        patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-        patch("safeyolo.agent_launchers.observe_launch",
-              return_value={"agent_state": "stopped"}, autospec=True),
-        patch(
-            "safeyolo.agent_lifecycle._run_agent",
-            side_effect=RuntimeError("configured workspace is unavailable"),
-            autospec=True,
-        ),
-        pytest.raises(
-            AgentLifecycleError,
-            match=(
-                "Agent start failed: RuntimeError: "
-                "configured workspace is unavailable"
-            ),
-        ),
-    ):
-        start_agent("ag-probe")
-
-    record = caplog.records[-1]
-    assert record.getMessage() == "Agent probe? failed to start"
-    assert record.exc_info is not None
-    assert str(record.exc_info[1]) == "configured workspace is unavailable"
-
-
 def test_stop_agent_stops_supervisor_and_running_sandbox():
     platform = create_autospec(AgentPlatform, instance=True, spec_set=True)
     platform.is_sandbox_running.side_effect = [True, False]
     with (
-        patch(
-            "safeyolo.agent_lifecycle.get_agent_by_id",
-            return_value=("probe", {"agent_id": "ag-probe"}),
-            autospec=True,
-        ),
         patch(
             "safeyolo.agent_command_supervisor.request_command_supervisor_stop",
             return_value=True,
@@ -152,7 +50,7 @@ def test_stop_agent_stops_supervisor_and_running_sandbox():
         patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True),
         patch("safeyolo.events.write_event", autospec=True) as write_event,
     ):
-        result = stop_agent("ag-probe")
+        result = stop_agent_by_name("probe", agent_id="ag-probe")
 
     stop_supervisor.assert_called_once_with("probe")
     platform.stop_sandbox.assert_called_once_with("probe")

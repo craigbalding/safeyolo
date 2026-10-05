@@ -1,4 +1,4 @@
-"""Typed agent lifecycle operations shared by CLI and operator clients."""
+"""Agent lifecycle helpers still used by Python workflow callers."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .agent_configuration import (
     _resolve_extra_shares,
     _validate_instance_name,
 )
-from .agents_store import get_agent_by_id, get_or_mint_agent_id, load_agent, load_all_agents
+from .agents_store import get_or_mint_agent_id, load_agent, load_all_agents
 
 log = logging.getLogger(__name__)
 console = Console()
@@ -74,10 +74,6 @@ def _load_agent_metadata(name: str) -> dict:
 
 class AgentLifecycleError(RuntimeError):
     """A configured agent could not complete a lifecycle transition."""
-
-    def __init__(self, message: str, *, status_code: int = 500) -> None:
-        super().__init__(message)
-        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -137,55 +133,6 @@ def list_agent_runtimes() -> list[AgentRuntime]:
         agent_id = str(metadata.get("agent_id") or get_or_mint_agent_id(name))
         runtimes.append(_runtime(name, agent_id, metadata=metadata))
     return runtimes
-
-
-def _resolve(agent_id: str) -> tuple[str, str]:
-    found = get_agent_by_id(agent_id)
-    if found is None:
-        raise AgentLifecycleError("Agent not found", status_code=404)
-    name, _ = found
-    return name, agent_id
-
-
-def start_agent(agent_id: str, *, interactive: bool = False) -> AgentRuntime:
-    """Start one configured agent using the ordinary fixed lifecycle path."""
-    name, stable_id = _resolve(agent_id)
-    state = _runtime(name, stable_id).agent_state
-    if state not in {"stopped", "exited", "failed"}:
-        raise AgentLifecycleError(f"Agent cannot start while {state}", status_code=409)
-    from .platform import get_platform
-
-    platform = get_platform()
-
-    try:
-        exit_code = _run_agent(
-            name=name,
-            yolo=True,
-            launch_mode="background",
-            interactive=interactive,
-            no_snapshot=True,
-            rename_tmux_window=False,
-        )
-    except Exception as exc:
-        from .core.audit_schema import sanitize_for_log
-
-        log.exception("Agent %s failed to start", sanitize_for_log(name, max_len=None))
-        detail = str(exc).strip() or "no additional detail"
-        exit_code = getattr(exc, "exit_code", None)
-        if exit_code is not None:
-            detail = f"exit code {exit_code}: {detail}"
-        raise AgentLifecycleError(
-            f"Agent start failed: {type(exc).__name__}: {detail}",
-        ) from exc
-    if exit_code != 0 or not platform.is_sandbox_running(name):
-        raise AgentLifecycleError(f"Agent start failed with exit code {exit_code}")
-    return _runtime(name, stable_id)
-
-
-def stop_agent(agent_id: str) -> AgentRuntime:
-    """Stop one configured agent and its command supervisor."""
-    name, stable_id = _resolve(agent_id)
-    return stop_agent_by_name(name, agent_id=stable_id)
 
 
 def stop_agent_by_name(
@@ -328,7 +275,8 @@ def _open_safe_setup_directory(path: Path, name: str) -> int:
 @contextmanager
 def _agent_host_setup_lock(name: str):
     """Serialize setup/start transitions and validate the lock entry."""
-    from .vm import ensure_agent_persistent_dirs, get_agent_home_dir
+    from .config import get_agents_dir
+    from .vm import ensure_agent_persistent_dirs
 
     held = _held_setup_locks()
     if name in held:
@@ -339,7 +287,9 @@ def _agent_host_setup_lock(name: str):
         return
 
     ensure_agent_persistent_dirs(name)
-    setup_dir = get_agent_home_dir(name) / ".safeyolo"
+    # Native lifecycle and remaining workflow callers must lock the same
+    # protected inode. The guest can replace entries in its writable home.
+    setup_dir = get_agents_dir() / name
     setup_dir_fd = _open_safe_setup_directory(setup_dir, name)
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
