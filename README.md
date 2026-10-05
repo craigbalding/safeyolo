@@ -156,7 +156,6 @@ The example uses Claude Code; substitute another alias if needed:
 
 ```sh
 safeyolo agent add work ~/code --host-script @claude
-safeyolo agent run work
 ```
 
 After first-run tool installation and any required login, you should reach the
@@ -183,7 +182,8 @@ Run these on the host; `work` is the agent created above.
 | Task | Command |
 | --- | --- |
 | List agents and their state | `safeyolo agent list` |
-| Run an agent | `safeyolo agent run work` |
+| Start a persistent agent run | `safeyolo agent start work` |
+| Reconnect to its terminal | `safeyolo agent attach work` |
 | Open a separate shell in a running sandbox | `safeyolo agent shell work` |
 | Stop an agent | `safeyolo agent stop work` |
 | Diagnose a setup or runtime problem | `safeyolo doctor` |
@@ -192,7 +192,6 @@ To add another agent, choose a different name and an existing workspace:
 
 ```sh
 safeyolo agent add side-project ~/side-project --host-script @claude
-safeyolo agent run side-project
 ```
 
 For persistent background runs and reconnecting, see [agent launchers](docs/agent-launchers.md).

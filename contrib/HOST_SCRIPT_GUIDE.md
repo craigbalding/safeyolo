@@ -11,10 +11,13 @@ SafeYolo invokes them via:
 safeyolo agent add <name> <folder> --host-script path/to/my-host-setup.sh
 ```
 
-For an existing agent, reapply or change the host setup before boot:
+For an existing agent, stop it before reapplying or changing host setup.
+Select an executable host script outside every agent-writable share:
 
 ```sh
-safeyolo agent run <name> --host-script path/to/my-host-setup.sh
+safeyolo agent stop <name>
+safeyolo agent configure <name> --host-script /absolute/path/to/my-host-setup.sh
+safeyolo agent start <name>
 ```
 
 SafeYolo does not interpret a template, domain-specific language (DSL), or
@@ -102,7 +105,7 @@ Typical tasks:
 1. Copy authentication, settings, or user extensions into
    `$SAFEYOLO_AGENT_HOME` only when the agent must be able to read them.
 2. Write an executable `$SAFEYOLO_AGENT_HOME/.safeyolo-command` foreground
-   command. `safeyolo agent run` executes this file. The command can install the
+   command. `safeyolo agent start` executes this file. The command can install the
    agent binary idempotently on first run and then replace itself with the
    selected agent process.
 
@@ -170,18 +173,18 @@ chmod +x "$SAFEYOLO_AGENT_HOME/.safeyolo-command"
 ### Entrypoint contract
 
 `$SAFEYOLO_AGENT_HOME/.safeyolo-command` is the guest entrypoint: an interactive
-coding agent, shell, or terminal application. Ordinary `agent run NAME` gives
-it the current terminal. `agent run NAME --detach` starts it persistently in a
+coding agent, shell, or terminal application. `agent start NAME --foreground`
+uses the caller's terminal. Ordinary `agent start NAME` starts it persistently in a
 host tmux window unless another launcher or manager is explicitly selected.
 Use `agent attach NAME` to reconnect, or `agent shell NAME` for an independent
-guest shell. For boot-only work use `agent run NAME --sandbox-only`; it invokes
+guest shell. For boot-only work use `agent start NAME --sandbox-only`; it invokes
 no coding agent, host launcher, or launch hooks.
 
 The bundled `@codex-coord` and `@pi-coord` setups explicitly select the
 SafeYolo runtime supervisor. Guest PID 1 owns that supervisor, which runs the
 Coord supervisor and its bounded harness turns. Existing recovery and
 intentional-stop handling remain unchanged. The setups retain a separate
-`.safeyolo-interactive-command` for temporary `run --interactive` debugging;
+`.safeyolo-interactive-command` for Command Centre's **Debug Agent** action;
 it does not replace the configured managed mode or its checkpoints.
 
 Host setup scripts install the guest environment. Runtime host launchers are
@@ -207,8 +210,8 @@ operator to run `safeyolo agent shell --root` for routine installs.
 
 ## Idempotency
 
-Host scripts run on `safeyolo agent add` and whenever an existing agent is
-started with `safeyolo agent run <name> --host-script PATH`. Re-running
+Host scripts run on `safeyolo agent add` and when an existing stopped agent is
+configured with `safeyolo agent configure <name> --host-script PATH`. Re-running
 `agent add --force` also reruns the script. Make yours re-runnable: check before
 creating, overwrite only what you own, and don't assume a blank slate.
 

@@ -31,13 +31,50 @@ fn supervisor_path(name: &str) -> PathBuf {
     agent_dir(name).join("home/.safeyolo-command-supervisor.json")
 }
 
-pub(crate) struct SetupLock(File);
+pub(crate) struct SetupLock {
+    // Closing the last descriptor releases flock. An inherited descriptor
+    // shares its lock with the workflow parent, so this process must not
+    // explicitly unlock that parent's all-role setup barrier.
+    _file: File,
+}
 
 impl SetupLock {
     pub(crate) fn acquire_in(
         directory: &std::path::Path,
         deadline: Option<std::time::Instant>,
     ) -> Result<Self, Error> {
+        let file = Self::open_in(directory)?;
+        lock_until(&file, deadline)?;
+        Ok(Self { _file: file })
+    }
+
+    pub(crate) fn inherit_in(directory: &std::path::Path, descriptor: i32) -> Result<Self, Error> {
+        let expected = Self::open_in(directory)?;
+        // Keep inherited workflow locks out of proxy, terminal and guest
+        // children. Only the short-lived native lifecycle call shares them.
+        let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
+        if flags < 0
+            || unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let duplicate = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let file = unsafe { File::from_raw_fd(duplicate) };
+        let actual = file.metadata()?;
+        let expected = expected.metadata()?;
+        if (actual.dev(), actual.ino()) != (expected.dev(), expected.ino()) {
+            return Err("inherited setup lock does not belong to the selected agent".into());
+        }
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(Self { _file: file })
+    }
+
+    fn open_in(directory: &std::path::Path) -> Result<File, Error> {
         // Agent home is writable by the guest UID. Keeping this host lock
         // there lets the guest unlink it and make concurrent host callers
         // lock different inodes while the first sandbox is still starting.
@@ -74,16 +111,7 @@ impl SetupLock {
             return Err("unsafe host setup lock".into());
         }
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        lock_until(&file, deadline)?;
-        Ok(Self(file))
-    }
-}
-
-impl Drop for SetupLock {
-    fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
+        Ok(file)
     }
 }
 
@@ -1194,10 +1222,10 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
     };
     let result = match operation {
         "start" | "start-interactive" | "start-foreground" | "sandbox-start" => {
-            start(&agent, operation).await
+            start(&agent, operation, None, None, false).await
         }
         "status" => runtime(&agent).await,
-        "stop" => stop(&agent).await,
+        "stop" => stop(&agent, None).await,
         "cleanup" => cleanup(&agent).await,
         _ => Ok(json!({"error":"invalid host operation","status_code":400})),
     };
@@ -1209,16 +1237,32 @@ pub(crate) async fn operate(operation: &str, agent_id: Option<&str>) -> Result<V
     }
 }
 
-async fn start(agent: &Agent, operation: &str) -> Result<Value, Error> {
+pub(crate) async fn start(
+    agent: &Agent,
+    operation: &str,
+    setup_lock: Option<SetupLock>,
+    arguments: Option<&[String]>,
+    allow_unowned: bool,
+) -> Result<Value, Error> {
     let interactive = operation == "start-interactive";
     let foreground = operation == "start-foreground";
     let lock_root = agent_dir(&agent.name);
-    let _lock =
-        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_root, None)).await??;
-    let current = crate::host_agents::list()?
+    let _lock = match setup_lock {
+        Some(lock) => lock,
+        None => {
+            tokio::task::spawn_blocking(move || SetupLock::acquire_in(&lock_root, None)).await??
+        }
+    };
+    let mut current = crate::host_agents::list()?
         .into_iter()
         .find(|current| current.id == agent.id)
         .ok_or("agent configuration was removed while start was waiting")?;
+    // Only the local CLI can supply these one-run values. Admin accepts
+    // named lifecycle actions against host-owned configuration.
+    if let Some(arguments) = arguments {
+        current.user_default_args = arguments.to_vec();
+    }
+    current.dangerously_allow_unowned |= allow_unowned;
     let agent = &current;
     let observed = runtime(agent).await?;
     let state = observed
@@ -1750,10 +1794,14 @@ async fn launch_script(agent: &Agent, record: &Value) -> Result<(), Error> {
     write_json(&launch_path(&agent.name), &current)
 }
 
-async fn stop(agent: &Agent) -> Result<Value, Error> {
+pub(crate) async fn stop(agent: &Agent, setup_lock: Option<SetupLock>) -> Result<Value, Error> {
     let directory = agent_dir(&agent.name);
-    let _lock =
-        tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??;
+    let _lock = match setup_lock {
+        Some(lock) => lock,
+        None => {
+            tokio::task::spawn_blocking(move || SetupLock::acquire_in(&directory, None)).await??
+        }
+    };
     let command_warning = stop_supervisor(&agent.name)
         .await
         .err()
@@ -1803,7 +1851,7 @@ fn clear_stopped_command_state(name: &str) -> Result<(), Error> {
 }
 
 async fn cleanup(agent: &Agent) -> Result<Value, Error> {
-    stop(agent).await?;
+    stop(agent, None).await?;
     let directory = agent_dir(&agent.name);
     let lock_directory = directory.clone();
     let _lock =
@@ -1953,6 +2001,29 @@ mod tests {
         );
         assert!(second.is_err(), "guest home bypassed the active host lock");
         drop(first);
+        assert!(SetupLock::acquire_in(&directory, None).is_ok());
+    }
+
+    #[test]
+    fn inherited_setup_lock_preserves_the_parent_barrier_and_agent_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("agent");
+        let parent = SetupLock::acquire_in(&directory, None).unwrap();
+        let same_inode_without_the_lock = SetupLock::open_in(&directory).unwrap();
+        assert!(
+            SetupLock::inherit_in(&directory, same_inode_without_the_lock.as_raw_fd()).is_err()
+        );
+        let inherited = SetupLock::inherit_in(&directory, parent._file.as_raw_fd()).unwrap();
+        drop(inherited);
+        assert!(SetupLock::acquire_in(&directory, Some(std::time::Instant::now())).is_err());
+        assert!(
+            SetupLock::inherit_in(&root.path().join("other"), parent._file.as_raw_fd()).is_err()
+        );
+        assert_ne!(
+            unsafe { libc::fcntl(parent._file.as_raw_fd(), libc::F_GETFD) } & libc::FD_CLOEXEC,
+            0
+        );
+        drop(parent);
         assert!(SetupLock::acquire_in(&directory, None).is_ok());
     }
 }

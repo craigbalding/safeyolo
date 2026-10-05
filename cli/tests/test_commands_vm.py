@@ -15,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, create_autospec, patch
 
-import click
 import pytest
 from click import unstyle
 from typer.testing import CliRunner
@@ -319,7 +318,7 @@ class TestLifecycleStart:
         [
             ["start", "--help"],
             ["stop", "--help"],
-            ["agent", "run", "--help"],
+            ["agent", "start", "--help"],
             ["agent", "stop", "--help"],
         ],
     )
@@ -1003,17 +1002,17 @@ class TestAgentAdd:
                 return_value={"folder": folder_str},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.start_native_agent", return_value=0, autospec=True,) as mock_run,
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
         assert "already configured" in result.output.lower()
         mock_run.assert_called_once()
 
-    def test_idempotent_readd_associates_pane_and_requests_rename(
+    def test_idempotent_readd_associates_pane_and_delegates_start(
         self, runner, config_dir, tmp_path
     ):
-        """Auto-run through the same-config path also associates and renames."""
+        """Retained setup delegates auto-start to the native owner."""
         folder = tmp_path / "project"
         folder.mkdir()
         folder_str = str(folder.resolve())
@@ -1027,42 +1026,14 @@ class TestAgentAdd:
                 return_value={"folder": folder_str},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.start_native_agent", return_value=0, autospec=True,) as mock_run,
             patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(app, ["agent", "add", "test", str(folder)])
 
         assert result.exit_code == 0
         associate.assert_called_once_with("test")
-        assert mock_run.call_args.kwargs["rename_tmux_window"] is True
-
-    def test_idempotent_readd_no_rename_window_skips_rename_only(
-        self, runner, config_dir, tmp_path
-    ):
-        folder = tmp_path / "project"
-        folder.mkdir()
-        folder_str = str(folder.resolve())
-        agent_dir = config_dir / "agents" / "test"
-        agent_dir.mkdir()
-        (agent_dir / "rootfs.ext4").touch()
-
-        with (
-            patch(
-                "safeyolo.commands.agent._load_agent_metadata",
-                return_value={"folder": folder_str},
-            autospec=True,
-            ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
-        ):
-            result = runner.invoke(
-                app,
-                ["agent", "add", "test", str(folder), "--no-rename-window"],
-            )
-
-        assert result.exit_code == 0
-        associate.assert_called_once_with("test")
-        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
+        mock_run.assert_called_once_with("test", dangerously_allow_unowned=False)
 
     def test_no_run_skips_association_and_rename(
         self, runner, config_dir, tmp_path
@@ -1081,7 +1052,7 @@ class TestAgentAdd:
                 return_value={"folder": folder_str},
             autospec=True,
             ),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
+            patch("safeyolo.commands.agent.start_native_agent", return_value=0, autospec=True,) as mock_run,
             patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
         ):
             result = runner.invoke(
@@ -1150,12 +1121,17 @@ class TestAgentList:
                 "vm-agent": {"folder": "/proj"},
             }, autospec=True,),
             patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
+            patch("safeyolo.agent_lifecycle.list_agent_runtimes", return_value=[
+                {"name": "vm-agent", "runtime_state": "degraded", "sandbox_state": "degraded",
+                 "control_state": "unavailable", "agent_state": "unknown"},
+            ], autospec=True),
         ):
             result = runner.invoke(app, ["agent", "list"])
 
         assert result.exit_code == 0
         assert "vm-agent" in result.output
         assert "not-an-agent" not in result.output
+        assert "degraded" in result.output
 
     def test_no_agents_shows_message(self, runner, config_dir):
         """No agents configured shows appropriate message."""
@@ -1281,567 +1257,48 @@ class TestAgentStop:
 
     def test_not_running_exits_zero(self, runner, config_dir):
         """Stopping a non-running agent exits 0."""
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = False
-        with patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,):
+        with patch("safeyolo.agent_lifecycle.stop_agent_by_name",
+                   return_value={"runtime_state": "stopped", "agent_state": "stopped"}, autospec=True) as stop_native:
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
         assert result.exit_code == 0
-        assert "not running" in result.output.lower()
+        assert json.loads(result.output)["runtime_state"] == "stopped"
+        assert stop_native.call_args.args == ("test-agent",)
 
-    def test_calls_stop_sandbox(self, runner, config_dir):
-        """Stopping a running agent calls plat.stop_sandbox."""
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
+    def test_stop_uses_only_native_lifecycle_observations(self, runner, config_dir):
+        """The retained stop command does not probe a second backend truth."""
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True,),
-            patch("safeyolo.proxy.sync_proxy_modes", autospec=True,) as sync_proxy_modes,
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.platform.get_platform", autospec=True) as platform,
+            patch("safeyolo.agent_lifecycle.stop_agent_by_name", return_value={
+                "runtime_state": "stopped", "control_state": "stopped", "agent_state": "stopped",
+            }, autospec=True),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
         assert result.exit_code == 0
-        mock_platform.stop_sandbox.assert_called_once_with("test-agent")
-        sync_proxy_modes.assert_not_called()
-        assert "stopped" in result.output.lower()
+        platform.assert_not_called()
+        assert json.loads(result.output)["control_state"] == "stopped"
 
-    def test_syncs_removed_listener_when_proxy_is_running(self, runner, config_dir):
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
+    def test_failed_native_stop_does_not_report_stopped(self, runner, config_dir):
+        from safeyolo.agent_lifecycle import AgentLifecycleError
+
         with (
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.proxy.sync_proxy_modes", autospec=True,) as sync_proxy_modes,
-            patch("safeyolo.commands.agent.write_event", autospec=True,),
+            patch("safeyolo.agent_lifecycle.stop_agent_by_name",
+                  side_effect=AgentLifecycleError("runtime identity is unknown"), autospec=True),
         ):
             result = runner.invoke(app, ["agent", "stop", "test-agent"])
 
-        assert result.exit_code == 0
-        sync_proxy_modes.assert_called_once_with(admin_port=9090)
+        assert result.exit_code == 1
+        assert "runtime identity is unknown" in result.output
+        assert "stopped" not in result.output
+        assert "agent diagnostics test-agent" in result.output
 
 
 # ---------------------------------------------------------------------------
-# agent.py: _run_agent
+# agent_lifecycle.py: workflow setup locks
 # ---------------------------------------------------------------------------
 
 
-class TestRunAgent:
-
-    def test_linux_host_script_command_receives_effective_agent_args(self, tmp_path):
-        """Every host-script command receives its resolved persistent/run args."""
-        from safeyolo.agent_launchers import configured_guest_command
-
-        command_host = tmp_path / ".safeyolo-command"
-        command_host.write_text("#!/bin/sh\n")
-        command_host.chmod(0o755)
-
-        with patch("safeyolo.vm.get_agent_home_dir", return_value=tmp_path, autospec=True):
-            command = configured_guest_command("probe", ["--add-dir", "/proj/toolage", "--prompt", "hello world"])
-
-        assert command == (
-            "/home/agent/.safeyolo-command --add-dir /proj/toolage "
-            "--prompt 'hello world'"
-        )
-
-    def test_linux_plain_shell_preserves_explicit_command_override(self, tmp_path):
-        from safeyolo.agent_launchers import configured_guest_command
-
-        with patch("safeyolo.vm.get_agent_home_dir", return_value=tmp_path, autospec=True):
-            command = configured_guest_command("probe", ["python3", "script with spaces.py"])
-
-        assert command == "python3 'script with spaces.py'"
-
-    def test_run_associates_current_tmux_pane(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,),
-            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
-        ):
-            result = runner.invoke(app, ["agent", "run", "test-agent"])
-
-        assert result.exit_code == 0
-        associate.assert_called_once_with("test-agent")
-
-    def test_run_requests_window_rename_by_default(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,),
-        ):
-            result = runner.invoke(app, ["agent", "run", "test-agent"])
-
-        assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["rename_tmux_window"] is True
-
-    def test_run_detach_skips_window_rename(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
-        ):
-            result = runner.invoke(app, ["agent", "run", "test-agent", "--detach"])
-
-        assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
-        associate.assert_called_once_with("test-agent")
-
-    def test_run_no_rename_window_skips_rename_only(self, runner, config_dir):
-        with (
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run,
-            patch("safeyolo.commands.agent.associate_agent_pane", autospec=True,) as associate,
-        ):
-            result = runner.invoke(
-                app, ["agent", "run", "test-agent", "--no-rename-window"]
-            )
-
-        assert result.exit_code == 0
-        assert mock_run.call_args.kwargs["rename_tmux_window"] is False
-        associate.assert_called_once_with("test-agent")
-
-    def test_run_agent_starts_native_proxy_before_guest_preflight(self, config_dir):
-        """The moved lifecycle path uses the native proxy's zero-argument start API."""
-        from safeyolo.agent_lifecycle import _run_agent_impl
-
-        platform = _platform()
-        platform.is_sandbox_running.return_value = True
-        with (
-            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value={}, autospec=True),
-            patch("safeyolo.proxy.is_proxy_running", return_value=False, autospec=True),
-            patch("safeyolo.proxy.start_proxy", autospec=True) as start,
-            patch("safeyolo.proxy.wait_for_healthy", return_value=True, autospec=True) as healthy,
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-            pytest.raises(click.exceptions.Exit),
-        ):
-            _run_agent_impl("test-agent")
-
-        start.assert_called_once_with()
-        healthy.assert_called_once_with(timeout=30)
-
-    def _committed_launch_patches(
-        self, folder, rootfs, *, metadata=None, snapshot_supported=False
-    ):
-        """Mock every step from `_run_agent` entry through `prepare_config_share`
-        as successful, and cut off execution at `write_event("agent.started")`
-        so the sandbox layer is never invoked. Any test using this reaches the
-        rename boundary iff the rename flag is on and no failure was injected
-        earlier in the chain."""
-        fake_platform = _platform()
-        fake_platform.agent_rootfs_path.return_value = rootfs
-        fake_platform.is_sandbox_running.return_value = False
-        fake_platform.setup_networking.return_value = {
-            "host_ip": "10.0.0.1",
-            "guest_ip": "10.0.0.2",
-            "subnet": "10.0.0.0/24",
-            "attribution_ip": "10.0.0.2",
-            "needs_bridge_socket": False,
-        }
-
-        import safeyolo.platform as platform_module
-
-        return [
-            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
-            patch(
-                "safeyolo.agent_lifecycle._load_agent_metadata",
-                return_value=metadata or {"folder": str(folder)},
-            autospec=True,
-            ),
-            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.vm._update_agent_map", autospec=True,),
-            patch(
-                "safeyolo.snapshot.platform_supports_snapshot",
-                return_value=snapshot_supported,
-                autospec=True,
-            ),
-            patch("safeyolo.vm.prepare_config_share", autospec=True,),
-            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
-            patch(
-                "safeyolo.agent_lifecycle.write_event",
-                side_effect=RuntimeError("stop after rename boundary"),
-            autospec=True,
-            ),
-        ]
-
-    def test_run_agent_renames_after_config_share_committed(self, config_dir, tmp_path):
-        """rename_window_for_agent fires only once `prepare_config_share` has
-        succeeded and every earlier preflight has passed."""
-        folder = tmp_path / "project"
-        folder.mkdir()
-        rootfs = tmp_path / "rootfs"
-        rootfs.mkdir()
-
-        from safeyolo.agent_lifecycle import _run_agent
-
-        patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,)
-
-        with rename_patch as rename:
-            for p in patches:
-                p.start()
-            try:
-                with pytest.raises(RuntimeError, match="stop after rename boundary"):
-                    _run_agent("committed", rename_tmux_window=True)
-            finally:
-                for p in patches:
-                    p.stop()
-
-        rename.assert_called_once_with("committed")
-
-    def test_run_agent_skips_rename_when_flag_false(self, config_dir, tmp_path):
-        """With the flag off, the rename call is not made even when the
-        committed-launch boundary is reached (--detach, --no-rename-window)."""
-        folder = tmp_path / "project"
-        folder.mkdir()
-        rootfs = tmp_path / "rootfs"
-        rootfs.mkdir()
-
-        from safeyolo.agent_lifecycle import _run_agent
-
-        patches = self._committed_launch_patches(folder, rootfs)
-        rename_patch = patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,)
-
-        with rename_patch as rename:
-            for p in patches:
-                p.start()
-            try:
-                with pytest.raises(RuntimeError, match="stop after rename boundary"):
-                    _run_agent("committed", rename_tmux_window=False)
-            finally:
-                for p in patches:
-                    p.stop()
-
-        rename.assert_not_called()
-
-    def test_snapshot_fingerprint_receives_effective_workspace(
-        self, config_dir, tmp_path
-    ):
-        """Both persistent and one-run primary mounts participate in restore."""
-        persistent = tmp_path / "persistent"
-        transient = tmp_path / "transient"
-        rootfs = tmp_path / "rootfs"
-        for path in (persistent, transient, rootfs):
-            path.mkdir()
-
-        from safeyolo.agent_lifecycle import _run_agent
-
-        patches = self._committed_launch_patches(
-            persistent, rootfs, snapshot_supported=True
-        )
-        with (
-            patch(
-                "safeyolo.snapshot.compute_snapshot_version",
-                return_value={"snapshot_schema": 3},
-                autospec=True,
-            ) as compute,
-            patch(
-                "safeyolo.snapshot.is_snapshot_valid",
-                return_value=True,
-                autospec=True,
-            ),
-        ):
-            for item in patches:
-                item.start()
-            try:
-                with pytest.raises(RuntimeError, match="stop after rename boundary"):
-                    _run_agent("committed", folder_override=str(transient))
-            finally:
-                for item in patches:
-                    item.stop()
-
-        assert compute.call_args.kwargs["workspace_path"] == transient.resolve()
-
-    @pytest.mark.parametrize(
-        ("configured_memory", "expected_memory"),
-        [(None, 4096), (8192, 8192)],
-    )
-    def test_snapshot_fingerprint_receives_effective_agent_memory(
-        self, config_dir, tmp_path, configured_memory, expected_memory
-    ):
-        folder = tmp_path / "project"
-        rootfs = tmp_path / "rootfs"
-        folder.mkdir()
-        rootfs.mkdir()
-        metadata = {"folder": str(folder)}
-        if configured_memory is not None:
-            metadata["memory_mb"] = configured_memory
-
-        from safeyolo.agent_lifecycle import _run_agent
-
-        patches = self._committed_launch_patches(
-            folder,
-            rootfs,
-            metadata=metadata,
-            snapshot_supported=True,
-        )
-        with (
-            patch(
-                "safeyolo.snapshot.compute_snapshot_version",
-                return_value={"snapshot_schema": 3},
-                autospec=True,
-            ) as compute,
-            patch(
-                "safeyolo.snapshot.is_snapshot_valid",
-                return_value=True,
-                autospec=True,
-            ),
-        ):
-            for item in patches:
-                item.start()
-            try:
-                with pytest.raises(RuntimeError, match="stop after rename boundary"):
-                    _run_agent("committed")
-            finally:
-                for item in patches:
-                    item.stop()
-
-        assert compute.call_args.kwargs["memory_mb"] == expected_memory
-
-    def test_run_agent_network_reservation_failure_does_not_rename(
-        self, config_dir, tmp_path
-    ):
-        """`reserve_agent_network_slot` is a launch-committing step; its
-        failure must not leave the tmux window renamed."""
-        folder = tmp_path / "project"
-        folder.mkdir()
-        rootfs = tmp_path / "rootfs"
-        rootfs.mkdir()
-
-        fake_platform = _platform()
-        fake_platform.agent_rootfs_path.return_value = rootfs
-        fake_platform.is_sandbox_running.return_value = False
-
-        import safeyolo.platform as platform_module
-        from safeyolo.agent_lifecycle import _run_agent
-
-        with (
-            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
-            patch(
-                "safeyolo.agent_lifecycle._load_agent_metadata",
-                return_value={"folder": str(folder)},
-            autospec=True,
-            ),
-            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch(
-                "safeyolo.agents_store.reserve_agent_network_slot",
-                side_effect=OSError("no slot"),
-            autospec=True,
-            ),
-            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
-            pytest.raises(click.exceptions.Exit),
-        ):
-            _run_agent("committed", rename_tmux_window=True)
-
-        rename.assert_not_called()
-
-    def test_run_agent_config_share_failure_does_not_rename(
-        self, config_dir, tmp_path
-    ):
-        """`prepare_config_share` failure sits between early preflight and
-        the rename boundary; if it fails, rename must not run."""
-        folder = tmp_path / "project"
-        folder.mkdir()
-        rootfs = tmp_path / "rootfs"
-        rootfs.mkdir()
-
-        fake_platform = _platform()
-        fake_platform.agent_rootfs_path.return_value = rootfs
-        fake_platform.is_sandbox_running.return_value = False
-        fake_platform.setup_networking.return_value = {
-            "host_ip": "10.0.0.1",
-            "guest_ip": "10.0.0.2",
-            "subnet": "10.0.0.0/24",
-            "attribution_ip": "10.0.0.2",
-            "needs_bridge_socket": False,
-        }
-
-        import safeyolo.platform as platform_module
-        from safeyolo.agent_lifecycle import _run_agent
-
-        with (
-            patch.object(platform_module, "get_platform", return_value=fake_platform, autospec=True,),
-            patch(
-                "safeyolo.agent_lifecycle._load_agent_metadata",
-                return_value={"folder": str(folder)},
-            autospec=True,
-            ),
-            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.vm._update_agent_map", autospec=True,),
-            patch("safeyolo.sockets.path_for", return_value=Path("/tmp/mock.sock"), autospec=True,),
-            patch(
-                "safeyolo.snapshot.platform_supports_snapshot",
-                return_value=False,
-            autospec=True,
-            ),
-            patch(
-                "safeyolo.vm.prepare_config_share",
-                side_effect=RuntimeError("config share broken"),
-            autospec=True,
-            ),
-            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
-            pytest.raises(click.exceptions.Exit),
-        ):
-            _run_agent("committed", rename_tmux_window=True)
-
-        rename.assert_not_called()
-
-    def test_immediate_helper_failure_surfaces_error_instead_of_empty_log_hint(
-        self, config_dir, tmp_path, capsys
-    ):
-        from safeyolo.agent_lifecycle import _run_agent
-
-        folder = tmp_path / "project"
-        folder.mkdir()
-        rootfs = tmp_path / "rootfs.ext4"
-        rootfs.touch()
-        fake_platform = _platform()
-        fake_platform.agent_rootfs_path.return_value = rootfs
-        fake_platform.is_sandbox_running.return_value = False
-        fake_platform.setup_networking.return_value = {
-            "host_ip": "127.0.0.1",
-            "guest_ip": "127.0.0.1",
-            "attribution_ip": "10.200.0.2",
-            "subnet": None,
-            "needs_bridge_socket": False,
-        }
-        fake_platform.start_sandbox.return_value = 4321
-
-        with (
-            patch(
-                "safeyolo.agent_lifecycle._load_agent_metadata",
-                return_value={"folder": str(folder)},
-                autospec=True,
-            ),
-            patch("safeyolo.agent_lifecycle._check_project_ownership", autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=1, autospec=True,),
-            patch("safeyolo.agent_lifecycle._resolve_extra_shares", return_value=[], autospec=True,),
-            patch("safeyolo.vm._update_agent_map", autospec=True,),
-            patch("safeyolo.agent_lifecycle.write_event", autospec=True,),
-            patch("safeyolo.vm.prepare_config_share", autospec=True,),
-            patch("safeyolo.snapshot.platform_supports_snapshot", return_value=False, autospec=True,),
-            patch(
-                "safeyolo.vm.vm_helper_failure_summary",
-                return_value=(
-                    "safeyolo-vm startup failed with exit code 1: "
-                    "Error: Virtualization is not supported on this machine"
-                ),
-                autospec=True,
-            ) as failure_summary,
-            patch("safeyolo.platform.get_platform", return_value=fake_platform, autospec=True,),
-            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
-            patch("sys.platform", "darwin"),
-        ):
-            result = _run_agent("broken-helper", no_snapshot=True)
-
-        output = capsys.readouterr().out
-        normalized_output = " ".join(output.split())
-        assert result == 1
-        assert "Virtualization is not supported on this machine" in normalized_output
-        assert "exit code 1" in normalized_output
-        assert "Check logs" not in output
-        failure_summary.assert_called_once_with("broken-helper", 4321)
-
-    def test_run_preflight_failure_does_not_rename(self, runner, config_dir):
-        """Nonexistent agent: preflight fails before rename gets a chance."""
-        with (
-            patch("safeyolo.commands.tmux.rename_window_for_agent", autospec=True,) as rename,
-        ):
-            result = runner.invoke(app, ["agent", "run", "no-such-agent"])
-
-        assert result.exit_code == 1
-        rename.assert_not_called()
-
-    @pytest.mark.parametrize("options", [[], ["--detach"], ["--sandbox-only"]])
-    def test_rootfs_missing_exits_one(self, runner, config_dir, options):
-        """Missing rootfs is reported before inspecting the installed runtime."""
-        from safeyolo.platform import get_platform
-
-        platform = get_platform()
-        with (
-            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value={"folder": "."}, autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-            patch.object(
-                platform, "is_sandbox_running", autospec=True,
-                side_effect=RuntimeError("runsc not found"),
-            ) as running,
-        ):
-            result = runner.invoke(app, ["agent", "run", "no-rootfs", *options])
-        assert result.exit_code == 1
-        assert "not found" in result.output.lower()
-        running.assert_not_called()
-        assert not (config_dir / "agents" / "no-rootfs").exists()
-
-    def test_run_host_script_reapplies_existing_agent_setup(self, runner, config_dir, tmp_path):
-        """agent run --host-script runs setup against the persistent home before boot."""
-        project = tmp_path / "project"
-        project.mkdir()
-        script = tmp_path / "setup.sh"
-        script.write_text(
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            "printf '%s\\n' \"$SAFEYOLO_AGENT_NAME\" > \"$SAFEYOLO_AGENT_HOME/name.txt\"\n"
-            "printf '%s\\n' \"$SAFEYOLO_AGENT_FOLDER\" > \"$SAFEYOLO_AGENT_HOME/folder.txt\"\n"
-            "printf '%s\\n' '#!/usr/bin/env bash' 'exec echo command-ok' > \"$SAFEYOLO_AGENT_HOME/.safeyolo-command\"\n"
-            "chmod +x \"$SAFEYOLO_AGENT_HOME/.safeyolo-command\"\n"
-        )
-        script.chmod(0o755)
-        (config_dir / "policy.toml").write_text(
-            'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n\n'
-            f'[agents.web]\nfolder = "{project}"\n'
-        )
-
-        platform = _platform()
-        platform.is_sandbox_running.return_value = False
-        with (
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
-        ):
-            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
-
-        assert result.exit_code == 0
-        home = config_dir / "agents" / "web" / "home"
-        assert (home / "name.txt").read_text().strip() == "web"
-        assert (home / "folder.txt").read_text().strip() == str(project.resolve())
-        assert (home / ".safeyolo-command").exists()
-        assert f'host_script = "{script.resolve()}"' in (config_dir / "policy.toml").read_text()
-        mock_run.assert_called_once()
-
-    def test_run_host_script_missing_exits_one(self, runner, config_dir, tmp_path):
-        """agent run --host-script validates the script before booting."""
-        with patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True,) as mock_run:
-            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(tmp_path / "missing.sh")])
-
-        assert result.exit_code == 1
-        assert "host script not found" in result.output.lower()
-        mock_run.assert_not_called()
-
-    def test_run_host_script_refuses_live_agent_before_script(self, runner, config_dir, tmp_path):
-        """A live agent is rejected before host setup can mutate its home."""
-        project = tmp_path / "project"
-        project.mkdir()
-        marker = tmp_path / "script-ran"
-        script = tmp_path / "setup.sh"
-        script.write_text(f"#!/bin/sh\ntouch {marker}\n")
-        script.chmod(0o755)
-        (config_dir / "policy.toml").write_text(
-            'version = "2.0"\n\n[hosts]\n"*" = { rate = 600 }\n\n'
-            f'[agents.web]\nfolder = "{project}"\n'
-        )
-        platform = _platform()
-        platform.is_sandbox_running.return_value = True
-        with (
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True),
-            patch("safeyolo.commands.agent._run_agent", return_value=0, autospec=True) as mock_run,
-        ):
-            result = runner.invoke(app, ["agent", "run", "web", "--host-script", str(script)])
-
-        assert result.exit_code == 1
-        assert "already running" in result.output.lower()
-        assert not marker.exists()
-        mock_run.assert_not_called()
+class TestWorkflowSetupLock:
 
     def test_setup_and_start_transitions_share_a_barrier(self, config_dir):
         """A setup or start transition cannot pass while the other owns the lock."""
@@ -2098,213 +1555,6 @@ class TestRunAgent:
             (42, agent_module.fcntl.LOCK_UN),
         ]
 
-    def test_ready_sandbox_can_launch_stopped_agent(self, runner, config_dir, tmp_path):
-        """A ready sandbox needs no second boot to launch its coding agent."""
-        agent_dir = config_dir / "agents" / "test-agent"
-        agent_dir.mkdir()
-        rootfs_path = agent_dir / "rootfs.ext4"
-        rootfs_path.touch()
-
-        mock_platform = _platform()
-        mock_platform.is_sandbox_running.return_value = True
-        # agent_rootfs_path is platform-dispatched -- return the same file we
-        # just touched so the existence check passes regardless of host OS.
-        mock_platform.agent_rootfs_path.return_value = rootfs_path
-        from safeyolo.agents_store import save_agent
-
-        save_agent("test-agent", {"folder": str(tmp_path), "agent_id": "ag-test"})
-        mock_platform.exec_in_sandbox.return_value = 7
-        with (
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=mock_platform, autospec=True,),
-        ):
-            result = runner.invoke(app, ["agent", "run", "test-agent"])
-
-        assert result.exit_code == 7, result.output
-        mock_platform.start_sandbox.assert_not_called()
-        mock_platform.exec_in_sandbox.assert_called_once()
-        mock_platform.stop_sandbox.assert_not_called()
-
-    def test_run_forwards_persistent_config_and_transient_mounts_to_boot(
-        self, config_dir, tmp_path, capsys,
-    ):
-        """Public mount settings must reach both config staging and runtime."""
-        from safeyolo.agent_lifecycle import _run_agent
-
-        project = tmp_path / "project"
-        persistent = tmp_path / "persistent-toolage"
-        transient = tmp_path / "transient-toolage"
-        readonly = tmp_path / "readonly-refs"
-        for path in (project, persistent, transient, readonly):
-            path.mkdir()
-
-        agent_dir = config_dir / "agents" / "mount-agent"
-        status_dir = agent_dir / "status"
-        config_share = agent_dir / "config-share"
-        status_dir.mkdir(parents=True)
-        config_share.mkdir()
-        rootfs = agent_dir / "rootfs"
-        rootfs.mkdir()
-
-        metadata = {
-            "folder": str(project),
-            "memory_mb": 8192,
-            "mounts": [
-                f"{persistent}:/proj/toolage",
-                f"{readonly}:/refs:ro",
-            ],
-        }
-        expected = [
-            (str(readonly), "/refs", True),
-            (str(transient), "/proj/toolage", False),
-        ]
-        running = False
-        platform = _platform()
-        platform.agent_rootfs_path.return_value = rootfs
-
-        def is_running(_name):
-            return running
-
-        def start_sandbox(**_kwargs):
-            nonlocal running
-            running = True
-            (status_dir / "per-run-started").write_text("")
-            return 1234
-
-        platform.is_sandbox_running.side_effect = is_running
-        platform.start_sandbox.side_effect = start_sandbox
-        platform.setup_networking.return_value = {
-            "host_ip": "127.0.0.1",
-            "guest_ip": "10.200.0.2",
-            "attribution_ip": "10.200.0.2",
-            "subnet": None,
-            "needs_bridge_socket": False,
-        }
-
-        with (
-            patch("safeyolo.agent_lifecycle._load_agent_metadata", return_value=metadata, autospec=True,),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=0, autospec=True,),
-            patch("safeyolo.vm._update_agent_map", autospec=True,),
-            patch("safeyolo.agent_lifecycle.write_event", autospec=True,),
-            patch("safeyolo.vm.prepare_config_share", autospec=True,) as prepare,
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
-            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
-        ):
-            result = _run_agent(
-                "mount-agent",
-                extra_mounts=[f"{transient}:/proj/toolage"],
-                launch_mode="sandbox",
-                no_snapshot=True,
-            )
-
-        assert result == 0
-        output = capsys.readouterr().out
-        assert "Starting agent... ready" in output
-        assert "no coding agent was launched" in output
-        assert "10.200.0.2" not in output
-        assert prepare.call_args.kwargs["host_mounts"] == expected
-        assert platform.start_sandbox.call_args.kwargs["extra_shares"] == expected
-        assert platform.start_sandbox.call_args.kwargs["memory_mb"] == 8192
-
-    @pytest.mark.parametrize(
-        ("session_result", "expect_detach"),
-        [
-            (KeyboardInterrupt, True),
-            (-2, True),
-            (130, True),
-            (0, False),
-        ],
-        ids=[
-            "keyboard-interrupt",
-            "negative-sigint",
-            "shell-sigint",
-            "normal-exit",
-        ],
-    )
-    def test_linux_attached_session_exit_controls_sandbox_lifetime(
-        self, config_dir, tmp_path, capsys, session_result, expect_detach,
-    ):
-        """Only host Ctrl-C leaves the Linux/gVisor sandbox running."""
-        from safeyolo.agent_lifecycle import _run_agent
-
-        name = "session-exit-agent"
-        project = tmp_path / "project"
-        project.mkdir()
-        from safeyolo.agents_store import save_agent
-
-        save_agent(name, {"folder": str(project), "agent_id": "ag-session"})
-        agent_dir = config_dir / "agents" / name
-        status_dir = agent_dir / "status"
-        status_dir.mkdir(parents=True)
-        rootfs = agent_dir / "rootfs"
-        rootfs.mkdir()
-        pid_path = agent_dir / "vm.pid"
-        pid_path.write_text("1234")
-
-        running = False
-        platform = _platform()
-        platform.agent_rootfs_path.return_value = rootfs
-
-        def is_running(_name):
-            return running
-
-        def start_sandbox(**_kwargs):
-            nonlocal running
-            running = True
-            (status_dir / "per-run-started").write_text("")
-            return 1234
-
-        platform.is_sandbox_running.side_effect = is_running
-        platform.start_sandbox.side_effect = start_sandbox
-        platform.setup_networking.return_value = {
-            "host_ip": "127.0.0.1",
-            "guest_ip": "10.200.0.2",
-            "attribution_ip": "10.200.0.2",
-            "subnet": None,
-            "needs_bridge_socket": False,
-        }
-        if session_result is KeyboardInterrupt:
-            platform.exec_in_sandbox.side_effect = KeyboardInterrupt
-        else:
-            platform.exec_in_sandbox.return_value = session_result
-
-        with (
-            patch(
-                "safeyolo.agent_lifecycle._load_agent_metadata",
-                return_value={"folder": str(project)},
-                autospec=True,
-            ),
-            patch("safeyolo.proxy.is_proxy_running", return_value=True, autospec=True,),
-            patch("safeyolo.agents_store.reserve_agent_network_slot", return_value=0, autospec=True,),
-            patch("safeyolo.vm._update_agent_map", autospec=True,),
-            patch("safeyolo.agent_lifecycle.write_event", autospec=True,) as write_event,
-            patch("safeyolo.events.write_event", autospec=True) as lifecycle_event,
-            patch("safeyolo.vm.prepare_config_share", autospec=True,),
-            patch("safeyolo.platform.get_platform", return_value=platform, autospec=True,),
-            patch("safeyolo.sockets.path_for", return_value=tmp_path / "proxy.sock", autospec=True,),
-            patch("sys.platform", "linux"),
-        ):
-            result = _run_agent(name, no_snapshot=True)
-
-        assert result == (130 if expect_detach else 0)
-        output = capsys.readouterr().out
-        event_names = [call.args[0] for call in write_event.call_args_list]
-        if expect_detach:
-            platform.stop_sandbox.assert_not_called()
-            assert platform.is_sandbox_running(name)
-            assert pid_path.read_text() == "1234"
-            assert event_names == ["agent.started"]
-        else:
-            assert "Agent running (detached)" not in output
-            platform.stop_sandbox.assert_called_once_with(name)
-            assert event_names == ["agent.started"]
-            assert lifecycle_event.call_args.args[0] == "agent.stopped"
-
-
-# ---------------------------------------------------------------------------
-# init.py
-# ---------------------------------------------------------------------------
 
 
 class TestInit:

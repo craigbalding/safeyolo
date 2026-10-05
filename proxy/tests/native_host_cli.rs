@@ -40,6 +40,109 @@ fn initialize(root: &Path) {
     .unwrap();
 }
 
+#[test]
+fn workflow_stop_inherits_the_selected_lock_without_releasing_the_parent_barrier() {
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    for name in ["marker", "other"] {
+        value(cli(
+            &root,
+            &[
+                "agent",
+                "create",
+                name,
+                "--workspace",
+                temp.path().to_str().unwrap(),
+            ],
+        ));
+    }
+    let directory = root.join("agents/marker");
+    fs::create_dir_all(&directory).unwrap();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join("host-setup.lock"))
+        .unwrap();
+    let descriptor = lock.as_raw_fd();
+    assert_eq!(unsafe { libc::flock(descriptor, libc::LOCK_EX) }, 0);
+    let run = |name| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_safeyolo"));
+        command
+            .arg("--root")
+            .arg(&root)
+            .args(["agent", "stop", name])
+            .env("SAFEYOLO_HOST_SETUP_LOCK_FD", descriptor.to_string());
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(descriptor, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.output().unwrap()
+    };
+    assert_eq!(value(run("marker"))["runtime_state"], "stopped");
+    let contender = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(directory.join("host-setup.lock"))
+        .unwrap();
+    assert_ne!(
+        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    let rejected = run("other");
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("does not belong to the selected agent")
+    );
+    drop(lock);
+    assert_eq!(
+        unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+}
+
+#[test]
+fn invalid_local_start_selection_cannot_start_proxy_or_change_agent_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("instance");
+    initialize(&root);
+    value(cli(
+        &root,
+        &[
+            "agent",
+            "create",
+            "marker",
+            "--workspace",
+            temp.path().to_str().unwrap(),
+        ],
+    ));
+    let policy = fs::read(root.join("policy.toml")).unwrap();
+    for arguments in [
+        vec!["agent", "start", "marker", "--foreground", "--sandbox-only"],
+        vec![
+            "agent",
+            "start",
+            "marker",
+            "--sandbox-only",
+            "--",
+            "fixture argument",
+        ],
+        vec!["agent", "start", "marker", "--host-executable", "/fixture"],
+    ] {
+        assert!(!cli(&root, &arguments).status.success());
+        assert_eq!(fs::read(root.join("policy.toml")).unwrap(), policy);
+        assert!(!root.join("data/proxy-process.json").exists());
+        assert!(!root.join("agents/marker/current-launch.json").exists());
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn dead_vz_handle_and_stale_socket_can_be_cleaned_without_signalling_a_live_pid() {

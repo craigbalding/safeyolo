@@ -114,6 +114,7 @@ async fn start_proxy() -> Result<(), Error> {
         .args(["--config"])
         .arg(config_path)
         .env("SAFEYOLO_CONFIG_DIR", &root)
+        .env_remove("SAFEYOLO_HOST_SETUP_LOCK_FD")
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -302,6 +303,46 @@ async fn diagnostics(agent: &host_agents::Agent) -> Result<Value, Error> {
     Ok(observed)
 }
 
+fn start_arguments(extra: &[String]) -> Result<(&str, Option<&[String]>, bool), Error> {
+    let mut operation = "start";
+    let mut allow_unowned = false;
+    let mut arguments = None;
+    for (index, option) in extra.iter().enumerate() {
+        match option.as_str() {
+            "--" => {
+                arguments = Some(&extra[index + 1..]);
+                break;
+            }
+            "--foreground" | "--sandbox-only" if operation == "start" => {
+                operation = if option == "--foreground" {
+                    "start-foreground"
+                } else {
+                    "sandbox-start"
+                };
+            }
+            "--dangerously-allow-unowned" => allow_unowned = true,
+            _ => return Err(format!("unexpected start argument: {option}").into()),
+        }
+    }
+    if operation == "sandbox-start" && arguments.is_some() {
+        return Err("--sandbox-only does not launch coding-agent arguments".into());
+    }
+    Ok((operation, arguments, allow_unowned))
+}
+
+fn inherited_setup_lock(
+    agent: &host_agents::Agent,
+) -> Result<Option<host_lifecycle::SetupLock>, Error> {
+    match std::env::var("SAFEYOLO_HOST_SETUP_LOCK_FD") {
+        Ok(descriptor) => Ok(Some(host_lifecycle::SetupLock::inherit_in(
+            &host_platform::config_dir().join("agents").join(&agent.name),
+            descriptor.parse()?,
+        )?)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
 async fn run_inner(args: &[String]) -> Result<i32, Error> {
     let root = host_platform::config_dir();
     match args {
@@ -326,7 +367,7 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             )?;
         }
         [agent, help] if agent == "agent" && help == "--help" => println!(
-            "safeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nConfiguration changes apply at the next sandbox start. Attach never launches an absent coding agent. Shell is independent."
+            "safeyolo [--root ROOT] agent create|configure NAME --workspace PATH [--memory MB] [--mount HOST:GUEST[:ro]] [--launcher tmux-window|tmux-pane|supervisor|SCRIPT] [--host-script SCRIPT] [--command COMMAND] [--dangerously-allow-unowned]\nsafeyolo [--root ROOT] agent start NAME [--foreground|--sandbox-only] [--dangerously-allow-unowned] [-- ARGUMENTS...]\nsafeyolo [--root ROOT] agent status|stop|cleanup|attach|diagnostics|recover NAME\nsafeyolo [--root ROOT] agent shell [--persistent] [--] NAME [-c COMMAND]\nsafeyolo [--root ROOT] agent diagnostics NAME relays|dump|cancel INSTANCE ID\nConfiguration changes apply at the next sandbox start. Start arguments affect only that launch. Attach never launches an absent coding agent. Shell is independent."
         ),
         [kind, operation, name, rest @ ..]
             if kind == "agent" && matches!(operation.as_str(), "create" | "configure") =>
@@ -383,14 +424,22 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
             let extra = &rest[1..];
             match operation.as_str() {
                 "start"|"stop"|"status"|"cleanup"=>{
-                    let operation=if operation=="start" {
-                        match extra {[]=>"start",[arg]if arg=="--foreground"=>"start-foreground",[arg]if arg=="--sandbox-only"=>"sandbox-start",_=>return Err("start accepts --foreground or --sandbox-only".into())}
-                    }else{if !extra.is_empty(){return Err("unexpected agent argument".into());} operation};
+                    let (operation, arguments, allow_unowned) = if operation=="start" {
+                        start_arguments(extra)?
+                    }else{if !extra.is_empty(){return Err("unexpected agent argument".into());} (operation.as_str(), None, false)};
+                    let setup_lock = if matches!(operation, "start"|"start-foreground"|"sandbox-start"|"stop") {
+                        inherited_setup_lock(&agent)?
+                    } else { None };
                     if operation.starts_with("start") || operation=="sandbox-start" {start_proxy().await?;}
                     // Ordinary named runtime operations use the same authenticated
                     // Admin path as Commander. Foreground terminals stay local;
                     // independent stop remains available when the proxy is down.
-                    let observed = if matches!(operation, "start" | "stop") && proxy_live() {
+                    let observed = if matches!(operation, "start"|"start-foreground"|"sandbox-start")
+                        && (setup_lock.is_some() || arguments.is_some() || allow_unowned) {
+                        host_lifecycle::start(&agent,operation,setup_lock,arguments,allow_unowned).await?
+                    } else if operation=="stop" && setup_lock.is_some() {
+                        host_lifecycle::stop(&agent,setup_lock).await?
+                    } else if matches!(operation, "start" | "stop") && proxy_live() {
                         crate::native_client::admin(
                             &host_platform::config_path(),
                             &format!("/admin/agents/{}/{operation}", agent.id),
@@ -445,6 +494,26 @@ async fn run_inner(args: &[String]) -> Result<i32, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_start_arguments_keep_defaults_distinct_from_an_empty_override() {
+        let empty = Vec::new();
+        assert_eq!(start_arguments(&empty).unwrap(), ("start", None, false));
+        let override_args = vec!["--".into()];
+        assert_eq!(
+            start_arguments(&override_args).unwrap(),
+            ("start", Some(&[][..]), false)
+        );
+        let literal = vec![
+            "--foreground".into(),
+            "--".into(),
+            "--model".into(),
+            "fixture model $(literal)".into(),
+        ];
+        let selected = start_arguments(&literal).unwrap();
+        assert_eq!(selected.0, "start-foreground");
+        assert_eq!(selected.1, Some(&literal[2..]));
+    }
+
     #[test]
     fn lost_host_handle_can_restore_only_the_observed_agents_current_listener() {
         let agent = host_agents::Agent {
