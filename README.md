@@ -132,6 +132,10 @@ Guest builds currently need a source checkout and these platform prerequisites:
 | macOS | Command Line Tools, Lima, and tmux. For Homebrew, use `brew install lima tmux`. The host package already installs the VM helper. |
 | Linux | Bootstrap checks guest build dependencies and configures gVisor. If packages are missing, it prints an installation command and stops. |
 
+For hardware acceptance, the [deployment path](tests/blackbox/hardware/README.md)
+prepares a private Mac tmux on Tart and transfers it for offline execution.
+Its installed-runtime checks require that private input before public start.
+
 **Source installation is an alternative.** For contributor builds and their
 compiler requirements, see [source installation](cli/README.md#installation).
 For an explicit return to the selected prior Python package, see

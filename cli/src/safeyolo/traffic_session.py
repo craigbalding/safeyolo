@@ -17,8 +17,8 @@ SESSION_NAME = "safeyolo-traffic"
 _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
-def find_private_tmux() -> Path:  # DOC: README.md, cli/README.md
-    """Find SafeYolo's bundled tmux, with a system binary as a dev fallback."""
+def find_private_tmux(*, allow_system: bool = True) -> Path:  # DOC: README.md, cli/README.md
+    """Find the private runtime; callers can exclude the system dev fallback."""
     explicit = os.environ.get("SAFEYOLO_TMUX_BIN")
     if explicit:
         candidate = Path(explicit)
@@ -35,7 +35,7 @@ def find_private_tmux() -> Path:  # DOC: README.md, cli/README.md
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
 
-    system_tmux = shutil.which("tmux")
+    system_tmux = shutil.which("tmux") if allow_system else None
     if system_tmux:
         return Path(system_tmux)
     raise RuntimeError("SafeYolo's private tmux runtime is missing; reinstall the host artifact")

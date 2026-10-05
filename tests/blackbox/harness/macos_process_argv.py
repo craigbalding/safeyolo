@@ -1,6 +1,8 @@
 """Read a macOS process's exact argument vector when the seatbelt denies ps."""
 
 import ctypes
+import errno
+import json
 import os
 import sys
 
@@ -53,8 +55,46 @@ def process_argv(pid: int) -> list[bytes]:
     return argv
 
 
+def account_pids(uid: int) -> list[int]:
+    """Read a complete libproc snapshot for one uid, including under Seatbelt."""
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    query = library.proc_listpids
+    query.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int]
+    query.restype = ctypes.c_int
+    # PROC_UID_ONLY is defined in Apple's bsd/sys/proc_info.h.
+    size = query(4, uid, None, 0)
+    if size <= 0:
+        raise OSError(ctypes.get_errno(), "cannot size account process inspection")
+    buffer = (ctypes.c_int * (size // ctypes.sizeof(ctypes.c_int) + 64))()
+    count = query(4, uid, buffer, ctypes.sizeof(buffer))
+    if count <= 0 or count >= ctypes.sizeof(buffer) or count % ctypes.sizeof(ctypes.c_int):
+        raise OSError(ctypes.get_errno(), "account process inspection failed or was truncated")
+    return [pid for pid in buffer[:count // ctypes.sizeof(ctypes.c_int)] if pid > 1]
+
+
+def owned_account_processes(uid: int, roots: list[str]) -> list[int]:
+    """Observe exact run paths without signalling or publishing any argv."""
+    survivors = []
+    for pid in account_pids(uid):
+        if pid == os.getpid():
+            continue  # This inspection's own arguments name the inspected roots.
+        try:
+            arguments = [os.fsdecode(value) for value in process_argv(pid)]
+        except OSError as exc:
+            if exc.errno == errno.ESRCH:
+                continue  # This process exited between the snapshot and argv read.
+            raise
+        if any(argument == root or argument.startswith(root + "/") for root in roots for argument in arguments):
+            survivors.append(pid)
+    return survivors
+
+
 if __name__ == "__main__":
+    if len(sys.argv) >= 4 and sys.argv[1] == "--owned-roots":
+        survivors = owned_account_processes(int(sys.argv[2]), sys.argv[3:])
+        print(json.dumps({"owned_processes": survivors}))
+        raise SystemExit(2 if survivors else 0)
     if len(sys.argv) != 2:
-        raise SystemExit("usage: macos_process_argv.py PID")
+        raise SystemExit("usage: macos_process_argv.py PID | --owned-roots UID ROOT [ROOT ...]")
     arguments = process_argv(int(sys.argv[1]))
     sys.stdout.buffer.write(b"\0".join(arguments) + b"\0")

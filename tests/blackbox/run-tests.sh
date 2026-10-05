@@ -242,8 +242,14 @@ INSTALL_COMMIT_ARGS=()
 if [ -n "$INSTALL_COMMIT" ]; then
     INSTALL_COMMIT_ARGS=(--install-commit "$INSTALL_COMMIT")
 fi
+RUNTIME_COMMIT_ARGS=()
+RUNTIME_COMMIT="${INSTALL_COMMIT:-${SAFEYOLO_BLACKBOX_INSTALL_REVISION:-}}"
+if [ -n "$RUNTIME_COMMIT" ]; then
+    RUNTIME_COMMIT_ARGS=(--install-commit "$RUNTIME_COMMIT")
+fi
 
-# The physical VZ test account has six assigned localhost TCP ports. All
+# The physical VZ test account has six primary localhost TCP ports and two
+# additional NATS ports for the independent lifecycle owner. All
 # native selections use one HTTP fixture listener for parent, origin, and
 # control requests; the HTTPS fixture selects certificate chains by SNI.
 VZ_FIXED_PORTS=false
@@ -260,6 +266,11 @@ if [ "$EXPECTED_PLATFORM" = "vz" ] && [ "$PROXY_IMPL" = "rust" ]; then
     # this disposable instance's NATS client and ownership monitor.
     export SAFEYOLO_NATS_TEST_PORTS=46370,46372
     export SAFEYOLO_LIFECYCLE_OWNER_ADMIN_PORT=46375
+    export SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS=46377,46378
+fi
+if [ "$LIFECYCLE" = true ]; then
+    # The parent retains this identity even if owner preparation fails.
+    export SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE="${SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE:-$(python3 -c 'import uuid; print(uuid.uuid4().hex)')}"
 fi
 export PROXY_URL="http://127.0.0.1:${TEST_PROXY_PORT}"
 export ADMIN_URL="http://127.0.0.1:${TEST_ADMIN_PORT}"
@@ -419,9 +430,13 @@ if [ -n "${SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR:-}" ]; then
     python3 - "$SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR" "$SAFEYOLO_CONFIG_DIR" <<'PY'
 import sys
 from pathlib import Path
-from installed_sections import copy_prepared_nats
-copy_prepared_nats(Path(sys.argv[1]), Path(sys.argv[2]))
+from installed_sections import copy_prepared_runtime
+copy_prepared_runtime(Path(sys.argv[1]), Path(sys.argv[2]))
 PY
+    if [ -f "$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux" ]; then
+        # A missing staged runtime must not fall through to another host tool.
+        export SAFEYOLO_TMUX_BIN="$SAFEYOLO_CONFIG_DIR/bin/safeyolo-tmux"
+    fi
 fi
 
 if [ "$INGRESS" = true ] || [ "$WORKLOADS" = true ]; then
@@ -718,7 +733,7 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from installed_sections import owned_processes
-print(json.dumps(owned_processes(Path(sys.argv[2]))))
+print(json.dumps(owned_processes(Path(sys.argv[2]), include_console=True)))
 PY_SNAPSHOT
 )" || cleanup_failed=true
 
@@ -727,8 +742,9 @@ PY_SNAPSHOT
 import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from installed_sections import cleanup_instance
-failures = cleanup_instance(Path(sys.argv[2]), Path(sys.argv[3]), owner=True)
+from installed_sections import cleanup_instance, lifecycle_owner_environment
+root = Path(sys.argv[3])
+failures = cleanup_instance(Path(sys.argv[2]), root, owner=True, env=lifecycle_owner_environment(root))
 for error in failures:
     print(error, file=sys.stderr)
 raise SystemExit(bool(failures))
@@ -787,8 +803,9 @@ PY_OWNER
     python3 - "$SCRIPT_DIR" "$owned_snapshot" <<'PY_SURVIVORS' || cleanup_failed=true
 import json, sys
 sys.path.insert(0, sys.argv[1])
-from installed_sections import surviving_processes
-failures = surviving_processes(json.loads(sys.argv[2]))
+from installed_sections import stop_owned_console, surviving_processes
+processes = json.loads(sys.argv[2])
+failures = stop_owned_console(processes) + surviving_processes(processes)
 for error in failures:
     print(error, file=sys.stderr)
 raise SystemExit(bool(failures))
@@ -1062,7 +1079,8 @@ if [ "$PROXY_IMPL" = "rust" ] && [ "$RUN_ISOLATION" = true ]; then
         --mode attached --cli "$INSTALLED_CLI" --rust-bin "$INSTALLED_RUST_BIN" \
         --rust-config "$SAFEYOLO_CONFIG_DIR/data/native.json" \
         --config-dir "$SAFEYOLO_CONFIG_DIR" --working-directory "$SCRIPT_DIR" \
-        --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json"; then
+        --agent "$AGENT_NAME" --output "$ARTIFACTS_DIR/installed-rust-runtime.json" \
+        "${RUNTIME_COMMIT_ARGS[@]+"${RUNTIME_COMMIT_ARGS[@]}"}"; then
         echo "ERROR: installed Rust runtime identity was not verified" >&2
         exit 2
     fi
@@ -1120,14 +1138,14 @@ if [ "$RUN_PROXY" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=native pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 native/
     PROXY_RESULT=$?
 
     # Process security tests (host-side)
     echo ""
     echo "=== Process Security Tests (host-side) ==="
     echo ""
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=security pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=60 security/
     FIREWALL_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1142,7 +1160,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=identity pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE --tb=short --timeout=30 identity/
     IDENTITY_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"
@@ -1150,10 +1168,27 @@ if [ "$RUN_ISOLATION" = true ]; then
 
     echo "=== VM Isolation Tests (in-VM) ==="
     echo ""
+    # Reports go through the owned guest home, which is mounted in both
+    # platform implementations. The workspace and config share can be read-only.
+    GUEST_OBSERVATIONS=""
+    if [ -n "${SAFEYOLO_BLACKBOX_OBSERVATIONS_DIR:-}" ]; then
+        printf -v observation_run_id '%q' "$SAFEYOLO_BLACKBOX_RUN_ID"
+        printf -v observation_revision '%q' "$SAFEYOLO_BLACKBOX_INSTALL_REVISION"
+        GUEST_OBSERVATIONS="SAFEYOLO_BLACKBOX_RUN_ID=$observation_run_id SAFEYOLO_BLACKBOX_INSTALL_REVISION=$observation_revision"
+    fi
+    ISOLATION_OBSERVATIONS=""
+    ROOT_OBSERVATIONS=""
+    if [ -n "$GUEST_OBSERVATIONS" ]; then
+        ISOLATION_OBSERVATIONS="$GUEST_OBSERVATIONS SAFEYOLO_BLACKBOX_PYTEST_SUITE=isolation SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=/home/agent/bb-isolation.json"
+        ROOT_OBSERVATIONS="$GUEST_OBSERVATIONS SAFEYOLO_BLACKBOX_PYTEST_SUITE=root-isolation SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH=/home/agent/bb-root-isolation.json"
+    fi
     set +e
     safeyolo agent shell "$AGENT_NAME" -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
+        "cd /workspace/tests/blackbox/isolation && $ISOLATION_OBSERVATIONS SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 --ignore=test_root_containment.py"
     ISOLATION_RESULT=$?
+    if [ -n "$GUEST_OBSERVATIONS" ] && [ -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-isolation.json" ]; then
+        cp "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-isolation.json" "$ARTIFACTS_DIR/pytest-isolation.json"
+    fi
     set -e
     echo ""
 
@@ -1161,8 +1196,11 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     set +e
     safeyolo agent shell "$AGENT_NAME" --root -c \
-        "cd /workspace/tests/blackbox/isolation && SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
+        "cd /workspace/tests/blackbox/isolation && $ROOT_OBSERVATIONS SAFEYOLO_BLACKBOX_ISOLATION=1 pytest${PYTEST_FORWARD_SHELL} $VERBOSE -rs --tb=short --timeout=60 test_root_containment.py test_key_isolation.py::TestPrivateKeyAbsent"
     ROOT_ISOLATION_RESULT=$?
+    if [ -n "$GUEST_OBSERVATIONS" ] && [ -f "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-root-isolation.json" ]; then
+        cp "$SAFEYOLO_CONFIG_DIR/agents/$AGENT_NAME/home/bb-root-isolation.json" "$ARTIFACTS_DIR/pytest-root-isolation.json"
+    fi
     set -e
     echo ""
 
@@ -1176,7 +1214,7 @@ if [ "$RUN_ISOLATION" = true ]; then
     echo ""
     cd "$SCRIPT_DIR/host"
     set +e
-    pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
+    SAFEYOLO_BLACKBOX_PYTEST_SUITE=lifecycle pytest "${PYTEST_FORWARD_ARGS[@]+"${PYTEST_FORWARD_ARGS[@]}"}" $VERBOSE -rs --tb=short --timeout=120 lifecycle/
     LIFECYCLE_RESULT=$?
     set -e
     cd "$SCRIPT_DIR"

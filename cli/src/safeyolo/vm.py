@@ -5,6 +5,7 @@ macOS via the ``safeyolo-vm`` Swift helper binary, rootless gVisor
 (``runsc``) on Linux.
 """
 
+import ctypes
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ from .config import (
     get_share_dir,
     get_ssh_key_path,
 )
+from .runtime_identity import process_is_alive, process_start_token
 
 log = logging.getLogger("safeyolo.vm")
 
@@ -1337,6 +1339,132 @@ def _ensure_ssh_key() -> None:
 # VM lifecycle
 # ---------------------------------------------------------------------------
 
+def _vz_test_command(command: list[str]) -> list[str]:
+    """Opt in to the host's direct-helper deadline runner for disposable tests."""
+    runner = os.environ.get("SAFEYOLO_VZ_TEST_RUNNER")
+    timeout = os.environ.get("SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS")
+    if runner is None and timeout is None:
+        return command
+    if not runner or not timeout or not timeout.isascii() or not timeout.isdecimal() or int(timeout) < 1:
+        raise VMError("VZ test supervision needs a runner and positive whole-number timeout")
+    path = Path(runner)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        raise VMError("VZ test runner must be an absolute executable file")
+    return [str(path), "--timeout-seconds", str(int(timeout)), "--", *command]
+
+
+def _vz_runner_helper_pid(runner_pid: int, helper: Path) -> tuple[int, str] | None:
+    """Identify the runner's direct helper child through macOS kernel data."""
+    from .runtime_identity import _darwin_process_info
+
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    children = library.proc_listchildpids
+    children.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    children.restype = ctypes.c_int
+    pid_path = library.proc_pidpath
+    pid_path.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    pid_path.restype = ctypes.c_int
+    pids = (ctypes.c_int * 32)()
+    count = children(runner_pid, pids, ctypes.sizeof(pids))
+    if count < 0 or count >= len(pids):
+        raise VMError("Cannot enumerate the VZ test runner's direct children")
+    matches = []
+    for pid in pids[:count]:
+        info = _darwin_process_info(pid)
+        if info is None or info.pbi_ppid != runner_pid or info.pbi_status == 5:
+            continue
+        buffer = ctypes.create_string_buffer(4096)
+        if pid_path(pid, buffer, ctypes.sizeof(buffer)) <= 0:
+            raise VMError("Cannot identify the VZ test runner's child executable")
+        token = f"darwin:{pid}:{info.pbi_start_tvsec}:{info.pbi_start_tvusec}"
+        if (Path(os.fsdecode(buffer.value)).resolve(strict=True) == helper.resolve(strict=True)
+                and process_start_token(pid) == token):
+            matches.append((pid, token))
+    if len(matches) > 1:
+        raise VMError("VZ test runner has more than one matching helper child")
+    return matches[0] if matches else None
+
+
+def _vz_receipt_process_alive(receipt: dict, field: str) -> bool:
+    pid = receipt.get(field)
+    if pid is None or not process_is_alive(pid):
+        return False
+    token = process_start_token(pid)
+    if token is None:
+        raise VMError("Cannot establish VZ test supervision process identity")
+    return token == receipt[field.replace("pid", "start_token")]
+
+
+def _register_vz_test_runner(proc: subprocess.Popen, helper: Path, receipt_path: Path) -> tuple[int, str]:
+    """Save the launch owner before observing its actual helper child."""
+    registered = False
+    try:
+        runner_token = process_start_token(proc.pid)
+        if runner_token is None:
+            raise VMError("Cannot observe VZ test runner start identity")
+        receipt = {"pid": proc.pid, "start_token": runner_token,
+                   "helper_pid": None, "helper_start_token": None}
+        receipt_path.write_text(json.dumps(receipt) + "\n")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and proc.poll() is None:
+            observed = _vz_runner_helper_pid(proc.pid, helper)
+            if observed is not None:
+                helper_pid, token = observed
+                receipt.update(helper_pid=helper_pid, helper_start_token=token)
+                receipt_path.write_text(json.dumps(receipt) + "\n")
+                registered = True
+                return helper_pid, token
+            time.sleep(0.02)
+        raise VMError("VZ test runner did not expose its direct VM helper child")
+    finally:
+        if not registered:
+            # Popen owns this runner even when writing its receipt failed.
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired as exc:
+                raise VMError("VZ test runner cleanup could not be established") from exc
+
+
+def _read_vz_test_receipt(receipt_path: Path) -> dict:
+    """Validate the two recorded process identities before using either PID."""
+    receipt = json.loads(receipt_path.read_text())
+    if not isinstance(receipt, dict):
+        raise VMError("Invalid VZ test supervision receipt")
+    for field in ("pid", "helper_pid"):
+        pid, token = receipt.get(field), receipt.get(field.replace("pid", "start_token"))
+        if field == "helper_pid" and pid is None:
+            continue  # A failed launch may never have exposed a helper child.
+        if type(pid) is not int or pid <= 1 or not isinstance(token, str) or not token:
+            raise VMError("Invalid VZ test supervision process identity")
+    return receipt
+
+
+def _stop_vz_test_runner(name: str, receipt_path: Path) -> None:
+    """Signal only the recorded runner; it stops and reaps its helper child."""
+    receipt = _read_vz_test_receipt(receipt_path)
+    runner_pid = receipt["pid"]
+    if _vz_receipt_process_alive(receipt, "pid"):
+        try:
+            os.kill(runner_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass  # The recorded runner exited between the identity check and signal.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        remaining = [field for field in ("pid", "helper_pid") if _vz_receipt_process_alive(receipt, field)]
+        if not remaining:
+            get_agent_pid_path(name).unlink(missing_ok=True)
+            (receipt_path.parent / "vm.token").unlink(missing_ok=True)
+            receipt_path.unlink()
+            _update_agent_map(name, remove=True)
+            return
+        time.sleep(0.1)
+    # Killing the supervisor would orphan a helper it still owns. Keep both
+    # identities for independent host teardown and report cleanup failure.
+    raise VMError("VZ test runner or its owned helper did not stop")
+
+
 def start_vm(
     name: str,
     workspace_path: str,
@@ -1350,7 +1478,10 @@ def start_vm(
     shell_socket_path: str | None = None,
     ephemeral: bool = False,
 ) -> subprocess.Popen:
-    """Start a VM and return the Popen handle.
+    """Start a VM and return its launch process handle.
+
+    For opt-in disposable VZ tests, the handle belongs to the deadline runner.
+    The PID file always identifies the actual VM helper.
 
     If background=True, serial console goes to a log file instead of
     stdin/stdout (for SSH-primary mode).
@@ -1376,6 +1507,13 @@ def start_vm(
 
     helper = find_vm_helper()
     host_system = platform.system()
+    pid_path = get_agent_pid_path(name)
+    supervisor_path = pid_path.parent / "vm-supervisor.json"
+    if supervisor_path.exists():
+        receipt = _read_vz_test_receipt(supervisor_path)
+        if any(_vz_receipt_process_alive(receipt, field) for field in ("pid", "helper_pid")):
+            raise VMError("The existing VZ test runner or its helper is still active")
+        _stop_vz_test_runner(name, supervisor_path)
     if host_system == "Darwin":
         probe_vm_helper(helper)
     rootfs = get_agent_rootfs_path(name)
@@ -1508,6 +1646,9 @@ def start_vm(
             mode = "ro" if read_only else "rw"
             cmd.extend(["--share", f"{host_path}:extra{index}:{mode}"])
 
+    supervised = host_system == "Darwin" and "SAFEYOLO_VZ_TEST_RUNNER" in os.environ
+    if host_system == "Darwin":
+        cmd = _vz_test_command(cmd)
     serial_log = get_agents_dir() / name / "serial.log"
     try:
         if background:
@@ -1539,36 +1680,39 @@ def start_vm(
             + (f": {detail}" if detail else "")
         ) from exc
 
-    # A helper that fails before VZ boot previously became a generic
-    # "check serial.log" result (often pointing at an empty file). Give the
-    # child a short bounded window to expose immediate loader, signing,
-    # argument, or framework failures and preserve its actionable exit text.
-    # Restore failures remain on the existing liveness/fallback path.
-    if host_system == "Darwin" and restore_from_path is None:
-        try:
-            returncode = proc.wait(timeout=_VM_HELPER_STARTUP_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            pass
-        else:
-            try:
-                helper_output = serial_log.read_text(errors="replace")
-            except OSError:
-                helper_output = ""
-            raise VMError(
-                _vm_helper_exit_message(
-                    helper,
-                    returncode,
-                    stderr=helper_output,
-                    operation="startup",
-                )
-            )
+    helper_pid = proc.pid
+    if supervised:
+        helper_pid, helper_token = _register_vz_test_runner(proc, helper, supervisor_path)
 
-    # Write PID file
-    pid_path = get_agent_pid_path(name)
-    # A Python-launched VM has no native start token. Clear one left by an
-    # earlier native run before exposing the new PID to the proxy.
-    (pid_path.parent / "vm.token").unlink(missing_ok=True)
-    pid_path.write_text(str(proc.pid))
+    saved = False
+    try:
+        # Give immediate loader/signing/argument failures a bounded window;
+        # restore failures retain the existing liveness/fallback path.
+        if host_system == "Darwin" and restore_from_path is None:
+            try:
+                returncode = proc.wait(timeout=_VM_HELPER_STARTUP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                try:
+                    helper_output = serial_log.read_text(errors="replace")
+                except OSError:
+                    helper_output = ""
+                raise VMError(_vm_helper_exit_message(helper, returncode, stderr=helper_output, operation="startup"))
+
+        # The helper and supervisor have separate identities. Direct Python
+        # launches still clear a native token from an earlier generation.
+        if supervised:
+            (pid_path.parent / "vm.token").write_text(helper_token)
+        else:
+            supervisor_path.unlink(missing_ok=True)
+            (pid_path.parent / "vm.token").unlink(missing_ok=True)
+        pid_path.write_text(str(helper_pid))
+        saved = True
+    finally:
+        if supervised and not saved:
+            _stop_vz_test_runner(name, supervisor_path)
+            proc.wait(timeout=10)
 
     return proc
 
@@ -1576,6 +1720,10 @@ def start_vm(
 def stop_vm(name: str) -> None:
     """Stop a running VM and clean up agent-map state."""
     pid_path = get_agent_pid_path(name)
+    supervisor_path = pid_path.parent / "vm-supervisor.json"
+    if supervisor_path.exists():
+        _stop_vz_test_runner(name, supervisor_path)
+        return
     if not pid_path.exists():
         _update_agent_map(name, remove=True)
         return

@@ -10,14 +10,24 @@ proxy or host-continuity result is an isolation result.
 from __future__ import annotations
 
 import argparse
+import collections
+import errno
 import json
 import os
+import platform
 import re
 import shutil
+import signal
+import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
+import zipfile
+from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -29,33 +39,264 @@ SECTIONS = {
 # run-tests.sh reserves this result for failed cleanup when invoked by this
 # loop. Its ordinary public infrastructure/cleanup exit remains 2.
 INNER_CLEANUP_FAILURE_EXIT = 3
+PYTEST_SUITES = ("native", "security", "identity", "isolation", "root-isolation", "lifecycle")
+VZ_CONTINUITY_DEFAULTS = {"origin-host": "127.0.0.2", "origin-bind": "127.0.0.1", "http-port": 46373,
+                          "https-port": 46374, "oauth-port": 46375, "admin-port": 46371}
 
 
-def copy_prepared_nats(source: Path, root: Path) -> None:
-    """Reuse only verified binary bytes; credentials/JetStream stay private."""
+class InstalledCancellation:
+    """Retain a launched child until normal cancellation and owned cleanup finish."""
+
+    def __init__(self):
+        if __package__:
+            from .installed_host_smoke import _process_start_token
+        else:
+            from installed_host_smoke import _process_start_token
+        self.process_start_token = _process_start_token
+        self.signum = None
+        self.processes = {}
+        self.failures = []
+        self.previous_handlers = {}
+        self.started = False
+        self.child_exit = None
+        self.child_reaped = True
+        self.child_identity = None
+
+    def __enter__(self):
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            self.previous_handlers[signum] = signal.signal(signum, self.cancel)
+        return self
+
+    def __exit__(self, *_exception):
+        for signum, handler in self.previous_handlers.items():
+            signal.signal(signum, handler)
+
+    def cancel(self, signum, _frame):
+        # Record only: raising here could lose a child between Popen and assignment,
+        # or interrupt cleanup. Repeated signals must not restart that cleanup.
+        if self.signum is None:
+            self.signum = signum
+
+    def run(self, args, *, roots=(), **options):
+        """Run preparation or a section in its own group, retaining its Popen handle."""
+        self.started = False
+        self.child_exit = None
+        self.child_identity = None
+        if self.signum is not None:
+            return subprocess.CompletedProcess(args, 128 + self.signum)
+        options.pop("check", None)  # These callers classify the returned status.
+        process = subprocess.Popen(args, start_new_session=True, **options)
+        self.child_identity = {"pid": process.pid, "start_token": self.process_start_token(process.pid)}
+        self.started = True
+        while self.signum is None:
+            try:
+                self.child_exit = process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                continue
+            if self.signum is not None:
+                # wait already reaped this naturally exiting child. Do not
+                # signal a group whose leader identity is no longer pinned.
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    pass  # No member of the launched group remains.
+                except OSError as exc:
+                    self.failures.append(f"cancelled child group inspection: {exc}")
+                else:
+                    self.failures.append("cancelled child exited before its group cleanup could be verified")
+            return subprocess.CompletedProcess(args, self.child_exit)
+        self.stop(process, roots)
+        return subprocess.CompletedProcess(args, 128 + self.signum)
+
+    def stop(self, process, roots):
+        """Stop the unreaped child group before cleanup can remove ownership records."""
+        # Remember detached product/helper identities before a child trap can
+        # remove their records. Existing instance cleanup must check these too.
+        for root in roots:
+            try:
+                self.processes[root] = owned_processes(root, include_console=True)
+            except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
+                self.failures.append(f"cancelled owned process inspection: {exc}")
+        for signum in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, signum)
+            except ProcessLookupError:
+                break  # The entire owned group exited before the next signal.
+            except OSError as exc:
+                self.failures.append(f"cancelled child group stop: {exc}")
+            if signum == signal.SIGTERM:
+                # Keep the direct child unreaped during this grace period. Its
+                # PID pins our group identity even if the leader exits first.
+                time.sleep(1)
+        try:
+            self.child_exit = process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.child_reaped = False
+            self.failures.append("cancelled child could not be reaped")
+
+
+def check_vz_ports(*, include_owner: bool = False) -> list[str]:
+    """Check allocated IPv4 fixture ports without signalling an owner."""
+    failures = []
+    ports = (*range(46370, 46376), 46377, 46378) if include_owner else range(46370, 46376)
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                failures.append(f"VZ fixture port {port} is unavailable")
+    return failures
+
+
+def copy_prepared_runtime(source: Path, root: Path, *, copy_tmux: bool = True) -> None:
+    """Reuse prepared executables; credentials, sessions and streams stay private."""
     shutil.copytree(source / "data/coord/nats/bin", root / "data/coord/nats/bin")
+    tmux = source / "bin/safeyolo-tmux"
+    if copy_tmux and tmux.is_file():
+        (root / "bin").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(tmux, root / "bin/safeyolo-tmux")
 
 
-def owned_processes(root: Path) -> list[dict]:
-    """Remember live processes named by this instance before invoking stop."""
+def lifecycle_owner_environment(root: Path, *, env: dict[str, str] | None = None) -> dict[str, str]:
+    """Reuse the owner's identity for preparation and both cleanup callers."""
+    env = (os.environ if env is None else env).copy()
+    env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
+               SAFEYOLO_LOG_PATH=str(root / "logs/safeyolo.jsonl"), SAFEYOLO_SUBNET_BASE="76",
+               SAFEYOLO_COORD_DATA_DIR=str(root / "data/coord"),
+               SAFEYOLO_NATS_TEST_INSTANCE=env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"])
+    env.pop("SAFEYOLO_TMUX_BIN", None)
+    env.pop("SAFEYOLO_NATS_TEST_PORTS", None)
+    if ports := env.get("SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS"):
+        env["SAFEYOLO_NATS_TEST_PORTS"] = ports
+    return env
+
+
+def console_process(root: Path) -> dict | None:
+    """Observe the instance's private server and diagnostic pane before stop."""
+    if __package__:
+        from .installed_host_smoke import _process_start_token
+    else:
+        from installed_host_smoke import _process_start_token
+    path = root.resolve() / "data/traffic-tmux.sock"
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISSOCK(mode):
+        raise ValueError("private traffic console path is not a socket")
+    with socket.socket(socket.AF_UNIX) as probe:
+        probe.settimeout(2)
+        try:
+            probe.connect(str(path))
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ECONNREFUSED):
+                return None
+            raise
+    private = root / "bin/safeyolo-tmux"
+    if private.is_file():
+        tmux = private
+    else:
+        # Standalone preparation has no CLI package in this parent. Only a
+        # live console without a copied runtime needs the installed fallback.
+        from safeyolo.traffic_session import find_private_tmux
+
+        tmux = find_private_tmux()
+    result = subprocess.run(
+        [str(tmux), "-S", str(path), "-f", "/dev/null", "display-message", "-p", "-t", "safeyolo-traffic:0.0",
+         "#{pid} #{session_id} #{pane_id} #{pane_pid} #{socket_path}"],
+        capture_output=True, text=True, check=True, timeout=5,
+    )
+    # tmux replaces control characters inside the format in a C locale. Use
+    # printable separators, leaving the socket path (including spaces) last.
+    fields = result.stdout.removesuffix("\n").split(" ", 4)
+    if (len(fields) != 5 or fields[4] != str(path) or re.fullmatch(r"\$[0-9]+", fields[1]) is None
+            or re.fullmatch(r"%[0-9]+", fields[2]) is None or not fields[0].isascii() or not fields[0].isdecimal()
+            or not fields[3].isascii() or not fields[3].isdecimal()):
+        raise ValueError("cannot verify private traffic console identity")
+    pid = int(fields[0])
+    token = _process_start_token(pid)
+    if pid <= 1 or int(fields[3]) <= 1 or token is None:
+        raise ValueError("cannot observe private traffic console process identity")
+    return {"pid": pid, "start_token": token,
+            "console": {"tmux": str(tmux), "socket": str(path), "session": fields[1],
+                        "pane": fields[2], "pane_pid": fields[3]}}
+
+
+def stop_owned_console(processes: list[dict]) -> list[str]:
+    """Dispose only of a recorded dead diagnostic pane, then verify inactivity."""
+    if __package__:
+        from .installed_host_smoke import _pid_alive, _process_start_token
+    else:
+        from installed_host_smoke import _pid_alive, _process_start_token
+
+    failures = []
+    for row in processes:
+        if "console" not in row:
+            continue
+        console = row["console"]
+        try:
+            guard = f"#{{==:#{{pid}},{row['pid']}}}"
+            for name, value in (("session_id", console["session"]), ("pane_id", console["pane"]),
+                                ("pane_pid", console["pane_pid"]), ("pane_dead", "1")):
+                guard = f"#{{&&:{guard},#{{==:#{{{name}}},{value}}}}}"
+            deadline = time.monotonic() + 5
+            while _pid_alive(row["pid"]) and time.monotonic() < deadline:
+                if _process_start_token(row["pid"]) != row["start_token"]:
+                    raise ValueError("private traffic console process changed; retained")
+                # The server may not have reaped the stopped pane yet. tmux
+                # evaluates the identity/dead-pane guard and kill together.
+                subprocess.run(
+                    [console["tmux"], "-S", console["socket"], "-f", "/dev/null", "if-shell", "-F",
+                     "-t", console["pane"], guard, f"kill-session -t '{console['session']}'"],
+                    capture_output=True, text=True, check=True, timeout=5,
+                )
+                time.sleep(0.05)
+            failures.extend(surviving_processes([row]))
+            if console_process(Path(console["socket"]).parents[1]) is not None:
+                failures.append("private traffic console is still accepting connections")
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+            failures.append(f"private traffic console cleanup: {exc}")
+    return failures
+
+
+def owned_processes(root: Path, *, include_console: bool = False) -> list[dict]:
+    """Remember processes before stop; disposable cleanup also owns the console."""
     if __package__:
         from .installed_host_smoke import _pid_alive, _process_start_token
     else:
         from installed_host_smoke import _pid_alive, _process_start_token
 
     processes = []
-    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
+    for pattern in ("agents/*/container.pid", "agents/*/vm.pid", "agents/*/vm-supervisor.json", "data/proxy-rust.json",
                     "data/coord/nats/nats.pid.json"):
         for path in root.glob(pattern):
+            if path.name == "vm.pid" and (path.parent / "vm-supervisor.json").is_file():
+                continue  # The receipt binds the helper PID to its recorded start identity.
             content = path.read_text()
-            pid = json.loads(content)["pid"] if path.suffix == ".json" else int(content.strip())
-            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-                raise ValueError(f"invalid owned process PID in {path}")
-            if _pid_alive(pid):
-                token = _process_start_token(pid)
-                if token is None:
-                    raise ValueError(f"cannot observe owned process start identity: {path}")
-                processes.append({"pid": pid, "start_token": token})
+            receipt = json.loads(content) if path.suffix == ".json" else {"pid": int(content.strip())}
+            pids = [receipt["pid"]]
+            if path.name == "vm-supervisor.json" and receipt.get("helper_pid") is not None:
+                pids.append(receipt["helper_pid"])
+            for pid in pids:
+                if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+                    raise ValueError(f"invalid owned process PID in {path}")
+                if _pid_alive(pid):
+                    token = _process_start_token(pid)
+                    if token is None:
+                        raise ValueError(f"cannot observe owned process start identity: {path}")
+                    if path.name == "vm-supervisor.json":
+                        field = "start_token" if pid == receipt["pid"] else "helper_start_token"
+                        recorded = receipt.get(field)
+                        if not isinstance(recorded, str) or not recorded:
+                            raise ValueError(f"missing VZ supervision start identity: {path}")
+                        if token != recorded:
+                            continue  # A reused foreign PID is not this section's process.
+                    processes.append({"pid": pid, "start_token": token})
+    if include_console:
+        console = console_process(root)
+        if console is not None:
+            processes.append(console)
     return processes
 
 
@@ -76,18 +317,20 @@ def surviving_processes(processes: list[dict]) -> list[str]:
     return failures
 
 
-def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]:
+def cleanup_instance(cli: Path, root: Path, *, owner: bool = False, env: dict | None = None,
+                     retained_processes: list[dict] | tuple = ()) -> list[str]:
     """Stop only this section's agents/proxy and report surviving owned state."""
-    env = os.environ.copy()
+    env = (os.environ if env is None else env).copy()
     env.update(SAFEYOLO_CONFIG_DIR=str(root), SAFEYOLO_LOGS_DIR=str(root / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(root / "data/coord"),
                SAFEYOLO_SUBNET_BASE="76" if owner else "75")
     failures = []
     try:
-        processes = owned_processes(root)
-    except (OSError, ValueError, KeyError) as exc:
+        processes = owned_processes(root, include_console=True)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
         failures.append(f"owned process inspection: {exc}")
         processes = []
+    processes = [*retained_processes, *processes]
     if (root / "config.yaml").is_file():
         agents = ("bbowner",) if owner else ("bbtest", "bbpeer")
         for agent in agents:
@@ -106,8 +349,9 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
                 failures.append(f"proxy stop exited {result.returncode}")
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"proxy stop: {exc}")
+    failures.extend(stop_owned_console(processes))
     for pattern in (
-        "agents/*/container.pid", "agents/*/vm.pid", "data/proxy-rust.json",
+        "agents/*/container.pid", "agents/*/vm.pid", "agents/*/vm-supervisor.json", "data/proxy-rust.json",
         "data/proxy-readiness.json", "data/proxy.pid", "data/sockets/*/proxy.sock",
         "data/coord/nats/nats.pid.json", "sinkhole.pid", "native-parent.pid",
     ):
@@ -116,60 +360,378 @@ def cleanup_instance(cli: Path, root: Path, *, owner: bool = False) -> list[str]
     return failures
 
 
+def pytest_summary(data: dict) -> dict:
+    """Select observed outcomes without arbitrary nested annotations."""
+    return {name: data[name] for name in (
+        "schema_version", "run_id", "source_revision", "suite", "started_at", "finished_at",
+        "exit", "collected", "deselected", "collection_errors", "omitted_cases",
+    )} | {
+        "counts": {name: data["counts"][name] for name in ("passed", "failed", "skipped", "unexecuted")
+                   if name in data["counts"]},
+        "cases": [{name: case[name] for name in ("test", "case_sha256", "outcome", "phase")}
+                  for case in data["cases"]],
+    }
+
+
+def installed_runtime_summary(data: dict) -> dict:
+    """Retain observed identities without instance paths or added annotations."""
+    return {name: data[name] for name in (
+        "run_id", "source_revision", "captured_at", "isolation_platform", "native_sha256", "wheel_source_revision",
+    )} | {
+        "host": {name: data["host"][name] for name in ("system", "machine")},
+        "process": {name: data["process"][name] for name in ("pid", "start_token", "instance_id")},
+    }
+
+
+def installed_runtime_observation(artifacts: Path, report: dict, started_at: str, finished_at: str) -> tuple[dict | None, list[str]]:
+    """Bind the named attached observation to this section and selected build.
+
+    The attached probe authenticates the live process before section cleanup.
+    Reading its report does not independently prove physical host ownership.
+    """
+    if __package__:
+        from .installed_host_smoke import SmokeError, _read_json, _validate_marker
+    else:
+        from installed_host_smoke import SmokeError, _read_json, _validate_marker
+    platform_probe = import_module(f"{__package__}.assert-platform" if __package__ else "assert-platform")
+    try:
+        # Never read a special file or follow a report symlink into instance state.
+        for name in ("installed-rust-runtime.json", "doctor.json"):
+            if not stat.S_ISREG((artifacts / name).lstat().st_mode):
+                raise ValueError("observation must be a regular report")
+        data = _read_json(artifacts / "installed-rust-runtime.json", "installed runtime")
+        doctor = _read_json(artifacts / "doctor.json", "installed platform")
+        if (not isinstance(doctor.get("checks"), list)
+                or any(not isinstance(check, dict) for check in doctor["checks"])):
+            raise ValueError("invalid platform checks")
+        actual_platform, _message = platform_probe.reported_platform(doctor)
+        if (data["status"] != "attached_ready" or data["run_id"] != report["run_id"]
+                or data["source_revision"] != report["source_revision"]
+                or data["build_identity"]["source_revision"] != report["source_revision"]
+                or data["build_identity"]["state"] != "known" or actual_platform != report["lane"]):
+            raise ValueError("mismatched installed identity")
+        captured = datetime.fromisoformat(data["captured_at"])
+        if (captured.tzinfo is None
+                or not datetime.fromisoformat(started_at) <= captured <= datetime.fromisoformat(finished_at)):
+            raise ValueError("stale installed observation")
+        host = data["host"]
+        system = "Darwin" if report["lane"] == "vz" else "Linux"
+        if (host["system"] != system or host["system"] != platform.system()
+                or host["machine"] != platform.machine()):
+            raise ValueError("mismatched installed host")
+        native_sha256 = data["candidate"]["sha256"]
+        if native_sha256 != report["preparation"]["native_sha256"]:
+            raise ValueError("native executable differs from the prepared selected build")
+        runtime = data["runtime"]
+        receipt, readiness, authenticated = runtime["receipt"], runtime["readiness"], runtime["authenticated_runtime_identity"]
+        pid = runtime["pid"]
+        if (runtime["status"] != "ready" or type(pid) is not int or pid <= 1
+                or type(receipt["pid"]) is not int or receipt["pid"] != pid
+                or not isinstance(readiness, dict)):
+            raise ValueError("invalid process identity")
+        _validate_marker(readiness, pid)
+        if (authenticated["status"] != "authenticated" or type(authenticated["schema_version"]) is not int
+                or authenticated["schema_version"] != 1
+                or authenticated["instance_id"] != readiness["instance_id"]
+                or re.fullmatch(r"[0-9a-f]{32}", authenticated["instance_id"]) is None):
+            raise ValueError("invalid authenticated process identity")
+        token_pattern = (rf"darwin:{pid}:[0-9]+:[0-9]+" if system == "Darwin"
+                         else rf"linux:[0-9a-f]{{8}}(?:-[0-9a-f]{{4}}){{3}}-[0-9a-f]{{12}}:{pid}:[0-9]+")
+        if re.fullmatch(token_pattern, receipt["start_token"]) is None:
+            raise ValueError("invalid process start identity")
+        packaged = Path(data["cli"]["package_location"]).parent / "bin/safeyolo-proxy"
+        if (Path(data["candidate"]["path"]) != packaged
+                or Path(runtime["actual_executable"]) != packaged):
+            raise ValueError("runtime did not observe the installed wheel's native executable")
+    except (SmokeError, OSError, ValueError, KeyError, TypeError, RecursionError) as exc:
+        # Do not copy raw paths, exception text or a malformed field to publication.
+        return None, [f"installed runtime/platform observation unavailable or invalid ({type(exc).__name__})"]
+    return {"run_id": data["run_id"], "source_revision": data["source_revision"],
+            "wheel_source_revision": data["build_identity"]["source_revision"], "captured_at": data["captured_at"],
+            "isolation_platform": actual_platform, "native_sha256": native_sha256,
+            "host": {"system": system, "machine": host["machine"]},
+            "process": {"pid": pid, "start_token": receipt["start_token"], "instance_id": authenticated["instance_id"]}}, []
+
+
+def publication_summary(report: dict) -> dict:
+    """Project the owned runner report; private reports and logs stay private.
+
+    This is an installed-section summary, not an independent host teardown or
+    durable-publication receipt. A controller must also bind the expected run
+    and source identities and require the complete paired hardware results.
+    """
+    preparation = report["preparation"]
+    selected_preparation = {name: preparation[name] for name in (
+        "exit", "input_index_sha256", "source_revision", "wheel_sha256", "native_sha256",
+        "tmux_sha256", "tmux_version", "cleanup",
+    ) if name in preparation}
+    if "cleanup_failures" in preparation:
+        selected_preparation["cleanup_failure_count"] = len(preparation["cleanup_failures"])
+    if "vm_helper" in preparation:
+        selected_preparation["vm_helper"] = {name: preparation["vm_helper"][name] for name in (
+            "git_sha", "git_dirty", "architecture", "build_profile",
+        )}
+    if "boot_inputs" in preparation:
+        selected_preparation["boot_inputs"] = {
+            name: {field: preparation["boot_inputs"][name][field] for field in ("source_revision", "sha256")}
+            for name in ("Image", "initramfs.cpio.gz", "rootfs-base.ext4")
+        }
+    sections = []
+    for row in report["sections"]:
+        selected = {name: row[name] for name in (
+            "section", "executed", "started_at", "finished_at", "exit", "result", "cleanup",
+        )}
+        selected["cleanup_failure_count"] = len(row["cleanup_failures"])
+        selected["evidence_failure_count"] = len(row["evidence_failures"])
+        if row.get("installed_runtime") is not None:
+            selected["installed_runtime"] = installed_runtime_summary(row["installed_runtime"])
+        if row["section"] == "isolation":
+            selected["pytest"] = [pytest_summary(data) for data in row["pytest"]]
+        sections.append(selected)
+    return {"schema_version": 1, **{name: report[name] for name in (
+        "source_revision", "lane", "run_id", "started_at", "finished_at", "exit",
+        "requested_sections", "unexecuted_sections",
+    )}, "full_section_selection": set(report["requested_sections"]) == set(SECTIONS[report["lane"]]),
+            "preparation": selected_preparation, "sections": sections,
+            **({"cancellation": report["cancellation"], "cleanup": report["cleanup"],
+                "cleanup_failure_count": len(report["cleanup_failures"])} if "cancellation" in report else {})}
+
+
+def pytest_observations(artifacts: Path, run_id: str, revision: str) -> tuple[list[dict], list[str]]:
+    """Require this invocation's retained outcomes, without copying raw output."""
+    observations, failures = [], []
+    for suite in PYTEST_SUITES:
+        try:
+            path = artifacts / f"pytest-{suite}.json"
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError("observation must be a regular report")
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            failures.append(f"{suite}: retained pytest observations unavailable ({type(exc).__name__})")
+            continue
+        if (not isinstance(data, dict) or data.get("run_id") != run_id
+                or data.get("source_revision") != revision or data.get("suite") != suite):
+            failures.append(f"{suite}: retained pytest observations have stale or mismatched identity")
+            continue
+        try:
+            if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
+                raise ValueError("unsupported observation schema")
+            if not all(isinstance(data.get(name), str) for name in ("started_at", "finished_at")):
+                raise ValueError("missing observation timestamps")
+            started = datetime.fromisoformat(data["started_at"])
+            finished = datetime.fromisoformat(data["finished_at"])
+            if started.tzinfo is None or finished.tzinfo is None or finished < started:
+                raise ValueError("invalid observation timestamps")
+        except ValueError:
+            failures.append(f"{suite}: retained pytest observations have invalid schema or timestamps")
+            continue
+        counts = data.get("counts")
+        cases = data.get("cases")
+        if (any(type(data.get(name)) is not int or data[name] < 0
+                for name in ("exit", "collected", "deselected", "collection_errors", "omitted_cases"))
+                or not isinstance(counts, dict) or not isinstance(cases, list)
+                or any(name not in {"passed", "failed", "skipped", "unexecuted"}
+                       or type(count) is not int or count < 0 for name, count in counts.items())
+                or sum(counts.values()) != data["collected"]
+                or len(cases) + data["omitted_cases"] != data["collected"]
+                or any(not isinstance(case, dict)
+                       or not {"test", "case_sha256", "outcome", "phase"}.issubset(case)
+                       or not isinstance(case.get("test"), str)
+                       or re.fullmatch(r"[A-Za-z0-9_.:-]{1,300}", case["test"]) is None
+                       or re.fullmatch(r"[0-9a-f]{64}", str(case.get("case_sha256"))) is None
+                       or case.get("outcome") not in ("passed", "failed", "skipped", "unexecuted")
+                       or case.get("phase") not in (None, "setup", "call", "teardown") for case in cases)
+                or (not data["omitted_cases"] and dict(collections.Counter(case["outcome"] for case in cases)) != counts)):
+            failures.append(f"{suite}: retained pytest observations are malformed or partial")
+            continue
+        # Only the outcome schema is carried into the section report. Never
+        # copy captures, exception text, parameter values or added JSON fields.
+        observations.append(pytest_summary(data))
+        if (not data.get("collected") or data.get("deselected") or data.get("collection_errors")
+                or data.get("omitted_cases") or data.get("counts", {}).get("unexecuted")):
+            failures.append(f"{suite}: pytest collection or execution is incomplete")
+    return observations, failures
+
+
 def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
-                 directory: Path, artifacts: Path) -> int:
+                 directory: Path, artifacts: Path, *, staged_inputs: Path | None = None,
+                 staged_sha256: str | None = None, python: Path | None = None,
+                 continuity_options: tuple[str, ...] = (), vz_test_runner: tuple[Path, int] | None = None,
+                 run_id: str | None = None) -> int:
+    """Own normal cancellation across preparation, sections and final cleanup."""
+    with InstalledCancellation() as cancellation:
+        return _run_sections(lane, sections, checkout, revision, directory, artifacts,
+                             cancellation=cancellation, staged_inputs=staged_inputs,
+                             staged_sha256=staged_sha256, python=python,
+                             continuity_options=continuity_options, vz_test_runner=vz_test_runner,
+                             run_id=run_id)
+
+
+def _run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision: str,
+                  directory: Path, artifacts: Path, *, cancellation: InstalledCancellation,
+                  staged_inputs: Path | None, staged_sha256: str | None, python: Path | None,
+                  continuity_options: tuple[str, ...], vz_test_runner: tuple[Path, int] | None,
+                  run_id: str | None) -> int:
     """Prepare once; continue after a failed assertion only after owned cleanup."""
+    if __package__:
+        from .installed_host_smoke import SmokeError, _sha256
+    else:
+        from installed_host_smoke import SmokeError, _sha256
+
+    if run_id is not None and re.fullmatch(r"[0-9a-f]{32}", run_id) is None:
+        raise ValueError("installed run ID must be a 32-character hexadecimal identifier")
     source = directory / "prepared"
     env = os.environ.copy()
-    for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR",
-                 "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR"):
+    for name in ("SAFEYOLO_RUST_PROXY", "SAFEYOLO_PYTHON_SOURCE", "SAFEYOLO_PDP_DIR", "SAFEYOLO_VM_HELPER", "PYTHONPATH", "PYTHONHOME",
+                 "SAFEYOLO_TEST_CERT_DIR", "SAFEYOLO_TEST_KEY_DIR", "SAFEYOLO_BLACKBOX_OBSERVATIONS_PATH", "SAFEYOLO_TMUX_BIN"):
         env.pop(name, None)
+    for name in ("SAFEYOLO_VZ_TEST_RUNNER", "SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS"):
+        env.pop(name, None)
+    env.pop("SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS", None)
+    if vz_test_runner is not None:
+        env.update(SAFEYOLO_VZ_TEST_RUNNER=str(vz_test_runner[0]),
+                   SAFEYOLO_VZ_TEST_TIMEOUT_SECONDS=str(vz_test_runner[1]))
     env.update(UV_TOOL_DIR=str(directory / "uv-tools"),
                UV_TOOL_BIN_DIR=str(directory / "bin"),
                SAFEYOLO_CONFIG_DIR=str(source), SAFEYOLO_LOGS_DIR=str(source / "logs"),
                SAFEYOLO_COORD_DATA_DIR=str(source / "data/coord"),
                SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex, CARGO_BUILD_JOBS="1")
-    report = {"source_revision": revision, "lane": lane, "preparation": {}, "sections": []}
-    artifacts.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or uuid.uuid4().hex
+    report = {"source_revision": revision, "lane": lane, "run_id": run_id,
+              "started_at": datetime.now(UTC).isoformat(), "finished_at": None, "exit": None,
+              "requested_sections": list(sections),
+              "unexecuted_sections": list(sections), "preparation": {}, "sections": []}
     report_path = artifacts / "installed-sections.json"
+    summary_path = artifacts / "installed-summary.json"
 
-    def save():
-        report_path.write_text(json.dumps(report, indent=2) + "\n")
+    def save(exit_code=None):
+        if exit_code is not None:
+            report.update(exit=exit_code, finished_at=datetime.now(UTC).isoformat())
+        try:
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            temporary = summary_path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(publication_summary(report), indent=2) + "\n")
+            temporary.replace(summary_path)
+        except OSError as exc:
+            # A missing/unfinished summary must never become a successful run.
+            # Keep exception messages and private paths out of publishable data.
+            print(f"Installed report writing failed ({type(exc).__name__})", file=sys.stderr)
+            return False
+        return True
 
     try:
-        prepared = subprocess.run(
-            [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
-             "--install-checkout", str(checkout), "--prepare-only"],
-            cwd=REPOSITORY, env=env, check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        report["preparation"] = {"exit": 2, "error": str(exc), "config_dir": str(source)}
-        save()
+        # Preserve earlier attempts, including failures, when a caller retries.
+        artifacts.mkdir(parents=True, exist_ok=True)
+        for path in (report_path, summary_path):
+            path.touch(exist_ok=False)
+    except OSError as exc:
+        print(f"Installed report needs a new writable attempt directory ({type(exc).__name__})", file=sys.stderr)
         return 2
-    report["preparation"] = {"exit": prepared.returncode, "config_dir": str(source)}
-    save()
-    if prepared.returncode:
-        print(f"Product preparation failed (exit {prepared.returncode}); no sections ran")
+    if not save():
         return 2
+    preparation_identity = {}
     cli = directory / "bin/safeyolo"
-    env["PATH"] = os.pathsep.join((str(directory / "bin"), str(REPOSITORY / ".venv/bin"), env["PATH"]))
+
+    def cleanup_instance_after_child(root, cleanup_env, *, owner=False):
+        if not cancellation.child_reaped:
+            return ["instance cleanup not started while the cancelled child remains unreaped"]
+        return cleanup_instance(cli, root, owner=owner, env=cleanup_env,
+                                retained_processes=cancellation.processes.get(root, ()))
+
+    def save_cancellation(failures):
+        failures = [*failures, *cleanup_instance_after_child(source, env)]
+        if not report["sections"]:
+            report["preparation"].update(cleanup="failed" if failures else "stopped", cleanup_failures=failures)
+        report.update(cancellation=signal.Signals(cancellation.signum).name,
+                      cleanup="failed" if failures else "stopped", cleanup_failures=failures,
+                      cancelled_child={"identity": cancellation.child_identity,
+                                       "exit": cancellation.child_exit, "reaped": cancellation.child_reaped},
+                      retained_processes={str(root): processes for root, processes in cancellation.processes.items()})
+        status = 2 if failures else 128 + cancellation.signum
+        return status if save(status) else 2
+
+    try:
+        if staged_inputs is not None:
+            # Keep ordinary clean-host bootstrap independent of this optional
+            # offline path and its wheel/signing validation.
+            # A separate child covers every offline verifier/installer subprocess
+            # with the same owned lifetime as ordinary preparation and sections.
+            identity_path = directory / "preparation-identity.json"
+            code = """
+import json, os, subprocess, sys, zipfile
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from installed_staging import SmokeError, prepare_inputs
+try:
+    identity = prepare_inputs(Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), sys.argv[5],
+                              Path(sys.argv[6]), Path(sys.argv[7]), os.environ.copy())
+except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
+    print(f"Offline product preparation failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+Path(sys.argv[8]).write_text(json.dumps(identity))
+"""
+            prepared = cancellation.run(
+                [sys.executable, "-I", "-c", code, str(REPOSITORY / "tests/blackbox"),
+                 str(staged_inputs), staged_sha256 or "", str(checkout), revision,
+                 str(directory), str(python or Path(sys.executable)), str(identity_path)],
+                cwd=REPOSITORY, env=env, roots=(source,), check=False,
+            )
+            preparation_exit = prepared.returncode
+            if not preparation_exit:
+                preparation_identity = json.loads(identity_path.read_text())
+        else:
+            prepared = cancellation.run(
+                [str(REPOSITORY / "tests/blackbox/run-lane.sh"), lane,
+                 "--install-checkout", str(checkout), "--prepare-only"],
+                cwd=REPOSITORY, env=env, roots=(source,), check=False,
+            )
+            preparation_exit = prepared.returncode
+        if not preparation_exit:
+            preparation_identity["native_sha256"] = _sha256(checkout / "proxy/target/release/safeyolo-proxy")
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.SubprocessError, SmokeError) as exc:
+        preparation_exit = 2
+        preparation_identity = {"error": str(exc)}
+    report["preparation"] = {"exit": preparation_exit, "config_dir": str(source),
+                             "coord_data_dir": env["SAFEYOLO_COORD_DATA_DIR"],
+                             "nats_test_instance": env["SAFEYOLO_NATS_TEST_INSTANCE"], **preparation_identity}
+    if cancellation.signum is not None:
+        return save_cancellation(cancellation.failures)
+    saved = save(2 if preparation_exit else None)
+    if preparation_exit:
+        print(f"Product preparation failed (exit {preparation_exit}); no sections ran")
+    if preparation_exit or not saved:
+        return 2
+    test_bin = directory / "tests/bin" if staged_inputs is not None else REPOSITORY / ".venv/bin"
+    env["PATH"] = os.pathsep.join((str(directory / "bin"), str(test_bin), env["PATH"]))
     env["SAFEYOLO_BLACKBOX_INSTALL_CHECKOUT"] = str(checkout)
     env["SAFEYOLO_BLACKBOX_PREPARED_CONFIG_DIR"] = str(source)
+    env["SAFEYOLO_BLACKBOX_INSTALL_REVISION"] = revision
+    env["SAFEYOLO_BLACKBOX_RUN_ID"] = run_id
+    if lane == "vz":
+        env["SAFEYOLO_NATS_TEST_PORTS"] = "46370,46372"
+        env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_PORTS"] = "46377,46378"
+        continuity_options = tuple(item for name, value in VZ_CONTINUITY_DEFAULTS.items()
+                                   for item in (f"--{name}", str(value))) + continuity_options
     if lane == "systrap":
         env["SAFEYOLO_RUNSC_PLATFORM"] = "systrap"
     else:
         env.pop("SAFEYOLO_RUNSC_PLATFORM", None)
     overall = 0
     for section in sections:
+        if cancellation.signum is not None:
+            return save_cancellation(cancellation.failures)
         instance = directory / section
         section_artifacts = artifacts / section
         section_env = dict(env, SAFEYOLO_TEST_CONFIG_DIR=str(instance), SAFEYOLO_TEST_AGENT="bbtest",
                            SAFEYOLO_BLACKBOX_SECTION_RUN="1",
                            SAFEYOLO_BLACKBOX_ARTIFACTS_DIR=str(section_artifacts),
+                           SAFEYOLO_BLACKBOX_OBSERVATIONS_DIR=str(section_artifacts),
                            SAFEYOLO_COORD_DATA_DIR=str(instance / "data/coord"),
                            SAFEYOLO_NATS_TEST_INSTANCE=uuid.uuid4().hex,
                            SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR=str(directory / "lifecycle-owner"),
                            SAFEYOLO_LIFECYCLE_SOURCE_CONFIG_DIR=str(source))
+        if section == "lifecycle":
+            section_env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"] = uuid.uuid4().hex
         section_artifacts.mkdir(parents=True, exist_ok=True)
         args = [str(REPOSITORY / "tests/blackbox/run-tests.sh"), "--expect-platform", lane,
                 "--proxy-impl", "rust"]
@@ -178,44 +740,92 @@ def run_sections(lane: str, sections: tuple[str, ...], checkout: Path, revision:
         if section in {"ingress", "workloads", "access", "lifecycle"}:
             args += ["--install-commit", revision]
         if section == "continuity":
-            args = [str(REPOSITORY / ".venv/bin/python"),
+            args = [str(test_bin / "python"),
                     str(REPOSITORY / "tests/blackbox/installed_state_transition.py"),
                     "--native", "--cli", str(cli), "--install-commit", revision,
                     "--state-parent", str(directory), "--config-dir", str(instance),
                     "--prepared-config", str(source),
-                    "--output", str(section_artifacts / "installed-continuity.json")]
+                    "--output", str(section_artifacts / "installed-continuity.json"), *continuity_options]
         print(f"=== Installed {section}: {instance} ===", flush=True)
         error = None
+        executed = False
+        started_at = datetime.now(UTC).isoformat()
+        port_failures = check_vz_ports(include_owner=section == "lifecycle") if lane == "vz" else []
         try:
-            result = subprocess.run(args, cwd=REPOSITORY, env=section_env, check=False)
-            section_exit = result.returncode
+            if port_failures:
+                error = "; ".join(port_failures)
+                section_exit = 2
+            else:
+                roots = (instance, directory / "lifecycle-owner") if section == "lifecycle" else (instance,)
+                result = cancellation.run(args, cwd=REPOSITORY, env=section_env, roots=roots, check=False)
+                executed = cancellation.started
+                section_exit = result.returncode
         except (OSError, subprocess.SubprocessError) as exc:
             error = str(exc)
             section_exit = 2
         finally:
-            failures = cleanup_instance(cli, instance)
+            failures = cleanup_instance_after_child(instance, section_env)
             if section == "lifecycle":
-                failures += cleanup_instance(cli, directory / "lifecycle-owner", owner=True)
+                owner_root = directory / "lifecycle-owner"
+                failures += cleanup_instance_after_child(owner_root, lifecycle_owner_environment(owner_root, env=section_env), owner=True)
+            if lane == "vz" and not port_failures:
+                failures += check_vz_ports(include_owner=section == "lifecycle")
+        failures += cancellation.failures
+        if cancellation.signum is not None and section != "continuity" and cancellation.child_exit == INNER_CLEANUP_FAILURE_EXIT:
+            failures.append("section runner reported an owned cleanup failure during cancellation")
         if section != "continuity" and section_exit == INNER_CLEANUP_FAILURE_EXIT:
             # An inner stop can remove its markers while leaving a process
             # live. A later empty inspection cannot clear that known failure.
             failures.insert(0, "section runner reported an owned cleanup failure")
             section_exit = 2
+        observations, evidence_failures = (pytest_observations(section_artifacts, run_id, revision)
+                                           if section == "isolation" else ([], []))
+        if section_exit == 0:
+            # A successful command cannot clear a failure in its retained
+            # outcomes. The existing runner still owns exit classification.
+            evidence_failures.extend(f"{data['suite']}: pytest observations contradict successful section exit"
+                                     for data in observations if data["exit"] or data["counts"].get("failed"))
+        finished_at = datetime.now(UTC).isoformat()
+        installed_runtime = None
+        if section != "continuity" and executed:
+            installed_runtime, runtime_failures = installed_runtime_observation(section_artifacts, report, started_at, finished_at)
+            evidence_failures += runtime_failures
         row = {"section": section, "config_dir": str(instance), "prepared_config_dir": str(source),
+               "coord_data_dir": section_env["SAFEYOLO_COORD_DATA_DIR"],
+               "nats_test_instance": section_env["SAFEYOLO_NATS_TEST_INSTANCE"],
+               "executed": executed,
+               "started_at": started_at, "finished_at": finished_at,
                "exit": section_exit, "result": "cleanup_failure" if failures else
                "passed" if section_exit == 0 else
+               "cancelled" if cancellation.signum is not None else
                "assertion_failure" if section_exit == 1 else "preparation_failure",
-               "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures}
+               "cleanup": "stopped" if not failures else "failed", "cleanup_failures": failures,
+               "installed_runtime": installed_runtime, "evidence_failures": evidence_failures}
+        if section == "isolation":
+            row["pytest"] = observations
+        if section == "lifecycle":
+            row["lifecycle_owner"] = {"config_dir": section_env["SAFEYOLO_LIFECYCLE_OWNER_CONFIG_DIR"],
+                                      "nats_test_instance": section_env["SAFEYOLO_LIFECYCLE_OWNER_NATS_TEST_INSTANCE"]}
+        if evidence_failures and section_exit == 0 and not failures:
+            row.update(exit=2, result="evidence_failure")
+            section_exit = 2
         if error is not None:
             row["error"] = error
         report["sections"].append(row)
-        save()
+        if executed:
+            report["unexecuted_sections"].remove(section)
+        if cancellation.signum is not None:
+            return save_cancellation(failures)
+        saved = save(2 if failures else None)
         if failures:
             print(f"Owned cleanup failed for {section}: {failures}; remaining sections did not run")
+        if failures or not saved:
             return 2
         if section_exit:
             overall = max(overall, 1 if section_exit == 1 else 2)
-    return overall
+    if cancellation.signum is not None:
+        return save_cancellation(cancellation.failures)
+    return overall if save(overall) else 2
 
 
 def main() -> int:
@@ -223,10 +833,33 @@ def main() -> int:
     parser.add_argument("lane", choices=SECTIONS)
     parser.add_argument("--section", action="append", choices=sorted({s for v in SECTIONS.values() for s in v}))
     parser.add_argument("--install-commit", help="exact commit; defaults to this checkout's HEAD")
+    parser.add_argument("--run-id", help="Invocation identifier supplied by the trusted paired caller")
     parser.add_argument("--install-checkout", type=Path, default=REPOSITORY)
+    parser.add_argument("--staged-inputs", type=Path, help="Verified Tart-built offline VZ inputs")
+    parser.add_argument("--staged-sha256", help="Input index SHA-256 supplied by the trusted caller")
+    parser.add_argument("--python", type=Path, help="Existing Python 3.12/3.13 for offline wheel installation")
+    parser.add_argument("--vz-test-runner", type=Path, help="Absolute host runner for direct VZ helper deadline supervision")
+    parser.add_argument("--vz-test-timeout-seconds", type=int, help="Positive deadline for each supervised VZ helper")
+    parser.add_argument("--state-parent", type=Path, default=Path.home(), help="Disk-backed parent for new private section state")
+    parser.add_argument("--origin-host", help="Continuity fixture authority (VZ default: 127.0.0.2)")
+    parser.add_argument("--origin-bind", help="Continuity fixture bind/owned parent (VZ default: 127.0.0.1)")
+    for name in ("http-port", "https-port", "oauth-port", "admin-port"):
+        parser.add_argument(f"--{name}", type=int, help="Continuity fixture port; VZ uses its allocated fixed port")
     parser.add_argument("--artifacts", type=Path, default=Path(os.environ.get(
         "SAFEYOLO_BLACKBOX_ARTIFACTS_DIR", REPOSITORY / "tests/blackbox/artifacts")))
     args = parser.parse_args()
+    if args.run_id is not None and re.fullmatch(r"[0-9a-f]{32}", args.run_id) is None:
+        parser.error("--run-id must be a 32-character hexadecimal identifier")
+    if bool(args.staged_inputs) != bool(args.staged_sha256):
+        parser.error("--staged-inputs and --staged-sha256 must be supplied together")
+    if args.staged_inputs is not None and args.lane != "vz":
+        parser.error("staged preparation currently supports the VZ lane")
+    if (args.vz_test_runner is None) != (args.vz_test_timeout_seconds is None):
+        parser.error("--vz-test-runner and --vz-test-timeout-seconds must be supplied together")
+    if args.vz_test_runner is not None and (args.lane != "vz" or args.vz_test_timeout_seconds < 1
+            or not args.vz_test_runner.is_absolute() or not args.vz_test_runner.is_file()
+            or not os.access(args.vz_test_runner, os.X_OK)):
+        parser.error("VZ supervision needs an absolute executable runner and positive deadline on the VZ lane")
     checkout = args.install_checkout.resolve()
     revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
     expected = args.install_commit or revision
@@ -240,9 +873,20 @@ def main() -> int:
     # Keep downloaded/build inputs on disk-backed storage. Each invocation owns
     # a new parent; failed section logs remain available for diagnosis.
     # Short roots also keep configured UDS paths within macOS's pathname limit.
-    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=Path.home()))
+    directory = Path(tempfile.mkdtemp(prefix=f"sy-{args.lane}-", dir=args.state_parent.resolve()))
     print(f"Prepared product and section state: {directory}", flush=True)
-    return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve())
+    continuity_options = []
+    for name in ("origin-host", "origin-bind", "http-port", "https-port", "oauth-port", "admin-port"):
+        value = getattr(args, name.replace("-", "_"))
+        if value is not None:
+            continuity_options.extend((f"--{name}", str(value)))
+    return run_sections(args.lane, sections, checkout, revision, directory, args.artifacts.resolve(),
+                        staged_inputs=args.staged_inputs.resolve() if args.staged_inputs else None,
+                        staged_sha256=args.staged_sha256, python=args.python,
+                        continuity_options=tuple(continuity_options),
+                        run_id=args.run_id,
+                        vz_test_runner=(args.vz_test_runner, args.vz_test_timeout_seconds)
+                        if args.vz_test_runner is not None else None)
 
 
 if __name__ == "__main__":

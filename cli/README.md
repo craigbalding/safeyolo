@@ -27,6 +27,10 @@ guest images, and tmux for the host proxy session. Lima can be installed with
 `brew install lima`, `sudo port install lima`, or `mise use -g lima`; install
 tmux through your package manager as well.
 
+For hardware acceptance, the [deployment path](../tests/blackbox/hardware/README.md)
+prepares a private Mac tmux on Tart and transfers it for offline execution.
+Its installed-runtime checks require that private input before public start.
+
 ### Bootstrap and individual phases
 
 Run setup on the host, as your usual user. Guest builds need a source checkout,

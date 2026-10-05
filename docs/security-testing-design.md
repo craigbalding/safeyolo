@@ -52,15 +52,16 @@ requirement. Full macOS native protocol contracts run once overnight. The
 separate installed Mac witness checks the package without repeating that matrix.
 
 The approved overnight scope includes all three isolation mechanisms. Current
-GitHub automation covers systrap and hosted component/package checks; hardware
-automation/publication remains [#889](https://github.com/craigbalding/safeyolo/issues/889).
+GitHub automation covers systrap and hosted component/package checks. The
+[independent hardware scripts](../tests/blackbox/hardware/README.md) supply cron
+entries; installation/publication remains [#889](https://github.com/craigbalding/safeyolo/issues/889).
 
 <!-- blackbox-cadence-contract:start -->
 | Lane | Execution host | Scheduled | Current cadence | Evidence |
 |---|---|---|---|---|
 | `systrap` | GitHub-hosted Ubuntu | yes | Overnight and trusted manual dispatch | Exact installed/platform result and sanitized failure artifacts |
-| `kvm` | Fresh libvirt guest through the acceptance harness | no | Manual/on-demand until #889 automation | Exact candidate/binary, actual KVM result and owned cleanup |
-| `vz` | Physical Apple Silicon Mac | no | Manual/on-demand until #889 automation | Exact candidate/binary, actual VZ result and owned cleanup |
+| `kvm` | Fresh libvirt guest through the acceptance harness | no | Independent cron deployment unverified (#889) | Exact candidate/binary, actual KVM result and owned cleanup |
+| `vz` | Physical Apple Silicon Mac | no | Independent cron deployment unverified (#889) | Exact candidate/binary, actual VZ result and owned cleanup |
 <!-- blackbox-cadence-contract:end -->
 
 Hosted Mac package/proxy checks are not physical VZ evidence. Hosted nested-KVM

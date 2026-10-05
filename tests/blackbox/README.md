@@ -31,16 +31,24 @@ On a fresh KVM-capable acceptance guest:
 ./tests/blackbox/run-installed.sh kvm
 ```
 
-On the physical Apple Silicon host:
+For the constrained Bristol account, prepare inputs on Tart and use the
+[offline hardware path](hardware/INPUTS.md#offline-execution-on-bristol).
+The following command builds on a disposable physical Apple Silicon host with
+the build prerequisites:
 
 ```sh
 ./tests/blackbox/run-installed.sh vz
 ```
 
-The runner creates a disk-backed directory under the operator's home. It calls
+The runner creates a disk-backed directory under the operator's home;
+`--state-parent PATH` selects another short, private disk-backed parent. By
+default it calls
 `run-lane.sh --prepare-only` once: the supported `install.sh` wheel/native
 build, locked host test dependencies, bootstrap prerequisites, kernel/rootfs,
-and (VZ) source-built helper. Linux preparation reads
+and (VZ) source-built helper. Mac preparation also supplies a private tmux
+runtime; physical VZ inputs are built and packaged on Tart for offline Bristol
+execution through the [hardware deployment path](hardware/README.md).
+Linux preparation reads
 `bootstrap --check --json` rather than maintaining another dependency list.
 For KVM it grants the current operator UID access to `/dev/kvm`; product
 bootstrap supplies the persistent udev rule and subordinate-UID ACL. Systrap
@@ -54,6 +62,9 @@ Coord test instance and writable state. The lifecycle section's separate live
 owner also gets its own instance. Sharing preparation does not share live
 scenario state. NATS executable bytes are prepared once and reverified by the
 installed launcher in each instance; credentials and JetStream data are private.
+Private tmux bytes are reused in fresh Mac instances; session sockets remain
+under each instance's own data directory. KVM uses bootstrap's supported
+Linux tmux prerequisite.
 Individual procedural compositions remain intact.
 
 | Lane | Independent sections |
@@ -76,8 +87,16 @@ preparation, each section's exit/result, and owned cleanup separately. Section
 reports are below their behavior-named directories. Failed state/logs remain
 in the printed private instance directory for diagnosis.
 
+The isolation section also retains bounded actual pytest outcomes for each
+host and guest invocation. Test parameters, captures and exception text are
+omitted. Skipped and unexecuted assertions are explicit; skips are limitations.
+Missing, stale or incomplete observations produce `evidence_failure` when a
+zero section exit would otherwise hide them. Preparation failure leaves every
+requested section explicitly unexecuted.
+
 Exit 0 means the selected checks and cleanup passed; 1 means an assertion
-failed; 2 means preparation, execution infrastructure or cleanup failed.
+failed; 2 means preparation, execution infrastructure, retained evidence or
+cleanup failed.
 Another independent section may run after a failed assertion or setup only
 when owned cleanup establishes a clean boundary. A cleanup failure stops the
 remaining sections and is recorded as `cleanup_failure`. A later inspection
@@ -96,7 +115,8 @@ not a routine PR gate; discovering regression the next morning is accepted.
 
 The approved overnight scope includes systrap, KVM-backed gVisor and physical
 Apple Silicon VZ. Current GitHub automation schedules systrap and hosted
-package/component checks. Hardware scheduling/publication remains
+package/component checks. The [independent hardware scripts](hardware/README.md) supply cron entries;
+installation and publication remain
 [#889](https://github.com/craigbalding/safeyolo/issues/889); this restructuring
 supplies its maintained runners without claiming that automation is complete.
 
@@ -104,8 +124,8 @@ supplies its maintained runners without claiming that automation is complete.
 | Lane | Where it runs | Coverage | Scheduled | Current cadence | Evidence |
 |---|---|---|---|---|---|
 | `systrap` | GitHub-hosted Ubuntu | Installed isolation, workloads, access and lifecycle | yes | Overnight and trusted manual dispatch | Sanitized GitHub Actions artifacts, including failures |
-| `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
-| `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Manual/on-demand until #889 automation | Harness/operator exact-candidate result and cleanup |
+| `kvm` | Fresh libvirt guest through the acceptance harness | Actual KVM isolation, installed ingress and workloads | no | Independent cron deployment unverified (#889) | Harness/operator exact-candidate result and cleanup |
+| `vz` | Physical Apple Silicon Mac | Actual VZ isolation, installed access and lifecycle | no | Independent cron deployment unverified (#889) | Harness/operator exact-candidate result and cleanup |
 <!-- blackbox-cadence-contract:end -->
 
 Hosted macOS cannot supply physical VZ evidence, and hosted KVM availability is
@@ -293,10 +313,12 @@ localhost UDS (gVisor) or vsock (VZ) bridge; direct host/control reachability te
 do not open a second authorized egress path.
 
 Linux full/installed lanes use proxy/admin/web ports 8180/9190/8181, HTTP origin
-18080, TLS fixtures 18443–18452 and control 19999. Physical VZ uses only
+18080, TLS fixtures 18443–18452 and control 19999. Physical VZ uses
 46370–46375: Coord client/admin/Coord monitor on 46370/46371/46372, combined
 parent/HTTP/control on 46373, SNI-selected HTTPS variants on 46374, and the
-lifecycle owner admin on 46375. TCP proxy/web listeners are unbound in that VZ
+lifecycle owner admin on 46375. The independent lifecycle owner also needs
+NATS client/monitor ports 46377/46378, with its own test-instance identity and
+Coord data. TCP proxy/web listeners are unbound in that VZ
 configuration. Precheck the actual host ports, refuse occupied fixtures, and
 stop only owned processes with verified identity. A Linux fixture's cleanup
 does not prove that a physical Mac port is free.

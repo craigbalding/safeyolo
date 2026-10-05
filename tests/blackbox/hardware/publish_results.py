@@ -1,0 +1,276 @@
+"""Publish reviewed hardware results as discoverable #889 comment bundles.
+
+GitHub credentials stay in the trusted operator process. No artifact directory,
+candidate log or arbitrary file is uploaded. A private attempt record alone is
+not publication; every comment is read back before publication is verified.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import quote
+
+if __name__ == "__main__":
+    # The trusted installation can replay publication before installing its
+    # own CLI environment. Reuse only its stdlib process-identity helper in
+    # this parent; no PYTHONPATH is forwarded to candidate subprocesses.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "cli/src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tests.blackbox.hardware.attempt_results import FAILURE_STAGES, HardwareAttempt, hexadecimal
+else:
+    from .attempt_results import FAILURE_STAGES, HardwareAttempt, hexadecimal
+
+REPOSITORY = "craigbalding/safeyolo"
+ISSUE = 889
+COMMENT_CHARACTERS = 28000
+
+
+class GitHubResults:
+    """Use the installed gh client and its existing approved GitHub principal."""
+
+    def api(self, endpoint: str, method: str = "GET", body: str | None = None) -> dict:
+        route = f"repos/{REPOSITORY}" + (f"/{endpoint}" if endpoint else "")
+        command = ["gh", "api", route, "--method", method]
+        options = {"capture_output": True, "text": True, "timeout": 60, "check": True}
+        if body is not None:
+            command += ["--input", "-"]
+            options["input"] = json.dumps({"body": body})
+        response = subprocess.run(command, **options)
+        data = json.loads(response.stdout)
+        if not isinstance(data, dict):
+            raise ValueError("GitHub returned an invalid comment")
+        return data
+
+    def select_source(self, attempt: HardwareAttempt, authorized_commit: str | None = None) -> str:
+        """Resolve the default branch, or the operator's explicitly selected SHA."""
+        if authorized_commit is None:
+            if attempt.data["trigger"] != "overnight":
+                raise ValueError("on-demand selection requires an authorized full commit")
+            branch = self.api("")["default_branch"]
+            if not isinstance(branch, str) or not branch:
+                raise ValueError("default branch is unavailable")
+            selected = self.api(f"commits/{quote(branch, safe='')}")["sha"]
+        else:
+            if attempt.data["trigger"] != "on-demand":
+                raise ValueError("an overnight run must select the default branch")
+            hexadecimal(authorized_commit, 40)
+            selected = self.api(f"commits/{authorized_commit}")["sha"]
+            if selected != authorized_commit:
+                raise ValueError("origin returned a different authorized commit")
+        attempt.select(hexadecimal(selected, 40))
+        return selected
+
+    def verify_index(self, body: str, comment_id: int) -> None:
+        previous = self.api(f"issues/comments/{comment_id}")
+        expected_url = f"https://github.com/{REPOSITORY}/issues/{ISSUE}#issuecomment-{comment_id}"
+        if (previous.get("id") != comment_id or previous.get("html_url") != expected_url
+                or not isinstance(previous.get("body"), str)
+                or previous["body"].splitlines()[:1] != body.splitlines()[:1]):
+            raise ValueError("index update does not belong to this hardware attempt")
+
+    def comment(self, body: str, comment_id: int | None = None) -> dict:
+        if comment_id is not None:
+            self.verify_index(body, comment_id)
+        endpoint = f"issues/{ISSUE}/comments" if comment_id is None else f"issues/comments/{comment_id}"
+        response = self.api(endpoint, "POST" if comment_id is None else "PATCH", body)
+        identifier = response["id"]
+        if type(identifier) is not int or identifier <= 0:
+            raise ValueError("GitHub returned an invalid comment identity")
+        url = f"https://github.com/{REPOSITORY}/issues/{ISSUE}#issuecomment-{identifier}"
+        if response.get("html_url") != url or response.get("body") != body:
+            raise ValueError("GitHub comment response differs from submitted report")
+        # API mutation success is insufficient: inspect the durable record.
+        observed = self.api(f"issues/comments/{identifier}")
+        if observed.get("id") != identifier or observed.get("html_url") != url or observed.get("body") != body:
+            raise ValueError("published report could not be read back exactly")
+        return {"id": identifier, "url": url, "sha256": hashlib.sha256(body.encode()).hexdigest()}
+
+
+def index_body(attempt: HardwareAttempt, parts: list[dict], *, verified: bool) -> str:
+    data = attempt.data
+    selected = data["source_revision"]
+    source = f"[{selected}](https://github.com/{REPOSITORY}/commit/{selected})" if selected else "not selected"
+    lanes = ", ".join(data.get("required_lanes", ["kvm", "vz"]))
+    state = (f"complete {lanes} execution" if attempt.execution_succeeded() else "failed or incomplete execution")
+    if data["finished_at"] is None:
+        state = "attempt in progress"
+    publication = "read-back verified" if verified else "pending or failed; this attempt cannot pass"
+    failures = ", ".join(f"{row['stage']} ({row['lane'] or 'attempt'})" for row in data["failures"]) or "none recorded"
+    limitations = sum((row.get("result") or {}).get("skipped_assertions", 0) for row in data["lanes"].values())
+    links = "\n".join(f"- [Report part {number}]({row['url']})" for number, row in enumerate(parts, 1))
+    return (f"Hardware attempt `{data['run_id']}` — {data['trigger']}\n\n"
+            f"Selected source: {source}. Trusted installation: `{data['controller_revision']}`.\n\n"
+            f"Required lanes for this attempt: {lanes}. Execution: {state}. Publication: {publication}. Failures: {failures}. "
+            f"Skipped assertions: {limitations}; skipped assertions remain unproved.\n\n"
+            f"Owner: `{data['owner']}`. Started: {data['started_at']}. Finished: {data['finished_at'] or 'pending'}.\n\n"
+            f"{links}\n\n"
+            "Reports select installed identities, outcomes and trusted cleanup status. "
+            "Independent issue acceptance remains with Lens. Private logs and instance state are excluded.")
+
+
+def announce_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
+    """Leave a visible index before preflight or candidate fetch/execution."""
+    try:
+        receipt = github.comment(index_body(attempt, [], verified=False))
+        attempt.data["publication"]["index"] = receipt
+        attempt.save()
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+        attempt.data["publication"]["verified"] = False
+        attempt.fail("publication")
+        raise
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--attempt", type=Path,
+                        help="existing trusted attempt directory outside candidate execution trees")
+    parser.add_argument("--begin", choices=("kvm", "vz"))
+    parser.add_argument("--root", type=Path)
+    parser.add_argument("--trigger", choices=("overnight", "on-demand"))
+    parser.add_argument("--authorized-commit")
+    parser.add_argument("--finish", action="store_true")
+    parser.add_argument("--summary", type=Path)
+    parser.add_argument("--command-exit", type=int)
+    parser.add_argument("--cleanup", choices=("verified", "failed", "unverified"), default="unverified")
+    parser.add_argument("--failure-stage", choices=sorted(FAILURE_STAGES))
+    parser.add_argument("--input-index-sha256")
+    args = parser.parse_args()
+    github = GitHubResults()
+    try:
+        if args.begin:
+            if args.attempt is not None or args.root is None or args.trigger is None or args.finish:
+                parser.error("--begin needs --root and --trigger, without --attempt or --finish")
+            begin_lane(args.root.resolve(), args.begin, args.trigger, args.authorized_commit, github)
+            return 0
+        if args.attempt is None:
+            parser.error("--attempt is required for publication or --finish")
+        attempt = HardwareAttempt.restore(args.attempt.resolve())
+        if args.finish:
+            if len(attempt.data.get("required_lanes", [])) != 1 or args.command_exit is None or args.command_exit < 0:
+                parser.error("--finish needs a single-lane attempt and a nonnegative --command-exit")
+            finish_lane(attempt, args)
+        publish_attempt(attempt, github)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError) as exc:
+        print(f"Hardware publication remains unverified ({type(exc).__name__})", file=sys.stderr)
+        return 2
+    print(json.dumps({"run_id": attempt.data["run_id"], "index": attempt.data["publication"]["index"]["url"],
+                      "publication_verified": True, "attempt_passed": attempt.passed()}))
+    return 2 if args.finish and not attempt.passed() else 0
+
+
+def begin_lane(root: Path, lane: str, trigger: str, authorized_commit: str | None, github: GitHubResults) -> None:
+    """Save and announce an independent attempt before admitting candidate code."""
+    checkout = Path(__file__).resolve().parents[3]
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    attempt = HardwareAttempt(root, revision, trigger, lane=lane)
+    print(str(attempt.directory), flush=True)
+    try:
+        announce_attempt(attempt, github)
+        with attempt.phase("selection"):
+            github.select_source(attempt, authorized_commit)
+        attempt.start_lane(lane)
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+        attempt.finish()
+        publish_attempt(attempt, github)
+        raise
+
+
+def finish_lane(attempt: HardwareAttempt, args: argparse.Namespace) -> None:
+    """Retain actual command/cleanup outcomes before sanitized publication."""
+    lane = attempt.data["required_lanes"][0]
+    receipt = attempt.data["lanes"][lane]
+    receipt.update(command_exit=args.command_exit, cleanup=args.cleanup)
+    if args.input_index_sha256 is not None:
+        receipt["input_index_sha256"] = hexadecimal(args.input_index_sha256, 64)
+    if args.failure_stage:
+        attempt.fail(args.failure_stage, lane=lane)
+    if args.command_exit:
+        attempt.fail("execution", lane=lane)
+    if args.cleanup != "verified":
+        attempt.fail("cleanup", lane=lane)
+    if args.summary is not None:
+        attempt.retain_lane(lane, args.summary)
+    else:
+        attempt.fail("report", lane=lane)
+    attempt.finish()
+
+
+@contextmanager
+def managed_attempt(root: Path, controller_revision: str, trigger: str, github: GitHubResults):
+    """Persist and announce first; publish failure while preserving shutdown."""
+    attempt = HardwareAttempt(root, controller_revision, trigger)
+    completed = False
+    try:
+        announce_attempt(attempt, github)
+        yield attempt
+        completed = True
+    finally:
+        if not completed and not attempt.data["failures"]:
+            attempt.fail("execution")
+        attempt.finish()
+        if completed:
+            publish_attempt(attempt, github)
+        else:
+            try:
+                publish_attempt(attempt, github)
+            except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+                pass  # The pending index/outbox records publication failure; preserve the caller's original exception.
+
+
+def publish_attempt(attempt: HardwareAttempt, github: GitHubResults) -> None:
+    """Retain failed originals; interrupted publication resumes verified parts."""
+    publication = attempt.data["publication"]
+    publication["verified"] = False
+    attempt.save()
+    try:
+        if publication["index"] is None:
+            announce_attempt(attempt, github)
+        github.verify_index(index_body(attempt, [], verified=False), publication["index"]["id"])
+        document = json.dumps(attempt.publication_result(), indent=2, sort_keys=True, ensure_ascii=True)
+        chunks = [document[offset:offset + COMMENT_CHARACTERS] for offset in range(0, len(document), COMMENT_CHARACTERS)]
+        parts = []
+        for number, chunk in enumerate(chunks, 1):
+            # Chunks are bounded text, together forming one JSON document.
+            # Quotes/backticks inside observed test names cannot escape JSON.
+            body = (f"Hardware attempt `{attempt.data['run_id']}` report part {number}/{len(chunks)}\n\n"
+                    f"[Run index]({publication['index']['url']})\n\n```json\n{chunk}\n```")
+            digest = hashlib.sha256(body.encode()).hexdigest()
+            prior = next((part for part in publication["parts"] if part["sha256"] == digest), None)
+            if prior is not None:
+                observed = github.api(f"issues/comments/{prior['id']}")
+                if observed.get("body") != body or observed.get("html_url") != prior["url"]:
+                    raise ValueError("retained publication part changed or disappeared")
+                receipt = prior
+            else:
+                receipt = github.comment(body)
+                publication["parts"].append(receipt)
+                attempt.save()
+            parts.append(receipt)
+        # A pending index with all links is recoverable if the final update
+        # fails. No partially uploaded bundle is represented as a pass.
+        github.comment(index_body(attempt, parts, verified=False), publication["index"]["id"])
+        final = github.comment(index_body(attempt, parts, verified=True), publication["index"]["id"])
+        publication.update(index=final, verified=True)
+        attempt.save()
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+        publication["verified"] = False
+        attempt.fail("publication")
+        # The initially published index remains a discoverable failure route.
+        # A GitHub outage can also prevent this update; preserve the durable
+        # attempt/outbox and propagate failure for the operator's retry.
+        if publication["index"] is not None:
+            try:
+                github.comment(index_body(attempt, publication["parts"], verified=False), publication["index"]["id"])
+            except (OSError, ValueError, KeyError, TypeError, RecursionError, subprocess.SubprocessError):
+                pass  # Publication already failed; the pending index/outbox remains and failure propagates below.
+        raise
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
